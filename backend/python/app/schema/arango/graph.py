@@ -109,4 +109,44 @@ EDGE_DEFINITIONS = [
         "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
         "to_vertex_collections": [CollectionNames.AGENT_KNOWLEDGE.value],
     },
+    {
+        "edge_collection": CollectionNames.SALES_PROSPECT.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
+    {
+        "edge_collection": CollectionNames.SALES_CUSTOMER.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
+    {
+        "edge_collection": CollectionNames.SALES_LEAD.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.PEOPLE.value],
+    },
+    {
+        "edge_collection": CollectionNames.SALES_CONTACT.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.PEOPLE.value],
+    },
+    {
+        "edge_collection": CollectionNames.SALES_DEAL.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value],
+    },
+    {
+        "edge_collection": CollectionNames.DEAL_OF.value,
+        "from_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
+    {
+        "edge_collection": CollectionNames.SOLD_IN.value,
+        "from_vertex_collections": [CollectionNames.PRODUCTS.value],
+        "to_vertex_collections": [CollectionNames.DEALS.value],
+    },
+    {
+        "edge_collection": CollectionNames.MEMBER_OF.value,
+        "from_vertex_collections": [CollectionNames.PEOPLE.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
 ]

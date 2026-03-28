@@ -107,6 +107,173 @@ belongs_to_schema = {
     "message": "Document does not match the belongsTo schema.",
 }
 
+# Org -> Org: Salesforce prospect relationship (Account start to first won opportunity)
+sales_prospect_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "rating": {"type": ["string", "null"]},
+            "type": {"type": ["string", "null"]},
+            "externalId": {"type": ["string", "null"]},
+            "startTime": {"type": ["number", "null"]}, # When Account was made in Salesforce (epoch ms)
+            "endTime": {"type": ["number", "null"]}, # When first opportunity was won (epoch ms)
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the sales prospect schema.",
+}
+
+# Org -> Org: Salesforce customer relationship
+sales_customer_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "rating": {"type": ["string", "null"]},
+            "type": {"type": ["string", "null"]},
+            "activeCustomer": {"type": "boolean"},
+            "externalId": {"type": ["string", "null"]},
+            "since": {"type": ["number", "null"]}, # When customer relationship started (epoch ms)
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the sales customer schema.",
+}
+
+# Org -> Person: Salesforce lead (until converted to contact)
+sales_lead_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "company": {"type": ["string", "null"]},
+            "title": {"type": ["string", "null"]},
+            "status": {"type": ["string", "null"]},
+            "rating": {"type": ["string", "null"]},
+            "industry": {"type": ["string", "null"]},
+            "leadSource": {"type": ["string", "null"]},
+            "annualRevenue": {"type": ["number", "null"]},
+            "externalId": {"type": ["string", "null"]},
+            "startTime": {"type": ["number", "null"]},  # When contact was made in Salesforce (epoch ms)
+            "endTime": {"type": ["number", "null"]},   # When lead was converted to contact (epoch ms)
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the sales lead schema.",
+}
+
+# Org -> Person: Salesforce contact relationship
+sales_contact_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "description": {"type": ["string", "null"]},
+            "leadSource": {"type": ["string", "null"]},
+            "since": {"type": ["number", "null"]},  # When contact was made in Salesforce (epoch ms)
+            "externalId": {"type": ["string", "null"]},  # Salesforce Contact Id for mapping leads
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the sales contact schema.",
+}
+
+# Org -> Deal: Salesforce opportunity/deal relationship
+sales_deal_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "stage": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the sales deal schema.",
+}
+
+# Deal -> Org: deal belongs to organization
+deal_of_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the dealOf schema.",
+}
+
+# Product -> Deal: product sold in deal (lineItems: quantity + unitPrice per OLI)
+sold_in_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "lineItems": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "quantity": {"type": ["number", "null"]},
+                        "unitPrice": {"type": ["number", "null"]},
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "sourceUpdatedAtTimestamp": {"type": ["number", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the soldIn schema.",
+}
+
+# Person -> Org: membership (Title, Department)
+member_of_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "title": {"type": ["string", "null"]},
+            "department": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the memberOf schema.",
+}
+
 # This is when records/record groups inherit permissions from parent record groups
 inherit_permissions_schema = {
     "rule": {

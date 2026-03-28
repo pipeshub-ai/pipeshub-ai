@@ -37,11 +37,13 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    DealRecord,
     FileRecord,
     LinkRecord,
     MailRecord,
     MeetingRecord,
     Person,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -3100,12 +3102,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return TicketRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.PROJECTS.value:
                 return ProjectRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.MEETINGS.value:
                 return MeetingRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -6581,6 +6587,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+                CollectionNames.DEALS.value,
+                CollectionNames.PRODUCTS.value,
+                CollectionNames.SALES_PROSPECT.value,
+                CollectionNames.SALES_CUSTOMER.value,
+                CollectionNames.SALES_LEAD.value,
+                CollectionNames.SALES_CONTACT.value,
+                CollectionNames.SALES_DEAL.value,
+                CollectionNames.DEAL_OF.value,
+                CollectionNames.SOLD_IN.value,
+                CollectionNames.MEMBER_OF.value,
             ]
 
             # Start transaction for node deletions only

@@ -35,13 +35,13 @@ class SalesforceRESTClient(HTTPClient):
         api_version: The Salesforce API version (default: '59.0')
     """
 
-    def __init__(self, instance_url: str, access_token: str, api_version: str = "59.0") -> None:
+    def __init__(self, instance_url: str, access_token: str, api_version: str = "59.0", refresh_token: str = None) -> None:
         super().__init__(access_token, "Bearer")
 
         # Ensure instance_url doesn't end with a slash
         self.instance_url = instance_url.rstrip('/')
         self.api_version = api_version
-
+        self.refresh_token = refresh_token
         # Construct the base API URL
         # Format: https://instance.salesforce.com/services/data/vXX.X
         self.base_url = self.instance_url
@@ -72,6 +72,7 @@ class SalesforceConfig(BaseModel):
     instance_url: str = Field(..., description="The Salesforce instance URL")
     access_token: str = Field(..., description="The OAuth access token")
     api_version: str = Field(default="59.0", description="The Salesforce API version")
+    refresh_token: str = Field(default=None, description="The OAuth refresh token")
 
     @field_validator('instance_url')
     @classmethod
@@ -88,7 +89,8 @@ class SalesforceConfig(BaseModel):
         return SalesforceRESTClient(
             instance_url=self.instance_url,
             access_token=self.access_token,
-            api_version=self.api_version
+            api_version=self.api_version,
+            refresh_token=self.refresh_token,
         )
 
     def to_dict(self) -> dict:

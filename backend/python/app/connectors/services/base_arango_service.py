@@ -36,9 +36,11 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    DealRecord,
     FileRecord,
     LinkRecord,
     MailRecord,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -53,6 +55,7 @@ from app.schema.arango.documents import (
     app_role_schema,
     app_schema,
     comment_record_schema,
+    deal_record_schema,
     department_schema,
     file_record_schema,
     knowledge_schema,
@@ -60,6 +63,7 @@ from app.schema.arango.documents import (
     mail_record_schema,
     orgs_schema,
     people_schema,
+    product_record_schema,
     project_record_schema,
     pull_request_record_schema,
     record_group_schema,
@@ -79,9 +83,17 @@ from app.schema.arango.edges import (
     entity_relations_schema,
     inherit_permissions_schema,
     is_of_type_schema,
+    member_of_schema,
     permissions_schema,
     record_relations_schema,
     toolset_has_tool_schema,
+    deal_of_schema,
+    sales_contact_schema,
+    sales_customer_schema,
+    sales_deal_schema,
+    sales_lead_schema,
+    sales_prospect_schema,
+    sold_in_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -126,6 +138,8 @@ NODE_COLLECTIONS = [
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.PULLREQUESTS.value,pull_request_record_schema),
+    (CollectionNames.PRODUCTS.value, product_record_schema),
+    (CollectionNames.DEALS.value, deal_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
@@ -152,6 +166,14 @@ EDGE_COLLECTIONS = [
     (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
     (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
     (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
+    (CollectionNames.SALES_PROSPECT.value, sales_prospect_schema),
+    (CollectionNames.SALES_CUSTOMER.value, sales_customer_schema),
+    (CollectionNames.SALES_LEAD.value, sales_lead_schema),
+    (CollectionNames.SALES_CONTACT.value, sales_contact_schema),
+    (CollectionNames.SALES_DEAL.value, sales_deal_schema),
+    (CollectionNames.DEAL_OF.value, deal_of_schema),
+    (CollectionNames.SOLD_IN.value, sold_in_schema),
+    (CollectionNames.MEMBER_OF.value, member_of_schema),
 ]
 
 class BaseArangoService:
@@ -998,6 +1020,10 @@ class BaseArangoService:
                 additional_data = await self.get_document(
                     record_id, CollectionNames.TICKETS.value
                 )
+            elif record["recordType"] == RecordTypes.PRODUCT.value:
+                additional_data = await self.get_document(
+                    record_id, CollectionNames.PRODUCTS.value
+                )
 
             metadata_query = f"""
             LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
@@ -1124,6 +1150,11 @@ class BaseArangoService:
                     "ticketRecord": (
                         additional_data
                         if record["recordType"] == RecordTypes.TICKET.value
+                        else None
+                    ),
+                    "productRecord": (
+                        additional_data
+                        if record["recordType"] == RecordTypes.PRODUCT.value
                         else None
                     ),
                 },
@@ -5987,6 +6018,8 @@ class BaseArangoService:
                 return LinkRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.PROJECTS.value:
                 return ProjectRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
