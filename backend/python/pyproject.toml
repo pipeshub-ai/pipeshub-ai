@@ -1,6 +1,6 @@
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py310"
 src = ["."]
 
 [tool.ruff.lint]
@@ -164,7 +164,8 @@ authors = [
 description = "AI Pipeline Service"
 version = "0.1"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10,<3.13"
+
 dependencies = [
     "aioboto3>=12.0.0",
     "aiohttp==3.13.4",
@@ -236,7 +237,9 @@ dependencies = [
     "nats-py==2.1.0",
     "notion-client==2.2.1",
     "nltk==3.9.4",
-    "numpy==2.3.2",
+    "numpy>=1.26.4,<2; python_version < '3.11'",
+    "numpy==2.3.2; python_version >= '3.11'",
+    "onnxruntime>=1.23.0,<1.24; python_version < '3.11'",
     "ocrmypdf==16.8.0",
     "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
@@ -270,6 +273,7 @@ dependencies = [
     "uvicorn==0.35",
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
+    "en-core-web-sm",
 ]
 
 [tool.setuptools.packages.find]
@@ -286,7 +290,7 @@ module = "app.indexing_main:run"
 dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
 
 [tool.pyright]
-pythonVersion = "3.12"
+pythonVersion = "3.10"
 typeCheckingMode = "strict"
 include = ["app"]
 exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
@@ -340,3 +344,4 @@ reportDeprecated = "warning"
 
 [tool.uv.sources]
 etcd3 = { git = "https://github.com/kragniz/python-etcd3.git", rev = "e58a899579ba416449c4e225b61f039457c8072a" }
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }

@@ -20,7 +20,7 @@ Welcome to our open source project! We're excited that you're interested in cont
 #### Linux
 ```bash
 sudo apt update
-sudo apt install python3.12-venv
+sudo apt install python3-venv  # Python 3.10–3.12 supported (3.12 recommended)
 sudo apt-get install libreoffice
 sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 ```
@@ -32,7 +32,7 @@ sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 
 
 # Install required packages
-brew install python@3.12
+brew install python@3.12  # Python 3.10–3.12 supported (3.12 recommended)
 brew install libreoffice
 brew install ocrmypdf ghostscript unpaper qpdf
 
@@ -42,7 +42,7 @@ brew install tesseract
 
 #### Windows
 ```bash
-- Install Python 3.12
+- Install Python 3.10–3.12 (3.12 recommended)
 - Install Tesseract OCR if you need to test OCR functionality
 - Consider using WSL2 for a Linux-like environment
 ```
@@ -51,10 +51,32 @@ brew install tesseract
 ```bash
 1. **Docker** - Install Docker for your platform
 2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.12** - Install as shown above
-4. **Optional debugging tools:**
+3. **Python 3.10+** (3.12 recommended) - Install as shown above
+4. **uv** - Python package manager (required for Python backend services)
+5. **Optional debugging tools:**
    - MongoDB Compass or Studio 3T
    - etcd-manager
+```
+
+### Installing uv
+
+[uv](https://docs.astral.sh/uv/) is used to manage Python dependencies and virtual environments for the backend Python services.
+
+#### Linux / Mac
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+#### Windows
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+After installation, restart your terminal or run `source $HOME/.local/bin/env` (Linux/Mac) to ensure `uv` is available on your PATH.
+
+Verify the installation:
+```bash
+uv --version
 ```
 
 ### Starting Required Docker Containers
@@ -174,22 +196,18 @@ npm run dev
 ```bash
 cd backend/python
 cp ../env.template .env
-# Create and activate virtual environment
-python3.12 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -e .
+# Create virtual environment and install dependencies (Python 3.10–3.12 supported)
+uv sync --python 3.12  # Or replace with your desired version, e.g., 3.11 or 3.10
 
 # Install additional language models
-python -m spacy download en_core_web_sm
-python -c "import nltk; nltk.download('punkt')"
+uv run python -c "import nltk; nltk.download('punkt')"
 
-# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
-python -m app.connectors_main
-python -m app.indexing_main
-python -m app.query_main
-python -m app.docling_main
+# Run each service in a separate terminal
+uv run python -m app.connectors_main
+uv run python -m app.indexing_main
+uv run python -m app.query_main
+uv run python -m app.docling_main
 ```
 
 ### Setting Up Frontend
