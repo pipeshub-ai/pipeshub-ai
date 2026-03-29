@@ -4259,7 +4259,7 @@ async def handle_oauth_callback(
             configuration_service=config_service,
             credentials_path=config_path
         )
-        
+
         try:
             token = await oauth_provider.handle_callback(code, original_state)
         except Exception as e:

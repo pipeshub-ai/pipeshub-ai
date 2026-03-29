@@ -98,7 +98,7 @@ class AppGroups(Enum):
 
 
     GITLAB = "GitLab"
-    
+
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"

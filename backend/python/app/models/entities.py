@@ -1717,13 +1717,12 @@ class RecordGroup(BaseModel):
 
 class CodeFileRecord(Record):
     """Record class for Code Files"""
-    file_path: Optional[str] = None
-    # file_name: Optional[str] = None
-    file_hash: Optional[str] = None
+    file_path:str|None = None
+    file_hash: str|None = None
     # file_type: Optional[str] = None
     # branch_name: Optional[str] = None
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1734,28 +1733,24 @@ class CodeFileRecord(Record):
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
-            # "signedUrl": self.signed_url,
-            # "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "filePath": self.file_path,
-            # "fileName": self.file_name,
             "fileHash": self.file_hash,
         }
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
             "name":self.record_name,
             "filePath": self.file_path,
-            # "fileName": self.file_name,
             "fileHash": self.file_hash,
         }
-        
+
     @staticmethod
-    def from_arango_record(arango_base_code_file_record: Dict,arango_base_record:Dict) -> "CodeFileRecord":
+    def from_arango_record(arango_base_code_file_record: dict,arango_base_record:dict) -> "CodeFileRecord":
         """Create CodeFileRecord from ArangoDB documents (records + codeFiles collections)"""
         conn_name_value = arango_base_record.get("connectorName")
         try:

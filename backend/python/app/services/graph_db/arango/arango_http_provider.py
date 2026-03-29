@@ -36,7 +36,6 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
-    CodeFileRecord,
     CommentRecord,
     DealRecord,
     FileRecord,
@@ -2512,9 +2511,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: List[str],
+        path: list[str],
         record_group_name:str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> dict|None:
         """
         Get a record from the FILES collection using its path.
@@ -2561,7 +2560,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         #     )
         #     return None
         try:
-            # based on external id 
+            # based on external id
             # assumed full path from record group next level is as list in param
             query = """
             LET appId = @appId
@@ -2589,7 +2588,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FILTER rec0 != null
             LET depth = LENGTH(parts) <= 1 ? 0 :length(parts) - 1
 
-            LET result_1  = depth == 0 ? rec0 : 
+            LET result_1  = depth == 0 ? rec0 :
                 (FOR v, e, p IN 1..100 OUTBOUND rec0
                     recordRelations
                     //OPTIONS { uniqueVertices: "path" }
@@ -2602,7 +2601,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     )
 
             LET result = depth == 0 ? rec0 : LAST(result_1)
-                        
+
             return result
             """
             self.logger.info(f"connector_id : { connector_id}")
@@ -2621,33 +2620,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"
             )
-            return None            
-    
-    async def get_path_of_file_by_external_id(
-        self,
-        external_id: str,
-        connector_id:str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
-        """Get path of file by id"""
-        file_path_list:List[str]=[]
-        try:
-            file_record = await self.get_record_by_external_id(connector_id, external_id, transaction)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get path of file by external id {external_id}: {str(e)}")
             return None
-        file_path_list.append(file_record.record_name)
-        while(file_record.parent_external_record_id):
-            try:
-                file_record = await self.get_record_by_external_id(connector_id, file_record.parent_external_record_id, transaction)
-            except Exception as e:
-                self.logger.error(f"❌ Failed to get parent file by external id {file_record.parent_external_record_id}: {str(e)}")
-                self.logger.error(f"Error fetching parent mid path returning None")
-                return None
-            file_path_list.append(file_record.record_name)
-        file_path_list.reverse()
-        return file_path_list
-    
+
     async def get_records_by_status(
         self,
         org_id: str,
