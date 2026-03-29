@@ -56,6 +56,16 @@ export interface QdrantConfig {
   grpcPort: number;
 }
 
+export interface OpenSearchConfig {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  useSsl: boolean;
+  verifyCerts: boolean;
+  timeout: number;
+}
+
 export interface ArangoConfig {
   url: string;
   db: string;
@@ -226,6 +236,32 @@ export class ConfigService {
       port: parseInt(process.env.QDRANT_PORT || '6333', 10),
       grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
     });
+  }
+
+  // OpenSearch Configuration
+  public async getOpenSearchConfig(): Promise<OpenSearchConfig> {
+    await this.saveConfigToEtcd(configPaths.db.opensearch, {
+      host: process.env.OPENSEARCH_HOST || 'localhost',
+      port: parseInt(process.env.OPENSEARCH_PORT || '9200', 10),
+      username: process.env.OPENSEARCH_USERNAME || 'admin',
+      password: process.env.OPENSEARCH_PASSWORD || 'admin',
+      useSsl: process.env.OPENSEARCH_USE_SSL === 'true',
+      verifyCerts: process.env.OPENSEARCH_VERIFY_CERTS === 'true',
+      timeout: parseInt(process.env.OPENSEARCH_TIMEOUT || '300', 10),
+    });
+
+    return this.getEncryptedConfig<OpenSearchConfig>(
+      configPaths.db.opensearch,
+      {
+        host: process.env.OPENSEARCH_HOST || 'localhost',
+        port: parseInt(process.env.OPENSEARCH_PORT || '9200', 10),
+        username: process.env.OPENSEARCH_USERNAME || 'admin',
+        password: process.env.OPENSEARCH_PASSWORD || 'admin',
+        useSsl: process.env.OPENSEARCH_USE_SSL === 'true',
+        verifyCerts: process.env.OPENSEARCH_VERIFY_CERTS === 'true',
+        timeout: parseInt(process.env.OPENSEARCH_TIMEOUT || '300', 10),
+      },
+    );
   }
 
   // Arango Configuration

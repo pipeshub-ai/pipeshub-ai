@@ -8,6 +8,7 @@ class config_node_constants(Enum):
     ARANGODB = "/services/arangodb"
     NEO4J = "/services/neo4j"
     QDRANT = "/services/qdrant"
+    OPENSEARCH = "/services/opensearch"
     REDIS = "/services/redis"
     AI_MODELS = "/services/aiModels"
     KAFKA = "/services/kafka"

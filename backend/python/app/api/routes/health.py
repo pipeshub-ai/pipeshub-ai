@@ -175,10 +175,13 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
     try:
         await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
         logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
+        from app.services.vector_db.models import CollectionConfig
         await retrieval_service.vector_db_service.create_collection(
             collection_name=retrieval_service.collection_name,
-            embedding_size=embedding_size,
-            sparse_idf=SPARSE_IDF,
+            config=CollectionConfig(
+                embedding_size=embedding_size,
+                sparse_idf=SPARSE_IDF,
+            ),
         )
 
         await retrieval_service.vector_db_service.create_index(

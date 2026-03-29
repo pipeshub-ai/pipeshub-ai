@@ -195,6 +195,18 @@ export const qdrantConfigSchema = z.object({
   }),
 });
 
+export const opensearchConfigSchema = z.object({
+  body: z.object({
+    host: z.string().min(1, { message: 'OpenSearch host is required' }),
+    port: z.number().min(1, { message: 'OpenSearch port is required' }),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    useSsl: z.boolean().optional(),
+    verifyCerts: z.boolean().optional(),
+    timeout: z.number().optional(),
+  }),
+});
+
 // Platform settings schema (feature flags and upload limits)
 export const platformSettingsSchema = z.object({
   body: z.object({

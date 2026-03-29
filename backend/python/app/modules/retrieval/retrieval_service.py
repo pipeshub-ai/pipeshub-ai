@@ -7,7 +7,6 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_qdrant import FastEmbedSparse
-from qdrant_client import models
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
@@ -26,6 +25,12 @@ from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.models import (
+    FusionMethod,
+    HybridSearchRequest,
+    SparseVector,
+)
+from app.services.vector_db.qdrant.utils import QdrantUtils
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     get_default_embedding_model,
@@ -296,7 +301,7 @@ class RetrievalService:
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
-            self.logger.debug("Extracting virtualRecordIds from Qdrant results")
+            self.logger.debug("Extracting virtualRecordIds from search results")
             returned_virtual_record_ids = list({
                 result["metadata"]["virtualRecordId"]
                 for result in search_results
@@ -306,7 +311,7 @@ class RetrievalService:
                 and result["metadata"].get("virtualRecordId") is not None
             })
 
-            self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
+            self.logger.debug(f"Search returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
@@ -610,18 +615,6 @@ class RetrievalService:
 
         return user_data
 
-    # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
-    # LangChain's SparseVector, which Prefetch does not accept.
-    @staticmethod
-    def to_qdrant_sparse(sparse: models.SparseVector | dict[str, Any] | object) -> models.SparseVector:
-        if isinstance(sparse, models.SparseVector):
-            return sparse
-        if hasattr(sparse, "indices") and hasattr(sparse, "values"):
-            return models.SparseVector(indices=list(sparse.indices), values=list(sparse.values))
-        if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
-            return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
-        raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
-
     async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
         all_results = []
@@ -643,23 +636,13 @@ class RetrievalService:
         )
 
         query_requests = [
-            models.QueryRequest(
-                prefetch=[
-                    models.Prefetch(
-                        query=dense_embedding,
-                        using="dense",
-                        limit=limit * 2,  # Fetch more candidates
-                    ),
-                    models.Prefetch(
-                        query=self.to_qdrant_sparse(sparse_embedding),
-                        using="sparse",
-                        limit=limit * 2,
-                    ),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),  # Reciprocal Rank Fusion
-                with_payload=True,
-                limit=limit,
+            HybridSearchRequest(
+                dense_query=dense_embedding,
+                sparse_query=QdrantUtils.to_generic_sparse_vector(sparse_embedding),
                 filter=filter,
+                limit=limit,
+                fusion_method=FusionMethod.RRF,
+                with_payload=True,
             )
             for dense_embedding, sparse_embedding in zip(dense_query_embeddings, sparse_query_embeddings)
         ]
@@ -668,20 +651,19 @@ class RetrievalService:
             requests=query_requests,
         )
         seen_points = set()
-        for r in search_results:
-                points = r.points
-                for point in points:
-                    if point.id in seen_points:
-                        continue
-                    seen_points.add(point.id)
-                    metadata = point.payload.get("metadata", {})
-                    metadata.update({"point_id": point.id})
-                    doc = Document(
-                        page_content=point.payload.get("page_content", ""),
-                        metadata=metadata
-                    )
-                    score = point.score
-                    all_results.append((doc, score))
+        for batch in search_results:
+            for result in batch:
+                if result.id in seen_points:
+                    continue
+                seen_points.add(result.id)
+                metadata = result.payload.get("metadata", {})
+                metadata.update({"point_id": result.id})
+                doc = Document(
+                    page_content=result.payload.get("page_content", ""),
+                    metadata=metadata
+                )
+                score = result.score
+                all_results.append((doc, score))
 
         return self._format_results(all_results)
 

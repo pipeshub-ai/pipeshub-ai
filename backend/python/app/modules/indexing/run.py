@@ -390,10 +390,13 @@ class IndexingPipeline:
             )
             try:
                 # create the collection
+                from app.services.vector_db.models import CollectionConfig
                 await self.vector_db_service.create_collection(
                     collection_name=self.collection_name,
-                    embedding_size=embedding_size,
-                    sparse_idf=sparse_idf,
+                    config=CollectionConfig(
+                        embedding_size=embedding_size,
+                        sparse_idf=sparse_idf,
+                    ),
                 )
                 self.logger.info(
                     f"✅ Successfully created collection {self.collection_name}"
