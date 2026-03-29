@@ -391,6 +391,7 @@ async def execute_tool_calls(
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
     is_agent: bool = False,  # Use is_agent flag instead of schema
+    mode: str = "json",  # "json" for structured output, "simple" for raw text
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -424,15 +425,20 @@ async def execute_tool_calls(
         try:
             # Measure LLM invocation latency
             ai = None
+            
+            if mode == "simple":
+                call_aiter_function = call_aiter_llm_stream_simple
+            else:
+                call_aiter_function = call_aiter_llm_stream
 
-            async for event in call_aiter_llm_stream(
+            async for event in call_aiter_function(
                 llm_to_pass,
                 messages,
                 final_results,
                 records=[],
                 target_words_per_chunk=target_words_per_chunk,
-                original_llm=llm,
-                is_agent=is_agent  # Pass is_agent flag
+                **{"original_llm":llm,
+                "is_agent":is_agent } if mode != "simple" else {}
             ):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
@@ -1307,11 +1313,6 @@ async def handle_simple_mode(
 ) -> AsyncGenerator[Dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
-        content_buf: str = ""
-        WORD_ITER = re.compile(r'\S+').finditer
-        prev_norm_len = 0
-        emit_upto = 0
-        words_in_chunk = 0
 
         # Fast-path: if the last message is already an AI answer
         try:
@@ -1357,65 +1358,10 @@ async def handle_simple_mode(
         except Exception as e:
             logger.debug("stream_llm_response_with_tools: simple mode fast-path failed: %s", str(e))
 
-        # Stream directly from LLM
-        try:
-            logger.debug("handle_simple_mode: Starting LLM stream")
-            async for token in aiter_llm_stream(llm, messages):
-                content_buf += token
+        async for event in call_aiter_llm_stream_simple(llm, messages, final_results, records, target_words_per_chunk):
+            yield event
 
-                # Stream content in word-based chunks
-                for match in WORD_ITER(content_buf[emit_upto:]):
-                    words_in_chunk += 1
-                    if words_in_chunk == target_words_per_chunk:
-                        char_end = emit_upto + match.end()
-
-                        # Include any citation blocks that immediately follow
-                        if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
-                            char_end += m.end()
-
-                        emit_upto = char_end
-                        words_in_chunk = 0
-
-                        current_raw = content_buf[:emit_upto]
-                        # Skip if we have incomplete citations
-                        if INCOMPLETE_CITE_RE.search(current_raw):
-                            continue
-
-                        clean_answer, confidence = parse_confidence_from_answer(current_raw)
-                        normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
-
-                        chunk_text = normalized[prev_norm_len:]
-                        prev_norm_len = len(normalized)
-
-                        yield {
-                            "event": "answer_chunk",
-                            "data": {
-                                "chunk": chunk_text,
-                                "accumulated": normalized,
-                                "citations": cites,
-                                "confidence": confidence,
-                            },
-                        }
-
-            # Final normalization and emit complete
-            clean_answer, confidence = parse_confidence_from_answer(content_buf)
-            normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
-            yield {
-                "event": "complete",
-                "data": {
-                    "answer": normalized,
-                    "citations": cites,
-                    "reason": "Not provided",
-                    "confidence": confidence,
-                },
-            }
-        except Exception as exc:
-            logger.error("Error in simple mode LLM streaming", exc_info=True)
-            yield {
-                "event": "error",
-                "data": {"error": f"Error in LLM streaming: {exc}"},
-            }
-
+        
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
     if not conversation_tasks:
@@ -1493,7 +1439,8 @@ async def stream_llm_response_with_tools(
                 org_id=org_id,
                 context_length=context_length,
                 is_multimodal_llm=is_multimodal_llm,
-                is_agent=is_agent  # Pass is_agent flag through to execute_tool_calls
+                is_agent=is_agent,  # Pass is_agent flag through to execute_tool_calls
+                mode=mode,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":
@@ -1633,6 +1580,100 @@ def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Patter
     # incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
+
+async def call_aiter_llm_stream_simple(
+    llm,
+    messages,
+    final_results,
+    records=None,
+    target_words_per_chunk: int = 1,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Stream LLM response in simple (non-JSON) mode.
+
+    Streams raw text content directly without JSON parsing or reflection.
+    After streaming, checks for tool calls and yields a tool_calls event if
+    present; otherwise emits a complete event with the accumulated answer.
+    """
+    content_buf: str = ""
+    WORD_ITER = re.compile(r'\S+').finditer
+    prev_norm_len = 0
+    emit_upto = 0
+    words_in_chunk = 0
+    parts = []
+
+    try:
+        async for token in aiter_llm_stream(llm, messages, parts):
+
+            content_buf += token
+
+            # Stream content in word-based chunks (same as handle_simple_mode)
+            for match in WORD_ITER(content_buf[emit_upto:]):
+                words_in_chunk += 1
+                if words_in_chunk == target_words_per_chunk:
+                    char_end = emit_upto + match.end()
+
+                    # Include any citation blocks that immediately follow
+                    if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
+                        char_end += m.end()
+
+                    emit_upto = char_end
+                    words_in_chunk = 0
+
+                    current_raw = content_buf[:emit_upto]
+                    # Skip if we have incomplete citations
+                    if INCOMPLETE_CITE_RE.search(current_raw):
+                        continue
+
+                    clean_answer, confidence = parse_confidence_from_answer(current_raw)
+                    normalized, cites = normalize_citations_and_chunks(
+                        clean_answer, final_results, records
+                    )
+
+                    chunk_text = normalized[prev_norm_len:]
+                    prev_norm_len = len(normalized)
+
+                    yield {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": normalized,
+                            "citations": cites,
+                            "confidence": confidence,
+                        },
+                    }
+    
+
+        # Tool call detection
+        ai = None
+        tool_calls_happened = True
+        for part in parts:
+            if ai is None:
+                ai = part
+            else:
+                ai += part
+
+        if tool_calls_happened and ai is not None:
+            tool_calls = getattr(ai, 'tool_calls', [])
+            if tool_calls:
+                yield {"event": "tool_calls", "data": {"ai": ai}}
+                return
+
+        # Final normalization and emit complete
+        clean_answer, confidence = parse_confidence_from_answer(content_buf)
+        normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
+        yield {
+            "event": "complete",
+            "data": {
+                "answer": normalized,
+                "citations": cites,
+                "reason": None,
+                "confidence": confidence,
+            },
+        }
+    except Exception as exc:
+        logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
+        yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
+        return
 
 async def call_aiter_llm_stream(
     llm,
@@ -1780,7 +1821,7 @@ async def call_aiter_llm_stream(
         else:
             ai += part
 
-    if tool_calls_happened:
+    if tool_calls_happened and ai is not None:
         tool_calls = getattr(ai, 'tool_calls', [])
         if tool_calls:
             yield {
