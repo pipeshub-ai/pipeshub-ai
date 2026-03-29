@@ -581,6 +581,8 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
     }
     case 'connected':
       return '🔌 Connected and processing...';
+    case 'metadata':
+      return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
       return null;
@@ -1045,6 +1047,11 @@ const ChatInterface = () => {
                 data.citations || []
               );
             }
+            break;
+
+          case 'metadata':
+            // Status message is already handled by getEngagingStatusMessage above
+            // This event indicates metadata is being saved, so we keep the status visible
             break;
 
           case 'complete': {
@@ -1760,12 +1767,13 @@ const ChatInterface = () => {
 
         const buffer = await arrayBufferPromise;
         setFileBuffer(buffer);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error downloading document:', err);
+        const message = err?.message || 'Failed to load preview.';
         setSnackbar({
           open: true,
-          message: 'Failed to load preview. Redirecting to the original document shortly...',
-          severity: 'info',
+          message,
+          severity: err?.statusCode === 503 ? 'warning' : 'error',
         });
         let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
 
@@ -1778,32 +1786,25 @@ const ChatInterface = () => {
           onClosePdf();
         }, 500);
 
-        setTimeout(() => {
-          if (webUrl) {
+        if (webUrl) {
+          setTimeout(() => {
             try {
               window.open(webUrl, '_blank', 'noopener,noreferrer');
             } catch (openError) {
               console.error('Error opening new tab:', openError);
-              setSnackbar({
-                open: true,
-                message:
-                  'Failed to automatically open the document. Please check your browser pop-up settings.',
-                severity: 'error',
-              });
             }
-          } else {
-            console.error('Cannot redirect: No webUrl found for the record.');
-            setSnackbar({
-              open: true,
-              message: 'Failed to load preview and cannot redirect (document URL not found).',
-              severity: 'error',
-            });
-          }
-        }, 2500);
+          }, 2500);
+        }
         return;
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch document:', err);
+      const message = err?.message || 'Failed to load document. Please try again.';
+      setSnackbar({
+        open: true,
+        message,
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
       setTimeout(() => {
         onClosePdf();
       }, 500);

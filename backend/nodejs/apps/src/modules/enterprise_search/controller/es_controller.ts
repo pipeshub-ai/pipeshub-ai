@@ -300,6 +300,7 @@ export const streamChat =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        conversationId: savedConversation._id?.toString() || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -1339,6 +1340,7 @@ export const addMessageStream =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -2590,6 +2592,7 @@ async function regenerateAnswersInternal(
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
       chatMode: req.body.chatMode || 'quick',
+      conversationId: conversationId || null,
     };
 
     const aiCommandOptions: AICommandOptions = {
@@ -3780,6 +3783,10 @@ export const unshareSearch =
     const startTime = Date.now();
     const { userIds } = req.body;
     try {
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        throw new BadRequestError('userIds is required and must be a non-empty array');
+      }
+
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
       const filter = buildFilter(req, orgId, userId, searchId);
@@ -4406,8 +4413,17 @@ export const listAgents =
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+      // Forward pagination/search params
+      const { page, limit, search, sort_by, sort_order } = req.query as Record<string, string | undefined>;
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.set('page', page);
+      if (limit) queryParams.set('limit', limit);
+      if (search) queryParams.set('search', search);
+      if (sort_by) queryParams.set('sort_by', sort_by);
+      if (sort_order) queryParams.set('sort_order', sort_order);
+      const qs = queryParams.toString();
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/`,
+        uri: `${appConfig.aiBackend}/api/v1/agent/${qs ? `?${qs}` : ''}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -4417,11 +4433,10 @@ export const listAgents =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        res.status(HTTP_STATUS.OK).json([]);
+        res.status(HTTP_STATUS.OK).json({ success: true, agents: [], pagination: { currentPage: Number(page ?? 1), limit: Number(limit ?? 20), totalItems: 0, totalPages: 0, hasNext: false, hasPrev: false } });
         return;
       }
-      const agents = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agents);
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
     } catch (error: any) {
       logger.error('Error getting agents', {
         requestId,
@@ -4723,12 +4738,13 @@ export const unshareAgent =
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
         tools: req.body.tools || [],
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        conversationId: savedConversation._id?.toString() || null,
       };
 
       logger.info('aiPayload', aiPayload);
@@ -5036,7 +5052,7 @@ export const createAgentConversation =
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
           modelFriendlyName: req.body.modelFriendlyName || null,
-          chatMode: req.body.chatMode || 'quick',
+          chatMode: req.body.chatMode || 'auto',
           timezone: req.body.timezone || null,
           currentTime: req.body.currentTime || null,
         },
@@ -5324,7 +5340,7 @@ export const createAgentConversation =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
-            chatMode: req.body.chatMode || 'quick',
+            chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
           },
@@ -5658,9 +5674,10 @@ export const addMessageStreamToAgentConversation =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {

@@ -9,7 +9,11 @@
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
-	check-and-kill-ports
+	check-and-kill-ports \
+	lint lint-python lint-python-ruff lint-python-pyright lint-nodejs \
+	test-nodejs test-nodejs-coverage \
+	test-python test-python-coverage \
+	test test-coverage
 
 # ==============================================================================
 # Configuration
@@ -93,6 +97,21 @@ help: ## Show this help message
 	@echo "  make clean-env            - Remove all .env files"
 	@echo "  make check-and-kill-ports - Check and kill ports"
 	@echo ""
+	@echo "$(GREEN)Testing:$(NC)"
+	@echo "  make test-nodejs          - Run Node.js unit tests"
+	@echo "  make test-nodejs-coverage - Run Node.js unit tests with coverage"
+	@echo "  make test-python          - Run Python unit tests"
+	@echo "  make test-python-coverage - Run Python unit tests with coverage report"
+	@echo "  make test                 - Run all unit tests (Node.js + Python)"
+	@echo "  make test-coverage        - Run all unit tests with coverage reports"
+	@echo ""
+	@echo "$(GREEN)Linting (changed files only):$(NC)"
+	@echo "  make lint                 - Lint all changed files (Python + Node.js)"
+	@echo "  make lint-python          - Lint changed Python files (ruff + pyright)"
+	@echo "  make lint-python-ruff     - Run ruff on changed Python files"
+	@echo "  make lint-python-pyright  - Run pyright on changed Python files"
+	@echo "  make lint-nodejs          - Run ESLint on changed TypeScript files"
+	@echo ""
 	@echo "$(GREEN)Complete Setup:$(NC)"
 	@echo "  make setup-all            - Setup all services (Node.js, Python, Frontend)"
 	@echo "  make clean-all            - Clean all setups (will ask about .env files)"
@@ -124,7 +143,7 @@ install-deps-mac: ## Install system dependencies on macOS
 	@echo "$(BLUE)Installing macOS dependencies...$(NC)"
 	@echo "$(YELLOW)Installing Homebrew if not already installed...$(NC)"
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
-	brew install python@3.10 || true
+	brew install python@3.12 || true
 	brew install libreoffice || true
 	brew install ocrmypdf ghostscript unpaper qpdf tesseract || true
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
@@ -133,7 +152,7 @@ install-deps-mac: ## Install system dependencies on macOS
 
 install-deps-windows: ## Show Windows installation instructions
 	@echo "$(YELLOW)Windows Installation Instructions:$(NC)"
-	@echo "1. Install Python 3.10 from python.org"
+	@echo "1. Install Python 3.12 from python.org"
 	@echo "2. Install Tesseract OCR if you need to test OCR functionality"
 	@echo "3. Consider using WSL2 for a Linux-like environment"
 	@echo "4. Run: make install-deps-linux in WSL2"
@@ -399,7 +418,7 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
 		echo "$(BLUE)Creating Python virtual environment...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.10; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.12; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
@@ -622,6 +641,89 @@ check-and-kill-ports: ## Check for running processes on required ports and ask t
 		fi; \
 	else \
 		echo "$(GREEN)No conflicting processes found on required ports.$(NC)"; \
+	fi
+
+# ==============================================================================
+# Testing
+# ==============================================================================
+
+test-nodejs: ## Run Node.js unit tests
+	@echo "$(BLUE)Running Node.js unit tests...$(NC)"
+	@cd $(ROOT_DIR)/backend/nodejs/apps && npm run test
+	@echo "$(GREEN)Node.js unit tests complete!$(NC)"
+
+test-nodejs-coverage: ## Run Node.js unit tests with coverage
+	@echo "$(BLUE)Running Node.js unit tests with coverage...$(NC)"
+	@cd $(ROOT_DIR)/backend/nodejs/apps && npm run test:coverage
+	@echo "$(GREEN)Node.js unit tests with coverage complete!$(NC)"
+	@echo "$(YELLOW)Coverage report available at: backend/nodejs/apps/coverage/$(NC)"
+
+test-python: ## Run Python unit tests (parallel)
+	@echo "$(BLUE)Running Python unit tests (parallel)...$(NC)"
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
+	@echo "$(GREEN)Python unit tests complete!$(NC)"
+
+test-python-coverage: ## Run Python unit tests with coverage report (parallel)
+	@echo "$(BLUE)Running Python unit tests with coverage (parallel)...$(NC)"
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
+	@echo "$(GREEN)Python unit tests with coverage complete!$(NC)"
+	@echo "$(YELLOW)Coverage report available at: backend/python/coverage_html/$(NC)"
+
+test: test-nodejs test-python ## Run all unit tests (Node.js + Python)
+	@echo "$(GREEN)All unit tests complete!$(NC)"
+
+test-coverage: test-nodejs-coverage test-python-coverage ## Run all unit tests with coverage reports
+	@echo "$(GREEN)All unit tests with coverage complete!$(NC)"
+
+# ==============================================================================
+# Linting (changed files only — same as CI)
+# ==============================================================================
+
+lint: lint-python lint-nodejs ## Lint all changed files (Python + Node.js)
+	@echo "$(GREEN)All linting complete!$(NC)"
+
+lint-python: lint-python-ruff lint-python-pyright ## Lint changed Python files (ruff + pyright)
+	@echo "$(GREEN)Python linting complete!$(NC)"
+
+lint-python-ruff: ## Run ruff on changed Python files
+	@echo "$(BLUE)Running ruff on changed Python files...$(NC)"
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/python/**/*.py' 2>/dev/null || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		echo "$$CHANGED_FILES" | head -5; \
+		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
+		if [ "$$TOTAL" -gt 5 ]; then echo "... and $$(( $$TOTAL - 5 )) more files"; fi; \
+		cd $(ROOT_DIR)/backend/python && echo "$$CHANGED_FILES" | sed 's|^backend/python/||' | xargs ruff check; \
+	else \
+		echo "$(YELLOW)No changed Python files found$(NC)"; \
+	fi
+
+lint-python-pyright: ## Run pyright on changed Python files
+	@echo "$(BLUE)Running pyright on changed Python files...$(NC)"
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/python/**/*.py' 2>/dev/null || true); \
+	CHANGED_FILES=$$(echo "$$CHANGED_FILES" | grep -v 'code-generator/' | grep -v 'example\.py$$' | sed 's|^backend/python/||' || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		echo "$$CHANGED_FILES" | head -5; \
+		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
+		if [ "$$TOTAL" -gt 5 ]; then echo "... and $$(( $$TOTAL - 5 )) more files"; fi; \
+		cd $(ROOT_DIR)/backend/python && source venv/bin/activate && echo "$$CHANGED_FILES" | xargs pyright; \
+	else \
+		echo "$(YELLOW)No changed Python files found$(NC)"; \
+	fi
+
+lint-nodejs: ## Run ESLint on changed TypeScript files
+	@echo "$(BLUE)Running ESLint on changed TypeScript files...$(NC)"
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' 2>/dev/null || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		echo "$$CHANGED_FILES" | head -5; \
+		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
+		if [ "$$TOTAL" -gt 5 ]; then echo "... and $$(( $$TOTAL - 5 )) more files"; fi; \
+		RELATIVE_FILES=$$(echo "$$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||'); \
+		cd $(ROOT_DIR)/backend/nodejs/apps && npx eslint $$RELATIVE_FILES; \
+	else \
+		echo "$(YELLOW)No changed TypeScript files found$(NC)"; \
 	fi
 
 # ==============================================================================

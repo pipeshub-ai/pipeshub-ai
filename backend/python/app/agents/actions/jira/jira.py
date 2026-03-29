@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -20,6 +20,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -38,8 +39,9 @@ class CreateIssueInput(BaseModel):
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
     priority_name: Optional[str] = Field(default=None, description="Priority")
-    labels: Optional[List[str]] = Field(default=None, description="List of labels")
-    components: Optional[List[str]] = Field(default=None, description="List of component names")
+    labels: list[str] | None = Field(default=None, description="List of labels")
+    components: list[str] | None = Field(default=None, description="List of component names")
+    parent_key: str | None = Field(default=None, description="Parent issue key")
 
     @model_validator(mode='before')
     @classmethod
@@ -173,9 +175,9 @@ class UpdateIssueInput(BaseModel):
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
     priority_name: Optional[str] = Field(default=None, description="Priority")
-    labels: Optional[List[str]] = Field(default=None, description="List of labels")
-    components: Optional[List[str]] = Field(default=None, description="List of component names")
-    status: Optional[str] = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
+    labels: list[str] | None = Field(default=None, description="List of labels")
+    components: list[str] | None = Field(default=None, description="List of component names")
+    status: str | None = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
 
     @model_validator(mode='before')
     @classmethod
@@ -300,7 +302,42 @@ class GetCommentsInput(BaseModel):
             icon_path="/assets/icons/connectors/jira.svg",
             app_group="Project Management",
             app_description="JIRA OAuth application for agent integration"
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="baseUrl",
+                display_name="Base URL",
+                placeholder="https://yourcompany.atlassian.net",
+                description="The base URL of your Atlassian instance",
+                field_type="URL",
+                required=True,
+                usage="CONFIGURE",
+                max_length=2000,
+                is_secret=False,
+            ),
+            AuthField(
+                name="email",
+                display_name="Email",
+                placeholder="your-email@company.com",
+                description="Your Atlassian account email",
+                field_type="TEXT",
+                required=True,
+                usage="AUTHENTICATE",
+                max_length=500,
+                is_secret=False,
+            ),
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="your-api-token",
+                description="API token from Atlassian account settings",
+                field_type="PASSWORD",
+                required=True,
+                usage="AUTHENTICATE",
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg"))\
     .build_decorator()
@@ -315,13 +352,14 @@ class Jira:
         """
         self.client = JiraDataSource(client)
         self._site_url = None  # Cache for site URL
+        self._field_schema_cache: Optional[dict[str, dict[str, str]]] = None  # Cache for field schema mapping
 
     def _handle_response(
         self,
         response: HTTPResponse,
         success_message: str,
         include_guidance: bool = False
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Handle HTTP response and return standardized tuple.
 
         Args:
@@ -387,7 +425,7 @@ class Jira:
                 error_text = response.text() if hasattr(response, 'text') else str(response)
 
             # Build error response
-            error_response: Dict[str, object] = {
+            error_response: dict[str, object] = {
                 "error": error_message or f"HTTP {response.status}",
                 "status_code": response.status,
                 "details": error_text
@@ -443,7 +481,7 @@ class Jira:
         }
         return guidance_map.get(status_code)
 
-    def _convert_text_to_adf(self, text: str) -> Optional[Dict[str, object]]:
+    def _convert_text_to_adf(self, text: str) -> Optional[dict[str, object]]:
         """Convert plain text to Atlassian Document Format (ADF).
 
         Args:
@@ -471,7 +509,7 @@ class Jira:
             ]
         }
 
-    def _validate_issue_fields(self, fields: Dict[str, object]) -> Tuple[bool, str]:
+    def _validate_issue_fields(self, fields: dict[str, object]) -> tuple[bool, str]:
         """Validate issue fields before creating the issue.
 
         Args:
@@ -598,8 +636,9 @@ class Jira:
             return self._site_url
 
         try:
-            # Get token from client
             client_obj = self.client._client
+
+            # Browse URLs need the site host from accessible-resources (*.atlassian.net).
             if hasattr(client_obj, 'get_token'):
                 token = client_obj.get_token()
                 if token:
@@ -610,13 +649,339 @@ class Jira:
                         # Resource URL is like 'https://example.atlassian.net'
                         self._site_url = resource_url.rstrip('/')
                         return self._site_url
+
+            # API token / basic: configured instance base_url is the site URL
+            if hasattr(client_obj, 'get_base_url'):
+                base_url = client_obj.get_base_url()
+                if base_url:
+                    self._site_url = base_url.rstrip('/')
+                    return self._site_url
         except Exception as e:
             logger.warning(f"Could not get site URL: {e}")
 
         return None
 
+    def _normalize_field_name(self, field_name: str) -> str:
+        """Normalize field name to a semantic identifier.
 
-    def _validate_and_fix_jql(self, jql: str) -> Tuple[str, Optional[str]]:
+        Converts field names like "Story Points" to "story_points" for deterministic access.
+
+        Args:
+            field_name: Original field name (e.g., "Story Points", "Issue Type")
+
+        Returns:
+            Normalized field name (e.g., "story_points", "issue_type")
+        """
+        if not field_name:
+            return field_name
+
+        # Convert to lowercase and replace spaces/special chars with underscores
+        normalized = re.sub(r'[^\w\s-]', '', field_name)  # Remove special chars except word chars, spaces, hyphens
+        normalized = re.sub(r'[\s-]+', '_', normalized)  # Replace spaces and hyphens with underscores
+
+        return normalized.lower().strip('_')
+
+    async def _fetch_and_cache_field_schema(self) -> dict[str, dict[str, str]]:
+        """Fetch and cache JIRA field schema mapping.
+
+        Returns a mapping of:
+        - field_id -> field_name (e.g., "customfield_10063" -> "Story Points")
+        - field_id -> normalized_name (e.g., "customfield_10063" -> "story_points")
+
+        Returns:
+            Dictionary mapping field_id to {"name": field_name, "normalized": normalized_name}
+        """
+        if self._field_schema_cache is not None:
+            return self._field_schema_cache
+
+        try:
+            response = await self.client.get_fields()
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                fields_data = response.json()
+                if not isinstance(fields_data, list):
+                    logger.warning(f"Expected list of fields, got {type(fields_data)}")
+                    self._field_schema_cache = {}
+                    return self._field_schema_cache
+
+                # Build mapping: field_id -> {name, normalized}
+                field_map: dict[str, dict[str, str]] = {}
+                for field in fields_data:
+                    field_id = field.get("id")
+                    field_name = field.get("name", "")
+                    if field_id and field_name:
+                        normalized_name = self._normalize_field_name(field_name)
+                        field_map[field_id] = {
+                            "name": field_name,
+                            "normalized": normalized_name
+                        }
+
+                self._field_schema_cache = field_map
+                logger.info(f"Cached {len(field_map)} JIRA field mappings")
+                return self._field_schema_cache
+            else:
+                logger.warning(f"Failed to fetch field schema: HTTP {response.status}")
+                self._field_schema_cache = {}
+                return self._field_schema_cache
+
+        except Exception as e:
+            logger.error(f"Error fetching field schema: {e}")
+            self._field_schema_cache = {}
+            return self._field_schema_cache
+
+    def _clean_issue_fields(self, issue: dict[str, Any]) -> dict[str, Any]:
+        """Clean issue fields by removing unnecessary data and simplifying nested structures.
+
+        This aggressively removes bloat while preserving user-actionable and business-relevant fields.
+
+        Args:
+            issue: Issue dictionary to clean
+
+        Returns:
+            New issue dictionary with cleaned fields
+        """
+        if not isinstance(issue, dict) or "fields" not in issue:
+            return issue
+
+        fields = issue["fields"]
+        if not isinstance(fields, dict):
+            return issue
+
+        # Create a copy to avoid modifying the original
+        cleaned_issue = dict(issue)
+        cleaned_fields = dict(fields)
+
+        # Fields to always remove (system metadata, empty values, redundant data)
+        fields_to_remove = []
+
+        # Fields to simplify (extract only essential info from nested objects)
+        fields_to_simplify = {}
+
+        for field_key, field_value in cleaned_fields.items():
+            # Remove None customfield_* fields (biggest bloat source)
+            if field_key.startswith("customfield_") and field_value is None:
+                fields_to_remove.append(field_key)
+            # Remove empty arrays
+            elif isinstance(field_value, list) and len(field_value) == 0:
+                fields_to_remove.append(field_key)
+            # Remove empty comment/worklog objects
+            elif field_key in ["comment", "worklog"] and isinstance(field_value, dict):
+                if field_key == "comment" and field_value.get("comments") == []:
+                    fields_to_remove.append(field_key)
+                elif field_key == "worklog" and field_value.get("worklogs") == []:
+                    fields_to_remove.append(field_key)
+            # Remove empty strings
+            elif field_value == "":
+                fields_to_remove.append(field_key)
+            # Remove redundant metadata fields (only if empty/null)
+            elif field_key in [
+                "statuscategorychangedate", "status_category_changed",
+                "aggregatetimeoriginalestimate", "aggregatetimeestimate",
+                "aggregatetimespent", "timeestimate", "timeoriginalestimate",
+                "timespent", "workratio", "progress", "aggregateprogress",
+                "rank", "environment", "security", "lastViewed",
+                "organizations", "request_participants", "responders"
+            ]:
+                # Only remove if empty/null
+                if field_value is None or (isinstance(field_value, list) and len(field_value) == 0):
+                    fields_to_remove.append(field_key)
+            # Remove empty arrays for these fields
+            elif field_key in ["fixVersions", "versions", "issuelinks", "subtasks"]:
+                if isinstance(field_value, list) and len(field_value) == 0:
+                    fields_to_remove.append(field_key)
+            # Simplify nested objects to essential fields only
+            elif field_key == "project" and isinstance(field_value, dict):
+                fields_to_simplify[field_key] = {
+                    "key": field_value.get("key"),
+                    "name": field_value.get("name")
+                }
+            elif field_key == "status" and isinstance(field_value, dict):
+                fields_to_simplify[field_key] = {
+                    "name": field_value.get("name"),
+                    "id": field_value.get("id")
+                }
+            elif field_key == "priority" and isinstance(field_value, dict):
+                fields_to_simplify[field_key] = {
+                    "name": field_value.get("name"),
+                    "id": field_value.get("id")
+                }
+            elif field_key == "issuetype" and isinstance(field_value, dict):
+                fields_to_simplify[field_key] = {
+                    "name": field_value.get("name"),
+                    "id": field_value.get("id")
+                }
+            elif field_key in ["assignee", "reporter", "creator"] and isinstance(field_value, dict):
+                # Keep only essential user info
+                simplified = {}
+                if field_value.get("accountId"):
+                    simplified["accountId"] = field_value.get("accountId")
+                if field_value.get("displayName"):
+                    simplified["displayName"] = field_value.get("displayName")
+                if field_value.get("emailAddress"):
+                    simplified["emailAddress"] = field_value.get("emailAddress")
+                if simplified:
+                    fields_to_simplify[field_key] = simplified
+                else:
+                    fields_to_remove.append(field_key)
+            elif field_key == "parent" and isinstance(field_value, dict):
+                # Simplify parent issue to just key and summary
+                parent_fields = field_value.get("fields", {})
+                fields_to_simplify[field_key] = {
+                    "key": field_value.get("key"),
+                    "id": field_value.get("id"),
+                    "summary": parent_fields.get("summary") if isinstance(parent_fields, dict) else None,
+                    "status": {
+                        "name": parent_fields.get("status", {}).get("name") if isinstance(parent_fields.get("status"), dict) else None
+                    } if parent_fields.get("status") else None
+                }
+            elif field_key == "attachment" and isinstance(field_value, list):
+                # Simplify attachments to just essential info
+                if field_value:
+                    simplified_attachments = []
+                    for att in field_value:
+                        if isinstance(att, dict):
+                            simplified_attachments.append({
+                                "id": att.get("id"),
+                                "filename": att.get("filename"),
+                                "size": att.get("size"),
+                                "mimeType": att.get("mimeType"),
+                                "created": att.get("created")
+                            })
+                    fields_to_simplify[field_key] = simplified_attachments
+                else:
+                    fields_to_remove.append(field_key)
+            elif field_key == "comment" and isinstance(field_value, dict) and field_value.get("comments"):
+                # Simplify comments - keep only recent ones or essential info
+                comments = field_value.get("comments", [])
+                if comments:
+                    # Keep only last 3 comments to reduce size
+                    simplified_comments = []
+                    for comment in comments[-3:]:
+                        if isinstance(comment, dict):
+                            simplified_comments.append({
+                                "id": comment.get("id"),
+                                "body": comment.get("body"),
+                                "author": {
+                                    "displayName": comment.get("author", {}).get("displayName"),
+                                    "emailAddress": comment.get("author", {}).get("emailAddress")
+                                } if comment.get("author") else None,
+                                "created": comment.get("created")
+                            })
+                    fields_to_simplify[field_key] = {"comments": simplified_comments}
+                else:
+                    fields_to_remove.append(field_key)
+
+        # Remove fields
+        for field_key in fields_to_remove:
+            cleaned_fields.pop(field_key, None)
+
+        # Simplify fields
+        for field_key, simplified_value in fields_to_simplify.items():
+            cleaned_fields[field_key] = simplified_value
+
+        cleaned_issue["fields"] = cleaned_fields
+        return cleaned_issue
+
+    async def _normalize_issues_in_response(
+        self,
+        response_data: dict[str, Any],
+        field_schema: dict[str, dict[str, str]]
+    ) -> dict[str, Any]:
+        """Normalize custom fields in a response containing issues.
+
+        Only normalizes fields that have values (not None) to avoid adding back removed fields.
+
+        Args:
+            response_data: Response data (may contain "issues" list or single issue)
+            field_schema: Field schema mapping
+
+        Returns:
+            Response data with normalized fields
+        """
+        if not isinstance(response_data, dict):
+            return response_data
+
+        normalized = dict(response_data)
+
+        # Handle list of issues (from search_issues, get_issues)
+        if "issues" in normalized and isinstance(normalized["issues"], list):
+            for issue in normalized["issues"]:
+                if "fields" in issue and isinstance(issue["fields"], dict):
+                    fields = issue["fields"]
+                    # Only normalize customfield_* fields that exist and are not None
+                    for field_id, field_info in field_schema.items():
+                        if field_id in fields and fields[field_id] is not None:
+                            normalized_name = field_info["normalized"]
+                            fields[normalized_name] = fields[field_id]
+
+        # Handle single issue (from get_issue)
+        elif "fields" in normalized and isinstance(normalized["fields"], dict):
+            fields = normalized["fields"]
+            for field_id, field_info in field_schema.items():
+                if field_id in fields and fields[field_id] is not None:
+                    normalized_name = field_info["normalized"]
+                    fields[normalized_name] = fields[field_id]
+
+        return normalized
+
+    def _add_urls_to_issue_references(
+        self,
+        issue: dict[str, Any],
+        site_url: Optional[str]
+    ) -> None:
+        """Add URLs to issue references in custom fields (like Epic Links) and parent field.
+
+        This makes Epic Links and other issue-referencing custom fields clickable,
+        similar to how regular Jira ticket links are handled.
+
+        Args:
+            issue: Issue dictionary to process (modified in place)
+            site_url: Base site URL (e.g., 'https://example.atlassian.net')
+        """
+        if not site_url or not isinstance(issue, dict):
+            return
+
+        fields = issue.get("fields", {})
+        if not isinstance(fields, dict):
+            return
+
+        # Helper to add URL to an issue reference object
+        def add_url_to_issue_ref(issue_ref: object) -> None:
+            """Add URL to an issue reference if it has a key."""
+            if isinstance(issue_ref, dict) and issue_ref.get("key"):
+                issue_key = issue_ref["key"]
+                issue_ref["url"] = f"{site_url}/browse/{issue_key}"
+
+        # Add URL to parent field if it exists and has a key
+        parent = fields.get("parent")
+        if parent:
+            add_url_to_issue_ref(parent)
+
+        # Check all fields for issue references
+        # Epic Links and other issue-referencing custom fields typically contain
+        # an issue object with a "key" field
+        # We check both original custom field IDs (customfield_*) and normalized names
+        for field_key, field_value in fields.items():
+            # Skip standard fields that we've already handled (parent) or that aren't issue references
+            if field_key in ["parent", "key", "id", "self", "url"]:
+                continue
+
+            # Check if this field contains an issue reference
+            # Issue references are dicts with a "key" field (like Epic Links)
+            if field_value is not None:
+                if isinstance(field_value, dict):
+                    # Check if it's an issue reference (has a "key" field)
+                    # This catches Epic Links and other issue-referencing custom fields
+                    if field_value.get("key") and isinstance(field_value.get("key"), str):
+                        add_url_to_issue_ref(field_value)
+                elif isinstance(field_value, list):
+                    # Some custom fields might be arrays of issue references
+                    for item in field_value:
+                        if isinstance(item, dict) and item.get("key") and isinstance(item.get("key"), str):
+                            add_url_to_issue_ref(item)
+
+
+    def _validate_and_fix_jql(self, jql: str) -> tuple[str, str | None]:
         """Validate and fix common JQL syntax errors.
 
         Args:
@@ -714,7 +1079,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def validate_connection(self) -> Tuple[bool, str]:
+    async def validate_connection(self) -> tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
         try:
             # Simply try to fetch the current user to validate the connection
@@ -729,7 +1094,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("accountId", "displayName", "emailAddress")
                     .clean()
                 )
 
@@ -781,7 +1145,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_current_user(self) -> Tuple[bool, str]:
+    async def get_current_user(self) -> tuple[bool, str]:
         """Get the current authenticated JIRA user's details"""
         try:
             response = await self.client.get_current_user()
@@ -794,7 +1158,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("accountId", "displayName", "emailAddress")
                     .clean()
                 )
 
@@ -841,7 +1204,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def convert_text_to_adf(self, text: str) -> Tuple[bool, str]:
+    async def convert_text_to_adf(self, text: str) -> tuple[bool, str]:
         """Convert plain text to Atlassian Document Format"""
         try:
             adf_document = self._convert_text_to_adf(text)
@@ -886,14 +1249,15 @@ class Jira:
         description: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        components: Optional[List[str]] = None
-    ) -> Tuple[bool, str]:
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        parent_key: str | None = None
+    ) -> tuple[bool, str]:
         """Create a new JIRA issue"""
         try:
             # Build issue fields
-            fields: Dict[str, object] = {
+            fields: dict[str, object] = {
                 "project": {"key": project_key},
                 "summary": summary,
                 "issuetype": {"name": issue_type_name},
@@ -920,6 +1284,9 @@ class Jira:
 
             if components:
                 fields["components"] = [{"name": comp} for comp in components]
+
+            if parent_key:
+                fields["parent"] = {"key": parent_key}
 
             # Validate fields
             is_valid, validation_msg = self._validate_issue_fields(fields)
@@ -960,17 +1327,18 @@ class Jira:
                             "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields", "url")
+
                     .clean()
                 )
 
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")
-                if issue_key:
-                    site_url = await self._get_site_url()
-                    if site_url:
-                        cleaned_data["url"] = f"{site_url}/browse/{issue_key}"
+                site_url = await self._get_site_url()
+                if issue_key and site_url:
+                    cleaned_data["url"] = f"{site_url}/browse/{issue_key}"
+                # Add URLs to Epic Links and other issue references in custom fields
+                if site_url:
+                    self._add_urls_to_issue_references(cleaned_data, site_url)
 
                 return True, json.dumps({
                     "message": "Issue created successfully",
@@ -1019,15 +1387,15 @@ class Jira:
         description: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        components: Optional[List[str]] = None,
-        status: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        status: str | None = None
+    ) -> tuple[bool, str]:
         """Update an existing JIRA issue"""
         try:
             # Build fields dictionary with only provided values
-            fields: Dict[str, object] = {}
+            fields: dict[str, object] = {}
 
             if summary:
                 fields["summary"] = summary
@@ -1091,59 +1459,103 @@ class Jira:
                 except Exception as e:
                     logger.warning(f"Could not get transitions for issue {issue_key}: {e}. Status update will be skipped.")
 
-            # Update issue
-            response = await self.client.edit_issue(
-                issueIdOrKey=issue_key,
-                fields=fields if fields else None,
-                transition=transition
+            # Validate that at least one update is being performed
+            if not fields and not transition:
+                return False, json.dumps({
+                    "error": "No updates provided",
+                    "guidance": "Provide at least one field to update (summary, description, assignee, priority, labels, components) or a status to transition to"
+                })
+
+            # Step 1: Update fields (if any) - Jira transitions must be done separately via POST
+            if fields:
+                response = await self.client.edit_issue(
+                    issueIdOrKey=issue_key,
+                    fields=fields,
+                    transition=None  # Don't pass transition here - it's ignored by PUT endpoint
+                )
+
+                if response.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
+                    return self._handle_response(
+                        response,
+                        "Issue updated successfully",
+                        include_guidance=True
+                    )
+
+            # Step 2: Perform transition separately (if needed) - requires POST to /transitions endpoint
+            transition_success = True
+            transition_error = None
+            if transition:
+                try:
+                    transition_response = await self.client.do_transition(
+                        issueIdOrKey=issue_key,
+                        transition=transition
+                    )
+                    if transition_response.status not in [
+                        HttpStatusCode.SUCCESS.value,
+                        HttpStatusCode.NO_CONTENT.value
+                    ]:
+                        transition_success = False
+                        transition_error = f"HTTP {transition_response.status}"
+                        try:
+                            error_data = transition_response.json()
+                            if isinstance(error_data, dict) and "errorMessages" in error_data:
+                                transition_error = "; ".join(error_data.get("errorMessages", []))
+                        except:
+                            pass
+                        logger.warning(
+                            f"Transition to '{status}' failed for issue {issue_key}: {transition_error}"
+                        )
+                except Exception as e:
+                    transition_success = False
+                    transition_error = str(e)
+                    logger.warning(
+                        f"Exception during transition to '{status}' for issue {issue_key}: {e}"
+                    )
+
+            # Step 3: Fetch the updated issue to return complete state
+            issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
+            if issue_response.status == HttpStatusCode.SUCCESS.value:
+                data = issue_response.json()
+            else:
+                # If we can't fetch the issue, return minimal success response
+                site_url = await self._get_site_url()
+                url = f"{site_url}/browse/{issue_key}" if site_url else None
+                message = "Issue updated successfully"
+                if transition and not transition_success:
+                    message += f" (but status transition failed: {transition_error})"
+                return True, json.dumps({
+                    "message": message,
+                    "data": {"key": issue_key, "url": url} if url else {"key": issue_key}
+                })
+
+            # Clean response: remove redundant fields
+            cleaned_data = (
+                ResponseTransformer(data)
+                .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                        "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                        "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                        "*.properties", "*._links")
+                .clean()
             )
 
-            if response.status == HttpStatusCode.SUCCESS.value or response.status == HttpStatusCode.NO_CONTENT.value:
-                # If returnIssue was not set, fetch the updated issue
-                if response.status == HttpStatusCode.NO_CONTENT.value:
-                    issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
-                    if issue_response.status == HttpStatusCode.SUCCESS.value:
-                        data = issue_response.json()
-                    else:
-                        # Add URL even if we can't fetch full issue
-                        site_url = await self._get_site_url()
-                        url = f"{site_url}/browse/{issue_key}" if site_url else None
-                        return True, json.dumps({
-                            "message": "Issue updated successfully",
-                            "data": {"key": issue_key, "url": url} if url else {"key": issue_key}
-                        })
-                else:
-                    data = response.json()
+            # Add web URL if available
+            issue_key_from_data = cleaned_data.get("key") or issue_key
+            site_url = await self._get_site_url()
+            if issue_key_from_data and site_url:
+                cleaned_data["url"] = f"{site_url}/browse/{issue_key_from_data}"
+            # Add URLs to Epic Links and other issue references in custom fields
+            if site_url:
+                self._add_urls_to_issue_references(cleaned_data, site_url)
 
-                # Clean response: remove redundant fields
-                cleaned_data = (
-                    ResponseTransformer(data)
-                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
-                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links")
-                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields")
-                    .clean()
-                )
+            # Build success message
+            message = "Issue updated successfully"
+            if transition and not transition_success:
+                message += f" (but status transition failed: {transition_error})"
 
-                # Add web URL if available
-                issue_key_from_data = cleaned_data.get("key") or issue_key
-                if issue_key_from_data:
-                    site_url = await self._get_site_url()
-                    if site_url:
-                        cleaned_data["url"] = f"{site_url}/browse/{issue_key_from_data}"
-
-                return True, json.dumps({
-                    "message": "Issue updated successfully",
-                    "data": cleaned_data
-                })
-            else:
-                return self._handle_response(
-                    response,
-                    "Issue updated successfully",
-                    include_guidance=True
-                )
+            return True, json.dumps({
+                "message": message,
+                "data": cleaned_data
+            })
 
         except Exception as e:
             logger.error(f"Error updating issue: {e}")
@@ -1173,7 +1585,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_projects(self) -> Tuple[bool, str]:
+    async def get_projects(self) -> tuple[bool, str]:
         """Get all JIRA projects"""
         try:
             response = await self.client.get_all_projects()
@@ -1186,7 +1598,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
                     .clean()
                 )
 
@@ -1241,7 +1652,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_project(self, project_key: str) -> Tuple[bool, str]:
+    async def get_project(self, project_key: str) -> tuple[bool, str]:
         """Get a specific JIRA project"""
         try:
             response = await self.client.get_project(projectIdOrKey=project_key)
@@ -1254,7 +1665,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
                     .clean()
                 )
 
@@ -1308,7 +1718,7 @@ class Jira:
         project_key: str,
         days: Optional[int] = None,
         max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get issues from a project with configurable time range"""
         try:
             # Escape project key and add time filter to avoid unbounded query errors
@@ -1320,24 +1730,44 @@ class Jira:
             response = await self.client.search_and_reconsile_issues_using_jql_post(
                 jql=jql,
                 maxResults=max_results or 50,
-                # Explicitly request key field to ensure issue keys are returned
-                fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
+                fields=["*all"],  # "*all" requests all fields from the API
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
-                # Clean response: remove redundant fields, keep essential ones
+                # Clean response: remove redundant fields
                 cleaned_data = (
                     ResponseTransformer(data)
                     .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                    .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
-                          "priority", "issuetype", "created", "updated", "description", "fields",
-                          "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
+                            "*.progress", "*.aggregateprogress", "*.aggregatetimeestimate",
+                            "*.aggregatetimespent", "*.workratio", "*.lastViewed", "*.security",
+                            "*.watchCount", "*.isWatching", "*.hasVoted", "*.startAt", "*.maxResults", "*.total",
+                            "*.statuscategorychangedate", "*.status_category_changed",
+                            "*.aggregatetimeoriginalestimate", "*.timeestimate", "*.timeoriginalestimate",
+                            "*.timespent", "*.rank", "*.environment", "*.fixVersions", "*.versions",
+                            "*.issuelinks", "*.subtasks", "*.organizations", "*.request_participants",
+                            "*.responders", "*.projectTypeKey", "*.simplified", "*.description",
+                            "*.id")  # Remove nested IDs (keep only top-level issue id/key)
                     .clean()
                 )
+
+                # Aggressive post-processing: Remove None customfield_* and simplify nested structures
+                if isinstance(cleaned_data, dict) and "issues" in cleaned_data:
+                    cleaned_data["issues"] = [
+                        self._clean_issue_fields(issue) for issue in cleaned_data["issues"]
+                    ]
+
+                # Normalize custom fields using field schema (only for fields with values)
+                field_schema = await self._fetch_and_cache_field_schema()
+                cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
+
+                # Remove pagination fields - never send to frontend/LLM
+                if isinstance(cleaned_data, dict):
+                    for field in ["nextPageToken", "next_cursor", "isLast", "total", "startAt", "maxResults"]:
+                        cleaned_data.pop(field, None)
 
                 # Add web URLs to issues if available
                 site_url = await self._get_site_url()
@@ -1346,6 +1776,8 @@ class Jira:
                         issue_key = issue.get("key")
                         if issue_key:
                             issue["url"] = f"{site_url}/browse/{issue_key}"
+                        # Add URLs to Epic Links and other issue references in custom fields
+                        self._add_urls_to_issue_references(issue, site_url)
 
                 return True, json.dumps({
                     "message": "Issues fetched successfully",
@@ -1386,7 +1818,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_issue(self, issue_key: str) -> Tuple[bool, str]:
+    async def get_issue(self, issue_key: str) -> tuple[bool, str]:
         """Get a specific JIRA issue"""
         try:
             response = await self.client.get_issue(issueIdOrKey=issue_key)
@@ -1397,21 +1829,36 @@ class Jira:
                 cleaned_data = (
                     ResponseTransformer(data)
                     .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields", "labels",
-                          "components", "url")
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
+                            "*.progress", "*.aggregateprogress", "*.aggregatetimeestimate",
+                            "*.aggregatetimespent", "*.workratio", "*.lastViewed", "*.security",
+                            "*.watchCount", "*.isWatching", "*.hasVoted", "*.startAt", "*.maxResults", "*.total",
+                            "*.statuscategorychangedate", "*.status_category_changed",
+                            "*.aggregatetimeoriginalestimate", "*.timeestimate", "*.timeoriginalestimate",
+                            "*.timespent", "*.rank", "*.environment", "*.fixVersions", "*.versions",
+                            "*.issuelinks", "*.subtasks", "*.organizations", "*.request_participants",
+                            "*.responders", "*.projectTypeKey", "*.simplified", "*.description",
+                            "*.id")  # Remove nested IDs (keep only top-level issue id/key)
                     .clean()
                 )
 
+                # Aggressive post-processing: Remove None customfield_* and simplify nested structures
+                cleaned_data = self._clean_issue_fields(cleaned_data)
+
+                # Normalize custom fields using field schema (only for fields with values)
+                field_schema = await self._fetch_and_cache_field_schema()
+                cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
+
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")
-                if issue_key:
-                    site_url = await self._get_site_url()
-                    if site_url:
-                        cleaned_data["url"] = f"{site_url}/browse/{issue_key}"
+                site_url = await self._get_site_url()
+                if issue_key and site_url:
+                    cleaned_data["url"] = f"{site_url}/browse/{issue_key}"
+                # Add URLs to Epic Links and other issue references in custom fields
+                if site_url:
+                    self._add_urls_to_issue_references(cleaned_data, site_url)
 
                 return True, json.dumps({
                     "message": "Issue fetched successfully",
@@ -1470,7 +1917,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
+    async def search_issues(self, jql: str, maxResults: Optional[int] = None) -> tuple[bool, str]:
         """Search for JIRA issues using the enhanced search endpoint"""
         try:
             # Validate and fix JQL query
@@ -1485,12 +1932,12 @@ class Jira:
 
             # Use the enhanced search endpoint (POST /rest/api/3/search/jql)
             # The standard search endpoint (/rest/api/3/search) has been removed (410 Gone)
+            # Pass ["*all"] to get all fields; passing [] returns only IDs
             logger.info(f"Calling Jira search API with JQL: {fixed_jql}")
             response = await self.client.search_and_reconsile_issues_using_jql_post(
                 jql=fixed_jql,
                 maxResults=maxResults or 50,
-                # Explicitly request key field to ensure issue keys are returned
-                fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
+                fields=["*all"],  # "*all" requests all fields from the API
             )
 
             logger.info(f"Jira search API response status: {response.status}")
@@ -1511,18 +1958,39 @@ class Jira:
                     })
 
                 try:
-                    # Clean response: remove redundant fields, keep essential ones
+                    # Clean response: remove redundant fields
                     cleaned_data = (
                         ResponseTransformer(data)
                         .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                                "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                                "*.subtask", "*.avatarId", "*.hierarchyLevel",
                                 "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                                "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                        .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
-                              "priority", "issuetype", "created", "updated", "description", "fields",
-                              "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
+                                "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
+                                "*.progress", "*.aggregateprogress", "*.aggregatetimeestimate",
+                                "*.aggregatetimespent", "*.workratio", "*.lastViewed", "*.security",
+                                "*.watchCount", "*.isWatching", "*.hasVoted", "*.startAt", "*.maxResults", "*.total",
+                                "*.statuscategorychangedate", "*.status_category_changed",
+                                "*.aggregatetimeoriginalestimate", "*.timeestimate", "*.timeoriginalestimate",
+                                "*.timespent", "*.rank", "*.environment", "*.fixVersions", "*.versions",
+                                "*.issuelinks", "*.subtasks", "*.organizations", "*.request_participants",
+                                "*.responders", "*.projectTypeKey", "*.simplified", "*.description",
+                                "*.id")  # Remove nested IDs (keep only top-level issue id/key)
                         .clean()
                     )
+
+                    # Simple post-processing: Remove None customfield_* and empty objects
+                    if isinstance(cleaned_data, dict) and "issues" in cleaned_data:
+                        cleaned_data["issues"] = [
+                            self._clean_issue_fields(issue) for issue in cleaned_data["issues"]
+                        ]
+
+                    # Normalize custom fields using field schema (only for fields with values)
+                    field_schema = await self._fetch_and_cache_field_schema()
+                    cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
+
+                    # Remove pagination fields - never send to frontend/LLM
+                    if isinstance(cleaned_data, dict):
+                        for field in ["nextPageToken", "next_cursor", "isLast", "total", "startAt", "maxResults"]:
+                            cleaned_data.pop(field, None)
 
                     # Add web URLs to issues if available
                     site_url = await self._get_site_url()
@@ -1531,6 +1999,8 @@ class Jira:
                             issue_key = issue.get("key")
                             if issue_key:
                                 issue["url"] = f"{site_url}/browse/{issue_key}"
+                            # Add URLs to Epic Links and other issue references in custom fields
+                            self._add_urls_to_issue_references(issue, site_url)
                     logger.info(f"Response cleaned successfully - issues count: {len(cleaned_data.get('issues', [])) if isinstance(cleaned_data, dict) else 'N/A'}")
                 except Exception as e:
                     logger.error(
@@ -1622,7 +2092,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
+    async def add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
 
         try:
             # Convert plain text comment to ADF format if it's a string
@@ -1658,8 +2128,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("id", "body", "author", "created", "updated",
-                          "accountId", "displayName", "emailAddress")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1700,7 +2168,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_comments(self, issue_key: str) -> Tuple[bool, str]:
+    async def get_comments(self, issue_key: str) -> tuple[bool, str]:
         """Get comments for an issue"""
         try:
             response = await self.client.get_comments(issueIdOrKey=issue_key)
@@ -1713,8 +2181,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("comments", "id", "body", "author", "created", "updated",
-                          "accountId", "displayName", "emailAddress")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1763,7 +2229,7 @@ class Jira:
         self,
         query: str,
         max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search JIRA users using the user picker API (more reliable than the search API)"""
         try:
             # Validate query parameter
@@ -1850,7 +2316,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    async def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
+    async def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         """Get project metadata"""
         try:
             response = await self.client.get_project(projectIdOrKey=project_key)
@@ -1869,8 +2335,6 @@ class Jira:
                 .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                         "*.active", "*.timeZone", "*.locale", "*.accountType",
                         "*.properties", "*._links", "*.subtask", "*.avatarId", "*.hierarchyLevel")
-                .keep("key", "id", "name", "projectTypeKey", "lead", "issueTypes", "components",
-                      "displayName", "emailAddress", "accountId", "description")
                 .clean()
             )
 

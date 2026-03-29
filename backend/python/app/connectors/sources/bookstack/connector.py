@@ -24,6 +24,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -46,6 +47,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -64,7 +66,6 @@ from app.models.entities import (
     AppRole,
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -152,7 +153,7 @@ class RecordUpdate:
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -1269,7 +1270,7 @@ class BookStackConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=f"{content_type_name}/{item_id}",
                 description=item.get("description", ""),
-                connector_name=self.connector_name,
+                connector_name=Connectors.BOOKSTACK,
                 connector_id=self.connector_id,
                 group_type=group_type,
                 parent_external_group_id=parent_external_id,
@@ -1666,7 +1667,7 @@ class BookStackConnector(BaseConnector):
 
                 if record_update.record:
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 # Handle deleted records
                 if record_update.is_deleted:
@@ -1757,7 +1758,7 @@ class BookStackConnector(BaseConnector):
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=page.get("name"),
                 external_record_id=f"page/{page_id}",
-                connector_name=self.connector_name,
+                connector_name=Connectors.BOOKSTACK,
                 connector_id=self.connector_id,
                 record_type=RecordType.FILE.value,
                 external_record_group_id=parent_external_id,
@@ -1768,7 +1769,7 @@ class BookStackConnector(BaseConnector):
                 version=0 if is_new else existing_record.version + 1,
                 external_revision_id=str(page.get("revision_count")),
                 weburl=f"{self.bookstack_base_url.rstrip('/')}/books/{page.get('book_slug')}/page/{page.get('slug')}",
-                mime_type=MimeTypes.MARKDOWN,
+                mime_type=MimeTypes.MARKDOWN.value,
                 extension="md",
                 is_file=True,
                 size_in_bytes=0,
@@ -2018,7 +2019,7 @@ class BookStackConnector(BaseConnector):
 
         if record_update.record:
             if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         if record_update.is_new:
             self.logger.info(f"New record detected from event: {record_update.record.record_name}")

@@ -6,6 +6,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { RecordRelationService } from '../services/kb.relation.service';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -36,10 +37,11 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { NotificationService } from '../../notification/service/notification.service';
+import { safeParsePagination } from '../../../utils/safe-integer';
 import {
-  safeParsePagination,
-} from '../../../utils/safe-integer';
-import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+  validateNoFormatSpecifiers,
+  validateNoXSS,
+} from '../../../utils/xss-sanitization';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
@@ -100,10 +102,7 @@ export const getKnowledgeHubNodes =
       }
 
       if (req.query.onlyContainers !== undefined) {
-        queryParams.append(
-          'only_containers',
-          String(req.query.onlyContainers),
-        );
+        queryParams.append('only_containers', String(req.query.onlyContainers));
       }
 
       const { parentType, parentId } = req.params;
@@ -132,10 +131,7 @@ export const getKnowledgeHubNodes =
         error: error.message,
         stack: error.stack,
       });
-      const handleError = handleBackendError(
-        error,
-        'get knowledge hub nodes',
-      );
+      const handleError = handleBackendError(error, 'get knowledge hub nodes');
       next(handleError);
     }
   };
@@ -148,6 +144,41 @@ interface ConnectorInfo {
 interface ActiveConnectorsResponse {
   connectors: ConnectorInfo[];
 }
+
+const LOCK_MESSAGES: Record<string, string> = {
+  FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
+  SYNCING: 'A sync is already in progress. Please wait and try again.',
+};
+
+interface ConnectorInstanceLock {
+  connector?: { isLocked?: boolean; status?: string };
+}
+
+const validateConnectorNotLocked = async (
+  connectorId: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const response = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    HttpMethod.GET,
+    headers,
+  );
+
+  const data = response.data as ConnectorInstanceLock | undefined;
+  if (response.statusCode !== 200 || !data?.connector) {
+    return;
+  }
+
+  const connector = data.connector;
+  if (connector.isLocked) {
+    const status = connector.status ?? '';
+    const message =
+      LOCK_MESSAGES[status] ??
+      'Another operation is in progress. Please wait and try again.';
+    throw new ConflictError(message);
+  }
+};
 
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
@@ -170,7 +201,9 @@ const validateActiveConnector = async (
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
 
-  const isAllowed = connectors.some((connector) => connector._key === connectorId);
+  const isAllowed = connectors.some(
+    (connector) => connector._key === connectorId,
+  );
 
   if (!isAllowed) {
     throw new BadRequestError(`Connector ${connectorId} not allowed`);
@@ -303,23 +336,26 @@ export const listKnowledgeBases =
       }
 
       const search = req.query.search ? String(req.query.search) : undefined;
-      
+
       // Additional validation for search parameter (defense in depth)
       if (search) {
         try {
           validateNoXSS(search, 'search parameter');
           validateNoFormatSpecifiers(search, 'search parameter');
-          
+
           if (search.length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+            throw new BadRequestError(
+              'Search parameter too long (max 1000 characters)',
+            );
           }
         } catch (error: any) {
           throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
+            error.message ||
+              'Search parameter contains potentially dangerous content',
           );
         }
       }
-      
+
       const permissions = req.query.permissions
         ? String(req.query.permissions).split(',')
         : undefined;
@@ -801,11 +837,12 @@ export const uploadRecordsToKB =
         } catch (placeholderError: any) {
           // Track failed file but continue processing others
           // Handle different error response structures
-          const errorMessage = placeholderError?.response?.data?.error?.message ||
-                              placeholderError?.response?.data?.message || 
-                              placeholderError?.message || 
-                              'Failed to create placeholder document';
-          
+          const errorMessage =
+            placeholderError?.response?.data?.error?.message ||
+            placeholderError?.response?.data?.message ||
+            placeholderError?.message ||
+            'Failed to create placeholder document';
+
           failedFiles.push({
             fileName,
             filePath,
@@ -826,7 +863,9 @@ export const uploadRecordsToKB =
         totalFiles: fileBuffers.length,
         successful: placeholderResults.length,
         failed: failedFiles.length,
-        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+        uploadsRequired: placeholderResults.filter(
+          (r) => r.placeholderResult.uploadPromise,
+        ).length,
       });
 
       // Send failed files notification immediately if any failed during placeholder creation
@@ -851,22 +890,35 @@ export const uploadRecordsToKB =
           };
 
           // Send immediately - service handles connection state and queuing
-          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+          const sentImmediately = notificationService.sendToUser(
+            userId,
+            'records:failed',
+            eventData,
+          );
 
-          logger.info('Notification sent for failed files (placeholder creation)', {
-            userId,
-            totalFailed: failedFiles.length,
-            kbId,
-            sentImmediately,
-          });
+          logger.info(
+            'Notification sent for failed files (placeholder creation)',
+            {
+              userId,
+              totalFailed: failedFiles.length,
+              kbId,
+              sentImmediately,
+            },
+          );
         } catch (socketError: unknown) {
-          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
-          logger.error('Failed to send notification for failed files (placeholder creation)', {
-            error: error.message,
-            stack: error.stack,
-            userId,
-            kbId,
-          });
+          const error =
+            socketError instanceof Error
+              ? socketError
+              : new Error(String(socketError));
+          logger.error(
+            'Failed to send notification for failed files (placeholder creation)',
+            {
+              error: error.message,
+              stack: error.stack,
+              userId,
+              kbId,
+            },
+          );
           // Don't fail the upload if notification fails - this is a non-critical notification
         }
       }
@@ -890,7 +942,14 @@ export const uploadRecordsToKB =
       // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
       const placeholderRecords = placeholderResults.map((result) => {
         const { placeholderResult, metadata } = result;
-        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+        const {
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        } = metadata;
 
         // Create record structure matching the format expected by frontend
         // Create record structure
@@ -938,9 +997,10 @@ export const uploadRecordsToKB =
       // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
       // Frontend can display these records immediately with a "processing" status
       res.status(200).json({
-        message: failedFiles.length > 0 
-          ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
-          : 'Upload initiated successfully',
+        message:
+          failedFiles.length > 0
+            ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
+            : 'Upload initiated successfully',
         totalFiles: fileBuffers.length,
         successfulFiles: placeholderResults.length,
         failedFiles: failedFiles.length,
@@ -1120,11 +1180,12 @@ export const uploadRecordsToFolder =
         } catch (placeholderError: any) {
           // Track failed file but continue processing others
           // Handle different error response structures
-          const errorMessage = placeholderError?.response?.data?.error?.message ||
-                              placeholderError?.response?.data?.message || 
-                              placeholderError?.message || 
-                              'Failed to create placeholder document';
-          
+          const errorMessage =
+            placeholderError?.response?.data?.error?.message ||
+            placeholderError?.response?.data?.message ||
+            placeholderError?.message ||
+            'Failed to create placeholder document';
+
           failedFiles.push({
             fileName,
             filePath,
@@ -1145,7 +1206,9 @@ export const uploadRecordsToFolder =
         totalFiles: fileBuffers.length,
         successful: placeholderResults.length,
         failed: failedFiles.length,
-        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+        uploadsRequired: placeholderResults.filter(
+          (r) => r.placeholderResult.uploadPromise,
+        ).length,
       });
 
       // Send failed files notification immediately if any failed during placeholder creation
@@ -1170,24 +1233,37 @@ export const uploadRecordsToFolder =
           };
 
           // Send immediately - service handles connection state and queuing
-          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+          const sentImmediately = notificationService.sendToUser(
+            userId,
+            'records:failed',
+            eventData,
+          );
 
-          logger.info('Notification sent for failed files (placeholder creation)', {
-            userId,
-            totalFailed: failedFiles.length,
-            kbId,
-            folderId,
-            sentImmediately,
-          });
+          logger.info(
+            'Notification sent for failed files (placeholder creation)',
+            {
+              userId,
+              totalFailed: failedFiles.length,
+              kbId,
+              folderId,
+              sentImmediately,
+            },
+          );
         } catch (socketError: unknown) {
-          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
-          logger.error('Failed to send notification for failed files (placeholder creation)', {
-            error: error.message,
-            stack: error.stack,
-            userId,
-            kbId,
-            folderId,
-          });
+          const error =
+            socketError instanceof Error
+              ? socketError
+              : new Error(String(socketError));
+          logger.error(
+            'Failed to send notification for failed files (placeholder creation)',
+            {
+              error: error.message,
+              stack: error.stack,
+              userId,
+              kbId,
+              folderId,
+            },
+          );
           // Don't fail the upload if notification fails - this is a non-critical notification
         }
       }
@@ -1211,7 +1287,14 @@ export const uploadRecordsToFolder =
       // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
       const placeholderRecords = placeholderResults.map((result) => {
         const { placeholderResult, metadata } = result;
-        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+        const {
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        } = metadata;
 
         // Create record structure matching the format expected by frontend
         // Create record structure
@@ -1258,9 +1341,10 @@ export const uploadRecordsToFolder =
       // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
       // Frontend can display these records immediately with a "processing" status
       res.status(200).json({
-        message: failedFiles.length > 0 
-          ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
-          : 'Upload initiated successfully',
+        message:
+          failedFiles.length > 0
+            ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
+            : 'Upload initiated successfully',
         totalFiles: fileBuffers.length,
         successfulFiles: placeholderResults.length,
         failedFiles: failedFiles.length,
@@ -1497,7 +1581,7 @@ export const updateRecord =
           fileUploaded = true;
         } catch (storageError: any) {
           const is404 = storageError?.response?.status === 404;
-          
+
           logger.error(
             'Failed to upload file to storage after database update',
             {
@@ -1524,7 +1608,7 @@ export const updateRecord =
           if (is404) {
             throw new InternalServerError(
               `File storage document not found. The original file may have been deleted` +
-              `Please delete this record and re-upload the file.`,
+                `Please delete this record and re-upload the file.`,
             );
           }
 
@@ -1620,23 +1704,26 @@ export const getKBContent =
       }
 
       const search = req.query.search ? String(req.query.search) : undefined;
-      
+
       // Validate search parameter for XSS and format specifiers
       if (search) {
         try {
           validateNoXSS(search, 'search parameter');
           validateNoFormatSpecifiers(search, 'search parameter');
-          
+
           if (search.length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+            throw new BadRequestError(
+              'Search parameter too long (max 1000 characters)',
+            );
           }
         } catch (error: any) {
           throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
+            error.message ||
+              'Search parameter contains potentially dangerous content',
           );
         }
       }
-      
+
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1815,23 +1902,26 @@ export const getFolderContents =
       }
 
       const search = req.query.search ? String(req.query.search) : undefined;
-      
+
       // Validate search parameter for XSS and format specifiers
       if (search) {
         try {
           validateNoXSS(search, 'search parameter');
           validateNoFormatSpecifiers(search, 'search parameter');
-          
+
           if (search.length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+            throw new BadRequestError(
+              'Search parameter too long (max 1000 characters)',
+            );
           }
         } catch (error: any) {
           throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
+            error.message ||
+              'Search parameter contains potentially dangerous content',
           );
         }
       }
-      
+
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1991,23 +2081,26 @@ export const getAllRecords =
         ? parseInt(String(req.query.limit), 10)
         : 20;
       const search = req.query.search ? String(req.query.search) : undefined;
-      
+
       // Validate search parameter for XSS and format specifiers
       if (search) {
         try {
           validateNoXSS(search, 'search parameter');
           validateNoFormatSpecifiers(search, 'search parameter');
-          
+
           if (search.length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+            throw new BadRequestError(
+              'Search parameter too long (max 1000 characters)',
+            );
           }
         } catch (error: any) {
           throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
+            error.message ||
+              'Search parameter contains potentially dangerous content',
           );
         }
       }
-      
+
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -2721,17 +2814,20 @@ export const getRecordBuffer =
         logger.info('Converting file to ', { convertTo });
         queryParams.append('convertTo', convertTo);
       }
+      const headers: Record<string, string> = {
+        Authorization: req.headers.authorization as string,
+        'Content-Type': 'application/json',
+      };
+      if (req.headers['x-oauth-user-id']) {
+        headers['x-oauth-user-id'] = req.headers['x-oauth-user-id'] as string;
+      }
 
       // Make request to FastAPI backend
       const response = await axios.get(
         `${connectorUrl}/api/v1/stream/record/${recordId}?${queryParams.toString()}`,
         {
           responseType: 'stream',
-          headers: {
-            // Include any necessary headers, such as authentication
-            Authorization: req.headers.authorization,
-            'Content-Type': 'application/json',
-          },
+          headers,
         },
       );
 
@@ -2764,10 +2860,26 @@ export const getRecordBuffer =
       console.error('Error fetching record buffer:', error);
       if (!res.headersSent) {
         if (error.response) {
-          // Forward status code and error from FastAPI
-          res.status(error.response.status).json({
-            error: error.response.data || 'Error from AI backend',
-          });
+          let errorMessage = 'Error from AI backend';
+          try {
+            const chunks: Buffer[] = [];
+            await new Promise<void>((resolve, reject) => {
+              error.response.data.on('data', (chunk: Buffer) =>
+                chunks.push(chunk),
+              );
+              error.response.data.on('end', resolve);
+              error.response.data.on('error', reject);
+            });
+            const body = Buffer.concat(chunks).toString('utf8');
+            const parsed = JSON.parse(body);
+            errorMessage = parsed.detail || parsed.error || body;
+          } catch (parseError) {
+            logger.error('Failed to parse error response from AI backend', {
+              error: parseError,
+            });
+          }
+          res.status(error.response.status).json({ error: errorMessage });
+          return;
         } else {
           // Don't throw here to avoid uncaughtException shutdown during streams
           res.status(500).json({ error: 'Failed to retrieve record data' });
@@ -2795,6 +2907,12 @@ export const reindexFailedRecords =
       }
 
       await validateActiveConnector(
+        connectorId,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
+
+      await validateConnectorNotLocked(
         connectorId,
         appConfig,
         req.headers as Record<string, string>,
@@ -2839,6 +2957,12 @@ export const resyncConnectorRecords =
       }
 
       await validateActiveConnector(
+        connectorId,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
+
+      await validateConnectorNotLocked(
         connectorId,
         appConfig,
         req.headers as Record<string, string>,

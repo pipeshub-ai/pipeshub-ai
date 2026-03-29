@@ -14,15 +14,17 @@ import {
   alpha,
   Snackbar,
   Alert,
+  Portal,
 } from '@mui/material';
-import { Icon } from '@iconify/react';
 
 import { RegistryToolset, RegistryTool } from 'src/types/agent';
 import ToolsetApiService from 'src/services/toolset-api';
+import { useAdmin } from 'src/context/AdminContext';
+import ToolsetConfigDialog from 'src/sections/toolsets/components/toolset-config-dialog';
 
 import { SidebarCategory } from './sidebar-category';
 import { SidebarNodeItem } from './sidebar-node-item';
-import { getToolIcon } from './sidebar.icons';
+import { getToolIcon, UI_ICONS } from './sidebar.icons';
 
 interface SidebarToolsetsSectionProps {
   expandedApps: Record<string, boolean>;
@@ -35,6 +37,8 @@ interface SidebarToolsetsSectionProps {
 }
 
 interface ToolsetWithStatus extends RegistryToolset {
+  isFromRegistry?: boolean;
+  instanceId?: string;
   isConfigured: boolean;
   isAuthenticated: boolean;
 }
@@ -73,52 +77,69 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   activeToolsetTypes = [],
 }) => {
   const theme = useTheme();
+  const { isAdmin } = useAdmin();
   const [searchQuery, setSearchQuery] = useState('');
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string }>({
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'warning' | 'info' }>({
     open: false,
     message: '',
+    severity: 'warning',
   });
+  const [configDialogToolset, setConfigDialogToolset] = useState<ToolsetWithStatus | null>(null);
+
+  const buildUIState = (toolset: ToolsetWithStatus) => {
+    const isFromRegistry = toolset.isFromRegistry === true || !toolset.instanceId;
+    const configureTooltip =
+      isFromRegistry
+        ? (<><span>Not configured (registry).</span><br /><span>Admins can create an instance.</span></>)
+        : toolset.isConfigured && !toolset.isAuthenticated
+          ? 'Authenticate this toolset'
+          : 'Configure toolset';
+    // Consistent action icon scheme for both branches
+    const configureIcon = isFromRegistry ? UI_ICONS.alertCircle : UI_ICONS.settings;
+    const configureIconColor = isFromRegistry ? theme.palette.error.main : theme.palette.warning.main;
+    return { isFromRegistry, configureTooltip, configureIcon, configureIconColor };
+  };
 
   // Use toolsets from props (already loaded with status)
   const toolsets = toolsetsProp as ToolsetWithStatus[];
   const loading = loadingProp;
   const normalizedActiveToolsetTypes = activeToolsetTypes.map(normalizeToolsetTypeKey);
 
-  // Track OAuth window reference
+  // Track OAuth window and polling interval
   const oauthWindowRef = useRef<Window | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Use body as snackbar container to escape any local stacking context (drawers, sticky headers)
+  const snackbarContainer = typeof window !== 'undefined' ? document.body : undefined;
 
-  // Listen for OAuth completion and refresh toolsets
+  // Listen for OAuth completion via postMessage and refresh toolsets
   useEffect(() => {
     const handleOAuthMessage = async (event: MessageEvent) => {
-      // Check if the message is from OAuth completion
-      if (event.data?.type === 'oauth-success' || event.data?.status === 'success') {
-        console.log('✅ OAuth authentication completed, refreshing toolsets...');
-        
-        // Refresh toolsets to get updated authentication status
-        await refreshToolsets();
-        
-        // Show success message
-        setSnackbar({
-          open: true,
-          message: 'Authentication successful! Toolset is now ready to use.',
-        });
-        
-        // Clean up polling if exists
+      // Only act on explicit oauth-success messages to avoid false positives
+      if (event.data?.type === 'oauth-success') {
+        console.log('✅ OAuth authentication completed via postMessage, refreshing toolsets...');
+
+        // Clean up any existing poll since the popup already reported success
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
         }
         oauthWindowRef.current = null;
+
+        await refreshToolsets();
+
+        setSnackbar({
+          open: true,
+          message: 'Authentication successful! Toolset is now ready to use.',
+          severity: 'success',
+        });
       }
     };
 
-    // Listen for messages from OAuth popup
     window.addEventListener('message', handleOAuthMessage);
 
     return () => {
       window.removeEventListener('message', handleOAuthMessage);
-      
+
       // Clean up polling interval on unmount
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -139,9 +160,8 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
     );
   });
 
-  // Loading state is handled by parent skeleton loader
-  // If toolsets are empty, show empty state
-  if (toolsets.length === 0) {
+  // Show empty state only when not loading and no results after filter
+  if (!loading && filteredToolsets.length === 0) {
     return (
       <Box sx={{ pl: 4, py: 2 }}>
         <Typography
@@ -172,60 +192,109 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   const handleConfigureClick = async (toolset: ToolsetWithStatus) => {
     const authType = (toolset as any).authType || '';
     const instanceId = (toolset as any).instanceId || '';
-    
+    const isFromRegistry = (toolset as any).isFromRegistry === true || !instanceId;
+
+    // If this is a synthetic/registry-only entry, route admins to Available tab
+    // and prompt non-admins to contact their administrator.
+    if (isFromRegistry) {
+      if (isAdmin) {
+        const basePath = isBusiness ? '/account/company-settings/settings/toolsets' : '/account/individual/settings/toolsets';
+        window.location.href = `${basePath}?tab=available`;
+        return;
+      }
+      setSnackbar({
+        open: true,
+        message: `${toolset.displayName} is not configured yet. Please contact your administrator to configure it.`,
+        severity: 'warning',
+      });
+      return;
+    }
+
     if (authType === 'OAUTH') {
-      // For OAuth: Call authorize API
       try {
         const result = await ToolsetApiService.getInstanceOAuthAuthorizationUrl(instanceId);
-        if (result.success && result.authorizationUrl) {
-          // Open OAuth window
-          const width = 600;
-          const height = 700;
-          const left = window.screen.width / 2 - width / 2;
-          const top = window.screen.height / 2 - height / 2;
-          const popup = window.open(
-            result.authorizationUrl,
-            'oauth',
-            `width=${width},height=${height},left=${left},top=${top}`
-          );
-          
-          // Store reference to popup window
-          oauthWindowRef.current = popup;
-          
-          // Fallback: Poll for window closure (in case postMessage doesn't work)
-          pollIntervalRef.current = setInterval(async () => {
-            if (!popup || popup.closed) {
-              // Clean up interval
-              if (pollIntervalRef.current) {
-                clearInterval(pollIntervalRef.current);
-                pollIntervalRef.current = null;
-              }
-              oauthWindowRef.current = null;
-              
-              // Refresh toolsets when window closes (user may have completed auth)
-              console.log('OAuth window closed, refreshing toolsets...');
-              await refreshToolsets();
-            }
-          }, 1000); // Check every second
-        } else {
+
+        if (!result.success || !result.authorizationUrl) {
           setSnackbar({
             open: true,
             message: 'Failed to start OAuth authentication. Please try again.',
+            severity: 'error',
           });
+          return;
         }
+
+        // Open the OAuth popup
+        const width = 600;
+        const height = 700;
+        const left = window.screen.width / 2 - width / 2;
+        const top = window.screen.height / 2 - height / 2;
+        const popup = window.open(
+          result.authorizationUrl,
+          'oauth_popup',
+          `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,resizable=yes`
+        );
+
+        if (!popup) {
+          setSnackbar({
+            open: true,
+            message: 'Popup blocked. Please allow popups for this site and try again.',
+            severity: 'error',
+          });
+          return;
+        }
+
+        popup.focus();
+        oauthWindowRef.current = popup;
+
+        // ── Poll exclusively for popup closure ──
+        // Do NOT call refreshToolsets until popup.closed is confirmed true.
+        // This prevents stale-status refreshes while OAuth is still in progress.
+        let statusChecked = false;
+
+        // Clean up any pre-existing interval before starting a new one
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+        }
+
+        pollIntervalRef.current = setInterval(async () => {
+          // Only act once the popup has genuinely closed
+          if (!popup.closed || statusChecked) return;
+
+          // Popup is confirmed closed — mark immediately so subsequent ticks are no-ops
+          statusChecked = true;
+          clearInterval(pollIntervalRef.current!);
+          pollIntervalRef.current = null;
+          oauthWindowRef.current = null;
+
+          // Give the backend a moment to finish processing the OAuth callback
+          // before refreshing, so the auth status is up-to-date.
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+
+          console.log('OAuth window closed, refreshing toolsets...');
+          await refreshToolsets();
+        }, 500); // Poll at 500 ms for a snappier response after popup closes
       } catch (error) {
         console.error('Error starting OAuth:', error);
         setSnackbar({
           open: true,
           message: 'Failed to start OAuth authentication. Please try again.',
+          severity: 'error',
         });
       }
-    } else if (isBusiness) {
-      // For other auth types: Navigate to toolsets page to configure
-      window.location.href = '/account/company-settings/settings/toolsets';
     } else {
-      window.location.href = '/account/individual/settings/toolsets';
+      // For other auth types (API Token, etc.): Open config dialog
+      setConfigDialogToolset(toolset);
     }
+  };
+
+  const handleConfigDialogSuccess = async () => {
+    setConfigDialogToolset(null);
+    await refreshToolsets();
+    setSnackbar({
+      open: true,
+      message: 'Authentication successful! Toolset is now ready to use.',
+      severity: 'success',
+    });
   };
 
   return (
@@ -248,6 +317,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             (toolset as any).toolsetType || toolset.name || ''
           );
           const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
+          const { isFromRegistry, configureTooltip, configureIcon, configureIconColor } = buildUIState(toolset);
           
           // Create drag data for entire toolset
           const toolsetDragData = {
@@ -276,13 +346,19 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
 
           // Handler for attempting to drag unconfigured toolset
           const handleUnconfiguredDragAttempt = () => {
-            const reason = !toolset.isConfigured 
-              ? 'not configured' 
-              : 'not authenticated';
-            
+            if (isFromRegistry) {
+              setSnackbar({
+                open: true,
+                message: `${toolset.displayName} is not configured yet. Please contact your administrator to configure it.`,
+                severity: 'warning',
+              });
+              return;
+            }
+            const reason = !toolset.isConfigured ? 'not configured' : 'not authenticated';
             setSnackbar({
               open: true,
               message: `${toolset.displayName} is ${reason}. Please configure it before using.`,
+              severity: 'warning',
             });
           };
 
@@ -290,6 +366,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             setSnackbar({
               open: true,
               message: `Only one ${formatToolsetTypeLabel((toolset as any).toolsetType || toolset.name)} instance can be added to the flow at a time.`,
+              severity: 'warning',
             });
           };
 
@@ -312,6 +389,9 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
               showConfigureIcon={needsConfiguration}
               showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
               onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
+              configureTooltip={configureTooltip}
+              configureIcon={configureIcon}
+              configureIconColor={configureIconColor}
               onDragAttempt={
                 hasTypeAlreadyInFlow
                   ? handleDuplicateTypeDragAttempt
@@ -407,6 +487,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     (toolset as any).toolsetType || toolset.name || ''
                   );
                   const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
+                  const { isFromRegistry, configureTooltip, configureIcon, configureIconColor } = buildUIState(toolset);
 
                   // Create drag data for this instance
                   const toolsetDragData = {
@@ -434,13 +515,19 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                   };
 
                   const handleUnconfiguredDragAttempt = () => {
-                    const reason = !toolset.isConfigured 
-                      ? 'not configured' 
-                      : 'not authenticated';
-                    
+                    if (isFromRegistry) {
+                      setSnackbar({
+                        open: true,
+                        message: `${instanceName} is not configured yet. Please contact your administrator to configure it.`,
+                        severity: 'warning',
+                      });
+                      return;
+                    }
+                    const reason = !toolset.isConfigured ? 'not configured' : 'not authenticated';
                     setSnackbar({
                       open: true,
                       message: `${instanceName} is ${reason}. Please configure it before using.`,
+                      severity: 'warning',
                     });
                   };
 
@@ -448,6 +535,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     setSnackbar({
                       open: true,
                       message: `Only one ${formatToolsetTypeLabel((toolset as any).toolsetType || toolset.name)} instance can be added to the flow at a time.`,
+                      severity: 'warning',
                     });
                   };
 
@@ -469,6 +557,9 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                       showConfigureIcon={needsConfiguration}
                       showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
                       onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
+                      configureTooltip={configureTooltip}
+                      configureIcon={configureIcon}
+                      configureIconColor={configureIconColor}
                       onDragAttempt={
                         hasTypeAlreadyInFlow
                           ? handleDuplicateTypeDragAttempt
@@ -571,20 +662,42 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
       )}
 
       {/* Snackbar for notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
-          severity="warning"
-          sx={{ width: '100%' }}
+      <Portal container={snackbarContainer}>
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={5000}
+          onClose={(_event, reason) => {
+            // Keep snackbar visible on clickaway during drag/drop so the user notices it
+            if (reason === 'clickaway') {
+              return;
+            }
+            setSnackbar({ ...snackbar, open: false });
+          }}
+          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
+          <Alert
+            onClose={() => setSnackbar({ ...snackbar, open: false })}
+            severity={snackbar.severity}
+            sx={{ width: '100%' }}
+          >
           {snackbar.message}
         </Alert>
       </Snackbar>
+    </Portal>
+
+      {/* Toolset Configuration Dialog */}
+      {configDialogToolset && (
+        <ToolsetConfigDialog
+          toolset={configDialogToolset}
+          toolsetId={configDialogToolset.instanceId}
+          isAdmin={isAdmin}
+          onClose={() => setConfigDialogToolset(null)}
+          onSuccess={handleConfigDialogSuccess}
+          onShowToast={(message) => {
+            setSnackbar({ open: true, message, severity: 'success' });
+          }}
+        />
+      )}
     </Box>
   );
 };

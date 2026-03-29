@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from github import Auth, Github
 from pydantic import BaseModel, Field  # type: ignore
@@ -11,9 +11,9 @@ from app.sources.client.iclient import IClient
 # Standardized Github API response wrapper
 class GitHubResponse(BaseModel):
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
-    message: Optional[str] = None
+    data: Any | None = None
+    error: str | None = None
+    message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
@@ -24,9 +24,9 @@ class GitHubClientViaToken:
     def __init__(
         self,
         token: str,
-        base_url: Optional[str] = None,
-        timeout: Optional[float] = None,
-        per_page: Optional[int] = None,
+        base_url: str | None = None,
+        timeout: float | None = None,
+        per_page: int | None = None,
     ) -> None:
         self.token = token
         self.base_url = base_url
@@ -53,18 +53,21 @@ class GitHubClientViaToken:
             raise RuntimeError("Client not initialized. Call create_client() first.")
         return self._sdk
 
-    def get_base_url(self) -> Optional[str]:
+    def get_base_url(self) -> str | None:
         return self.base_url
+
+    def get_token(self) ->str:
+        return self.token
 
 
 class GitHubConfig(BaseModel):
     token: str
-    base_url: Optional[str] = Field(
+    base_url: str | None = Field(
         default=None,
         description='e.g. "https://ghe.example.com/api/v3" for GH Enterprise',
     )
-    timeout: Optional[float] = None
-    per_page: Optional[int] = None
+    timeout: float | None = None
+    per_page: int | None = None
 
     def create_client(self) -> GitHubClientViaToken:
         return GitHubClientViaToken(
@@ -85,6 +88,9 @@ class GitHubClient(IClient):
     def get_sdk(self) -> Github:
         return self.client.get_sdk()
 
+    def get_token(self) -> str:
+        return self.client.get_token()
+
     @classmethod
     def build_with_config(
         cls,
@@ -95,11 +101,47 @@ class GitHubClient(IClient):
         return cls(client)
 
     @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: dict[str, Any],
+        logger: logging.Logger,
+    ) -> "GitHubClient":
+        """Build GitHubClient from toolset configuration (new architecture).
+
+        Toolset configs are stored per-user at:
+        /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+
+        Returns:
+            GitHubClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for GitHub client")
+
+            credentials_config = toolset_config.get("credentials", {}) or {}
+            token = credentials_config.get("access_token", "")
+            if not token:
+                raise ValueError("Access token required for GitHub client (OAuth)")
+
+            client = GitHubClientViaToken(token=token, per_page=90)
+            client.create_client()
+            logger.info("Built GitHub client from toolset config")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build GitHub client from toolset config: {str(e)}")
+            raise
+
+    @classmethod
     async def build_from_services(
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> "GitHubClient":
         """Build GitHubClient using configuration service
         Args:
@@ -127,7 +169,7 @@ class GitHubClient(IClient):
                 if not token:
                     raise ValueError("Token required for token auth type")
 
-                client_via_token = GitHubClientViaToken(token=token,per_page=30)
+                client_via_token = GitHubClientViaToken(token=token,per_page=90)
                 client_via_token.create_client()
                 client =client_via_token
             elif auth_type == "OAUTH":
@@ -135,7 +177,7 @@ class GitHubClient(IClient):
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
 
-                client_via_token = GitHubClientViaToken(token=access_token,per_page=30)
+                client_via_token = GitHubClientViaToken(token=access_token,per_page=90)
                 client_via_token.create_client()
                 client =client_via_token
             else:
@@ -146,7 +188,7 @@ class GitHubClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: str | None = None) -> dict[str, Any]:
         """Fetch connector config from etcd for GitHub."""
         try:
             config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
@@ -155,4 +197,4 @@ class GitHubClient(IClient):
             return config
         except Exception as e:
             logger.error(f"Failed to get GitHub connector config: {e}")
-            raise ValueError(f"Failed to get GitHub connector configuration for instance {connector_instance_id}")
+            raise ValueError(f"Failed to get GitHub connector configuration for instance {connector_instance_id}") from e

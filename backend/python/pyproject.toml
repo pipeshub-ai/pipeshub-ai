@@ -1,13 +1,159 @@
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py312"
 src = ["."]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "F401", "PLW0603"]
-ignore = [
-    "E501",  # Line too long
+select = [
+    "E",        
+    "F",        
+    "W",        
+    "I",
+
+    # --- Bug detection (catches real runtime errors) ---
+    "B006",     # Mutable default argument (def f(x=[]))
+    "B007",     # Unused loop variable (use _ prefix)
+    "B011",     # assert False (use raise AssertionError)
+    "B012",     # return/break/continue in finally block
+    "B015",     # Pointless comparison (x == y without using result)
+    "B016",     # Raise literal (raise "error" instead of raise Exception)
+    "B017",     # assertRaises(Exception) too broad
+    "B018",     # Useless expression (statement with no effect)
+    "B020",     # Loop variable overwritten inside body
+    "B023",     # Function variable not bound in loop body (closure bug)
+    "B025",     # try-except-pass with bare except
+    "B029",     # except with empty tuple
+    "B032",     # Unintentional type annotation (possible := typo)
+    "B904",     # raise without from inside except (loses traceback)
+
+    # --- Pylint errors (definite bugs) ---
+    "PLE0100",  # __init__ returns a value
+    "PLE0101",  # return in __init__
+    "PLE0116",  # continue in finally
+    "PLE0117",  # non local at module level
+    "PLE0241",  # duplicate bases in class
+    "PLE0302",  # unexpected special method signature
+    "PLE0604",  # invalid __all__ object
+    "PLE0605",  # invalid __all__ format
+    "PLE1142",  # await outside async
+
+    # --- Pylint warnings (risky patterns) ---
+    "PLW0120",  # useless else on loop
+    "PLW0127",  # self-assigning variable (x = x)
+    "PLW0129",  # assert on string literal (always truthy)
+    "PLW0602",  # global without assignment
+    "PLW0603",  # global statement usage
+    "PLW0711",  # binary op in exception (except A or B)
+    "PLW1508",  # invalid envvar default type
+    "PLW2901",  # redefined loop variable by assignment
+
+    # --- Pylint refactor (code quality) ---
+    "PLR0206",  # property with positional args
+    "PLR1704",  # redefining argument with local name
+    "PLR1711",  # useless return (return None at end)
+
+    # --- Misc bug catchers ---
+    "PIE794",   # duplicate class field definition
+    "PIE796",   # non-unique enum values
+    "PIE810",   # multiple startswith/endswith (use tuple)
+
+    # --- Return statement issues ---
+    "RET504",   # unnecessary assignment before return
+
+    # --- Performance ---
+    "PERF101",  # unnecessary list() in for loop
+    "PERF102",  # unnecessary list() on dict items/keys/values
+    "PERF401",  # use list comprehension instead of for+append
+    "PERF403",  # use dict comprehension instead of for+assign
+
+    # --- Comprehension simplification ---
+    "C4",       # unnecessary list/dict/set wrappers
+
+    # --- Async issues ---
+    "ASYNC100", # no timeout on async blocking calls
+    "ASYNC110", # no timeout on async event wait
+
+    # --- Simplification ---
+    "SIM102",   # collapsible if statements
+    "SIM105",   # use contextlib.suppress instead of try-except-pass
+    "SIM108",   # use ternary instead of if-else block
+    "SIM110",   # use any() instead of for loop
+    "SIM112",   # use os.environ instead of os.environ.get
+    "SIM118",   # use `key in dict` instead of `key in dict.keys()`
+    "SIM201",   # negate comparison instead of not (x == y)
+    "SIM910",   # use dict.get(key) instead of dict.get(key, None)
+
+    # --- Type annotation enforcement (for new code in PRs) ---
+    "ANN001",   # missing type annotation for function argument
+    "ANN002",   # missing type annotation for *args
+    "ANN003",   # missing type annotation for **kwargs
+    "ANN201",   # missing return type for public function
+    "ANN202",   # missing return type for private function
+    "ANN204",   # missing return type for __init__
+    "ANN205",   # missing return type for staticmethod
+    "ANN206",   # missing return type for classmethod
+
+    # --- Disallow Any in annotations ---
+    "ANN401",   # typing.Any banned — use concrete types or generics
+
+    # --- Modern Python type syntax (3.10+, like compiled-language explicitness) ---
+    "UP006",    # Use list[int] not List[int]
+    "UP007",    # Use X | Y not Union[X, Y]
+    "UP035",    # No deprecated typing imports (Dict, List, Optional, etc.)
+
+    # --- Type-checking imports optimization ---
+    "TC001",    # Move 1st-party type-only imports behind TYPE_CHECKING
+    "TC002",    # Move 3rd-party type-only imports behind TYPE_CHECKING
+    "TC003",    # Move stdlib type-only imports behind TYPE_CHECKING
+
+    # --- Return statement consistency (like compiled-language return rules) ---
+    "RET501",   # Do not explicitly return None if only return
+    "RET502",   # Do not implicitly return None if other returns have values
+    "RET503",   # Missing explicit return at end of function with other returns
+
+    # --- Boolean trap (force keyword args for booleans, like named params) ---
+    "FBT001",   # Boolean positional arg in function definition
+    "FBT002",   # Boolean default value in function definition
+
+    # --- Builtin name shadowing (causes type confusion) ---
+    "A001",     # Variable shadows a Python builtin
+    "A002",     # Argument shadows a Python builtin
+
+    # --- No print() in production code (use logging module) ---
+    "T201",     # print() found
+    "T203",     # pprint() found
+
+    # --- Timezone-aware datetimes (catch runtime errors) ---
+    "DTZ001",   # datetime.now() without tz
+    "DTZ002",   # datetime.today() (use now(tz=))
+    "DTZ003",   # datetime.utcnow() (use now(tz=UTC))
+    "DTZ004",   # datetime.utcfromtimestamp()
+    "DTZ005",   # datetime.now() without tz in call
+    "DTZ006",   # datetime.fromtimestamp() without tz
+    "DTZ007",   # strptime without %z
+    "DTZ011",   # datetime.date.today() (use date.today() with tz)
+    "DTZ012",   # datetime.fromisoformat() without tz
+
+    # --- Dead code & unused symbols (keep codebase clean) ---
+    "F401",     # Unused import
+    "F811",     # Redefinition of unused name from outer scope
+    "F841",     # Local variable assigned but never used
+
+    # --- Ruff-specific ---
+    "RUF005",   # collection literal concatenation (use [*a, *b])
+    "RUF015",   # unnecessary iterable allocation for first element
+    "RUF019",   # unnecessary key check before dict access
+    "RUF100",   # unused noqa directive
 ]
+ignore = [
+    "E501",     # Line too long (handled by formatter)
+    "B008",     # Function call in default arg (conflicts with FastAPI Depends())
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
+"app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
 
 
 [project]
@@ -18,7 +164,7 @@ authors = [
 description = "AI Pipeline Service"
 version = "0.1"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=12.0.0",
     "aiohttp==3.13.3",
@@ -37,6 +183,7 @@ dependencies = [
     "cloudscraper==1.2.71",
     "cryptography==44.0.1",
     "curl-cffi==0.14.0",
+    # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docling==2.60.0",
@@ -88,17 +235,17 @@ dependencies = [
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
-    "nltk==3.9.1",
-    "numpy<2",
+    "nltk==3.9.4",
+    "numpy==2.3.2",
     "ocrmypdf==16.8.0",
+    "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
-    "opik==1.9.37",
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "Pillow<12.0.0",
     "pdf2image==1.17.0",
     "pillow-avif-plugin==1.5.5",
-    "protobuf==3.20.3",
+    "protobuf>=4.25.0,<6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
     "PyMuPDF==1.24.14",
@@ -106,22 +253,24 @@ dependencies = [
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
     "python-dotenv==1.1.0",
+    "redshift_connector==2.0.918",
     "pikepdf>=8.1.0,<9.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.22",
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
-    "requests==2.32.5",
+    "requests==2.33.0",
     "ruff==0.11.9",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
-    "spacy<=3.7.5",
+    "spacy==3.8.2",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
     "uuid==1.30",
     "uvicorn==0.35",
     "zstandard==0.25.0",
+    "mariadb>=1.1.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -135,4 +284,60 @@ build-backend = "setuptools.build_meta"
 module = "app.indexing_main:run"
 
 [project.optional-dependencies]
-dev = ["ruff"]
+dev = ["ruff", "pyright"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["app"]
+exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
+
+# --- Overrides from strict defaults (everything else is "error") ---
+
+# Third-party libs without type stubs (langchain, etcd3, celery, python-arango, etc.)
+reportMissingTypeStubs = "warning"
+
+# Side-effect functions (logging, db writes) — unused return value is intentional
+reportUnusedCallResult = "warning"
+
+# Dead code enforcement — unused imports and variables are errors
+reportUnusedImport = "error"
+reportUnusedVariable = "error"
+
+# --- Unknown type enforcement ---
+# Variables: ERROR — if pyright can't determine a variable's type, you must annotate it.
+# This catches: untyped factory returns, `Any` assignments, missing annotations on custom objects.
+reportUnknownVariableType = "error"
+# Member access: ERROR — calling .method() on an Unknown/Any object is now an error.
+# This is the rule that catches "methods not reachable on different objects".
+reportUnknownMemberType = "error"
+# Arguments: ERROR — passing Unknown values to typed functions is caught.
+reportUnknownArgumentType = "error"
+# Parameters: WARNING — 3rd-party callback signatures often propagate Unknown.
+reportUnknownParameterType = "warning"
+# Lambdas: WARNING — lambda type inference from 3rd-party libs is noisy.
+reportUnknownLambdaType = "warning"
+
+# --- Override safety (like TypeScript noImplicitOverride) ---
+# Forces @override decorator when overriding parent methods.
+# Prevents: silently overriding a parent method, then parent renames it → child method becomes dead code.
+reportImplicitOverride = "error"
+
+# --- Initialization safety ---
+# Catches __init__ that doesn't call super().__init__() in subclasses.
+# Prevents: BaseConnector sets up logger/data_store, subclass skips super() → AttributeError at runtime.
+reportMissingSuperCall = "warning"
+
+# --- Inheritance safety ---
+# Catches diamond inheritance / MRO issues.
+reportUnsafeMultipleInheritance = "warning"
+
+# match/case not heavily used yet — warn for gradual adoption
+reportMatchNotExhaustive = "warning"
+
+# Informational quality signals, not type-safety blockers
+reportImportCycles = "warning"
+reportDeprecated = "warning"
+
+[tool.uv.sources]
+etcd3 = { git = "https://github.com/kragniz/python-etcd3.git", rev = "e58a899579ba416449c4e225b61f039457c8072a" }

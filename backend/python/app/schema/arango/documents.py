@@ -148,6 +148,8 @@ app_schema = {
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "status": {"type": ["string", "null"]},
+            "isLocked": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",
@@ -214,7 +216,7 @@ record_schema = {
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
                     "QUEUED",
-                    "CONNECTOR_DISABLED"
+                    "CONNECTOR_DISABLED"   # deprecated, use AUTO_INDEX_OFF instead
                 ],
             },
             "extractionStatus": {
@@ -402,12 +404,12 @@ ticket_record_schema = {
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assignee_source_id":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
@@ -441,31 +443,31 @@ pull_request_record_schema = {
             "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "assignee":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assigneeEmail":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
             "reviewEmail":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": []
             },
             "reviewName":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": []
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },

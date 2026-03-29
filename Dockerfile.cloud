@@ -1,5 +1,5 @@
 # Stage 1: Base dependencies
-FROM python:3.10-slim AS base
+FROM python:3.12-slim AS base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 WORKDIR /app
@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev libgflags-dev libsnappy-dev zlib1g-dev \
     libbz2-dev liblz4-dev libzstd-dev libssl-dev ca-certificates libspatialindex-dev libpq5 && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y nodejs git && \
     apt-get install -y libreoffice && \
     apt-get install -y ocrmypdf tesseract-ocr ghostscript unpaper qpdf && \
     apt-get clean && \

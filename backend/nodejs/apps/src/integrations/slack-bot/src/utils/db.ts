@@ -9,6 +9,7 @@ export interface ConversationDocument {
   threadId: string;
   conversationId: string;
   botId: string;
+  email: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -34,15 +35,39 @@ const conversationSchema = new Schema<ConversationDocument>(
     threadId: { type: String, required: true },
     conversationId: { type: String, required: true },
     botId: { type: String, required: true },
+    email: { type: String, required: true },
   },
 
   { timestamps: true },
 );
 
-conversationSchema.index({ threadId: 1, botId: 1 }, { unique: true });
 
 export const Conversation = model<ConversationDocument>(
   'Conversation',
   conversationSchema,
   'slack_conversations',
 );
+
+/**
+ * Checks for and drops the threadId + botId index if it exists.
+ * This is useful for removing legacy indexes.
+ */
+export const dropLegacyThreadBotIndex = async (): Promise<void> => {
+  try {
+    const indexes = await Conversation.collection.getIndexes();
+    // Look for an index that has threadId and botId as keys
+    for (const [indexName, _] of Object.entries(indexes)) {
+      // Skip the _id index
+      if (indexName === '_id_') {
+        continue;
+      }
+
+      console.log(`Dropping legacy index: ${indexName}`);
+      await Conversation.collection.dropIndex(indexName);
+      console.log(`Successfully dropped legacy index: ${indexName}`);
+    }
+
+  } catch (error) {
+    console.warn('Error checking/dropping legacy index/the index does not exist');
+  }
+};

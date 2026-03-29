@@ -648,11 +648,14 @@ async def execute_tool_calls(
         for tool_result in tool_results_inner:
             if tool_result.get("ok"):
                 tool_msg = {
-                    "ok": True,
-                    "records": message_contents,
-                    "record_count": tool_result.get("record_count", None),
-                    "not_found": tool_result.get("not_found", None),
-                }
+                        "ok": True,
+                        "records": message_contents,
+                        "record_count": tool_result.get("record_count", None),
+                        "sql_result": tool_result.get("markdown_result", None),
+                        "row_count": tool_result.get("row_count", None),
+                        "column_count": tool_result.get("column_count", None),
+                        "not_found": tool_result.get("not_found", None),
+                    }
 
                 # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
                 tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
@@ -1249,6 +1252,20 @@ async def handle_simple_mode(
                 "data": {"error": f"Error in LLM streaming: {exc}"},
             }
 
+
+def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
+    """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
+    if not conversation_tasks:
+        return answer
+    markers = "\n\n" + "  ".join(
+        f"::download_conversation_task[{t.get('fileName', 'Download')}]({t.get('signedUrl') or t.get('downloadUrl', '')})"
+        for t in conversation_tasks
+        if t.get("signedUrl") or t.get("downloadUrl")
+    )
+
+    return answer + markers
+
+
 async def stream_llm_response_with_tools(
     llm,
     messages,
@@ -1266,6 +1283,7 @@ async def stream_llm_response_with_tools(
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
     is_agent: bool = False,  # Use is_agent flag instead of schema
+    conversation_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1276,6 +1294,8 @@ async def stream_llm_response_with_tools(
     Args:
         is_agent: If True, use agent schemas (with referenceData support).
                   If False, use chatbot schemas (default).
+        conversation_id: Optional conversation ID for awaiting background tasks
+                         (e.g. CSV export) before closing the stream.
     """
     logger.info(
         "stream_llm_response_with_tools: START | messages=%d tools=%s target_words_per_chunk=%d mode=%s user_id=%s org_id=%s is_agent=%s",
@@ -1349,6 +1369,19 @@ async def stream_llm_response_with_tools(
                     logger.debug("stream_llm_response_with_tools: forwarding tool event type=%s", tool_event.get("event"))
                     yield tool_event
                 elif tool_event.get("event") == "complete" or tool_event.get("event") == "error":
+                    # Collect background conversation tasks and append markers to answer
+                    # so they are saved with the message (no separate SSE events).
+                    if conversation_id:
+                        from app.utils.conversation_tasks import await_and_collect_results
+
+                        logger.info(
+                            "stream_llm_response_with_tools: early-return path — awaiting conversation tasks for %s",
+                            conversation_id,
+                        )
+                        task_results = await await_and_collect_results(conversation_id)
+                        if task_results and tool_event.get("data"):
+                            current = tool_event["data"].get("answer", "") or ""
+                            tool_event["data"]["answer"] = _append_task_markers(current, task_results)
                     yield tool_event
                     return
                 else:
@@ -1370,6 +1403,22 @@ async def stream_llm_response_with_tools(
             "data": {"status": "generating_answer", "message": "Generating final answer..."}
         }
 
+    # Collect background conversation tasks BEFORE generating final answer so we can
+    # append ::download markers to the complete event answer (saved with message).
+    task_results: List[Dict[str, Any]] = []
+    if conversation_id:
+        from app.utils.conversation_tasks import await_and_collect_results
+
+        logger.info(
+            "stream_llm_response_with_tools: awaiting conversation tasks for %s",
+            conversation_id,
+        )
+        task_results = await await_and_collect_results(conversation_id)
+        logger.info(
+            "stream_llm_response_with_tools: got %d task results for %s",
+            len(task_results), conversation_id,
+        )
+
     # Stream the final answer with comprehensive error handling
     try:
         if mode == "json":
@@ -1382,9 +1431,17 @@ async def stream_llm_response_with_tools(
                 target_words_per_chunk,
                 is_agent=is_agent  # Pass is_agent flag
             ):
+                if event.get("event") == "complete" and task_results and event.get("data") is not None:
+                    event["data"]["answer"] = _append_task_markers(
+                        event["data"].get("answer", "") or "", task_results
+                    )
                 yield event
         else:
             async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk, virtual_record_id_to_result):
+                if event.get("event") == "complete" and task_results and event.get("data") is not None:
+                    event["data"]["answer"] = _append_task_markers(
+                        event["data"].get("answer", "") or "", task_results
+                    )
                 yield event
 
         logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
@@ -1460,6 +1517,10 @@ async def call_aiter_llm_stream(
                 # Only process if we have new content beyond what we've already emitted
                 if len(safe_answer) <= state.emit_upto:
                     # Nothing safe to emit yet, wait for more content
+                    yield {
+                        "event": "metadata",
+                        "data": {},
+                    }
                     continue
 
                 state.emit_upto = len(safe_answer)

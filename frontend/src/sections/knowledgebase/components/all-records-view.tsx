@@ -115,7 +115,7 @@ interface HubNode {
   name: string;
   nodeType: 'app' | 'kb' | 'folder' | 'record' | 'recordGroup';
   parentId: string | null;
-  origin: 'KB' | 'CONNECTOR';
+  origin: 'COLLECTION' | 'CONNECTOR';
   connector: string;
   recordType?: string;
   recordGroupType?: string;
@@ -128,6 +128,8 @@ interface HubNode {
   extension?: string;
   webUrl?: string;
   externalRecordId?: string;
+  /** Internal/system record group or record — indexing status is hidden in the UI */
+  isInternal?: boolean;
   permission?: {
     role: string;
     canEdit: boolean;
@@ -832,6 +834,11 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       });
     } catch (err: any) {
       console.error('Failed to download document', err);
+      setSnackbar({
+        open: true,
+        message: err?.message || 'Failed to download document. Please try again.',
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
     }
   };
 
@@ -1050,11 +1057,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
-        if (params.row.nodeType !== 'record')           return (
-          <Typography variant="caption" color="text.secondary">
-            —
-          </Typography>
-        );
+        if (params.row.nodeType !== 'record' || params.row.isInternal) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
 
         const status = params.value || 'NOT_STARTED';
         let displayLabel = '';
@@ -1154,8 +1163,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       renderCell: (params) => {
         const node = params.row;
         
-        if (params.value === 'CONNECTOR') {
-          // Show connector icon + connector name with premium styling
+        if (params.value === 'CONNECTOR' && node.connector !== 'KB') {
+          // Show connector icon + connector name with premium styling (skip KB → use Collection block below)
           return (
             <Box sx={{ 
               display: 'flex', 
@@ -1182,7 +1191,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           );
         }
         
-        // Show KB icon + "Knowledge Base" text with premium styling
+        // Show Collection icon + "Collection" for COLLECTION origin or for app with connector 'KB' (Collection app)
         return (
           <Box sx={{ 
             display: 'flex', 
@@ -1435,6 +1444,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 onClick: () => handleRetryIndexing(node.id),
               });
             }
+          } else if (node.nodeType === 'folder') {
+            menuActions.push({
+              label: 'Start indexing',
+              icon: refreshIcon,
+              color: theme.palette.warning.main,
+              onClick: () => handleRetryIndexingFolder(node.id),
+            });
           } else if (node.nodeType === 'recordGroup') {
             menuActions.push({
               label: 'Start indexing',

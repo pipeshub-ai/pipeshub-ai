@@ -22,6 +22,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    ProgressStatus,
     RecordRelations,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -43,6 +44,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -73,7 +75,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     ItemType,
     MimeTypes,
     OriginTypes,
@@ -151,7 +152,7 @@ ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
             'https://docs.pipeshub.com/connectors/zammad/zammad',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -1015,7 +1016,7 @@ class ZammadConnector(BaseConnector):
                     if ticket_record:
                         # Set indexing status based on indexing filters
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TICKETS):
-                            ticket_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Records inherit permissions from RecordGroup
                         batch_records.append((ticket_record, []))
@@ -1324,7 +1325,7 @@ class ZammadConnector(BaseConnector):
             external_revision_id=external_revision_id,
             external_record_group_id=external_record_group_id,
             record_group_type=record_group_type,
-            indexing_status=IndexingStatus.NOT_STARTED,
+            indexing_status=ProgressStatus.NOT_STARTED,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
@@ -1433,7 +1434,7 @@ class ZammadConnector(BaseConnector):
             parent_record_id=parent_record.id,
             parent_external_record_id=parent_record.external_record_id,
             parent_record_type=parent_record_type,
-            indexing_status=IndexingStatus.NOT_STARTED,
+            indexing_status=ProgressStatus.NOT_STARTED,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
@@ -1454,7 +1455,7 @@ class ZammadConnector(BaseConnector):
 
         # Set indexing status based on indexing filters
         if self.indexing_filters and not self.indexing_filters.is_enabled(indexing_filter_key):
-            file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         return file_record
 
@@ -2043,7 +2044,7 @@ class ZammadConnector(BaseConnector):
                     if answer_record:
                         # Set indexing status based on indexing filters
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.KNOWLEDGE_BASE):
-                            answer_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            answer_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Check if this is an existing record with changed permissions
                         # When visibility changes (PUBLIC/INTERNAL/DRAFT/ARCHIVED), inherit_permissions changes too
@@ -2220,7 +2221,7 @@ class ZammadConnector(BaseConnector):
             external_revision_id=external_revision_id,
             external_record_group_id=external_record_group_id,
             record_group_type=kb_record_group_type,
-            indexing_status=IndexingStatus.NOT_STARTED,
+            indexing_status=ProgressStatus.NOT_STARTED,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,

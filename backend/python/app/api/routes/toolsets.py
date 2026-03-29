@@ -15,7 +15,7 @@ import base64
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -34,6 +34,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.containers.connector import ConnectorAppContainer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -82,10 +83,10 @@ DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
 # ============================================================================
 
 async def get_oauth_credentials_for_toolset(
-    toolset_config: Dict[str, Any],
+    toolset_config: dict[str, Any],
     config_service: ConfigurationService,
-    logger: Optional[logging.Logger] = None
-) -> Dict[str, Any]:
+    logger: logging.Logger | None = None
+) -> dict[str, Any]:
     """
     Fetch complete OAuth configuration for a toolset (all fields dynamically).
 
@@ -264,6 +265,18 @@ async def get_oauth_credentials_for_toolset(
             f"Failed to retrieve OAuth credentials for toolset: {str(e)}"
         ) from e
 
+async def get_toolset_by_id(instance_id: str, config_service: ConfigurationService) -> dict[str, Any] | None:
+    """Fetch a single toolset instance by ID from ETCD."""
+    try:
+        instances_path = DEFAULT_TOOLSET_INSTANCES_PATH
+        instances = await config_service.get_config(instances_path, default=[])
+        if isinstance(instances, list):
+            return next((inst for inst in instances if inst.get("_id") == instance_id), None)
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch toolset instance '{instance_id}': {e}", exc_info=True)
+        return None
+
 
 # ============================================================================
 # Custom Exceptions
@@ -304,7 +317,7 @@ class ToolsetAlreadyExistsError(ToolsetError):
 
 class ToolsetInUseError(ToolsetError):
     """Toolset is in use and cannot be deleted"""
-    def __init__(self, toolset_name: str, agent_names: List[str]) -> None:
+    def __init__(self, toolset_name: str, agent_names: list[str]) -> None:
         if len(agent_names) == 1:
             detail = f"Cannot delete toolset '{toolset_name}': currently in use by agent '{agent_names[0]}'. Remove it from the agent first."
         else:
@@ -347,7 +360,7 @@ def _validate_non_empty_string(value: object, field_name: str) -> str:
     return value.strip()
 
 
-def _validate_list(value: object, field_name: str, allow_empty: bool = True) -> List[Any]:
+def _validate_list(value: object, field_name: str, *, allow_empty: bool = True) -> list[Any]:
     """Validate and return list, raise error if invalid."""
     if value is None:
         if allow_empty:
@@ -364,7 +377,7 @@ def _validate_list(value: object, field_name: str, allow_empty: bool = True) -> 
     return value
 
 
-def _validate_dict(value: object, field_name: str, allow_empty: bool = True) -> Dict[str, Any]:
+def _validate_dict(value: object, field_name: str, *, allow_empty: bool = True) -> dict[str, Any]:
     """Validate and return dict, raise error if invalid."""
     if value is None:
         if allow_empty:
@@ -381,7 +394,7 @@ def _validate_dict(value: object, field_name: str, allow_empty: bool = True) -> 
     return value
 
 
-def _has_oauth_credentials(auth_config: Dict[str, Any]) -> bool:
+def _has_oauth_credentials(auth_config: dict[str, Any]) -> bool:
     """
     Check if auth_config contains actual OAuth credentials (not just infrastructure fields).
     Returns True if ANY credential field has a non-empty value.
@@ -407,7 +420,7 @@ def _has_oauth_credentials(auth_config: Dict[str, Any]) -> bool:
 # Helper Functions
 # ============================================================================
 
-def _get_user_context(request: Request) -> Dict[str, Any]:
+def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract and validate user context from request"""
     user = getattr(request.state, "user", {})
     user_id = user.get("userId") or request.headers.get("X-User-Id")
@@ -456,7 +469,7 @@ async def _check_user_is_admin(
             nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
 
         # Forward the auth headers from the original request
-        auth_headers: Dict[str, str] = {}
+        auth_headers: dict[str, str] = {}
         for header_name in ("authorization", "x-organization-id", "cookie"):
             val = request.headers.get(header_name)
             if val:
@@ -487,7 +500,21 @@ def _get_registry(request: Request) -> ToolsetRegistry:
     return registry
 
 
-def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> Dict[str, Any]:
+def _get_graph_provider(request: Request) -> IGraphDBProvider:
+    """
+    Get graph provider from app state (same pattern as KB router).
+    Graph provider is set at application startup in app.state.graph_provider.
+    """
+    graph_provider = getattr(request.app.state, 'graph_provider', None)
+    if not graph_provider:
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Graph provider not initialized. Please contact system administrator."
+        )
+    return graph_provider
+
+
+def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> dict[str, Any]:
     """Get and validate toolset metadata"""
     if not toolset_type or not toolset_type.strip():
         raise HTTPException(
@@ -526,7 +553,7 @@ def _get_instances_path(org_id: str) -> str:
 async def _load_toolset_instances(
     org_id: str,
     config_service: ConfigurationService
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Load toolset instances from etcd with proper validation and error handling.
 
@@ -543,7 +570,7 @@ async def _load_toolset_instances(
     instances_path = _get_instances_path(org_id)
     try:
         instances_data = await config_service.get_config(instances_path, default=[])
-        instances = _validate_list(instances_data, "toolset instances")
+        instances = _validate_list(value=instances_data, field_name="toolset instances")
         logger.debug(f"Loaded {len(instances)} toolset instances from {instances_path}")
         return instances
     except HTTPException:
@@ -553,7 +580,7 @@ async def _load_toolset_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to access toolset instances. Please try again or contact support."
-        )
+        ) from e
 
 
 def _get_user_auth_path(instance_id: str, user_id: str) -> str:
@@ -590,6 +617,37 @@ def _generate_oauth_config_id() -> str:
 # Auth Config Helpers
 # ============================================================================
 
+def _apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
+    """Substitute the tenant segment in a Microsoft login URL.
+
+    Microsoft OAuth URLs are of the form:
+        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize
+        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+
+    If *tenant_id* is provided and is not empty / "common" / "organizations",
+    we replace the current tenant segment with the supplied value so that
+    single-tenant Azure AD applications (which cannot use the /common endpoint)
+    can authenticate successfully.
+    """
+    if not url or "login.microsoftonline.com" not in url:
+        return url
+
+    # Normalise – treat blank or "common" as no-op
+    tenant = (tenant_id or "").strip()
+    if not tenant or tenant.lower() == "common":
+        return url
+
+    # Replace the tenant segment — URL looks like:
+    #   https://login.microsoftonline.com/<current_tenant>/oauth2/...
+    import re as _re
+    return _re.sub(
+        r"(https://login\.microsoftonline\.com/)[^/]+(/)",
+        rf"\g<1>{tenant}\2",
+        url,
+        count=1,
+    )
+
+
 def _get_oauth_config_from_registry(toolset_type: str, registry: ToolsetRegistry) -> OAuthConfig:
     """Get OAuth config from toolset registry (returns dataclass instance)"""
     metadata = registry.get_toolset_metadata(toolset_type, serialize=False)
@@ -614,13 +672,13 @@ def _get_oauth_config_from_registry(toolset_type: str, registry: ToolsetRegistry
 
 
 async def _prepare_toolset_auth_config(
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     toolset_type: str,
-    registry,
+    registry: ToolsetRegistry,
     config_service: ConfigurationService,
-    base_url: Optional[str] = None,
-    request: Optional[Request] = None
-) -> Dict[str, Any]:
+    base_url: str | None = None,
+    request: Request | None = None
+) -> dict[str, Any]:
     """
     Prepare and enrich toolset auth config with OAuth infrastructure fields.
     Only applies to OAUTH auth type.
@@ -651,11 +709,19 @@ async def _prepare_toolset_auth_config(
     from app.connectors.core.registry.auth_builder import OAuthScopeType
     scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
+    # If a tenantId is supplied in the auth config, substitute it into the
+    # Microsoft OAuth URLs so single-tenant Azure AD applications can authenticate.
+    tenant_id = auth_config.get("tenantId", "").strip()
+    effective_authorize_url = _apply_tenant_to_microsoft_oauth_url(oauth_config.authorize_url, tenant_id)
+    effective_token_url = _apply_tenant_to_microsoft_oauth_url(oauth_config.token_url, tenant_id)
+
+    # Enrich auth_config with OAuth infrastructure fields
+    # Always update these fields to ensure they're current
     enriched_auth = {
         **auth_config,
-        "authorizeUrl": oauth_config.authorize_url,
-        "tokenUrl": oauth_config.token_url,
-        "redirectUri": redirect_uri,
+        "authorizeUrl": effective_authorize_url,
+        "tokenUrl": effective_token_url,
+        "redirectUri": redirect_uri,  # Always refreshed based on current base_url
         "scopes": scopes,
     }
 
@@ -672,12 +738,12 @@ async def _prepare_toolset_auth_config(
 
 
 async def _build_oauth_config(
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     toolset_type: str,
-    registry,
-    base_url: Optional[str] = None,
-    request: Optional[Request] = None
-) -> Dict[str, Any]:
+    registry: ToolsetRegistry,
+    base_url: str | None = None,
+    request: Request | None = None
+) -> dict[str, Any]:
     """Build OAuth configuration for authorization flow"""
     client_id = auth_config.get("clientId", "").strip()
     client_secret = auth_config.get("clientSecret", "").strip()
@@ -699,15 +765,28 @@ async def _build_oauth_config(
     if not scopes:
         scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
+
+    # If a tenantId is supplied in the auth config, substitute it into the
+    # Microsoft OAuth URLs so single-tenant Azure AD applications can authenticate.
+    tenant_id = auth_config.get("tenantId", "").strip()
+    base_authorize_url = auth_config.get("authorizeUrl") or oauth_config.authorize_url
+    base_token_url = auth_config.get("tokenUrl") or oauth_config.token_url
+    effective_authorize_url = _apply_tenant_to_microsoft_oauth_url(base_authorize_url, tenant_id)
+    effective_token_url = _apply_tenant_to_microsoft_oauth_url(base_token_url, tenant_id)
+
+    # Build config - prefer stored values from auth_config
     config = {
         "clientId": client_id,
         "clientSecret": client_secret,
         "redirectUri": redirect_uri,
         "scopes": scopes,
-        "authorizeUrl": auth_config.get("authorizeUrl") or oauth_config.authorize_url,
-        "tokenUrl": auth_config.get("tokenUrl") or oauth_config.token_url,
+        "authorizeUrl": effective_authorize_url,
+        "tokenUrl": effective_token_url,
         "name": toolset_type,
     }
+
+    if "tenantId" in auth_config:
+        config["tenantId"] = auth_config["tenantId"]
 
     if "additionalParams" in auth_config:
         config["additionalParams"] = auth_config["additionalParams"]
@@ -716,9 +795,12 @@ async def _build_oauth_config(
 
     if "tokenAccessType" in auth_config:
         config["tokenAccessType"] = auth_config["tokenAccessType"]
-    elif hasattr(oauth_config, 'token_access_type') and oauth_config.token_access_type:
-        if "access_type" not in config.get("additionalParams", {}):
-            config["tokenAccessType"] = oauth_config.token_access_type
+    elif (
+        hasattr(oauth_config, 'token_access_type')
+        and oauth_config.token_access_type
+        and "access_type" not in config.get("additionalParams", {})
+    ):
+        config["tokenAccessType"] = oauth_config.token_access_type
 
     if "scopeParameterName" in auth_config:
         config["scopeParameterName"] = auth_config["scopeParameterName"]
@@ -733,7 +815,7 @@ async def _build_oauth_config(
     return config
 
 
-def _format_toolset_data(toolset_name: str, metadata: Dict[str, Any], include_tools: bool = False) -> Dict[str, Any]:
+def _format_toolset_data(toolset_name: str, metadata: dict[str, Any], *, include_tools: bool = False) -> dict[str, Any]:
     """Format toolset metadata for API response"""
     tools = metadata.get("tools", [])
     data = {
@@ -764,7 +846,7 @@ def _format_toolset_data(toolset_name: str, metadata: Dict[str, Any], include_to
     return data
 
 
-def _parse_request_json(request: Request, data: bytes) -> Dict[str, Any]:
+def _parse_request_json(request: Request, data: bytes) -> dict[str, Any]:
     """Parse and validate JSON request body"""
     if not data:
         raise HTTPException(
@@ -778,7 +860,7 @@ def _parse_request_json(request: Request, data: bytes) -> Dict[str, Any]:
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail=f"Invalid JSON in request body: {str(e)}"
-        )
+        ) from e
 
 
 # ============================================================================
@@ -788,7 +870,7 @@ def _parse_request_json(request: Request, data: bytes) -> Dict[str, Any]:
 async def _get_oauth_configs_for_type(
     toolset_type: str,
     config_service: ConfigurationService
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Get the list of OAuth configs stored for a toolset type."""
     path = _get_toolset_oauth_config_path(toolset_type)
     try:
@@ -800,15 +882,15 @@ async def _get_oauth_configs_for_type(
 
 async def _create_or_update_toolset_oauth_config(
     toolset_type: str,
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     instance_name: str,
     user_id: str,
     org_id: str,
     config_service: ConfigurationService,
-    registry,
+    registry: ToolsetRegistry,
     base_url: str,
-    oauth_config_id: Optional[str] = None,
-) -> Optional[str]:
+    oauth_config_id: str | None = None,
+) -> str | None:
     """
     Create or update an OAuth config for a toolset type.
     Returns the OAuth config _id.
@@ -872,7 +954,7 @@ async def _get_oauth_config_by_id(
     oauth_config_id: str,
     org_id: str,
     config_service: ConfigurationService
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Find an OAuth config by its _id within a toolset type."""
     configs = await _get_oauth_configs_for_type(toolset_type, config_service)
     for cfg in configs:
@@ -882,11 +964,11 @@ async def _get_oauth_config_by_id(
 
 
 def _check_instance_name_conflict(
-    instances: List[Dict[str, Any]],
+    instances: list[dict[str, Any]],
     name: str,
     org_id: str,
     toolset_type: str,
-    exclude_id: Optional[str] = None
+    exclude_id: str | None = None
 ) -> bool:
     """
     Return True if the instance name already exists for the same toolset type in the org.
@@ -905,10 +987,10 @@ def _check_instance_name_conflict(
 
 
 def _check_oauth_name_conflict(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     name: str,
     org_id: str,
-    exclude_id: Optional[str] = None
+    exclude_id: str | None = None
 ) -> bool:
     """Return True if the OAuth config instance name already exists in the org."""
     for cfg in oauth_configs:
@@ -931,10 +1013,10 @@ def _encode_state_with_instance(state: str, instance_id: str, user_id: str) -> s
         state_data = {"state": state, "instance_id": instance_id, "user_id": user_id}
         return base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
     except Exception as e:
-        raise OAuthConfigError(f"Failed to encode OAuth state: {str(e)}")
+        raise OAuthConfigError(f"Failed to encode OAuth state: {str(e)}") from e
 
 
-def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
+def _decode_state_with_instance(encoded_state: str) -> dict[str, str]:
     """Decode OAuth state to extract original state, instance ID, and user ID."""
     try:
         decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
@@ -942,10 +1024,10 @@ def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
         if "state" not in state_data or "instance_id" not in state_data or "user_id" not in state_data:
             raise ValueError("Missing required fields in state data")
         return state_data
-    except json.JSONDecodeError:
-        raise OAuthConfigError("Invalid OAuth state format: not valid JSON")
+    except json.JSONDecodeError as e:
+        raise OAuthConfigError("Invalid OAuth state format: not valid JSON") from e
     except Exception as e:
-        raise OAuthConfigError(f"Failed to decode OAuth state: {str(e)}")
+        raise OAuthConfigError(f"Failed to decode OAuth state: {str(e)}") from e
 
 
 # ============================================================================
@@ -957,11 +1039,12 @@ async def get_toolset_registry_endpoint(
     request: Request,
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=200, description="Items per page"),
-    search: Optional[str] = Query(None, description="Search term"),
+    search: str | None = Query(None, description="Search term"),
+    *,
     include_tools: bool = Query(True, description="Include full tool details"),
     include_tool_count: bool = Query(True, description="Include tool count"),
     group_by_category: bool = Query(True, description="Group by category"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get all available toolsets from registry"""
     registry = _get_registry(request)
     all_toolsets = registry.list_toolsets()
@@ -980,7 +1063,7 @@ async def get_toolset_registry_endpoint(
                       for field in ["display_name", "description", "group"]):
                 continue
 
-        toolset_data = _format_toolset_data(toolset_name, metadata, include_tools)
+        toolset_data = _format_toolset_data(toolset_name=toolset_name, metadata=metadata, include_tools=include_tools)
 
         if not include_tools and include_tool_count:
             toolset_data["tools"] = []
@@ -1009,7 +1092,7 @@ async def get_toolset_registry_endpoint(
 
 
 @router.get("/registry/{toolset_type}/schema", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_toolset_schema(toolset_type: str, request: Request) -> Dict[str, Any]:
+async def get_toolset_schema(toolset_type: str, request: Request) -> dict[str, Any]:
     """Get schema/config for a specific toolset"""
     registry = _get_registry(request)
     metadata = _get_toolset_metadata(registry, toolset_type)
@@ -1037,10 +1120,10 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> Dict[str, A
 @router.get("/tools", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_all_tools(
     request: Request,
-    app_name: Optional[str] = Query(None, description="Filter by app/toolset name"),
-    tag: Optional[str] = Query(None, description="Filter by tag"),
-    search: Optional[str] = Query(None, description="Search in name/description"),
-) -> List[Dict[str, Any]]:
+    app_name: str | None = Query(None, description="Filter by app/toolset name"),
+    tag: str | None = Query(None, description="Filter by tag"),
+    search: str | None = Query(None, description="Search in name/description"),
+) -> list[dict[str, Any]]:
     """Get all available tools from registry (flat list)"""
     registry = _get_registry(request)
     tools_data = []
@@ -1081,7 +1164,7 @@ async def get_all_tools(
 
 
 @router.get("/registry/{toolset_name}/tools", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_toolset_tools(toolset_name: str, request: Request) -> Dict[str, Any]:
+async def get_toolset_tools(toolset_name: str, request: Request) -> dict[str, Any]:
     """Get all tools for a specific toolset"""
     registry = _get_registry(request)
     metadata = _get_toolset_metadata(registry, toolset_name)
@@ -1116,7 +1199,7 @@ async def get_toolset_tools(toolset_name: str, request: Request) -> Dict[str, An
 async def create_toolset_instance(
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Admin creates a toolset instance.
     - Validates the toolset type exists in registry
@@ -1142,7 +1225,7 @@ async def create_toolset_instance(
 
     # Optional fields with explicit defaults
     base_url = body.get("baseUrl", "").strip() if body.get("baseUrl") else ""
-    auth_config = _validate_dict(body.get("authConfig"), "authConfig", allow_empty=True)
+    auth_config = _validate_dict(value=body.get("authConfig"), field_name="authConfig", allow_empty=True)
     oauth_config_id_from_body = body.get("oauthConfigId", "").strip() if body.get("oauthConfigId") else None
     oauth_instance_name = body.get("oauthInstanceName", "").strip() if body.get("oauthInstanceName") else ""
 
@@ -1171,7 +1254,7 @@ async def create_toolset_instance(
         )
 
     # Handle OAuth config creation/selection
-    oauth_config_id: Optional[str] = None
+    oauth_config_id: str | None = None
     if auth_type == "OAUTH":
         # Resolve base_url for OAuth redirects
         if not base_url:
@@ -1256,7 +1339,7 @@ async def create_toolset_instance(
 
     # Build and save the instance
     now = get_epoch_timestamp_in_ms()
-    new_instance: Dict[str, Any] = {
+    new_instance: dict[str, Any] = {
         "_id": _generate_instance_id(),
         "instanceName": instance_name,
         "toolsetType": toolset_type,
@@ -1268,7 +1351,8 @@ async def create_toolset_instance(
     }
     if oauth_config_id:
         new_instance["oauthConfigId"] = oauth_config_id
-
+    else:
+        new_instance["auth"] = auth_config
     instances.append(new_instance)
 
     instances_path = _get_instances_path(org_id)
@@ -1279,7 +1363,7 @@ async def create_toolset_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to save toolset instance. Please try again."
-        )
+        ) from e
 
     return {
         "status": "success",
@@ -1294,9 +1378,9 @@ async def get_toolset_instances(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
-    search: Optional[str] = Query(None),
+    search: str | None = Query(None),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get all admin-created toolset instances for the organization."""
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
@@ -1353,7 +1437,7 @@ async def get_toolset_instance(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get a specific toolset instance.
     Admins also receive the full OAuth config data and authenticatedUserCount.
@@ -1372,7 +1456,7 @@ async def get_toolset_instance(
     toolset_type = instance.get("toolsetType", "")
     meta = registry.get_toolset_metadata(toolset_type)
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         **instance,
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
@@ -1461,7 +1545,7 @@ async def update_toolset_instance(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Admin updates a toolset instance.
     Supports:
@@ -1569,7 +1653,7 @@ async def update_toolset_instance(
         await config_service.set_config(instances_path, instances)
     except Exception as e:
         logger.error(f"Failed to update toolset instance in {instances_path}: {e}", exc_info=True)
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.") from e
 
     # Deauthenticate all users in parallel if credentials changed
     deauthed_count = 0
@@ -1596,7 +1680,7 @@ async def delete_toolset_instance(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Admin deletes a toolset instance.
     SAFE DELETE: Rejects deletion if any user has authenticated against this instance
@@ -1615,24 +1699,100 @@ async def delete_toolset_instance(
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
 
-    # Safe-delete check: block if any user has authenticated against this instance
+    # Safe-delete check: block if any agent is using this toolset instance
+    # This check must happen BEFORE deleting user credentials to prevent data loss
+    # FAIL-CLOSED: Block deletion if we cannot verify agent usage
+    try:
+        graph_provider = _get_graph_provider(request)
+        agent_names = await graph_provider.check_toolset_instance_in_use(instance_id)
+
+        # Validate that agent_names is a list (defensive programming)
+        if not isinstance(agent_names, list):
+            logger.error(f"check_toolset_instance_in_use returned unexpected type: {type(agent_names)} for instance {instance_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Cannot delete toolset instance: Invalid response from agent usage check. Please try again or contact support."
+            )
+
+        # Explicit check: if any agents are using this instance, block deletion
+        # ToolsetInUseError will automatically be handled by FastAPI (it's an HTTPException)
+        if agent_names and len(agent_names) > 0:
+            logger.warning(f"⚠️ Blocking deletion of instance {instance_id}: found {len(agent_names)} agent(s) using this toolset")
+            raise ToolsetInUseError(
+                toolset_name=instance.get('instanceName', instance_id),
+                agent_names=agent_names
+            )
+
+        logger.info(f"✅ Agent usage check passed for instance {instance_id}: no agents found using this toolset")
+    except HTTPException:
+        # Let HTTPException (including ToolsetInUseError) propagate - FastAPI handles it automatically
+        raise
+    except Exception as e:
+        logger.error(f"Failed to check agent usage for instance {instance_id}: {e}", exc_info=True)
+        # FAIL-CLOSED: Block deletion if we cannot verify (prevent accidental deletion)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Cannot delete toolset instance: Unable to verify if it's in use by agents. Please try again or contact support."
+        ) from e
+
+    # Cancel all refresh tasks for this instance BEFORE deleting credentials
+    # This prevents errors from trying to refresh deleted credentials
+    cancelled_tasks_count = 0
+    try:
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        refresh_service = startup_service.get_toolset_token_refresh_service()
+        if refresh_service:
+            cancelled_tasks_count = refresh_service.cancel_refresh_tasks_for_instance(instance_id)
+            if cancelled_tasks_count > 0:
+                logger.info(f"Cancelled {cancelled_tasks_count} refresh task(s) for instance {instance_id}")
+    except Exception as e:
+        logger.warning(f"Could not cancel refresh tasks for instance {instance_id}: {e}")
+
+    # After agent check passes, delete all user credentials for this instance
+    # This happens AFTER agent check to prevent deleting credentials if agents are using the instance
+    deleted_credentials_count = 0
     try:
         prefix = _get_instance_users_prefix(instance_id)
         user_keys = await config_service.list_keys_in_directory(prefix)
+
         if user_keys:
-            raise HTTPException(
-                status_code=HttpStatusCode.CONFLICT.value,
-                detail=(
-                    f"Cannot delete toolset instance '{instance.get('instanceName', instance_id)}': "
-                    f"{len(user_keys)} user(s) have authenticated against it. "
-                    "Please remove all user credentials before deleting the instance."
-                )
-            )
-    except HTTPException:
-        raise
+            # Validate that all keys are for this specific instance to prevent accidental deletion
+            expected_prefix = f"/services/toolsets/{instance_id}/"
+            valid_user_keys = []
+            for key in user_keys:
+                # Ensure the key matches the expected pattern for this instance
+                if key.startswith(expected_prefix):
+                    # Extract user_id from key: /services/toolsets/{instanceId}/{userId}
+                    # Key format: /services/toolsets/{instanceId}/{userId}
+                    # Split by "/" gives: ["", "services", "toolsets", "{instanceId}", "{userId}"]
+                    key_parts = key.split("/")
+                    if len(key_parts) >= 5 and key_parts[1] == "services" and key_parts[2] == "toolsets" and key_parts[3] == instance_id:
+                        valid_user_keys.append(key)
+                    else:
+                        logger.warning(f"Skipping invalid key format for instance {instance_id}: {key}")
+                else:
+                    logger.warning(f"Skipping key that doesn't match expected prefix for instance {instance_id}: {key}")
+
+            # Delete all valid user credentials in parallel
+            if valid_user_keys:
+                delete_tasks = [config_service.delete_config(key) for key in valid_user_keys]
+                delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+
+                # Count successful deletions
+                for i, result in enumerate(delete_results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"Failed to delete credential {valid_user_keys[i]}: {result}")
+                    elif result:
+                        deleted_credentials_count += 1
+
+                if deleted_credentials_count > 0:
+                    logger.info(f"Deleted {deleted_credentials_count} user credential(s) for instance {instance_id}")
     except Exception as e:
-        logger.warning(f"Could not check user auth records for instance {instance_id}: {e}")
-        # Proceed with deletion if we can't verify (fail-open for listing errors)
+        logger.error(f"Error deleting user credentials for instance {instance_id}: {e}", exc_info=True)
+        # Don't block deletion if credential cleanup fails, but log the error
+        # The instance deletion will proceed, but credentials may remain
 
     updated = [i for i in instances if i.get("_id") != instance_id]
 
@@ -1643,9 +1803,18 @@ async def delete_toolset_instance(
         logger.info("Toolset instance deleted successfully.")
     except Exception as e:
         logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
 
-    return {"status": "success", "message": "Toolset instance deleted successfully.", "instanceId": instance_id}
+    message = "Toolset instance deleted successfully."
+    if deleted_credentials_count > 0:
+        message += f" {deleted_credentials_count} user credential(s) were also deleted."
+
+    return {
+        "status": "success",
+        "message": message,
+        "instanceId": instance_id,
+        "deletedCredentialsCount": deleted_credentials_count
+    }
 
 
 # ============================================================================
@@ -1656,9 +1825,18 @@ async def delete_toolset_instance(
 @inject
 async def get_my_toolsets(
     request: Request,
-    search: Optional[str] = Query(None),
+    search: str | None = Query(None),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=200, description="Items per page"),
+    *,
+    include_registry: bool = Query(False, alias="includeRegistry"),
+    auth_status: str | None = Query(
+        None,
+        alias="authStatus",
+        description="Filter by auth status: 'authenticated' or 'not-authenticated'. Omit for all.",
+    ),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Returns all admin-created toolset instances merged with the current user's
     authentication status for each instance.
@@ -1667,6 +1845,10 @@ async def get_my_toolsets(
       instanceId, instanceName, toolsetType, authType, oauthConfigId,
       displayName, description, iconPath, toolCount,
       isAuthenticated, isConfigured (always true for admin-created instances)
+
+    filterCounts in the response always reflects the counts for the current
+    search query *before* applying auth_status, so the UI can display
+    meaningful badge numbers on every filter chip.
     """
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
@@ -1687,13 +1869,22 @@ async def get_my_toolsets(
             or search_lower in i.get("toolsetType", "").lower()
         ]
 
-    if not instances:
-        return {"status": "success", "toolsets": []}
+    if not instances and not include_registry:
+        # If no configured instances exist and includeRegistry is false, short-circuit
+        return {
+            "status": "success",
+            "toolsets": [],
+            "pagination": {
+                "page": page, "limit": limit, "total": 0,
+                "totalPages": 0, "hasNext": False, "hasPrev": False,
+            },
+            "filterCounts": {"all": 0, "authenticated": 0, "notAuthenticated": 0},
+        }
 
     registry = _get_registry(request)
 
     # Fetch user auth for all instances in parallel
-    async def _fetch_user_auth(inst: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    async def _fetch_user_auth(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
         iid = inst.get("_id", "")
         try:
             path = _get_user_auth_path(iid, user_id)
@@ -1709,6 +1900,10 @@ async def get_my_toolsets(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         is_authenticated = bool(user_auth and user_auth.get("isAuthenticated", False))
+        authType = inst.get("authType", "NONE").upper()
+        auth_stored = None
+        if authType != "OAUTH" and user_auth is not None:
+            auth_stored = user_auth.get("auth", None)
 
         toolsets.append({
             "instanceId": inst.get("_id"),
@@ -1732,12 +1927,97 @@ async def get_my_toolsets(
             ],
             "isConfigured": True,
             "isAuthenticated": is_authenticated,
+            "isFromRegistry": False,
             "createdBy": inst.get("createdBy"),
             "createdAtTimestamp": inst.get("createdAtTimestamp"),
             "updatedAtTimestamp": inst.get("updatedAtTimestamp"),
+            "auth": auth_stored,
         })
 
-    return {"status": "success", "toolsets": toolsets}
+    # Optionally include missing toolsets from registry as synthetic, non-configured entries
+    if include_registry:
+        # Build a set of existing toolset types present in the user's list
+        existing_types = {t.get("toolsetType", "").lower() for t in toolsets}
+
+        for toolset_name in registry.list_toolsets():
+            try:
+                meta = registry.get_toolset_metadata(toolset_name)
+            except Exception as e:
+                logger.warning(f"Failed to get metadata for toolset '{toolset_name}': {e}")
+                meta = None
+            if not meta or meta.get("isInternal", False):
+                continue
+
+            toolset_type = (meta.get("name") or toolset_name or "").lower()
+            if not toolset_type or toolset_type in existing_types:
+                continue
+
+            # Determine auth type from supported list, default to NONE
+            supported_auth_types = meta.get("supported_auth_types", [])
+            auth_type_value = supported_auth_types[0] if supported_auth_types else "NONE"
+
+            # Prepare tools list
+            tools_list = [
+                {
+                    "name": t.get("name", ""),
+                    "fullName": f"{toolset_type}.{t.get('name', '')}",
+                    "description": t.get("description", ""),
+                }
+                for t in meta.get("tools", [])
+            ]
+
+            synthetic_entry = {
+                "instanceId": "",
+                "instanceName": f"{meta.get('display_name', toolset_type)}",
+                "toolsetType": toolset_type,
+                "authType": auth_type_value,
+                "oauthConfigId": None,
+                "displayName": meta.get("display_name", toolset_type),
+                "description": meta.get("description", ""),
+                "iconPath": meta.get("icon_path", ""),
+                "category": meta.get("category", "app"),
+                "supportedAuthTypes": supported_auth_types,
+                "toolCount": len(meta.get("tools", [])),
+                "tools": tools_list,
+                "isConfigured": False,
+                "isAuthenticated": False,
+                "isFromRegistry": True,
+            }
+            toolsets.append(synthetic_entry)
+
+    # Compute filter counts BEFORE applying auth_status so the UI can show
+    # meaningful numbers on every chip regardless of which filter is active.
+    filter_counts = {
+        "all": len(toolsets),
+        "authenticated": sum(1 for t in toolsets if t.get("isAuthenticated")),
+        "notAuthenticated": sum(1 for t in toolsets if not t.get("isAuthenticated")),
+    }
+
+    # Apply auth status filter (server-side — never filtered on the frontend)
+    if auth_status == "authenticated":
+        toolsets = [t for t in toolsets if t.get("isAuthenticated")]
+    elif auth_status == "not-authenticated":
+        toolsets = [t for t in toolsets if not t.get("isAuthenticated")]
+
+    # Server-side pagination
+    total = len(toolsets)
+    start = (page - 1) * limit
+    end = start + limit
+    page_items = toolsets[start:end]
+
+    return {
+        "status": "success",
+        "toolsets": page_items,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "totalPages": (total + limit - 1) // limit,
+            "hasNext": end < total,
+            "hasPrev": page > 1,
+        },
+        "filterCounts": filter_counts,
+    }
 
 
 # ============================================================================
@@ -1750,7 +2030,7 @@ async def authenticate_toolset_instance(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     User authenticates an admin-created toolset instance by providing credentials
     (API token, username/password, bearer token, etc.).
@@ -1777,26 +2057,21 @@ async def authenticate_toolset_instance(
 
     body_data = await request.body()
     body = _parse_request_json(request, body_data)
-    credentials = body.get("credentials", {})
     auth = body.get("auth", {})
 
-    if not credentials and not auth:
+    if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
 
     # Validate required fields based on auth type
     if auth_type == "API_TOKEN":
-        token = (credentials.get("apiToken") or auth.get("apiToken") or "").strip()
+        token = auth.get("apiToken").strip()
         if not token:
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
-    elif auth_type == "BEARER_TOKEN":
-        token = (credentials.get("bearerToken") or auth.get("bearerToken") or "").strip()
-        if not token:
-            raise InvalidAuthConfigError("bearerToken is required for BEARER_TOKEN auth type")
-    elif auth_type == "USERNAME_PASSWORD":
-        username = (credentials.get("username") or auth.get("username") or "").strip()
-        password = (credentials.get("password") or auth.get("password") or "").strip()
+    elif auth_type == "BASIC_AUTH":
+        username = auth.get("username").strip()
+        password = auth.get("password").strip()
         if not username or not password:
-            raise InvalidAuthConfigError("username and password are required for USERNAME_PASSWORD auth type")
+            raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
     now = get_epoch_timestamp_in_ms()
     user_auth = {
@@ -1805,7 +2080,7 @@ async def authenticate_toolset_instance(
         "instanceId": instance_id,
         "toolsetType": instance.get("toolsetType"),
         "auth": auth if auth else {},
-        "credentials": credentials if credentials else {},
+        "credentials": {},
         "updatedAt": now,
         "updatedBy": user_id,
     }
@@ -1815,10 +2090,51 @@ async def authenticate_toolset_instance(
         await config_service.set_config(auth_path, user_auth)
     except Exception as e:
         logger.error(f"Failed to save user auth for instance {instance_id}: {e}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save credentials.")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save credentials.") from e
 
     return {"status": "success", "message": "Toolset authenticated successfully.", "isAuthenticated": True}
 
+@router.put("/instances/{instance_id}/credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@inject
+async def update_toolset_credentials(
+    instance_id: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> dict[str, Any]:
+    """
+    Update the current user's credentials for a toolset instance.
+    This is used for non-OAuth types to update credentials without re-authenticating.
+    For OAuth types, use the reauthenticate endpoint to clear credentials and start a new OAuth flow.
+    """
+    user_context = _get_user_context(request)
+    user_id = user_context["user_id"]
+
+    body_data = await request.body()
+    body = _parse_request_json(request, body_data)
+    auth = body.get("auth", {})
+
+    if not auth:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+
+    auth_path = _get_user_auth_path(instance_id, user_id)
+
+    try:
+        existing_auth = await config_service.get_config(auth_path, default=None)
+        if not existing_auth or not isinstance(existing_auth, dict):
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
+
+        existing_auth["auth"] = auth
+        existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
+        existing_auth["updatedBy"] = user_id
+
+        await config_service.set_config(auth_path, existing_auth)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update credentials for instance {instance_id}: {e}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update credentials.") from e
+
+    return {"status": "success", "message": "Credentials updated successfully."}
 
 @router.delete("/instances/{instance_id}/credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
@@ -1826,12 +2142,24 @@ async def remove_toolset_credentials(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Remove the current user's credentials for a toolset instance."""
     user_context = _get_user_context(request)
     user_id = user_context["user_id"]
 
     auth_path = _get_user_auth_path(instance_id, user_id)
+
+    # Cancel refresh task before deleting credentials to prevent errors
+    try:
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        refresh_service = startup_service.get_toolset_token_refresh_service()
+        if refresh_service:
+            refresh_service.cancel_refresh_task(auth_path)
+    except Exception as e:
+        logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
+
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
@@ -1846,7 +2174,7 @@ async def reauthenticate_toolset_instance(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Clear the user's OAuth tokens for an instance, requiring a new OAuth flow.
     For non-OAuth types, clears all credentials.
@@ -1863,25 +2191,23 @@ async def reauthenticate_toolset_instance(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
 
     auth_path = _get_user_auth_path(instance_id, user_id)
+
+    # Cancel refresh task before deleting credentials to prevent errors
     try:
-        current_auth = await config_service.get_config(auth_path, default=None)
-        if current_auth:
-            updated = {
-                **current_auth,
-                "isAuthenticated": False,
-                "updatedAt": get_epoch_timestamp_in_ms(),
-                "updatedBy": user_id,
-            }
-            # Clear credentials and oauthConfigId to force fresh authentication
-            # This ensures that if admin changed OAuth config, user gets the new one
-            updated.pop("credentials", None)
-            updated.pop("oauthConfigId", None)  # Will be refreshed on next auth
-            await config_service.set_config(auth_path, updated)
-        else:
-            await config_service.delete_config(auth_path)
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        refresh_service = startup_service.get_toolset_token_refresh_service()
+        if refresh_service:
+            refresh_service.cancel_refresh_task(auth_path)
+    except Exception as e:
+        logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
+
+    try:
+        await config_service.delete_config(auth_path)
     except Exception as e:
         logger.error(f"Failed to reauthenticate instance {instance_id}: {e}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.") from e
 
     return {"status": "success", "message": "Credentials cleared. Please re-authenticate."}
 
@@ -1895,9 +2221,9 @@ async def reauthenticate_toolset_instance(
 async def get_instance_oauth_authorization_url(
     instance_id: str,
     request: Request,
-    base_url: Optional[str] = Query(None),
+    base_url: str | None = Query(None),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get the OAuth authorization URL for a toolset instance.
     Reads OAuth client credentials from the instance's linked OAuth config.
@@ -1963,8 +2289,7 @@ async def get_instance_oauth_authorization_url(
         parsed_url = urlparse(auth_url)
         query_params = parse_qs(parsed_url.query)
 
-        if "token_access_type" in query_params:
-            if query_params["token_access_type"] in [["None"], [None], ["null"], [""]]:
+        if "token_access_type" in query_params and query_params["token_access_type"] in [["None"], [None], ["null"], [""]]:
                 del query_params["token_access_type"]
 
         original_state = query_params.get("state", [None])[0]
@@ -1981,7 +2306,7 @@ async def get_instance_oauth_authorization_url(
         raise
     except Exception as e:
         logger.error(f"Error generating OAuth URL for instance {instance_id}: {e}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to generate OAuth authorization URL.")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to generate OAuth authorization URL.") from e
     finally:
         await oauth_provider.close()
 
@@ -1990,12 +2315,12 @@ async def get_instance_oauth_authorization_url(
 @inject
 async def handle_toolset_oauth_callback(
     request: Request,
-    code: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-    error: Optional[str] = Query(None),
-    base_url: Optional[str] = Query(None),
+    code: str | None = Query(None),
+    state: str | None = Query(None),
+    error: str | None = Query(None),
+    base_url: str | None = Query(None),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Union[Dict[str, Any], RedirectResponse]:
+) -> dict[str, Any] | RedirectResponse:
     """Handle OAuth callback for toolset instance authentication."""
     base_url = base_url or "http://localhost:3001"
 
@@ -2110,7 +2435,7 @@ async def list_toolset_oauth_configs(
     toolset_type: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     List OAuth configurations for a toolset type.
     Admins see all fields including clientSecret. Non-admins see only basic metadata.
@@ -2124,7 +2449,7 @@ async def list_toolset_oauth_configs(
     for cfg in configs:
         if cfg.get("orgId") != org_id:
             continue
-        entry: Dict[str, Any] = {k: v for k, v in cfg.items() if k != "config"}
+        entry: dict[str, Any] = {k: v for k, v in cfg.items() if k != "config"}
         if is_admin:
             cfg_data = cfg.get("config", {})
             # Add all config fields dynamically (include clientSecret for admins)
@@ -2145,7 +2470,7 @@ async def update_toolset_oauth_config(
     oauth_config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Admin updates an OAuth configuration for a toolset type.
     After update, all instances referencing this oauth_config_id have their
@@ -2219,7 +2544,7 @@ async def delete_toolset_oauth_config(
     oauth_config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Admin deletes an OAuth configuration for a toolset type.
     SAFE DELETE: Rejected if any toolset instance references this OAuth config.
@@ -2262,7 +2587,7 @@ async def delete_toolset_oauth_config(
         await config_service.set_config(path, updated_configs)
     except Exception as e:
         logger.error(f"Failed to delete OAuth config: {e}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete OAuth configuration.")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete OAuth configuration.") from e
 
     return {"status": "success", "message": "OAuth configuration deleted successfully."}
 
@@ -2276,7 +2601,7 @@ async def delete_toolset_oauth_config(
 async def get_configured_toolsets(
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Backward-compatible endpoint: returns toolsets the user has authenticated.
     Merges admin-created instances with user's auth status.
@@ -2295,7 +2620,7 @@ async def get_instance_status(
     instance_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get authentication status for a specific toolset instance for the current user."""
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]

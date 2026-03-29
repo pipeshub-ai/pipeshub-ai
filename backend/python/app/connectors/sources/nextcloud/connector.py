@@ -42,6 +42,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCollection,
@@ -297,7 +298,7 @@ def nextcloud_permissions_to_permission_type(permissions: int) -> PermissionType
     """
     if permissions == NEXTCLOUD_PERM_MASK_ALL:
         return PermissionType.OWNER
-    elif permissions & 8 or permissions & 2:
+    elif permissions & 8 or permissions & 4 or permissions & 2:
         return PermissionType.WRITE
     elif permissions & 1:
         return PermissionType.READ
@@ -413,7 +414,7 @@ def get_response_error(response) -> str:
             'https://docs.pipeshub.com/connectors/nextcloud',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
@@ -751,7 +752,7 @@ class NextcloudConnector(BaseConnector):
                 external_revision_id=etag,
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=self.connector_name,
+                connector_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
@@ -1094,7 +1095,7 @@ class NextcloudConnector(BaseConnector):
 
             # Create a single app user for the current user
             app_user = AppUser(
-                app_name=self.connector_name,
+                app_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 source_user_id=self.current_user_id,
                 full_name=self.current_user_id,
@@ -1111,7 +1112,7 @@ class NextcloudConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 description="Personal Nextcloud Folder",
                 external_group_id=self.current_user_id,
-                connector_name=self.connector_name,
+                connector_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
@@ -1639,7 +1640,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate() -> AsyncGenerator[bytes]:
+            async def generate() -> AsyncGenerator[bytes, None]:
                 yield file_content
 
             return create_stream_record_response(

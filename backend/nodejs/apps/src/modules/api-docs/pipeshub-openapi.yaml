@@ -31,6 +31,12 @@ servers:
       instance_url:
         default: https://app.pipeshub.com
         description: Base server URL (without /api/v1)
+  - url: "{instance_url}"
+    description: Root URL (used for MCP endpoints mounted at /mcp)
+    variables:
+      instance_url:
+        default: https://app.pipeshub.com
+        description: Base server URL
 
 tags:
   # Authentication
@@ -83,6 +89,8 @@ tags:
 
       **Discovery:**
       - `/.well-known/openid-configuration` - Authorization server metadata
+      - `/.well-known/oauth-authorization-server` - Authorization server metadata (RFC 8414)
+      - `/.well-known/oauth-protected-resource/mcp` - Protected resource metadata (RFC 9728)
       - `/.well-known/jwks.json` - Public keys for token verification
 
       **UserInfo:**
@@ -108,6 +116,8 @@ tags:
     description: Document CRUD and retrieval operations
   - name: Knowledge Bases
     description: Knowledge base management operations
+  - name: Knowledge Hub
+    description: Unified browse API for root and child nodes (apps, record groups, folders, records) with filtering and search
   - name: Folders
     description: Folder organization and management
   - name: Records
@@ -190,6 +200,24 @@ tags:
       - All metrics are anonymized before collection
       - No personally identifiable information (PII) is collected
       - Organization can disable collection at any time
+  # MCP (Model Context Protocol)
+  - name: MCP
+    description: |
+      Model Context Protocol (MCP) endpoints for AI tool integration.
+
+      PipesHub exposes a Streamable HTTP MCP server that allows MCP-compatible clients
+      (such as Claude Desktop, Cursor, or custom agents) to interact with PipesHub tools
+      including search, conversations, knowledge base management, and connector operations.
+
+      **Transport:** Streamable HTTP (JSON-RPC over HTTP)
+      **Base Path:** `/mcp` (not under `/api/v1`)
+
+      **Authentication:**
+      All MCP requests require a valid Bearer token or OAuth 2.0 access token.
+
+      **Stateless Mode:**
+      The server operates in stateless mode — each request creates an independent MCP session.
+
   - name: Crawling Jobs
     description: |
       Endpoints for scheduling, managing, and monitoring data crawling jobs for enterprise connectors.
@@ -278,9 +306,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
@@ -321,9 +346,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
 
@@ -1130,6 +1152,42 @@ components:
           description: Supported PKCE code challenge methods
           example: ["S256", "plain"]
 
+    OAuthProtectedResourceMetadata:
+      type: object
+      description: |
+        OAuth Protected Resource Metadata (RFC 9728).
+        Describes the protected resource, its authorization servers, supported scopes, and bearer token methods.
+      required:
+        - resource
+        - authorization_servers
+      properties:
+        resource:
+          type: string
+          format: uri
+          description: Protected resource identifier
+        authorization_servers:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Authorization servers that can issue tokens for this resource
+        scopes_supported:
+          type: array
+          items:
+            type: string
+          description: OAuth scopes supported by this resource
+          example: ["read:records", "write:records", "admin:connectors"]
+        bearer_methods_supported:
+          type: array
+          items:
+            type: string
+          description: Methods supported for sending bearer tokens
+          example: ["header"]
+        resource_documentation:
+          type: string
+          format: uri
+          description: URL to human-readable documentation for the resource
+
     JWKS:
       type: object
       description: |
@@ -1175,7 +1233,10 @@ components:
     # ==================== OAUTH APP MANAGEMENT SCHEMAS ====================
     CreateOAuthAppRequest:
       type: object
-      description: Request to create a new OAuth app
+      description: |
+        Request to create a new OAuth app.
+        Redirect URIs are required only when `authorization_code` is included in `allowedGrantTypes`.
+        If `authorization_code` is not enabled, redirect URIs are optional and will be ignored.
       properties:
         name:
           type: string
@@ -1193,8 +1254,9 @@ components:
           items:
             type: string
             format: uri
-          description: Allowed redirect URIs (1-10 URIs)
-          minItems: 1
+          description: |
+            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
+            Not needed for apps using only `client_credentials` grant type.
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -1203,7 +1265,7 @@ components:
             type: string
             enum: [authorization_code, client_credentials, refresh_token]
           description: |
-            Allowed grant types. Defaults to all if not specified.
+            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if not specified.
           example: ["authorization_code", "refresh_token"]
         allowedScopes:
           type: array
@@ -1247,12 +1309,14 @@ components:
           example: 604800
       required:
         - name
-        - redirectUris
         - allowedScopes
 
     UpdateOAuthAppRequest:
       type: object
-      description: Request to update an OAuth app
+      description: |
+        Request to update an OAuth app.
+        Redirect URIs are required when `authorization_code` grant type is enabled (either already set or being added).
+        Existing redirect URIs are preserved in the database even if `authorization_code` is removed from grant types.
       properties:
         name:
           type: string
@@ -1268,8 +1332,9 @@ components:
           items:
             type: string
             format: uri
-          description: Allowed redirect URIs
-          minItems: 1
+          description: |
+            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
+            Preserved in the database even if `authorization_code` is removed from grant types.
           maxItems: 10
         allowedGrantTypes:
           type: array
@@ -2221,25 +2286,283 @@ components:
               items:
                 type: object
 
-    KnowledgeHubNode:
+    FilterOption:
       type: object
-      description: A node in the knowledge hub tree structure
+      description: A single filter option for knowledge hub filters
       properties:
         id:
           type: string
-        name:
+          description: Filter ID value to send in requests
+        label:
           type: string
+          description: Display label for the filter
         type:
           type: string
-          enum: [KB, FOLDER, RECORD, CONNECTOR, APP]
+          nullable: true
+        connectorType:
+          type: string
+          nullable: true
+
+    KnowledgeHubNode:
+      type: object
+      description: A node in the knowledge hub tree structure (NodeItem)
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the node
+        name:
+          type: string
+          description: Display name of the node
+        nodeType:
+          type: string
+          enum: [app, recordGroup, folder, record]
+          description: Type of the node
         parentId:
           type: string
+          nullable: true
+          description: ID of the parent node
+        origin:
+          type: string
+          enum: [COLLECTION, CONNECTOR]
+          description: Origin type
+        connector:
+          type: string
+          nullable: true
+          description: Connector name (only for CONNECTOR origin)
+        recordType:
+          type: string
+          nullable: true
+        recordGroupType:
+          type: string
+          nullable: true
+        indexingStatus:
+          type: string
+          nullable: true
+        isInternal:
+          type: boolean
+          description: True when the node is an internal/system record group or record (doesn't come from source)
+        createdAt:
+          type: integer
+          description: Creation timestamp (epoch ms)
+        updatedAt:
+          type: integer
+          description: Update timestamp (epoch ms)
+        sizeInBytes:
+          type: integer
+          nullable: true
+        mimeType:
+          type: string
+          nullable: true
+        extension:
+          type: string
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
         hasChildren:
           type: boolean
-        childCount:
-          type: integer
-        metadata:
+        previewRenderable:
+          type: boolean
+          nullable: true
+        permission:
           type: object
+          nullable: true
+          properties:
+            role:
+              type: string
+            canEdit:
+              type: boolean
+            canDelete:
+              type: boolean
+        sharingStatus:
+          type: string
+          nullable: true
+
+    KnowledgeHubNodesResponse:
+      type: object
+      description: Response for Knowledge Hub nodes API
+      properties:
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        id:
+          type: string
+          nullable: true
+          description: Current parent node ID (null for root)
+        currentNode:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            nodeType:
+              type: string
+            subType:
+              type: string
+              nullable: true
+        parentNode:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            nodeType:
+              type: string
+            subType:
+              type: string
+              nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeHubNode'
+        pagination:
+          type: object
+          nullable: true
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalItems:
+              type: integer
+            totalPages:
+              type: integer
+            hasNext:
+              type: boolean
+            hasPrev:
+              type: boolean
+        filters:
+          type: object
+          nullable: true
+          properties:
+            applied:
+              type: object
+              properties:
+                q:
+                  type: string
+                  nullable: true
+                nodeTypes:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                recordTypes:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                origins:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                connectorIds:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                indexingStatus:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                createdAt:
+                  type: object
+                  nullable: true
+                updatedAt:
+                  type: object
+                  nullable: true
+                size:
+                  type: object
+                  nullable: true
+                sortBy:
+                  type: string
+                sortOrder:
+                  type: string
+            available:
+              type: object
+              nullable: true
+              properties:
+                nodeTypes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                recordTypes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                origins:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                connectors:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                indexingStatus:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                sortBy:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                sortOrder:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+        breadcrumbs:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+              subType:
+                type: string
+                nullable: true
+        counts:
+          type: object
+          nullable: true
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  label:
+                    type: string
+                  count:
+                    type: integer
+            total:
+              type: integer
+        permissions:
+          type: object
+          nullable: true
+          properties:
+            role:
+              type: string
+            canUpload:
+              type: boolean
+            canCreateFolders:
+              type: boolean
+            canEdit:
+              type: boolean
+            canDelete:
+              type: boolean
+            canManagePermissions:
+              type: boolean
 
     KBPermission:
       type: object
@@ -3732,6 +4055,15 @@ components:
           type: string
           description: SAML attribute name for user email
           example: "email"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
+        samlPlatform:
+          type: string
+          description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
+          example: "Okta"
 
     GenericOAuthConfig:
       type: object
@@ -5000,6 +5332,44 @@ paths:
         '404':
           description: OAuth provider configuration not found
 
+  /userAccount/validateEmailChange:
+    put:
+      tags:
+        - User Account
+      summary: Validate email change token
+      description: |
+        Validate a token for changing the user's email address.
+        This is used in the email change flow to verify the token before allowing the change.
+        <br><br>
+        <b>Flow:</b><br>
+        1. User requests email change and receives a token via email<br>
+        2. This endpoint validates the token and returns success if valid<br>
+        3. If valid, user can proceed to change their email address
+      operationId: validateEmailChangeToken
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Email change token is valid and email is updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    description: Success message for email update
+                    example: Email updated successfully
+        '400':
+          description: Invalid request or malformed token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+        '401':
+          description: Invalid or expired token
+        '404':
+          description: User not found
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
   /oauth2/authorize:
     get:
@@ -5395,6 +5765,45 @@ paths:
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
                 code_challenge_methods_supported: ["S256", "plain"]
 
+  /.well-known/oauth-authorization-server:
+    get:
+      tags:
+        - OpenID Connect
+      summary: OAuth 2.0 Authorization Server Metadata
+      description: |
+        OAuth 2.0 Authorization Server Metadata Endpoint (RFC 8414).
+        <br><br>
+        Returns the same metadata as the OpenID Connect Discovery endpoint
+        but at the RFC 8414 standard path. MCP clients like Claude Code use
+        this endpoint for discovery instead of openid-configuration.
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication.
+      operationId: oauthAuthorizationServerMetadata
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '200':
+          description: Authorization server metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenIDConfiguration'
+              example:
+                issuer: "https://api.pipeshub.com"
+                authorization_endpoint: "https://api.pipeshub.com/oauth2/authorize"
+                token_endpoint: "https://api.pipeshub.com/oauth2/token"
+                userinfo_endpoint: "https://api.pipeshub.com/oauth2/userinfo"
+                revocation_endpoint: "https://api.pipeshub.com/oauth2/revoke"
+                introspection_endpoint: "https://api.pipeshub.com/oauth2/introspect"
+                jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
+                scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
+                response_types_supported: ["code"]
+                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
+                token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
+                code_challenge_methods_supported: ["S256", "plain"]
+
   /.well-known/jwks.json:
     get:
       tags:
@@ -5434,6 +5843,42 @@ paths:
                     kid: "key-1"
                     n: "0vx7agoebG..."
                     e: "AQAB"
+
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags:
+        - OpenID Connect
+      summary: OAuth Protected Resource Metadata
+      description: |
+        OAuth Protected Resource Metadata Endpoint (RFC 9728).
+        <br><br>
+        Returns metadata about the protected resource including the resource
+        identifier, authorization servers, supported scopes, and bearer token methods.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - Discovering which authorization server to use for this resource<br>
+        - Determining supported scopes and bearer token methods<br>
+        - MCP client auto-configuration
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication.
+      operationId: oauthProtectedResource
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '200':
+          description: Protected resource metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthProtectedResourceMetadata'
+              example:
+                resource: "https://api.pipeshub.com/mcp"
+                authorization_servers: ["https://api.pipeshub.com"]
+                scopes_supported: ["read:records", "write:records", "admin:connectors"]
+                bearer_methods_supported: ["header"]
+                resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
@@ -6167,9 +6612,7 @@ paths:
       tags:
         - Organization Auth Config
       summary: Set up auth configuration
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Set up or initialize the organization's authentication configuration.
       operationId: setUpAuthConfig
       security:
@@ -6254,14 +6697,28 @@ paths:
       tags:
         - SAML
       summary: SAML sign-in callback
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Handle the SAML Identity Provider callback after user authentication. This endpoint receives the SAML assertion from the IdP.
       operationId: samlSignInCallback
+      description: |
+        Handles the callback from the SAML Identity Provider (IDP)
+        after successful user authentication.
+
+        This endpoint is invoked by the IDP and not directly by clients.
+
+        Flow:
+        1. IDP posts SAMLResponse and RelayState
+        2. Server validates the SAML assertion signature
+        3. Server extracts user identity
+        4. Server completes authentication
+        5. Redirects to frontend with authentication result
+
+        RelayState contains the session token or state used to resume
+        the authentication process.
+
       security: []
+
       requestBody:
         description: "SAML response from Identity Provider"
+        required: false
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -6275,9 +6732,65 @@ paths:
                   description: Relay state from the original request
       responses:
         '302':
-          description: Redirect to application with authentication tokens
+          description: Redirect to frontend with authentication result
+          headers:
+            Location:
+              description: Frontend URL containing authentication result parameters
+              schema:
+                type: string
+
+        '400':
+          description: Invalid or malformed SAML response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
         '401':
-          description: SAML authentication failed
+          description: SAML assertion validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '404':
+          description: Session expired or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '500':
+          description: Internal server error during SAML processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+  /saml/updateAppConfig:
+    post:
+      tags:
+        - SAML
+      summary: Reload SAML application configuration (Internal)
+      description: |
+        Internal endpoint to reload SAML configuration from the configuration manager.
+        This is called by other services when SAML settings are updated.<br><br>
+        <b>Purpose:</b><br>
+        When SAML configuration is updated in the Configuration Manager, this endpoint
+        is called to reload the settings into the authentication service without restart.<br><br>
+        <b>Effects:</b><br>
+        <ul>
+        <li>Reloads AppConfig from configuration files</li>
+        <li>Rebinds authentication controllers with new config</li>
+        <li>Updates SAML passport strategy settings</li>
+        </ul>
+        <b>Note:</b> This is an internal service-to-service endpoint.
+      operationId: updateSamlAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Configuration reloaded successfully
           content:
             application/json:
               schema:
@@ -6794,9 +7307,7 @@ paths:
       tags:
         - Users
       summary: Update user email
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Update the email address of a user.
       operationId: updateEmail
       security:
@@ -7371,9 +7882,7 @@ paths:
       tags:
         - Users
       summary: Get users by IDs
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve multiple users by their IDs in a single request.
       operationId: getUsersByIds
       security:
@@ -7413,9 +7922,7 @@ paths:
       tags:
         - Users
       summary: Update user full name
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Update the full name of a user.
       operationId: updateFullName
       security:
@@ -7452,14 +7959,13 @@ paths:
         '404':
           description: User not found
 
+        # TODO: remove these three apis and replace it with changeName update only
   /users/{id}/firstName:
     patch:
       tags:
         - Users
       summary: Update user first name
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Update the first name of a user.
       operationId: updateFirstName
       security:
@@ -7501,9 +8007,7 @@ paths:
       tags:
         - Users
       summary: Update user last name
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Update the last name of a user.
       operationId: updateLastName
       security:
@@ -7545,9 +8049,7 @@ paths:
       tags:
         - Users
       summary: Update user designation
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Update the designation/title of a user.
       operationId: updateDesignation
       security:
@@ -7589,9 +8091,7 @@ paths:
       tags:
         - Users
       summary: Check if user is admin
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Check whether the specified user has admin privileges. Returns 200 OK if the user is an admin.
       operationId: adminCheck
       security:
@@ -7625,9 +8125,7 @@ paths:
       tags:
         - Users
       summary: Get user teams
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve teams associated with the authenticated user.
       operationId: getUserTeamsViaUsers
       security:
@@ -8096,9 +8594,7 @@ paths:
       tags:
         - Teams
       summary: Get users in team
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve all users that belong to a specific team.
       operationId: getTeamUsers
       security:
@@ -8133,9 +8629,7 @@ paths:
       tags:
         - Teams
       summary: Add users to team
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Add one or more users to a team.
       operationId: addUsersToTeam
       security:
@@ -8178,9 +8672,7 @@ paths:
       tags:
         - Teams
       summary: Remove user from team
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Remove a user from a team.
       operationId: removeUserFromTeam
       security:
@@ -8222,9 +8714,7 @@ paths:
       tags:
         - Teams
       summary: Update team users permissions
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Update permissions for users within a team.
       operationId: updateTeamUsersPermissions
       security:
@@ -8263,9 +8753,7 @@ paths:
       tags:
         - Teams
       summary: Get user created teams
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve teams created by the authenticated user.
       operationId: getUserCreatedTeams
       security:
@@ -9374,9 +9862,7 @@ paths:
       tags:
         - User Groups
       summary: Get users in group
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve all users that belong to a specific user group.
       operationId: getUsersInGroup
       security:
@@ -9413,9 +9899,7 @@ paths:
       tags:
         - User Groups
       summary: Get group statistics
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve statistics for all user groups including member counts.
       operationId: getGroupStatistics
       security:
@@ -9465,7 +9949,7 @@ paths:
       operationId: downloadDocument
       security:
         - bearerAuth: []
-        - oauth2: [document:read]
+        - oauth2: [kb:read]
       parameters:
         - name: documentId
           in: path
@@ -9526,385 +10010,385 @@ paths:
           description: Unauthorized - Valid bearer token required
         '404':
           description: Document not found
-
-  /document/upload:
-    post:
-      tags:
-        - Document Management
-      summary: Upload document
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Upload a new document to the storage system.
-      operationId: uploadDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [document:write]
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                file:
-                  type: string
-                  format: binary
-      responses:
-        '200':
-          description: Document uploaded successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '400':
-          description: Invalid file or missing required fields
-        '401':
-          description: Unauthorized
-
-  /document/placeholder:
-    post:
-      tags:
-        - Document Management
-      summary: Create placeholder document
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Create a placeholder document entry without uploading content.
-      operationId: createPlaceholderDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [document:write]
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: Placeholder document created successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-
-  /document/{documentId}:
-    get:
-      tags:
-        - Document Management
-      summary: Get document by ID
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve document metadata and details by its ID.
-      operationId: getDocumentById
-      security:
-        - bearerAuth: []
-        - oauth2: [document:read]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Document details retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-    delete:
-      tags:
-        - Document Management
-      summary: Delete document by ID
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Delete a document by its ID.
-      operationId: deleteDocumentById
-      security:
-        - bearerAuth: []
-        - oauth2: [document:delete]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Document deleted successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-  /document/{documentId}/uploadNextVersion:
-    post:
-      tags:
-        - Document Management
-      summary: Upload next version of document
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Upload a new version of an existing document.
-      operationId: uploadNextVersionDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [document:write]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                file:
-                  type: string
-                  format: binary
-      responses:
-        '200':
-          description: New version uploaded successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-  /document/{documentId}/rollBack:
-    post:
-      tags:
-        - Document Management
-      summary: Roll back to previous version
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Roll back a document to its previous version.
-      operationId: rollBackToPreviousVersion
-      security:
-        - bearerAuth: []
-        - oauth2: [document:write]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                version:
-                  type: integer
-                  description: Version number to roll back to
-      responses:
-        '200':
-          description: Document rolled back successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-  /document/{documentId}/buffer:
-    get:
-      tags:
-        - Document Management
-      summary: Get document buffer
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve the binary buffer of a document.
-      operationId: getDocumentBuffer
-      security:
-        - bearerAuth: []
-        - oauth2: [document:read]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Document buffer retrieved
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-    put:
-      tags:
-        - Document Management
-      summary: Create/update document buffer
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Create or update the binary buffer of a document.
-      operationId: createDocumentBuffer
-      security:
-        - bearerAuth: []
-        - oauth2: [document:write]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                file:
-                  type: string
-                  format: binary
-          application/octet-stream:
-            schema:
-              type: string
-              format: binary
-      responses:
-        '200':
-          description: Document buffer updated successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-  /document/{documentId}/directUpload:
-    post:
-      tags:
-        - Document Management
-      summary: Direct upload document
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Upload a document directly without intermediate processing.
-      operationId: uploadDirectDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [document:write]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                file:
-                  type: string
-                  format: binary
-      responses:
-        '200':
-          description: Document uploaded directly
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
-  /document/{documentId}/isModified:
-    get:
-      tags:
-        - Document Management
-      summary: Check if document is modified
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Check if a document has been modified since its last saved version.
-      operationId: documentDiffChecker
-      security:
-        - bearerAuth: []
-        - oauth2: [document:read]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Modification status retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  isModified:
-                    type: boolean
-        '401':
-          description: Unauthorized
-        '404':
-          description: Document not found
-
+  # TODO: most of the document operations is done using /knowledgeBase/{recordId} route, none of this methods are being called by frontend do we really need them?
+  # /document/upload:
+  #   post:
+  #     tags:
+  #       - Document Management
+  #     summary: Upload document
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Upload a new document to the storage system.
+  #     operationId: uploadDocument
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:write]
+  #     requestBody:
+  #       required: true
+  #       content:
+  #         multipart/form-data:
+  #           schema:
+  #             type: object
+  #             properties:
+  #               file:
+  #                 type: string
+  #                 format: binary
+  #     responses:
+  #       '200':
+  #         description: Document uploaded successfully
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '400':
+  #         description: Invalid file or missing required fields
+  #       '401':
+  #         description: Unauthorized
+  #
+  # /document/placeholder:
+  #   post:
+  #     tags:
+  #       - Document Management
+  #     summary: Create placeholder document
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Create a placeholder document entry without uploading content.
+  #     operationId: createPlaceholderDocument
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:write]
+  #     requestBody:
+  #       required: true
+  #       description: "Request payload"
+  #       content:
+  #         application/json:
+  #           schema:
+  #             type: object
+  #     responses:
+  #       '200':
+  #         description: Placeholder document created successfully
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #
+  # /document/{documentId}:
+  #   get:
+  #     tags:
+  #       - Document Management
+  #     summary: Get document by ID
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve document metadata and details by its ID.
+  #     operationId: getDocumentById
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:read]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     responses:
+  #       '200':
+  #         description: Document details retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  #   delete:
+  #     tags:
+  #       - Document Management
+  #     summary: Delete document by ID
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Delete a document by its ID.
+  #     operationId: deleteDocumentById
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:delete]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     responses:
+  #       '200':
+  #         description: Document deleted successfully
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  # /document/{documentId}/uploadNextVersion:
+  #   post:
+  #     tags:
+  #       - Document Management
+  #     summary: Upload next version of document
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Upload a new version of an existing document.
+  #     operationId: uploadNextVersionDocument
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:write]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     requestBody:
+  #       required: true
+  #       content:
+  #         multipart/form-data:
+  #           schema:
+  #             type: object
+  #             properties:
+  #               file:
+  #                 type: string
+  #                 format: binary
+  #     responses:
+  #       '200':
+  #         description: New version uploaded successfully
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  # /document/{documentId}/rollBack:
+  #   post:
+  #     tags:
+  #       - Document Management
+  #     summary: Roll back to previous version
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Roll back a document to its previous version.
+  #     operationId: rollBackToPreviousVersion
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:write]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     requestBody:
+  #       content:
+  #         application/json:
+  #           schema:
+  #             type: object
+  #             properties:
+  #               version:
+  #                 type: integer
+  #                 description: Version number to roll back to
+  #     responses:
+  #       '200':
+  #         description: Document rolled back successfully
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  # /document/{documentId}/buffer:
+  #   get:
+  #     tags:
+  #       - Document Management
+  #     summary: Get document buffer
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve the binary buffer of a document.
+  #     operationId: getDocumentBuffer
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:read]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     responses:
+  #       '200':
+  #         description: Document buffer retrieved
+  #         content:
+  #           application/octet-stream:
+  #             schema:
+  #               type: string
+  #               format: binary
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  #   put:
+  #     tags:
+  #       - Document Management
+  #     summary: Create/update document buffer
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Create or update the binary buffer of a document.
+  #     operationId: createDocumentBuffer
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:write]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     requestBody:
+  #       required: true
+  #       content:
+  #         multipart/form-data:
+  #           schema:
+  #             type: object
+  #             properties:
+  #               file:
+  #                 type: string
+  #                 format: binary
+  #         application/octet-stream:
+  #           schema:
+  #             type: string
+  #             format: binary
+  #     responses:
+  #       '200':
+  #         description: Document buffer updated successfully
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  # /document/{documentId}/directUpload:
+  #   post:
+  #     tags:
+  #       - Document Management
+  #     summary: Direct upload document
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Upload a document directly without intermediate processing.
+  #     operationId: uploadDirectDocument
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:write]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     requestBody:
+  #       content:
+  #         multipart/form-data:
+  #           schema:
+  #             type: object
+  #             properties:
+  #               file:
+  #                 type: string
+  #                 format: binary
+  #     responses:
+  #       '200':
+  #         description: Document uploaded directly
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
+  # /document/{documentId}/isModified:
+  #   get:
+  #     tags:
+  #       - Document Management
+  #     summary: Check if document is modified
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Check if a document has been modified since its last saved version.
+  #     operationId: documentDiffChecker
+  #     security:
+  #       - bearerAuth: []
+  #       - oauth2: [kb:read]
+  #     parameters:
+  #       - name: documentId
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #     responses:
+  #       '200':
+  #         description: Modification status retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 isModified:
+  #                   type: boolean
+  #       '401':
+  #         description: Unauthorized
+  #       '404':
+  #         description: Document not found
+  #
   /knowledgeBase:
     post:
       tags:
@@ -11627,9 +12111,7 @@ paths:
       tags:
         - Knowledge Bases
       summary: Move record to another location
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Move a record from one location to another within a knowledge base.
       operationId: moveRecord
       security:
@@ -11881,44 +12363,111 @@ paths:
   /knowledgeBase/knowledge-hub/nodes:
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Hub
       summary: Get knowledge hub root nodes
       description: |
-        Retrieve root-level nodes for unified knowledge hub browsing.<br><br>
+        Retrieve root-level nodes (Apps) or search across all nodes for unified knowledge hub browsing.<br><br>
         <b>Overview:</b><br>
-        Provides a unified view across all knowledge sources - KBs, connectors, and apps. Use for building file browser UIs.<br><br>
+        Provides a unified view across all knowledge sources - Collections, connectors, and apps. Use for building file browser UIs.<br><br>
         <b>Node Types:</b><br>
         <ul>
-        <li><b>KB:</b> Knowledge bases</li>
-        <li><b>CONNECTOR:</b> External connector instances</li>
-        <li><b>APP:</b> Connected applications</li>
+        <li><b>Collection:</b> Local collections (formerly Knowledge Bases)</li>
+        <li><b>Connector:</b> External connector instances</li>
+        <li><b>App:</b> Connected applications</li>
         </ul>
       operationId: getKnowledgeHubRootNodes
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
       parameters:
-        - name: view
+        - name: only_containers
           in: query
-          description: View mode
+          description: Only return nodes with children (for sidebar)
           schema:
-            type: string
+            type: boolean
+            default: false
         - name: page
           in: query
+          description: Page number (1-indexed)
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Items per page
           schema:
             type: integer
-        - name: nodeTypes
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: sort_by
+          in: query
+          description: Sort field (name, createdAt, updatedAt, size, type)
+          schema:
+            type: string
+            default: updatedAt
+        - name: sort_order
+          in: query
+          description: Sort order (asc or desc)
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: q
+          in: query
+          description: Full-text search query
+          schema:
+            type: string
+        - name: node_types
           in: query
           description: Filter by node types (comma-separated)
           schema:
             type: string
-        - name: q
+        - name: record_types
           in: query
-          description: Search query
+          description: Comma-separated record types
+          schema:
+            type: string
+        - name: origins
+          in: query
+          description: Comma-separated origins (COLLECTION, CONNECTOR)
+          schema:
+            type: string
+        - name: connector_ids
+          in: query
+          description: Comma-separated connector instance IDs
+          schema:
+            type: string
+        - name: indexing_status
+          in: query
+          description: Comma-separated indexing statuses
+          schema:
+            type: string
+        - name: created_at
+          in: query
+          description: Created date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: updated_at
+          in: query
+          description: Updated date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: size
+          in: query
+          description: Size range (gte:bytes,lte:bytes)
+          schema:
+            type: string
+        - name: flattened
+          in: query
+          description: Return flattened view with all nested children
+          schema:
+            type: boolean
+            default: false
+        - name: include
+          in: query
+          description: Comma-separated includes (breadcrumbs, counts, availableFilters, permissions)
           schema:
             type: string
       responses:
@@ -11927,107 +12476,24 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  error:
-                    type: string
-                    nullable: true
-                  id:
-                    type: string
-                    nullable: true
-                  currentNode:
-                    type: object
-                    nullable: true
-                  parentNode:
-                    type: object
-                    nullable: true
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        nodeType:
-                          type: string
-                          enum: [kb, folder, record, connector, app]
-                        parentId:
-                          type: string
-                          nullable: true
-                        origin:
-                          type: string
-                        connector:
-                          type: string
-                        recordType:
-                          type: string
-                          nullable: true
-                        indexingStatus:
-                          type: string
-                          nullable: true
-                        createdAt:
-                          type: integer
-                        updatedAt:
-                          type: integer
-                        sizeInBytes:
-                          type: integer
-                          nullable: true
-                        mimeType:
-                          type: string
-                          nullable: true
-                        extension:
-                          type: string
-                          nullable: true
-                        webUrl:
-                          type: string
-                        hasChildren:
-                          type: boolean
-                        sharingStatus:
-                          type: string
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filters:
-                    type: object
-                    nullable: true
-                  breadcrumbs:
-                    type: array
-                    nullable: true
-                    items:
-                      type: object
-                  counts:
-                    type: object
-                    nullable: true
-                  permissions:
-                    type: object
-                    nullable: true
+                $ref: '#/components/schemas/KnowledgeHubNodesResponse'
+        '400':
+          description: Bad request (invalid parameters or validation error)
         '401':
           description: Unauthorized
+        '500':
+          description: Internal server error
 
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Hub
       summary: Get knowledge hub child nodes
       description: |
-        Retrieve child nodes under a specific parent in the knowledge hub tree.<br><br>
+        Get children of a specific node. Retrieve child nodes under a specific parent in the knowledge hub tree.<br><br>
         <b>Navigation:</b><br>
-        Use this to drill down into KBs, folders, and connector hierarchies.
+        Use this to drill down into collections, folders, and connector hierarchies.<br><br>
+        parent_type must be one of: app, recordGroup, folder, record.
       operationId: getKnowledgeHubChildNodes
       security:
         - bearerAuth: []
@@ -12036,26 +12502,104 @@ paths:
         - name: parentType
           in: path
           required: true
-          description: Type of parent node (KB, FOLDER, CONNECTOR, APP)
+          description: Type of parent node (app, recordGroup, folder, record)
           schema:
             type: string
+            enum: [app, recordGroup, folder, record]
         - name: parentId
           in: path
           required: true
-          description: ID of parent node
+          description: ID of parent node (UUID or knowledgeBase_<orgId> for Collection app)
           schema:
             type: string
+        - name: only_containers
+          in: query
+          description: Only return nodes with children (for sidebar)
+          schema:
+            type: boolean
+            default: false
         - name: page
           in: query
+          description: Page number (1-indexed)
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Items per page
           schema:
             type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: sort_by
+          in: query
+          description: Sort field (name, createdAt, updatedAt, size, type)
+          schema:
+            type: string
+            default: updatedAt
+        - name: sort_order
+          in: query
+          description: Sort order (asc or desc)
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
         - name: q
           in: query
-          description: Search query
+          description: Full-text search query
+          schema:
+            type: string
+        - name: node_types
+          in: query
+          description: Filter by node types (comma-separated)
+          schema:
+            type: string
+        - name: record_types
+          in: query
+          description: Comma-separated record types
+          schema:
+            type: string
+        - name: origins
+          in: query
+          description: Comma-separated origins (COLLECTION, CONNECTOR)
+          schema:
+            type: string
+        - name: connector_ids
+          in: query
+          description: Comma-separated connector instance IDs
+          schema:
+            type: string
+        - name: indexing_status
+          in: query
+          description: Comma-separated indexing statuses
+          schema:
+            type: string
+        - name: created_at
+          in: query
+          description: Created date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: updated_at
+          in: query
+          description: Updated date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: size
+          in: query
+          description: Size range (gte:bytes,lte:bytes)
+          schema:
+            type: string
+        - name: flattened
+          in: query
+          description: Return flattened view with all nested children
+          schema:
+            type: boolean
+            default: false
+        - name: include
+          in: query
+          description: Comma-separated includes (breadcrumbs, counts, availableFilters, permissions)
           schema:
             type: string
       responses:
@@ -12064,18 +12608,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  nodes:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KnowledgeHubNode'
-                  parent:
-                    $ref: '#/components/schemas/KnowledgeHubNode'
+                $ref: '#/components/schemas/KnowledgeHubNodesResponse'
+        '400':
+          description: Bad request (invalid parent_type or parameters)
         '401':
           description: Unauthorized
         '404':
           description: Parent node not found
+        '500':
+          description: Internal server error
 
   # ==================== ENTERPRISE SEARCH ENDPOINTS ====================
 
@@ -12877,9 +13418,7 @@ paths:
       tags:
         - Conversations
       summary: Unshare a conversation
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Revoke sharing for a conversation, making it private again.
       operationId: unshareConversationById
       security:
@@ -13080,9 +13619,7 @@ paths:
       tags:
         - Semantic Search
       summary: Get search by ID
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve a specific search result by its ID.
       operationId: getSearchById
       security:
@@ -13112,9 +13649,7 @@ paths:
       tags:
         - Semantic Search
       summary: Delete search by ID
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Delete a specific search result by its ID.
       operationId: deleteSearchById
       security:
@@ -13149,9 +13684,7 @@ paths:
       tags:
         - Semantic Search
       summary: Share a search
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Share a specific search result, making it accessible to other users.
       operationId: shareSearch
       security:
@@ -13199,9 +13732,7 @@ paths:
       tags:
         - Semantic Search
       summary: Unshare a search
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Revoke sharing for a specific search result, making it private again.
       operationId: unshareSearch
       security:
@@ -13249,9 +13780,7 @@ paths:
       tags:
         - Semantic Search
       summary: Archive a search
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Archive a specific search result. Archived searches are hidden from the default search history view.
       operationId: archiveSearch
       security:
@@ -13286,9 +13815,7 @@ paths:
       tags:
         - Semantic Search
       summary: Unarchive a search
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Restore a previously archived search result back to the active search history.
       operationId: unarchiveSearch
       security:
@@ -15139,6 +15666,12 @@ paths:
                     type: boolean
                   config:
                     $ref: '#/components/schemas/ConnectorConfig'
+                  message:
+                    type: string
+                    description: Success message
+                  syncFiltersChanged:
+                    type: boolean
+                    description: Indicates whether sync filters changed, requiring a full resync
         '401':
           description: Unauthorized
         '404':
@@ -15500,6 +16033,7 @@ paths:
           description: Connector or filter not found
 
   # -------------------- Legacy Token Exchange --------------------
+  # TODO: to remove this from backend
   /connectors/getTokenFromCode:
     post:
       tags:
@@ -15815,7 +16349,7 @@ paths:
           description: Unauthorized
         '404':
           description: Toolset not found
-
+    # TODO: to remove from backend as well
     post:
       tags:
         - Toolset Configuration
@@ -16032,6 +16566,19 @@ paths:
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+      parameters:
+        - name: includeRegistry
+          in: query
+          required: false
+          description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          required: false
+          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          schema:
+            type: string
       responses:
         '200':
           description: Toolsets retrieved successfully
@@ -16039,7 +16586,63 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        instanceId:
+                          type: string
+                          description: Empty string for registry-only (synthetic) entries.
+                        instanceName:
+                          type: string
+                        toolsetType:
+                          type: string
+                        authType:
+                          type: string
+                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                        oauthConfigId:
+                          type: string
+                          nullable: true
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        iconPath:
+                          type: string
+                        category:
+                          type: string
+                          example: app
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              name:
+                                type: string
+                              fullName:
+                                type: string
+                              description:
+                                type: string
+                        isConfigured:
+                          type: boolean
+                        isAuthenticated:
+                          type: boolean
+                        isFromRegistry:
+                          type: boolean
+                          description: true for registry-only (synthetic) entries.
         '401':
           description: Unauthorized
 
@@ -16211,6 +16814,46 @@ paths:
           description: Instance not found
 
   /toolsets/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update toolset credentials
+      operationId: updateToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+      responses:
+        '200':
+          description: Credentials updated successfully
+        '400':
+          description: Invalid credentials payload
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
     delete:
       tags:
         - Toolset Instances
@@ -17724,336 +18367,336 @@ paths:
           description: Unauthorized - Valid authentication required
         '403':
           description: Forbidden - Admin access required
-
-  /configurationManager/connectors/atlassian/config:
-    get:
-      tags:
-        - Configuration Manager
-      summary: Get Atlassian OAuth config
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve the Atlassian OAuth configuration for the organization.
-      operationId: getAtlassianOauthConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Atlassian config retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - clientId
-                  - clientSecret
-                properties:
-                  clientId:
-                    type: string
-                  clientSecret:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-    post:
-      tags:
-        - Configuration Manager
-      summary: Set Atlassian OAuth config
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Configure Atlassian OAuth credentials for the organization.
-      operationId: setAtlassianOauthConfig
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: Atlassian config saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-  /configurationManager/connectors/onedrive/config:
-    get:
-      tags:
-        - Configuration Manager
-      summary: Get OneDrive credentials
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve OneDrive connector credentials.
-      operationId: getOneDriveCredentials
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: OneDrive credentials retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - clientId
-                  - clientSecret
-                  - tenantId
-                properties:
-                  clientId:
-                    type: string
-                  clientSecret:
-                    type: string
-                  tenantId:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-    post:
-      tags:
-        - Configuration Manager
-      summary: Set OneDrive credentials
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Configure OneDrive connector credentials.
-      operationId: setOneDriveCredentials
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: OneDrive credentials saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-  /configurationManager/connectors/sharepoint/config:
-    get:
-      tags:
-        - Configuration Manager
-      summary: Get SharePoint credentials
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve SharePoint connector credentials.
-      operationId: getSharePointCredentials
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: SharePoint credentials retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - clientId
-                  - clientSecret
-                  - tenantId
-                  - sharepointDomain
-                properties:
-                  clientId:
-                    type: string
-                  clientSecret:
-                    type: string
-                  tenantId:
-                    type: string
-                  sharepointDomain:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-    post:
-      tags:
-        - Configuration Manager
-      summary: Set SharePoint credentials
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Configure SharePoint connector credentials.
-      operationId: setSharePointCredentials
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: SharePoint credentials saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-  /configurationManager/connectors/googleWorkspaceCredentials:
-    get:
-      tags:
-        - Configuration Manager
-      summary: Get Google Workspace credentials
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve Google Workspace service account credentials.
-      operationId: getGoogleWorkspaceCredentials
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Google Workspace credentials retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-    post:
-      tags:
-        - Configuration Manager
-      summary: Upload Google Workspace credentials
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Upload Google Workspace service account credentials file.
-      operationId: createGoogleWorkspaceCredentials
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                file:
-                  type: string
-                  format: binary
-      responses:
-        '200':
-          description: Google Workspace credentials uploaded
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-  /configurationManager/connectors/googleWorkspaceOauthConfig:
-    get:
-      tags:
-        - Configuration Manager
-      summary: Get Google Workspace OAuth config
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Retrieve Google Workspace OAuth configuration.
-      operationId: getGoogleWorkspaceOauthConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Google Workspace OAuth config retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - clientId
-                  - clientSecret
-                properties:
-                  clientId:
-                    type: string
-                  clientSecret:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-    post:
-      tags:
-        - Configuration Manager
-      summary: Set Google Workspace OAuth config
-      deprecated: true
-      description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-        Configure Google Workspace OAuth settings.
-      operationId: setGoogleWorkspaceOauthConfig
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: Google Workspace OAuth config saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
+          # TODO: Cleanup:To remove all these apis from backend code as well
+  # /configurationManager/connectors/atlassian/config:
+  #   get:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Get Atlassian OAuth config
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve the Atlassian OAuth configuration for the organization.
+  #     operationId: getAtlassianOauthConfig
+  #     security:
+  #       - bearerAuth: []
+  #     responses:
+  #       '200':
+  #         description: Atlassian config retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               required:
+  #                 - clientId
+  #                 - clientSecret
+  #               properties:
+  #                 clientId:
+  #                   type: string
+  #                 clientSecret:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  #   post:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Set Atlassian OAuth config
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Configure Atlassian OAuth credentials for the organization.
+  #     operationId: setAtlassianOauthConfig
+  #     security:
+  #       - bearerAuth: []
+  #     requestBody:
+  #       required: true
+  #       description: "Request payload"
+  #       content:
+  #         application/json:
+  #           schema:
+  #             type: object
+  #     responses:
+  #       '200':
+  #         description: Atlassian config saved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  # /configurationManager/connectors/onedrive/config:
+  #   get:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Get OneDrive credentials
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve OneDrive connector credentials.
+  #     operationId: getOneDriveCredentials
+  #     security:
+  #       - bearerAuth: []
+  #     responses:
+  #       '200':
+  #         description: OneDrive credentials retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               required:
+  #                 - clientId
+  #                 - clientSecret
+  #                 - tenantId
+  #               properties:
+  #                 clientId:
+  #                   type: string
+  #                 clientSecret:
+  #                   type: string
+  #                 tenantId:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  #   post:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Set OneDrive credentials
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Configure OneDrive connector credentials.
+  #     operationId: setOneDriveCredentials
+  #     security:
+  #       - bearerAuth: []
+  #     requestBody:
+  #       required: true
+  #       description: "Request payload"
+  #       content:
+  #         application/json:
+  #           schema:
+  #             type: object
+  #     responses:
+  #       '200':
+  #         description: OneDrive credentials saved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  # /configurationManager/connectors/sharepoint/config:
+  #   get:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Get SharePoint credentials
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve SharePoint connector credentials.
+  #     operationId: getSharePointCredentials
+  #     security:
+  #       - bearerAuth: []
+  #     responses:
+  #       '200':
+  #         description: SharePoint credentials retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               required:
+  #                 - clientId
+  #                 - clientSecret
+  #                 - tenantId
+  #                 - sharepointDomain
+  #               properties:
+  #                 clientId:
+  #                   type: string
+  #                 clientSecret:
+  #                   type: string
+  #                 tenantId:
+  #                   type: string
+  #                 sharepointDomain:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  #   post:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Set SharePoint credentials
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Configure SharePoint connector credentials.
+  #     operationId: setSharePointCredentials
+  #     security:
+  #       - bearerAuth: []
+  #     requestBody:
+  #       required: true
+  #       description: "Request payload"
+  #       content:
+  #         application/json:
+  #           schema:
+  #             type: object
+  #     responses:
+  #       '200':
+  #         description: SharePoint credentials saved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  # /configurationManager/connectors/googleWorkspaceCredentials:
+  #   get:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Get Google Workspace credentials
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve Google Workspace service account credentials.
+  #     operationId: getGoogleWorkspaceCredentials
+  #     security:
+  #       - bearerAuth: []
+  #     responses:
+  #       '200':
+  #         description: Google Workspace credentials retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  #   post:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Upload Google Workspace credentials
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Upload Google Workspace service account credentials file.
+  #     operationId: createGoogleWorkspaceCredentials
+  #     security:
+  #       - bearerAuth: []
+  #     requestBody:
+  #       required: true
+  #       content:
+  #         multipart/form-data:
+  #           schema:
+  #             type: object
+  #             properties:
+  #               file:
+  #                 type: string
+  #                 format: binary
+  #     responses:
+  #       '200':
+  #         description: Google Workspace credentials uploaded
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  # /configurationManager/connectors/googleWorkspaceOauthConfig:
+  #   get:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Get Google Workspace OAuth config
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Retrieve Google Workspace OAuth configuration.
+  #     operationId: getGoogleWorkspaceOauthConfig
+  #     security:
+  #       - bearerAuth: []
+  #     responses:
+  #       '200':
+  #         description: Google Workspace OAuth config retrieved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               required:
+  #                 - clientId
+  #                 - clientSecret
+  #               properties:
+  #                 clientId:
+  #                   type: string
+  #                 clientSecret:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
+  #   post:
+  #     tags:
+  #       - Configuration Manager
+  #     summary: Set Google Workspace OAuth config
+  #     deprecated: true
+  #     description: |
+  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+  #       Configure Google Workspace OAuth settings.
+  #     operationId: setGoogleWorkspaceOauthConfig
+  #     security:
+  #       - bearerAuth: []
+  #     requestBody:
+  #       required: true
+  #       description: "Request payload"
+  #       content:
+  #         application/json:
+  #           schema:
+  #             type: object
+  #     responses:
+  #       '200':
+  #         description: Google Workspace OAuth config saved
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: object
+  #               properties:
+  #                 message:
+  #                   type: string
+  #       '401':
+  #         description: Unauthorized
+  #       '403':
+  #         description: Forbidden - Admin access required
+  #
   /configurationManager/slack-bot:
     get:
       tags:
@@ -18191,9 +18834,7 @@ paths:
       tags:
         - Configuration Manager
       summary: Set metrics push interval
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Configure the interval for pushing metrics to the collection server.
       operationId: setMetricsCollectionPushInterval
       security:
@@ -18229,9 +18870,7 @@ paths:
       tags:
         - Configuration Manager
       summary: Set metrics remote server URL
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Configure the remote server URL for metrics collection.
       operationId: setMetricsCollectionRemoteServer
       security:
@@ -18267,9 +18906,7 @@ paths:
       tags:
         - Configuration Manager
       summary: Get AI models configuration
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve the AI models configuration for the organization.
       operationId: getAIModelsConfig
       security:
@@ -18290,9 +18927,7 @@ paths:
       tags:
         - Configuration Manager
       summary: Create AI models configuration
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Create or initialize AI models configuration for the organization.
       operationId: createAIModelsConfig
       security:
@@ -18324,9 +18959,7 @@ paths:
       tags:
         - Configuration Manager
       summary: Get AI model providers
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve all available AI model providers.
       operationId: getAIModelsProviders
       security:
@@ -18683,9 +19316,7 @@ paths:
       tags:
         - Crawling Jobs
       summary: Get all crawling job statuses
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve the status of all scheduled crawling jobs across the organization.
       operationId: getAllCrawlingJobStatus
       security:
@@ -18712,9 +19343,7 @@ paths:
       tags:
         - Crawling Jobs
       summary: Remove all crawling jobs
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Remove all scheduled crawling jobs for the organization.
       operationId: removeAllCrawlingJob
       security:
@@ -18738,9 +19367,7 @@ paths:
       tags:
         - Crawling Jobs
       summary: Pause a crawling job
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Pause a running or scheduled crawling job for a specific connector.
       operationId: pauseCrawlingJob
       security:
@@ -18777,9 +19404,7 @@ paths:
       tags:
         - Crawling Jobs
       summary: Resume a crawling job
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Resume a previously paused crawling job for a specific connector.
       operationId: resumeCrawlingJob
       security:
@@ -18816,9 +19441,7 @@ paths:
       tags:
         - Crawling Jobs
       summary: Get queue statistics
-      deprecated: true
       description: |
-        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
         Retrieve statistics for the crawling job queue including active, waiting, and completed job counts.
       operationId: getQueueStats
       security:
@@ -18831,5 +19454,111 @@ paths:
             application/json:
               schema:
                 type: object
+        '401':
+          description: Unauthorized
+
+  # ── MCP (Model Context Protocol) ──────────────────────────────────
+  # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
+  # Use the root server URL: {instance_url}/mcp
+
+  /mcp:
+    post:
+      tags:
+        - MCP
+      summary: Handle MCP JSON-RPC request
+      description: |
+        Main MCP endpoint that handles all JSON-RPC requests including:
+        - `initialize` — Negotiate capabilities and protocol version
+        - `tools/list` — List available tools
+        - `tools/call` — Execute a tool (search, conversations, KB management, etc.)
+
+        The server operates in stateless mode with Streamable HTTP transport.
+        Each request creates an independent MCP server session.
+      operationId: handleMCPRequest
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC 2.0 request object
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                id:
+                  oneOf:
+                    - type: string
+                    - type: integer
+                method:
+                  type: string
+                  description: "MCP method (e.g. initialize, tools/list, tools/call)"
+                params:
+                  type: object
+              required:
+                - jsonrpc
+                - method
+      responses:
+        '200':
+          description: JSON-RPC 2.0 response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    oneOf:
+                      - type: string
+                      - type: integer
+                  result:
+                    type: object
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                      message:
+                        type: string
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE streaming endpoint
+      description: |
+        Used by MCP clients for SSE (Server-Sent Events) streaming.
+        In stateless mode, the transport returns 405 Method Not Allowed
+        since each request is handled independently via POST.
+      operationId: handleMCPStreamingRequest
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      responses:
+        '200':
+          description: SSE event stream (when stateful mode is enabled)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '405':
+          description: Method Not Allowed (stateless mode does not support SSE streaming)
         '401':
           description: Unauthorized

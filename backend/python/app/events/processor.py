@@ -32,6 +32,7 @@ from app.models.entities import Record, RecordType
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
@@ -58,9 +59,9 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType", None)
+    mime_type = record_dict.get("mimeType")
 
-    record = Record(
+    return Record(
         id=record_dict.get("_key") or record_dict.get("id"),
         org_id=record_dict.get("orgId"),
         record_name=record_dict.get("recordName"),
@@ -81,7 +82,6 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
         connector_id=record_dict.get("connectorId"),
     )
-    return record
 
 class Processor:
     def __init__(
@@ -158,7 +158,7 @@ class Processor:
                         "Error updating record status: " + str(e),
                         doc_id=record_id,
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             mime_type = record.get("mimeType")
             if mime_type is None:
@@ -214,6 +214,54 @@ class Processor:
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
+            raise
+
+    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
+        self.logger.info(f"🚀 Starting PDF document processing for record: {recordId}")
+        try:
+            self.logger.debug("📄 Processing PDF binary content using PyMuPDF+OpenCV processor")
+
+            record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
+
+            processor = PyMuPDFOpenCVProcessor(
+                logger=self.logger,
+                config=self.config_service,
+            )
+
+            # Phase 1: Parse PDF layout (no LLM calls)
+            parsed_data = await processor.parse_document(record_name, pdf_binary)
+
+            # Signal parsing complete
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await processor.create_blocks(parsed_data)
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PyMuPDF+OpenCV processor")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
             raise
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
@@ -920,7 +968,7 @@ class Processor:
                 caption = block.image_metadata.captions
                 if caption:
                     caption = caption[0] if isinstance(caption, list) else caption
-                    if caption in caption_map and caption_map[caption]:
+                    if caption_map.get(caption):
                         if block.data is None:
                             block.data = {}
                         if isinstance(block.data, dict):
@@ -1534,7 +1582,6 @@ class Processor:
             raise DocumentProcessingError(
                 "Failed to update indexing status", doc_id=record_id
             )
-        return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
@@ -1641,7 +1688,7 @@ class Processor:
                         "Error updating record status: " + str(e),
                         doc_id=recordId,
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
@@ -1649,11 +1696,9 @@ class Processor:
 
             modified_markdown, images = parser.extract_and_replace_images(markdown)
             caption_map = {}
-            urls_to_convert = []
 
             # Collect all image URLs
-            for image in images:
-                urls_to_convert.append(image["url"])
+            urls_to_convert = [image["url"] for image in images]
 
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
@@ -1695,7 +1740,7 @@ class Processor:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
-                        if caption in caption_map and caption_map[caption]:
+                        if caption_map.get(caption):
                             if block.data is None:
                                 block.data = {}
                             if isinstance(block.data, dict):

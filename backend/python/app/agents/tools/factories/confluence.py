@@ -2,9 +2,10 @@
 Client factories for Confluence.
 """
 
-from typing import Any, Dict
+from typing import Any, Optional
 
 from app.agents.tools.factories.base import ClientFactory
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.confluence.confluence import ConfluenceClient
 
 # ============================================================================
@@ -18,10 +19,10 @@ class ConfluenceClientFactory(ClientFactory):
 
     async def create_client(
         self,
-        config_service,
-        logger,
-        toolset_config: Dict[str, Any],
-        state=None
+        config_service: object,
+        logger: Optional[object],
+        toolset_config: dict[str, Any],
+        state: Optional[ChatState] = None
     ) -> ConfluenceClient:
         """
         Create Confluence client instance from toolset configuration.
@@ -38,4 +39,5 @@ class ConfluenceClientFactory(ClientFactory):
         return await ConfluenceClient.build_from_toolset(
             toolset_config=toolset_config,
             logger=logger,
+            config_service=config_service,
         )

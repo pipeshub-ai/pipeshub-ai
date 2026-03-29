@@ -72,12 +72,12 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
     },
     redirectUris: {
       type: [String],
-      required: true,
+      default: [],
       validate: {
         validator: function (uris: string[]) {
-          return uris.length > 0 && uris.length <= 10
+          return uris.length <= 10
         },
-        message: 'Must have between 1 and 10 redirect URIs',
+        message: 'Must have at most 10 redirect URIs',
       },
     },
     allowedGrantTypes: {

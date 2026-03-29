@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import http from 'http';
+import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
 import { Logger } from './libs/services/logger.service';
@@ -56,16 +57,16 @@ import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreM
 import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
-import {
-  createOAuthProviderRouter,
-  createOAuthClientsRouter,
-  createOIDCDiscoveryRouter,
-} from './modules/oauth_provider/routes';
+import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { McpClientContainer } from './modules/mcp_client/container/mcp-client.container';
 import { createMcpClientRouter } from './modules/mcp_client/routes/mcp-client.routes';
+import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import { SamlController } from './modules/auth/controller/saml.controller';
 
 const loggerConfig = {
   service: 'Application',
@@ -266,6 +267,7 @@ export class Application {
       });
 
       this.logger.info('Application initialized successfully');
+      await this.updateSamlStrategies()
     } catch (error: any) {
       this.logger.error(
         `Failed to initialize application: ${error.message}`,
@@ -331,10 +333,10 @@ export class Application {
     // CORS - ensure this matches your frontend domain
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
-        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
         allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token']
       }),
     );
@@ -475,8 +477,16 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
-    // OIDC Discovery routes - mounted at root level per RFC 8414
+    // MCP (Model Context Protocol) routes
+    this.app.use(
+      '/mcp',
+      createMCPRouter(this.oauthProviderContainer),
+    );
+
+    // OIDC Discovery routes - mounted at root level per RFC 8414 & RFC 9728
     // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/oauth-authorization-server
+    //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
     this.app.use(
       '/.well-known',
@@ -512,7 +522,7 @@ export class Application {
           .get<NotificationService>(NotificationService)
           .shutdown();
       } catch (err) {
-        this.logger.warn('NotificationService not available during shutdown', 
+        this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
       await NotificationContainer.dispose();
@@ -658,5 +668,17 @@ export class Application {
       });
     }
   }
+  async updateSamlStrategies(): Promise<void> {
+    try {
+      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
+      samlController.updateSamlStrategiesWithCallback()
+      this.logger.info('SSO SAML passport strategies updated successfully')
+    } catch (error) {
+      this.logger.warn('Failed to update passport strategies', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }
+
 

@@ -16,6 +16,7 @@ interface BaseField {
   options?: string[];
   validation?: FieldValidation;
   isSecret?: boolean;
+  nonEditable?: boolean;
 }
 
 // Auth schema field
@@ -292,6 +293,8 @@ interface Connector {
   supportsSync: boolean;
   supportsAgent: boolean;
   scope: 'personal' | 'team';
+  status?: 'DELETING' | 'IDLE' | 'FULL_SYNCING' | 'SYNCING' | null;
+  isLocked?: boolean;
   createdBy?: string;
   updatedBy?: string;
   createdAtTimestamp: number;
@@ -335,7 +338,6 @@ interface IndexingStatusStats {
   EMPTY: number;
   ENABLE_MULTIMODAL_MODELS: number;
   QUEUED: number;
-  CONNECTOR_DISABLED: number;
 }
 
 interface BasicStats {

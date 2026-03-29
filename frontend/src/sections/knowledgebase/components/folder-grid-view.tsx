@@ -422,8 +422,6 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'Paused';
       case 'QUEUED':
         return 'Queued';
-      case 'CONNECTOR_DISABLED':
-        return 'Connector Disabled';
       default:
         return status
           .replace(/_/g, ' ')
@@ -650,8 +648,8 @@ export const GridView: React.FC<GridViewProps> = ({
                             </Box>
                           )}
                           {itemData.origin && itemData.origin !== 'UPLOAD' && (
-                            <Chip
-                              label={itemData.origin}
+                              <Chip
+                              label={itemData.origin === 'COLLECTION' || itemData.origin === 'KB' ? 'Collection' : itemData.origin}
                               size="small"
                               variant="filled"
                               sx={{

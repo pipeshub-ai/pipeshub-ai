@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 class NodeType(str, Enum):
     """Valid node types in the knowledge hub hierarchy"""
-    KB = "kb"
     FOLDER = "folder"
     APP = "app"
     RECORD_GROUP = "recordGroup"
@@ -16,7 +15,7 @@ class NodeType(str, Enum):
 
 class OriginType(str, Enum):
     """Valid origin types for nodes"""
-    KB = "KB"
+    COLLECTION = "COLLECTION"
     CONNECTOR = "CONNECTOR"
 
 class SortField(str, Enum):
@@ -63,7 +62,7 @@ class NodeItem(BaseModel):
     name: str = Field(..., description="Display name of the node")
     nodeType: NodeType = Field(..., description="Type of the node")
     parentId: Optional[str] = Field(None, description="ID of the parent node")
-    origin: OriginType = Field(..., description="Origin type (KB or CONNECTOR)")
+    origin: OriginType = Field(..., description="Origin type (COLLECTION or CONNECTOR)")
     connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR origin)")
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
@@ -78,6 +77,7 @@ class NodeItem(BaseModel):
     previewRenderable: Optional[bool] = Field(None, description="Whether preview can be rendered for this record")
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
     sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
+    isInternal: bool = Field(False, description="True when the node is an internal/system record group or record (doesn't come from source)")
 
     class Config:
         use_enum_values = True
@@ -87,7 +87,7 @@ class CurrentNode(BaseModel):
     """Response model for the current node being browsed"""
     id: str = Field(..., description="Current node ID")
     name: str = Field(..., description="Current node name")
-    nodeType: str = Field(..., description="Current node type (app, kb, recordGroup, folder, record)")
+    nodeType: str = Field(..., description="Current node type (app, recordGroup, folder, record)")
     subType: Optional[str] = Field(None, description="Sub-type: connector name for apps/recordGroups, recordType for records")
 
     class Config:
@@ -97,7 +97,7 @@ class BreadcrumbItem(BaseModel):
     """Response model for a breadcrumb item"""
     id: str = Field(..., description="Node ID")
     name: str = Field(..., description="Node name")
-    nodeType: str = Field(..., description="Node type (app, kb, recordGroup, folder, record)")
+    nodeType: str = Field(..., description="Node type (app, recordGroup, folder, record)")
     subType: Optional[str] = Field(None, description="Sub-type: connector name for apps/recordGroups, recordType for records")
 
     class Config:
@@ -125,7 +125,6 @@ class AvailableFilters(BaseModel):
     recordTypes: List[FilterOption] = Field(default_factory=list, description="Available record types")
     origins: List[FilterOption] = Field(default_factory=list, description="Available origins")
     connectors: List[FilterOption] = Field(default_factory=list, description="Available connectors (instances)")
-    kbs: List[FilterOption] = Field(default_factory=list, description="Available Knowledge Bases")
     indexingStatus: List[FilterOption] = Field(default_factory=list, description="Available indexing statuses")
     sortBy: List[FilterOption] = Field(default_factory=list, description="Available sort fields")
     sortOrder: List[FilterOption] = Field(default_factory=list, description="Available sort orders")
@@ -137,7 +136,6 @@ class AppliedFilters(BaseModel):
     recordTypes: Optional[List[str]] = Field(None, description="Applied record type filters")
     origins: Optional[List[str]] = Field(None, description="Applied origin filters")
     connectorIds: Optional[List[str]] = Field(None, description="Applied connector instance ID filters")
-    kbIds: Optional[List[str]] = Field(None, description="Applied KB ID filters")
     indexingStatus: Optional[List[str]] = Field(None, description="Applied indexing status filters")
     createdAt: Optional[DateRangeFilter] = Field(None, description="Applied created date range")
     updatedAt: Optional[DateRangeFilter] = Field(None, description="Applied updated date range")

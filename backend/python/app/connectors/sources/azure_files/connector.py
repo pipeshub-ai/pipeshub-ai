@@ -14,9 +14,9 @@ Key differences from Azure Blob/S3:
 import base64
 import mimetypes
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
 from aiolimiter import AsyncLimiter
@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -53,6 +54,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -72,7 +74,6 @@ from app.connectors.sources.azure_files.common.apps import AzureFilesApp
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -89,7 +90,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
 
-def get_file_extension(file_path: str) -> Optional[str]:
+def get_file_extension(file_path: str) -> str | None:
     """Extracts the extension from a file path."""
     if "." in file_path:
         parts = file_path.split(".")
@@ -98,7 +99,7 @@ def get_file_extension(file_path: str) -> Optional[str]:
     return None
 
 
-def get_parent_path(file_path: str) -> Optional[str]:
+def get_parent_path(file_path: str) -> str | None:
     """Extracts the parent path from a file path.
 
     For a path like 'a/b/c/file.txt', returns 'a/b/c'
@@ -115,7 +116,7 @@ def get_parent_path(file_path: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
-def get_mimetype_for_azure_files(file_path: str, is_directory: bool = False) -> str:
+def get_mimetype_for_azure_files(file_path: str, *, is_directory: bool = False) -> str:
     """Determines the correct MimeTypes string value for an Azure file."""
     if is_directory:
         return MimeTypes.FOLDER.value
@@ -182,7 +183,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             share_name = parent_external_id
             return f"https://{self.account_name}.file.core.windows.net/{share_name}"
 
-    def _extract_path_from_external_id(self, parent_external_id: str) -> Optional[str]:
+    def _extract_path_from_external_id(self, parent_external_id: str) -> str | None:
         """Extract path from external ID.
 
         Args:
@@ -241,7 +242,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -289,20 +290,20 @@ class AzureFilesConnector(BaseConnector):
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
-        self.data_source: Optional[AzureFilesDataSource] = None
+        self.data_source: AzureFilesDataSource | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        self.share_name: Optional[str] = None
-        self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
-        self.creator_email: Optional[str] = None  # Cached to avoid repeated DB queries
-        self.account_name: Optional[str] = None
+        self.share_name: str | None = None
+        self.connector_scope: str | None = None
+        self.created_by: str | None = None
+        self.creator_email: str | None = None  # Cached to avoid repeated DB queries
+        self.account_name: str | None = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
-    def get_app_users(self, users: List[User]) -> List[AppUser]:
+    def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for Azure Files connector."""
         return [
             AppUser(
@@ -390,7 +391,7 @@ class AzureFilesConnector(BaseConnector):
     @staticmethod
     def _extract_account_name_from_connection_string(
         connection_string: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Extract account name from an Azure Storage connection string."""
         for part in connection_string.split(";"):
             if not part or "=" not in part:
@@ -488,7 +489,7 @@ class AzureFilesConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_shares(
-        self, share_names: List[str]
+        self, share_names: list[str]
     ) -> None:
         """Create record groups for shares with appropriate permissions."""
         if not share_names:
@@ -547,12 +548,12 @@ class AzureFilesConnector(BaseConnector):
 
     def _get_date_filters(
         self,
-    ) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    ) -> tuple[int | None, int | None, int | None, int | None]:
         """Extract date filter values from sync_filters."""
-        modified_after_ms: Optional[int] = None
-        modified_before_ms: Optional[int] = None
-        created_after_ms: Optional[int] = None
-        created_before_ms: Optional[int] = None
+        modified_after_ms: int | None = None
+        modified_before_ms: int | None = None
+        created_after_ms: int | None = None
+        created_before_ms: int | None = None
 
         modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_date_filter and not modified_date_filter.is_empty():
@@ -586,11 +587,11 @@ class AzureFilesConnector(BaseConnector):
 
     def _pass_date_filters(
         self,
-        item: Dict,
-        modified_after_ms: Optional[int] = None,
-        modified_before_ms: Optional[int] = None,
-        created_after_ms: Optional[int] = None,
-        created_before_ms: Optional[int] = None,
+        item: dict,
+        modified_after_ms: int | None = None,
+        modified_before_ms: int | None = None,
+        created_after_ms: int | None = None,
+        created_before_ms: int | None = None,
     ) -> bool:
         """Returns True if item PASSES date filters (should be kept)."""
         is_directory = item.get("is_directory", False)
@@ -660,7 +661,7 @@ class AzureFilesConnector(BaseConnector):
 
         return True
 
-    def _pass_extension_filter(self, item_path: str, is_directory: bool = False) -> bool:
+    def _pass_extension_filter(self, item_path: str, *, is_directory: bool = False) -> bool:
         """
         Checks if the Azure Files item passes the configured file extensions filter.
 
@@ -765,7 +766,7 @@ class AzureFilesConnector(BaseConnector):
             else:
                 modified_after_ms = last_sync_time
 
-        batch_records: List[Tuple[FileRecord, List[Permission]]] = []
+        batch_records: list[tuple[FileRecord, list[Permission]]] = []
         max_timestamp = last_sync_time if last_sync_time else 0
 
         # Recursive directory traversal
@@ -798,7 +799,7 @@ class AzureFilesConnector(BaseConnector):
                             item_path = item.get("path", item_name)
 
                             # Check extension filter
-                            if not self._pass_extension_filter(item_path, is_directory):
+                            if not self._pass_extension_filter(item_path, is_directory=is_directory):
                                 self.logger.debug(
                                     f"Skipping {item_path}: does not pass extension filter"
                                 )
@@ -889,7 +890,7 @@ class AzureFilesConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
-    def _get_azure_files_revision_id(self, item: Dict) -> str:
+    def _get_azure_files_revision_id(self, item: dict) -> str:
         """
         Determines a stable revision ID for an Azure Files item.
 
@@ -926,8 +927,8 @@ class AzureFilesConnector(BaseConnector):
         return ""
 
     async def _process_azure_files_item(
-        self, item: Dict, share_name: str
-    ) -> Tuple[Optional[FileRecord], List[Permission]]:
+        self, item: dict, share_name: str
+    ) -> tuple[FileRecord | None, list[Permission]]:
         """Process a single Azure Files item (file or directory) and convert it to a FileRecord.
 
         Key difference from S3/Blob: Directories are REAL entities, not placeholders.
@@ -992,11 +993,6 @@ class AzureFilesConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
-                    self.logger.debug(
-                        f"Skipping {normalized_path}: externalRecordId and externalRevisionId unchanged"
-                    )
-                    return None, []
 
                 # Content changed or missing revision - sync properly from Azure Files
                 if current_revision_id and stored_revision and current_revision_id != stored_revision:
@@ -1035,7 +1031,7 @@ class AzureFilesConnector(BaseConnector):
             extension = get_file_extension(normalized_path) if is_file else None
             mime_type = (
                 item.get("content_type")
-                or get_mimetype_for_azure_files(normalized_path, is_directory)
+                or get_mimetype_for_azure_files(normalized_path, is_directory=is_directory)
             )
 
             parent_path = get_parent_path(normalized_path)
@@ -1058,10 +1054,7 @@ class AzureFilesConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     await self._remove_old_parent_relationship(record_id, tx_store)
 
-            if not existing_record:
-                version = 0
-            else:
-                version = existing_record.version + 1
+            version = 0 if not existing_record else existing_record.version + 1
 
             # Get content MD5 hash for md5_hash field (same handling as Azure Blob)
             content_md5 = item.get("content_md5")
@@ -1114,11 +1107,14 @@ class AzureFilesConnector(BaseConnector):
                 file_record.parent_external_record_id = None
                 file_record.parent_record_type = None
 
-            if hasattr(self, "indexing_filters") and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(
+            if (
+                hasattr(self, "indexing_filters")
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(
                     IndexingFilterKey.FILES, default=True
-                ):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                )
+            ):
+                file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_files_permissions(
                 share_name, normalized_path
@@ -1132,10 +1128,10 @@ class AzureFilesConnector(BaseConnector):
 
     async def _create_azure_files_permissions(
         self, share_name: str, item_path: str
-    ) -> List[Permission]:
+    ) -> list[Permission]:
         """Create permissions for an Azure Files item based on connector scope."""
         try:
-            permissions: List[Permission] = []
+            permissions: list[Permission] = []
 
             if self.connector_scope == ConnectorScope.TEAM.value:
                 permissions.append(
@@ -1197,7 +1193,7 @@ class AzureFilesConnector(BaseConnector):
             )
             return False
 
-    def _extract_file_path_info(self, record: Record) -> Optional[Tuple[str, str]]:
+    def _extract_file_path_info(self, record: Record) -> tuple[str, str] | None:
         """Extract share name and file path from record.
 
         Returns:
@@ -1223,7 +1219,7 @@ class AzureFilesConnector(BaseConnector):
         file_path = unquote(file_path)
         return (share_name, file_path)
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """Generate a SAS URL for an Azure file."""
         if not self.data_source:
             return None
@@ -1368,7 +1364,7 @@ class AzureFilesConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to stream file: {str(e)}",
-            )
+            ) from e
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
@@ -1382,8 +1378,8 @@ class AzureFilesConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None,
+        search: str | None = None,
+        cursor: str | None = None,
     ) -> FilterOptionsResponse:
         """Get dynamic filter options for filters."""
         if filter_key == "shares":
@@ -1392,7 +1388,7 @@ class AzureFilesConnector(BaseConnector):
             raise ValueError(f"Unsupported filter key: {filter_key}")
 
     async def _get_share_options(
-        self, page: int, limit: int, search: Optional[str]
+        self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
         """Get list of available file shares."""
         try:
@@ -1465,11 +1461,11 @@ class AzureFilesConnector(BaseConnector):
                 message=f"Error: {str(e)}",
             )
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from the source."""
         raise NotImplementedError("This method is not supported")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex records by checking for updates at source and publishing reindex events."""
         try:
             if not record_results:
@@ -1522,7 +1518,7 @@ class AzureFilesConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Check if record has been updated at source and fetch updated data."""
         try:
             share_name = record.external_record_group_id
@@ -1604,7 +1600,7 @@ class AzureFilesConnector(BaseConnector):
             extension = get_file_extension(item_path) if is_file else None
             mime_type = (
                 item_metadata.get("content_type")
-                or get_mimetype_for_azure_files(item_path, is_directory)
+                or get_mimetype_for_azure_files(item_path, is_directory=is_directory)
             )
 
             parent_path = get_parent_path(item_path)
@@ -1671,11 +1667,14 @@ class AzureFilesConnector(BaseConnector):
                 updated_record.parent_external_record_id = None
                 updated_record.parent_record_type = None
 
-            if hasattr(self, "indexing_filters") and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(
+            if (
+                hasattr(self, "indexing_filters")
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(
                     IndexingFilterKey.FILES, default=True
-                ):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                )
+            ):
+                updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_files_permissions(
                 share_name, item_path
@@ -1754,7 +1753,7 @@ class AzureFilesConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
-        **kwargs,
+        **kwargs: object,
     ) -> "AzureFilesConnector":
         """Factory method to create and initialize connector."""
         # Get account name from config for entities processor
@@ -1776,7 +1775,7 @@ class AzureFilesConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        connector = cls(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -1784,4 +1783,3 @@ class AzureFilesConnector(BaseConnector):
             connector_id,
         )
 
-        return connector

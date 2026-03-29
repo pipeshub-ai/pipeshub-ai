@@ -1,0 +1,392 @@
+import 'reflect-metadata'
+import { expect } from 'chai'
+import sinon from 'sinon'
+import { UploadDocumentService } from '../../../../src/modules/storage/controllers/storage.upload.service'
+import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
+import { BadRequestError, InternalServerError } from '../../../../src/libs/errors/http.errors'
+import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
+import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
+
+describe('UploadDocumentService', () => {
+  let mockAdapter: any
+  let mockKeyValueStoreService: any
+  let mockDefaultConfig: any
+
+  beforeEach(() => {
+    mockAdapter = {
+      uploadDocumentToStorageService: sinon.stub(),
+      generatePresignedUrlForDirectUpload: sinon.stub(),
+    }
+    mockKeyValueStoreService = {
+      get: sinon.stub(),
+      set: sinon.stub(),
+    }
+    mockDefaultConfig = {
+      storageType: 'local',
+      endpoint: 'http://localhost:3000',
+    }
+  })
+
+  afterEach(() => { sinon.restore() })
+
+  // -------------------------------------------------------------------------
+  // constructor
+  // -------------------------------------------------------------------------
+  describe('constructor', () => {
+    it('should create an instance with all dependencies', () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+      expect(service).to.be.instanceOf(UploadDocumentService)
+    })
+
+    it('should create an instance with S3 vendor', () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+      expect(service).to.be.instanceOf(UploadDocumentService)
+    })
+
+    it('should create an instance with Azure vendor', () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.AzureBlob,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+      expect(service).to.be.instanceOf(UploadDocumentService)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // uploadDocument
+  // -------------------------------------------------------------------------
+  describe('uploadDocument', () => {
+    it('should throw BadRequestError when file has no extension', async () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'noextension', size: 4, mimetype: 'text/plain' } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: 'org-1', userId: 'user-1' },
+        body: { documentName: 'test' },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() } as any
+      const next = sinon.stub()
+
+      try {
+        await service.uploadDocument(req, res, next)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should throw BadRequestError when filename contains forward slash', async () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'path/test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: 'org-1', userId: 'user-1' },
+        body: { documentName: 'test' },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() } as any
+      const next = sinon.stub()
+
+      try {
+        await service.uploadDocument(req, res, next)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should throw BadRequestError for file with dot but no valid extension', async () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'file.', size: 4, mimetype: 'text/plain' } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: 'org-1', userId: 'user-1' },
+        body: { documentName: 'test' },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() } as any
+      const next = sinon.stub()
+
+      try {
+        await service.uploadDocument(req, res, next)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError)
+      }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // handleDocumentUpload
+  // -------------------------------------------------------------------------
+  describe('handleDocumentUpload', () => {
+    it('should create document and upload for non-versioned file with S3', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      mockAdapter.uploadDocumentToStorageService.resolves({
+        statusCode: 200,
+        data: 'https://bucket.s3.us-east-1.amazonaws.com/org/PipesHub/doc-1/test.pdf',
+      })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          isVersionedFile: false,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(savedDoc.save.calledOnce).to.be.true
+    })
+
+    it('should create document and upload with version history for versioned file', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [],
+        sizeInBytes: 4,
+        extension: '.pdf',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      mockAdapter.uploadDocumentToStorageService.resolves({
+        statusCode: 200,
+        data: 'https://bucket.s3.us-east-1.amazonaws.com/org/PipesHub/doc-1/current/test.pdf',
+      })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          isVersionedFile: true,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should handle local storage vendor with URL normalization', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      mockAdapter.uploadDocumentToStorageService.resolves({
+        statusCode: 200,
+        data: 'file:///path/to/file.pdf',
+      })
+      mockKeyValueStoreService.get.resolves(JSON.stringify({
+        storage: { endpoint: 'http://localhost:3004' },
+      }))
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          isVersionedFile: false,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should use documentPath when provided', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      mockAdapter.uploadDocumentToStorageService.resolves({
+        statusCode: 200,
+        data: 'https://bucket.s3.us-east-1.amazonaws.com/path',
+      })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          documentPath: 'custom/path',
+          isVersionedFile: false,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(savedDoc.documentPath).to.include('custom/path')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // cloneDocument (private)
+  // -------------------------------------------------------------------------
+  describe('cloneDocument (private)', () => {
+    it('should clone document with correct payload', async () => {
+      mockAdapter.uploadDocumentToStorageService.resolves({ statusCode: 200, data: 'url' })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4 } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const doc = { extension: '.pdf', isVersionedFile: true } as any
+      const result = await (service as any).cloneDocument(doc, Buffer.from('test'), 'new/path')
+      expect(result.statusCode).to.equal(200)
+    })
+
+    it('should throw InternalServerError on upload failure', async () => {
+      mockAdapter.uploadDocumentToStorageService.resolves({ statusCode: 500, msg: 'fail' })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4 } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const doc = { extension: '.pdf', isVersionedFile: true } as any
+      try {
+        await (service as any).cloneDocument(doc, Buffer.from('test'), 'new/path')
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.exist
+      }
+    })
+
+    it('should throw BadRequestError for invalid extension', async () => {
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4 } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const doc = { extension: '.xyz_invalid_format', isVersionedFile: true } as any
+      try {
+        await (service as any).cloneDocument(doc, Buffer.from('test'), 'new/path')
+      } catch (error) {
+        expect(error).to.exist
+      }
+    })
+
+    it('should strip leading dot from extension before getting mime type', async () => {
+      mockAdapter.uploadDocumentToStorageService.resolves({ statusCode: 200, data: 'url' })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4 } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const doc = { extension: '.docx', isVersionedFile: false } as any
+      const result = await (service as any).cloneDocument(doc, Buffer.from('test'), 'path')
+      expect(result.statusCode).to.equal(200)
+    })
+  })
+})

@@ -2,11 +2,13 @@ import { config } from "dotenv";
 config(); // Load environment variables first
 
 import { json, urlencoded, Request, Response } from "express";
-import { connect } from "./utils/db";
+import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
-
 import axios from "axios";
-import { markdownToBlocks } from "@tryfabric/mack";
+import { marked } from "marked";
+// Disable marked's email mangling to prevent HTML entity encoding of email addresses.
+// @tryfabric/mack uses the same marked instance internally.
+marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
@@ -16,7 +18,6 @@ import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
 import {
   type SlackBotConfig,
   getCurrentMatchedSlackBot,
-  refreshSlackBotRegistry,
 } from "./botRegistry";
 
 
@@ -56,25 +57,62 @@ interface StreamEvent {
   data: unknown;
 }
 
+const FAILED_RESPONSE_GENERATION_MESSAGE = 'Something went wrong while generating the response. Please try again later.';
 const STREAM_UPDATE_THROTTLE_MS = 900;
 const SLACK_MAX_TEXT_LENGTH = 39000;
-const SLACK_STREAM_MARKDOWN_LIMIT = 12000;
+const SLACK_STREAM_MARKDOWN_LIMIT = 11500;
+const SLACK_STREAM_MESSAGE_CHAR_LIMIT = 11500;
 const MAX_SLACK_ERROR_BODY_LENGTH = 64000;
 const SLACK_BLOCKS_PER_MESSAGE_LIMIT = 50;
+/** Slack cumulative block text limit per message (~13,200 chars in practice); use 10k to stay safe. */
+const SLACK_BLOCKS_TOTAL_TEXT_LIMIT = 10000;
+/** Maximum rows (including header) per table block to prevent msg_blocks_too_long. */
+const MAX_TABLE_ROWS = 100;
+/** Maximum columns per table block; extra columns are silently dropped. */
+const MAX_TABLE_COLS = 20;
+/** Maximum character count per table block; Slack enforces a hard limit of 10,000. */
+const MAX_TABLE_CHARS = 9500;
 const SLACK_SECTION_TEXT_LIMIT = 3000;
 const SLACK_SECTION_FIELD_TEXT_LIMIT = 2000;
 const SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT = 10;
 const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again later.";
 const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
-const SLACK_MENTION_REGEX = /<@[A-Z0-9]+>/g;
 const STREAM_FAILURE_MESSAGE =
   "I ran into an issue while streaming the response. Please try again.";
+const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
 
+// User info cache to avoid redundant API calls
+interface CachedUserInfo {
+  userRecord: SlackUserRecord | undefined;
+  timestamp: number;
+}
 
+const userInfoCache = new Map<string, CachedUserInfo>();
+const USER_INFO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
+function getCachedUserInfo(userId: string): SlackUserRecord | undefined | null {
+  const cached = userInfoCache.get(userId);
+  if (!cached) {
+    return null; // Not in cache
+  }
 
+  const now = Date.now();
+  if (now - cached.timestamp > USER_INFO_CACHE_TTL_MS) {
+    userInfoCache.delete(userId); // Expired
+    return null;
+  }
+
+  return cached.userRecord;
+}
+
+function setCachedUserInfo(userId: string, userRecord: SlackUserRecord | undefined): void {
+  userInfoCache.set(userId, {
+    userRecord,
+    timestamp: Date.now(),
+  });
+}
 
 interface StreamStartResult {
   ts?: string;
@@ -762,8 +800,9 @@ function hasMarkdownTableStartOutsideCodeFences(content: string): boolean {
   if (!content) {
     return false;
   }
+  
+  const normalizedContent = content.replace(/\r\n/g, "\n").replace(/\\n/g, "\n");
 
-  const normalizedContent = content.replace(/\r\n/g, "\n");
   const lines = normalizedContent.split("\n");
   let activeFenceMarker: FenceMarker | null = null;
 
@@ -859,7 +898,8 @@ function splitMarkdownMessageIntoTableAwareSegments(content: string): MarkdownTa
 }
 
 function buildSlackRichTextTextElement(text: string, makeBold: boolean): Record<string, unknown> {
-  text = markdownToText(text);
+  const stripped = markdownToText(text);
+  text = stripped.length > 0 ? stripped : text;
   const element: Record<string, unknown> = {
     type: "text",
     text,
@@ -995,7 +1035,7 @@ function buildSlackTableCellElements(
   appendTextWithClickableUrls(trailingText, elements, isHeaderCell);
 
   if (elements.length === 0) {
-    elements.push(buildSlackRichTextTextElement("", isHeaderCell));
+    elements.push(buildSlackRichTextTextElement(" ", isHeaderCell));
   }
 
   return elements;
@@ -1013,84 +1053,178 @@ function buildSlackTableCell(cellText: string, isHeaderCell: boolean): Record<st
   };
 }
 
-function buildSlackTableBlockFromMarkdownSegment(
-  segment: Extract<MarkdownTableSegment, { type: "table" }>,
-): Record<string, unknown> {
-  const allRows = [segment.header, ...segment.rows];
-  const columnCount = allRows.reduce((max, row) => Math.max(max, row.length), 0);
-  const normalizedRows = allRows.map((row, rowIndex) =>
-    Array.from({ length: columnCount }, (_, columnIndex) =>
-      buildSlackTableCell(row[columnIndex] ?? "", rowIndex === 0),
+function buildSlackTableBlock(rows: string[][]): Record<string, unknown> {
+  const columnCount = Math.min(
+    rows.reduce((max, row) => Math.max(max, row.length), 0),
+    MAX_TABLE_COLS,
+  );
+  const normalizedRows = rows.map((row, rowIndex) =>
+    Array.from({ length: columnCount }, (_, colIndex) =>
+      buildSlackTableCell(row[colIndex] ?? "", rowIndex === 0),
     ),
   );
+  return { type: "table", rows: normalizedRows };
+}
 
-  return {
-    type: "table",
-    rows: normalizedRows,
-  };
+function buildSlackTableBlocksFromMarkdownSegment(
+  segment: Extract<MarkdownTableSegment, { type: "table" }>,
+): Record<string, unknown>[] {
+  const { header, rows: dataRows } = segment;
+  const maxDataRows = MAX_TABLE_ROWS - 1; // reserve 1 slot for header
+  const headerCharCount = header.reduce((sum, cell) => sum + cell.length, 0);
+
+  if (dataRows.length === 0) {
+    return [buildSlackTableBlock([header])];
+  }
+
+  const blocks: Record<string, unknown>[] = [];
+  let currentRows: string[][] = [];
+  let currentCharCount = headerCharCount;
+
+  for (const row of dataRows) {
+    const rowChars = row.reduce((sum, cell) => sum + cell.length, 0);
+    const wouldExceedChars = currentCharCount + rowChars > MAX_TABLE_CHARS;
+    const wouldExceedRows = currentRows.length >= maxDataRows;
+
+    if (currentRows.length > 0 && (wouldExceedChars || wouldExceedRows)) {
+      blocks.push(buildSlackTableBlock([header, ...currentRows]));
+      currentRows = [];
+      currentCharCount = headerCharCount;
+    }
+
+    currentRows.push(row);
+    currentCharCount += rowChars;
+  }
+
+  if (currentRows.length > 0) {
+    blocks.push(buildSlackTableBlock([header, ...currentRows]));
+  }
+
+  return blocks;
 }
 
 
+/**
+ * Returns the approximate character count of a block that counts toward Slack's
+ * cumulative blocks payload limit (used for chunking).
+ */
+function getBlockPayloadTextSize(block: any): number {
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    return 0;
+  }
+  const type = block.type;
+  if (type === "section") {
+    let size = 0;
+    if (block.text && typeof block.text.text === "string") {
+      size += block.text.text.length;
+    }
+    const fields = block.fields;
+    if (Array.isArray(fields)) {
+      for (const f of fields) {
+        if (f && typeof f.text === "string") size += f.text.length;
+      }
+    }
+    return size;
+  }
+  if (type === "rich_text" && Array.isArray(block.elements)) {
+    let size = 0;
+    for (const el of block.elements) {
+      if (el && Array.isArray(el.elements)) {
+        for (const sub of el.elements) {
+          if (sub && typeof sub.text === "string") size += sub.text.length;
+          if (sub && typeof sub.url === "string") size += sub.url.length;
+        }
+      }
+    }
+    return size;
+  }
+  if (type === "table" && Array.isArray(block.rows)) {
+    let size = 0;
+    for (const row of block.rows) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        if (cell && Array.isArray(cell.elements)) {
+          for (const el of cell.elements) {
+            if (el && Array.isArray(el.elements)) {
+              for (const sub of el.elements) {
+                if (sub && typeof sub.text === "string") size += sub.text.length;
+                if (sub && typeof sub.url === "string") size += sub.url.length;
+              }
+            }
+          }
+        }
+      }
+    }
+    return size;
+  }
+  return JSON.stringify(block).length;
+}
+
 function splitSlackBlocksByLimit(
   blocks: any[],
-  maxBlocksPerMessage: number = SLACK_BLOCKS_PER_MESSAGE_LIMIT
+  maxBlocksPerMessage: number = SLACK_BLOCKS_PER_MESSAGE_LIMIT,
+  maxTotalTextPerMessage: number = SLACK_BLOCKS_TOTAL_TEXT_LIMIT,
 ): any[][] {
   if (blocks.length === 0) {
     return [];
   }
-  const result = [];
-  for (let i = 0; i < blocks.length; i += maxBlocksPerMessage) {
-    result.push(blocks.slice(i, i + maxBlocksPerMessage));
+  const result: any[][] = [];
+  let currentChunk: any[] = [];
+  let currentSize = 0;
+  let currentChunkHasTable = false;
+  for (const block of blocks) {
+    const blockSize = getBlockPayloadTextSize(block);
+    const isTable = block.type === "table";
+    const wouldExceedCount = currentChunk.length >= maxBlocksPerMessage;
+    const wouldExceedSize = currentSize + blockSize > maxTotalTextPerMessage;
+    const wouldExceedTableLimit = isTable && currentChunkHasTable;
+    if (currentChunk.length > 0 && (wouldExceedCount || wouldExceedSize || wouldExceedTableLimit)) {
+      result.push(currentChunk);
+      currentChunk = [];
+      currentSize = 0;
+      currentChunkHasTable = false;
+    }
+    currentChunk.push(block);
+    currentSize += blockSize;
+    if (isTable) currentChunkHasTable = true;
+  }
+  if (currentChunk.length > 0) {
+    result.push(currentChunk);
   }
   return result;
 }
 
 async function buildFinalSlackChunks(
   answerBody: string,
-): Promise<any[][]> {  
+): Promise<any[][]> {
+  const tableAwareSegments = splitMarkdownMessageIntoTableAwareSegments(answerBody || "");
+  const combinedBlocks: any[] = [];
 
-  try {
-    const tableAwareSegments = splitMarkdownMessageIntoTableAwareSegments(answerBody || "");
-    const combinedBlocks: any[] = [];
-
-    for (const segment of tableAwareSegments) {
-      if (segment.type === "markdown") {
-        if (segment.content.trim().length === 0) {
-          continue;
-        }
-        const markdownBlocks = await markdownToBlocks(segment.content);
-        const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
-        combinedBlocks.push(...normalizedMarkdownBlocks);
+  for (const segment of tableAwareSegments) {
+    if (segment.type === "markdown") {
+      if (segment.content.trim().length === 0) {
         continue;
       }
-
-      combinedBlocks.push(buildSlackTableBlockFromMarkdownSegment(segment));
+      const slackMrkdwn = markdownToSlackMrkdwn(segment.content);
+      const markdownBlocks = [{
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": slackMrkdwn,
+        },
+      }];
+      const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
+      combinedBlocks.push(...normalizedMarkdownBlocks);
+      continue;
     }
 
-    const blockChunks = splitSlackBlocksByLimit(combinedBlocks);
-
-    return blockChunks;
-  } catch (error) {
-    throw error;
-  }
-}
-
-function parseSlackTimestamp(ts?: string): number | null {
-  if (!ts) {
-    return null;
+    combinedBlocks.push(...buildSlackTableBlocksFromMarkdownSegment(segment));
   }
 
-  const parsed = Number(ts);
-  return Number.isFinite(parsed) ? parsed : null;
+  return splitSlackBlocksByLimit(combinedBlocks);
 }
 
-function sanitizeSlackThreadMessageText(text?: string): string {
-  if (!text) {
-    return "";
-  }
 
-  return text.replace(SLACK_MENTION_REGEX, "").replace(/\s+/g, " ").trim();
-}
 
 function isThreadFollowUpMessage(message: SlackMessagePayload): boolean {
   return Boolean(message.thread_ts && message.thread_ts !== message.ts);
@@ -1101,6 +1235,31 @@ function sanitizeSlackLabelValue(value?: string): string {
     return "";
   }
   return value.replace(/\s+/g, " ").trim();
+}
+
+function formatMentionedUser(
+  userRecord: SlackUserRecord | undefined,
+  userId: string,
+): string {
+  const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
+
+  // Skip mentions without email - replace with empty string
+  if (!email) {
+    return "";
+  }
+
+  const displayNameCandidates = [
+    userRecord?.profile?.display_name,
+    userRecord?.real_name,
+    userRecord?.profile?.real_name,
+    userRecord?.name,
+  ];
+  const displayName =
+    displayNameCandidates
+      .map((nameCandidate) => sanitizeSlackLabelValue(nameCandidate))
+      .find((nameCandidate) => Boolean(nameCandidate)) || "User";
+
+  return `${displayName} (Email: ${email}, Slack user id: ${userId})`;
 }
 
 function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: string): string {
@@ -1126,6 +1285,70 @@ function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: s
     return email;
   }
   return `User (${userId})`;
+}
+
+async function resolveMentionsInText(
+  text: string | undefined,
+  typedClient: TypedSlackClient,
+): Promise<string> {
+  if (!text) {
+    return "";
+  }
+
+  // Extract all user IDs from mentions
+  const mentionRegex = /<@([A-Z0-9]+)>/g;
+  const userIds = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionRegex.exec(text)) !== null) {
+    const userId = match[1];
+    if (userId) {
+      userIds.add(userId);
+    }
+  }
+
+  if (userIds.size === 0) {
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  // Build replacement map for all mentions
+  const replacements = new Map<string, string>();
+
+  for (const userId of userIds) {
+    const mention = `<@${userId}>`;
+
+    // Check cache first
+    const cachedUserRecord = getCachedUserInfo(userId);
+
+    if (cachedUserRecord !== null) {
+      // Cache hit (includes cached failures as undefined)
+      const formattedUser = formatMentionedUser(cachedUserRecord, userId);
+      replacements.set(mention, formattedUser);
+      continue;
+    }
+
+    // Cache miss - fetch from API
+    try {
+      const userInfoResult = await typedClient.users.info({ user: userId });
+      const userRecord = userInfoResult.user;
+      setCachedUserInfo(userId, userRecord);
+      const formattedUser = formatMentionedUser(userRecord, userId);
+      replacements.set(mention, formattedUser);
+    } catch (error) {
+      console.error(`Failed to resolve Slack user mention for ${userId}:`, error);
+      // Keep the original Slack mention token so the mention isn't silently lost.
+
+      replacements.set(mention, mention);
+    }
+  }
+
+  // Replace all mentions in text
+  let result = text;
+  for (const [mention, replacement] of replacements) {
+    result = result.replace(new RegExp(mention.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), replacement);
+  }
+
+  return result.replace(/\s+/g, " ").trim();
 }
 
 function inferThreadMessageSpeaker(
@@ -1176,71 +1399,44 @@ async function fetchPriorThreadMessages(
     return [];
   }
 
-  const allThreadMessages: SlackMessagePayload[] = [];
-  let cursor: string | undefined;
+  const SLACK_MAX_REPLIES_LIMIT = 101;
 
-  do {
-    const apiOptions: Record<string, unknown> = {
-      channel: typedMessage.channel,
-      ts: typedMessage.thread_ts,
-      limit: 200,
-    };
-    if (cursor) {
-      apiOptions.cursor = cursor;
-    }
-
-    const rawResponse = await typedClient.apiCall("conversations.replies", apiOptions);
-    const response = rawResponse as SlackConversationsRepliesResponse;
-    if (Array.isArray(response.messages)) {
-      allThreadMessages.push(...response.messages);
-    }
-
-    const nextCursor = response.response_metadata?.next_cursor?.trim();
-    cursor = nextCursor || undefined;
-  } while (cursor);
-
-  const currentMessageTs = parseSlackTimestamp(typedMessage.ts);
-
-  return allThreadMessages.filter((threadMessage) => {
-    const normalizedText = sanitizeSlackThreadMessageText(threadMessage.text);
-    if (!normalizedText) {
-      return false;
-    }
-
-    if (threadMessage.ts === typedMessage.ts) {
-      return false;
-    }
-
-    if (currentMessageTs === null) {
-      return true;
-    }
-
-    const threadMessageTs = parseSlackTimestamp(threadMessage.ts);
-    return threadMessageTs !== null && threadMessageTs < currentMessageTs;
+  // Call 1: fetch up to max limit, oldest-first
+  const call1Raw = await typedClient.apiCall("conversations.replies", {
+    channel: typedMessage.channel,
+    ts: typedMessage.thread_ts,
+    limit: SLACK_MAX_REPLIES_LIMIT,
   });
+  const call1 = call1Raw as SlackConversationsRepliesResponse;
+  let firstBatch: SlackMessagePayload[] = Array.isArray(call1.messages) ? call1.messages : [];
+  
+  firstBatch = firstBatch.slice(0, -1);
+  return firstBatch;
+
 }
 
-function buildThreadContextualQuery(
+async function buildThreadContextualQuery(
   query: string,
   priorMessages: SlackMessagePayload[],
   userLabelsById: Map<string, string>,
-): string {
-  const contextLines = priorMessages
-    .map((message) => {
-      const normalizedText = sanitizeSlackThreadMessageText(message.text);
+  typedClient: TypedSlackClient,
+): Promise<string> {
+  const contextLines = await Promise.all(
+    priorMessages.map(async (message) => {
+      const normalizedText = await resolveMentionsInText(message.text, typedClient);
       if (!normalizedText) {
         return null;
       }
       const speaker = inferThreadMessageSpeaker(message, userLabelsById);
       return `${speaker}: ${normalizedText}`;
     })
-    .filter((line): line is string => Boolean(line));
+  ).then(lines => lines.filter((line): line is string => Boolean(line)));
 
   if (contextLines.length === 0) {
     return query;
   }
 
-  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message: ${query}`;
+  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
 }
 
 async function buildQueryWithThreadContext(
@@ -1255,7 +1451,7 @@ async function buildQueryWithThreadContext(
   try {
     const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
     const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
-    return buildThreadContextualQuery(query, priorMessages, userLabelsById);
+    return await buildThreadContextualQuery(query, priorMessages, userLabelsById, typedClient);
   } catch (error) {
     console.error("Failed to fetch Slack thread context:", error);
     return query;
@@ -1335,7 +1531,6 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
 }
 
 
-
 function buildChatStreamUrl(
   conversationId: string | null,
   agentId: string | null,
@@ -1363,7 +1558,6 @@ async function resolveSlackBotForEvent(
   if (matchedFromRequestContext) {
     return matchedFromRequestContext;
   }
-
   return null;
 }
 
@@ -1431,9 +1625,12 @@ async function processSlackMessage(
   const conversation = await getFromDatabase(
     threadId,
     currentBotId,
+    email,
   );
   let streamTs: string | null = null;
   let streamStopped = false;
+  let streamCharCount = 0;
+  let rolledOverStreamTs: string[] = [];
   let waitingMessageTs: string | null = null;
 
   const sendOrUpdateNonStreamMessage = async (
@@ -1511,7 +1708,7 @@ async function processSlackMessage(
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: "Something went wrong while generating the response. Please try again later.",
+        text: FAILED_RESPONSE_GENERATION_MESSAGE,
       });
     }
   };
@@ -1549,6 +1746,23 @@ async function processSlackMessage(
     }
   };
 
+  const rolloverSlackStream = async (): Promise<void> => {
+    if (!streamTs) return;
+    try {
+      await typedClient.apiCall("chat.stopStream", {
+        channel: typedMessage.channel!,
+        ts: streamTs,
+      });
+    } catch (error) {
+      const code = (error as { data?: { error?: string } }).data?.error;
+      if (code !== "message_not_in_streaming_state") throw error;
+    }
+    rolledOverStreamTs.push(streamTs);
+    streamTs = null;
+    streamCharCount = 0;
+    // streamStopped stays false — the overall session is still active
+  };
+
   try {
     const streamRecipientPayload: Record<string, unknown> = {};
     streamRecipientPayload.recipient_user_id = typedMessage.user;
@@ -1581,6 +1795,7 @@ async function processSlackMessage(
           Accept: "text/event-stream",
         },
         responseType: "stream",
+        timeout: BACKEND_STREAM_TIMEOUT_MS,
       },
     );
 
@@ -1596,6 +1811,12 @@ async function processSlackMessage(
     let tablePauseHintSent = false;
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
+      // Bail out early if the stream is already stopped or an error was recorded —
+      // prevents the independent-catch queue items from firing redundant API calls.
+      if (streamStopped || streamErrorMessage) {
+        return;
+      }
+
       if (text.length === 0) {
         return;
       }
@@ -1615,47 +1836,78 @@ async function processSlackMessage(
         return;
       }
 
-      let chunksToAppend = markdownChunks;
-      if (!streamTs) {
-        const [firstChunk, ...restChunks] = markdownChunks;
-        if (!firstChunk) {
-          return;
-        }
-        const startStreamResult = (await typedClient.apiCall(
-          "chat.startStream",
-          {
-            channel: typedMessage.channel!,
-            thread_ts: threadId,
-            markdown_text: firstChunk,
-            ...streamRecipientPayload,
-          },
-        )) as StreamStartResult;
-
-        if (!startStreamResult.ts) {
-          throw new Error("Failed to start Slack stream");
-        }
-        streamTs = startStreamResult.ts;
-        if (waitingMessageTs) {
-          try {
-            await typedClient.apiCall("chat.delete", {
-              channel: typedMessage.channel!,
-              ts: waitingMessageTs,
-            });
-          } catch (error) {
-            console.error("Error deleting Slack waiting message:", error);
-          } finally {
-            waitingMessageTs = null;
+      for (let chunk of markdownChunks) {
+        while (chunk.length > 0) {
+          if (streamStopped || streamErrorMessage) {
+            return;
           }
-        }
-        chunksToAppend = restChunks;
-      }
 
-      for (const appendChunk of chunksToAppend) {
-        await typedClient.apiCall("chat.appendStream", {
-          channel: typedMessage.channel!,
-          ts: streamTs,
-          markdown_text: appendChunk,
-        });
+          // If this chunk would overflow the current message, split at a clean boundary first
+          if (streamTs && streamCharCount + chunk.length > SLACK_STREAM_MESSAGE_CHAR_LIMIT) {
+            const spaceLeft = SLACK_STREAM_MESSAGE_CHAR_LIMIT - streamCharCount;
+
+            if (spaceLeft > 0) {
+              // Prefer splitting at the last newline within the remaining space
+              const candidate = chunk.slice(0, spaceLeft);
+              const lastNewline = candidate.lastIndexOf("\n");
+              const splitIndex = lastNewline > -1 ? lastNewline + 1 : spaceLeft;
+              const fitsInCurrent = chunk.slice(0, splitIndex);
+
+              if (fitsInCurrent.length > 0) {
+                await typedClient.apiCall("chat.appendStream", {
+                  channel: typedMessage.channel!,
+                  ts: streamTs,
+                  markdown_text: fitsInCurrent,
+                });
+                streamCharCount += fitsInCurrent.length;
+              }
+              chunk = chunk.slice(splitIndex);
+            }
+
+            await rolloverSlackStream();
+            continue; // re-evaluate the overflow with a fresh streamCharCount = 0
+          }
+
+          // No overflow — start a new stream or append to existing
+          if (!streamTs) {
+            const startStreamResult = (await typedClient.apiCall(
+              "chat.startStream",
+              {
+                channel: typedMessage.channel!,
+                thread_ts: threadId,
+                markdown_text: chunk,
+                ...streamRecipientPayload,
+              },
+            )) as StreamStartResult;
+
+            if (!startStreamResult.ts) {
+              throw new Error("Failed to start Slack stream");
+            }
+            streamTs = startStreamResult.ts;
+            streamCharCount = chunk.length;
+
+            if (waitingMessageTs) {
+              try {
+                await typedClient.apiCall("chat.delete", {
+                  channel: typedMessage.channel!,
+                  ts: waitingMessageTs,
+                });
+              } catch (error) {
+                console.error("Error deleting Slack waiting message:", error);
+              } finally {
+                waitingMessageTs = null;
+              }
+            }
+          } else {
+            await typedClient.apiCall("chat.appendStream", {
+              channel: typedMessage.channel!,
+              ts: streamTs,
+              markdown_text: chunk,
+            });
+            streamCharCount += chunk.length;
+          }
+          break; // chunk fully consumed
+        }
       }
     };
 
@@ -1683,6 +1935,10 @@ async function processSlackMessage(
       tablePauseHintSent = true;
 
       if (streamTs) {
+        if (streamStopped || streamErrorMessage) {
+          return;
+        }
+
         const renderedHint = markdownToSlackMrkdwn(TABLE_STREAMING_PAUSED_HINT, {
           preserveTrailingWhitespace: true,
         });
@@ -1694,7 +1950,7 @@ async function processSlackMessage(
           await typedClient.apiCall("chat.appendStream", {
             channel: typedMessage.channel!,
             ts: streamTs,
-            markdown_text: truncateForSlackStreamMarkdown(renderedHint),
+            markdown_text: renderedHint,
           });
         } catch (error) {
           console.error("Error appending Slack table formatting hint:", error);
@@ -1710,7 +1966,7 @@ async function processSlackMessage(
         await typedClient.chat.update({
           channel: typedMessage.channel!,
           ts: waitingMessageTs,
-          text: truncateForSlack(TABLE_STREAMING_PAUSED_HINT),
+          text: TABLE_STREAMING_PAUSED_HINT,
         });
       } catch (error) {
         console.error("Error updating Slack waiting message with table hint:", error);
@@ -1844,7 +2100,8 @@ async function processSlackMessage(
       await saveToDatabase({
         threadId: threadId,
         conversationId,
-        botId: currentBotId
+        botId: currentBotId,
+        email: email,
       });
     }
 
@@ -1867,19 +2124,37 @@ async function processSlackMessage(
     if (!streamTs && !tableStreamingDisabled && botResponse.content) {
       await pushTextToSlackStream(botResponse.content);
     }
-    
 
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
     const answerBody = botResponse.content || "" ;
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
-    
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
     
-    if (streamTs) {
-      await stopSlackStream();
-      if (firstFinalChunk) {
+    if (firstFinalChunk) {
+      let firstChunkSent = false;
+
+      if (streamTs) {
+        await stopSlackStream();
+
+        // Delete any earlier rolled-over stream messages — the final blocks
+        // represent the full answer so those partial-text messages are redundant.
+        for (const oldTs of rolledOverStreamTs) {
+          try {
+            await typedClient.apiCall("chat.delete", {
+              channel: typedMessage.channel!,
+              ts: oldTs,
+            });
+          } catch (deleteError) {
+            const code = (deleteError as { data?: { error?: string } }).data?.error;
+            if (code !== "message_not_found") {
+              console.error("Error deleting rolled-over stream message:", deleteError);
+            }
+          }
+        }
+        rolledOverStreamTs = [];
+
         try {
           await typedClient.chat.update({
             channel: typedMessage.channel!,
@@ -1887,60 +2162,48 @@ async function processSlackMessage(
             text: "",
             blocks: firstFinalChunk,
           });
-          for (const remainingChunk of remainingFinalChunks) {
-            await postThreadChunkMessage(remainingChunk);
-          }
-          for (const citationChunk of citationBlockChunks) {
-            await postThreadChunkMessage(citationChunk);
-          }
-        } catch (error) {
-          const fallbackErrorMessage =
-            "Something went wrong while generating the response. Please try again later.";
+          firstChunkSent = true;
+        } catch (updateError) {
           console.error(
             "Error updating final streamed Slack message with blocks, trying delete and repost:",
-            error,
+            updateError,
           );
-          let replacedMessageSuccessfully = false;
           try {
-            await typedClient.apiCall("chat.delete", {
-              channel: typedMessage.channel!,
-              ts: streamTs,
-            });
+            try {
+              await typedClient.apiCall("chat.delete", {
+                channel: typedMessage.channel!,
+                ts: streamTs,
+              });
+            } catch (deleteError) {
+              // If the message is already gone, we can still post a fresh one
+              const code = (deleteError as { data?: { error?: string } }).data?.error;
+              if (code !== "message_not_found") {
+                throw deleteError;
+              }
+            }
             await typedClient.chat.postMessage({
               channel: typedMessage.channel!,
               thread_ts: threadId,
               text: "",
               blocks: firstFinalChunk,
             });
-
-            for (const remainingChunk of remainingFinalChunks) {
-              await postThreadChunkMessage(remainingChunk);
-            }
-            for (const citationChunk of citationBlockChunks) {
-              await postThreadChunkMessage(citationChunk);
-            }
-            replacedMessageSuccessfully = true;
-
+            firstChunkSent = true;
           } catch (replacementError) {
             console.error(
               "Error replacing failed streamed Slack message, sending fallback error message:",
               replacementError,
             );
-          }
-
-          if (!replacedMessageSuccessfully) {
-            await sendOrUpdateNonStreamMessage(fallbackErrorMessage);
+            await sendOrUpdateNonStreamMessage(
+              FAILED_RESPONSE_GENERATION_MESSAGE,
+            );
           }
         }
+      } else {
+        await sendOrUpdateNonStreamMessage("", firstFinalChunk);
+        firstChunkSent = true;
       }
-      
-    } else {
-      if (firstFinalChunk) {
-        await sendOrUpdateNonStreamMessage(
-          "",
-          firstFinalChunk,
-        );
 
+      if (firstChunkSent) {
         for (const remainingChunk of remainingFinalChunks) {
           await postThreadChunkMessage(remainingChunk);
         }
@@ -1948,17 +2211,20 @@ async function processSlackMessage(
           await postThreadChunkMessage(citationChunk);
         }
       }
-      
     }
   } catch (error) {
-    const errorMessage = await resolveSlackErrorMessageAsync(error);
-    if (streamTs) {
-      const stopStreamSucceeded = await stopSlackStream(errorMessage);
-      if (!stopStreamSucceeded) {
+    try {
+      const errorMessage = await resolveSlackErrorMessageAsync(error);
+      if (streamTs) {
+        const stopStreamSucceeded = await stopSlackStream(errorMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(errorMessage);
+        }
+      } else {
         await sendOrUpdateNonStreamMessage(errorMessage);
       }
-    } else {
-      await sendOrUpdateNonStreamMessage(errorMessage);
+    } catch (handlerError) {
+      console.error("Error in Slack message error handler:", handlerError);
     }
   }
 }
@@ -1994,7 +2260,7 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const query = typedMessage.text?.replace(SLACK_MENTION_REGEX, "").trim();
+  const query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
     return;
   }
@@ -2022,8 +2288,7 @@ app.event("app_mention", async ({ event, client, context }) => {
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
-
-  const query = typedMessage.text?.replace(SLACK_MENTION_REGEX, "").trim();
+  const query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
     return;
   }
@@ -2048,15 +2313,12 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 });
 
-
-
 (async () => {
   await connect();
-  try {
-    await refreshSlackBotRegistry({ force: true });
-  } catch (error) {
-    console.error("Initial Slack bot registry refresh failed:", error);
-  }
+
+  // Drop legacy threadId + botId index if it exists
+  await dropLegacyThreadBotIndex();
+
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");
 })();

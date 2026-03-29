@@ -64,7 +64,7 @@ def generate_models(connector: str, spec_file: Path, model_file: Path) -> None:
         "--input", str(spec_file),
         "--input-file-type", "openapi",
         "--output", str(model_file),
-        "--target-python-version", "3.10",
+        "--target-python-version", "3.12",
         "--use-standard-collections",
         "--output-model-type", "pydantic_v2.BaseModel",
     ]

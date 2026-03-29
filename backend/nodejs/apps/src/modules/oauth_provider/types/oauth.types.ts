@@ -106,7 +106,7 @@ export interface UserInfoResponse {
 export interface CreateOAuthAppRequest {
   name: string
   description?: string
-  redirectUris: string[]
+  redirectUris?: string[]
   allowedGrantTypes?: string[]
   allowedScopes: string[]
   homepageUrl?: string
@@ -193,6 +193,15 @@ export interface OAuthErrorResponse {
   error_description?: string
   error_uri?: string
   state?: string
+}
+
+// OAuth Protected Resource Metadata (RFC 9728)
+export interface OAuthProtectedResourceMetadata {
+  resource: string
+  authorization_servers: string[]
+  scopes_supported: string[]
+  bearer_methods_supported: string[]
+  resource_documentation?: string
 }
 
 // OIDC Discovery Response

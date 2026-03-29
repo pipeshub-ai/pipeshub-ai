@@ -20,7 +20,7 @@ Welcome to our open source project! We're excited that you're interested in cont
 #### Linux
 ```bash
 sudo apt update
-sudo apt install python3.10-venv
+sudo apt install python3.12-venv
 sudo apt-get install libreoffice
 sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 ```
@@ -32,7 +32,7 @@ sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 
 
 # Install required packages
-brew install python@3.10
+brew install python@3.12
 brew install libreoffice
 brew install ocrmypdf ghostscript unpaper qpdf
 
@@ -42,7 +42,7 @@ brew install tesseract
 
 #### Windows
 ```bash
-- Install Python 3.10
+- Install Python 3.12
 - Install Tesseract OCR if you need to test OCR functionality
 - Consider using WSL2 for a Linux-like environment
 ```
@@ -51,7 +51,7 @@ brew install tesseract
 ```bash
 1. **Docker** - Install Docker for your platform
 2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.10** - Install as shown above
+3. **Python 3.12** - Install as shown above
 4. **Optional debugging tools:**
    - MongoDB Compass or Studio 3T
    - etcd-manager
@@ -175,7 +175,7 @@ npm run dev
 cd backend/python
 cp ../env.template .env
 # Create and activate virtual environment
-python3.10 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies

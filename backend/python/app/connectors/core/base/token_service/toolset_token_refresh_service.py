@@ -892,6 +892,7 @@ class ToolsetTokenRefreshService:
         )
         await self.schedule_token_refresh(config_path, toolset_type, token)
 
+    # TODO: Migrate to 3.12
     async def _refresh_toolset_token(self, config_path: str, toolset_type: str) -> None:
         """
         Check token status and refresh if needed, then schedule next refresh.
@@ -1052,6 +1053,47 @@ class ToolsetTokenRefreshService:
         # Remove from tracking IMMEDIATELY (don't wait for task to finish)
         # This prevents duplicate scheduling if a new task is created before cancel completes
         del self._refresh_tasks[config_path]
+
+    def cancel_refresh_task(self, config_path: str) -> None:
+        """
+        Public method to cancel a refresh task for a specific toolset config path.
+        Used when credentials are deleted to prevent errors from trying to refresh deleted credentials.
+
+        Args:
+            config_path: Toolset config path (e.g., /services/toolsets/{instanceId}/{userId})
+        """
+        self._cancel_existing_refresh_task(config_path)
+
+    def cancel_refresh_tasks_for_instance(self, instance_id: str) -> int:
+        """
+        Cancel all refresh tasks for all users of a specific toolset instance.
+        Used when an instance is deleted to prevent errors from trying to refresh deleted credentials.
+
+        Args:
+            instance_id: Toolset instance ID
+
+        Returns:
+            Number of tasks cancelled
+        """
+        cancelled_count = 0
+        instance_prefix = f"/services/toolsets/{instance_id}/"
+        
+        # Find all tasks that match this instance prefix
+        tasks_to_cancel = [
+            config_path for config_path in self._refresh_tasks.keys()
+            if config_path.startswith(instance_prefix)
+        ]
+        
+        for config_path in tasks_to_cancel:
+            self._cancel_existing_refresh_task(config_path)
+            cancelled_count += 1
+        
+        if cancelled_count > 0:
+            self.logger.info(
+                f"⏹️ Cancelled {cancelled_count} refresh task(s) for instance {instance_id}"
+            )
+        
+        return cancelled_count
 
     def _create_refresh_task(
         self,

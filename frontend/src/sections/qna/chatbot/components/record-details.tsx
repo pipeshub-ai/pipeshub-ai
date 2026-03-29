@@ -237,7 +237,8 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
       setIsPDFViewerOpen(true);
     } catch (err: any) {
       console.error('Error downloading document:', err);
-      throw new Error(`Failed to download document: ${err.message || err}`);
+      setFileBuffer(undefined);
+      setIsPDFViewerOpen(false);
     }
   };
 
