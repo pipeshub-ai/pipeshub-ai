@@ -39,6 +39,7 @@ export function createMockAppConfig(): Record<string, any> {
       db: 'test-db',
     },
 
+    vectorDbType: 'qdrant',
     qdrant: {
       port: 6333,
       apiKey: 'test-qdrant-key',

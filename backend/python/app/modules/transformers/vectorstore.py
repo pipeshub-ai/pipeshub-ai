@@ -10,7 +10,8 @@ from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client.http.models import PointStruct
+
+from app.services.vector_db.models import VectorPoint
 from spacy.language import Language
 from spacy.tokens import Doc
 
@@ -88,16 +89,20 @@ class VectorStore(Transformer):
         self.region_name = None
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
+        self._backend = self.vector_db_service.get_service_name()
 
         try:
-            # Initialize sparse embeddings
-            try:
-                self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to initialize sparse embeddings: " + str(e),
-                    details={"error": str(e)},
-                )
+            # Sparse embeddings only needed for Qdrant; OpenSearch uses built-in BM25
+            if self._backend == "qdrant":
+                try:
+                    self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to initialize sparse embeddings: " + str(e),
+                        details={"error": str(e)},
+                    )
+            else:
+                self.sparse_embeddings = None
 
 
 
@@ -263,14 +268,22 @@ class VectorStore(Transformer):
             nlp.tokenizer.add_special_case(case, mapping)
         return nlp
 
+    def _get_existing_vector_size(self, collection_info: object) -> int:
+        """Extract the current dense vector dimension from collection metadata."""
+        if self._backend == "opensearch":
+            mapping = collection_info[self.collection_name]  # type: ignore[index]
+            props = mapping["mappings"]["properties"]
+            return int(props["dense_embedding"]["dimension"])
+        # Qdrant path
+        return collection_info.config.params.vectors["dense"].size  # type: ignore[union-attr]
+
     async def _initialize_collection(
         self, embedding_size: int = 1024, sparse_idf: bool = False
     ) -> None:
-        """Initialize Qdrant collection with proper configuration."""
+        """Initialize vector-db collection with proper configuration."""
         try:
             collection_info = await self.vector_db_service.get_collection(self.collection_name)
-            current_vector_size = collection_info.config.params.vectors["dense"].size
-            # current_vector_size_2 = collection_info.config.params.vectors["dense-1536"].size
+            current_vector_size = self._get_existing_vector_size(collection_info)
 
             if current_vector_size != embedding_size:
                 self.logger.warning(
@@ -286,10 +299,13 @@ class VectorStore(Transformer):
                 f"Collection {self.collection_name} not found, creating new collection"
             )
             try:
+                from app.services.vector_db.models import CollectionConfig
                 await self.vector_db_service.create_collection(
-                    embedding_size=embedding_size,
                     collection_name=self.collection_name,
-                    sparse_idf=sparse_idf,
+                    config=CollectionConfig(
+                        embedding_size=embedding_size,
+                        sparse_idf=sparse_idf,
+                    ),
                 )
                 self.logger.info(
                     f"✅ Successfully created collection {self.collection_name}"
@@ -379,17 +395,17 @@ class VectorStore(Transformer):
             # Initialize collection with correct embedding size
             await self._initialize_collection(embedding_size=embedding_size)
 
-            # Initialize vector store with same configuration
-
-            self.vector_store: QdrantVectorStore = QdrantVectorStore(
-                client=self.vector_db_service.get_service_client(),
-                collection_name=self.collection_name,
-                vector_name="dense",
-                sparse_vector_name="sparse",
-                embedding=dense_embeddings,
-                sparse_embedding=self.sparse_embeddings,
-                retrieval_mode=RetrievalMode.HYBRID,
-            )
+            # Initialize LangChain vector store (only for Qdrant)
+            if self._backend == "qdrant":
+                self.vector_store = QdrantVectorStore(
+                    client=self.vector_db_service.get_service_client(),
+                    collection_name=self.collection_name,
+                    vector_name="dense",
+                    sparse_vector_name="sparse",
+                    embedding=dense_embeddings,
+                    sparse_embedding=self.sparse_embeddings,
+                    retrieval_mode=RetrievalMode.HYBRID,
+                )
 
             self.dense_embeddings = dense_embeddings
             self.embedding_provider = provider
@@ -423,14 +439,14 @@ class VectorStore(Transformer):
 
     async def _process_image_embeddings_cohere(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
+    ) -> List[VectorPoint]:
         """Process image embeddings using Cohere API."""
         import cohere
 
         co = cohere.ClientV2(api_key=self.api_key)
         points = []
 
-        async def embed_single_image(i: int, image_base64: str) -> Optional[PointStruct]:
+        async def embed_single_image(i: int, image_base64: str) -> Optional[VectorPoint]:
             """Embed a single image with Cohere API."""
             image_input = {
                 "content": [
@@ -454,7 +470,7 @@ class VectorStore(Transformer):
                 )
                 chunk = image_chunks[i]
                 embedding = response.embeddings.float[0]
-                return PointStruct(
+                return VectorPoint(
                     id=str(uuid.uuid4()),
                     vector={"dense": embedding},
                     payload={
@@ -474,7 +490,7 @@ class VectorStore(Transformer):
         concurrency_limit = 10
         semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def limited_embed(i: int, image_base64: str) -> Optional[PointStruct]:
+        async def limited_embed(i: int, image_base64: str) -> Optional[VectorPoint]:
             async with semaphore:
                 return await embed_single_image(i, image_base64)
 
@@ -482,7 +498,7 @@ class VectorStore(Transformer):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:
-            if isinstance(result, PointStruct):
+            if isinstance(result, VectorPoint):
                 points.append(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Failed to embed image: {str(result)}")
@@ -491,12 +507,12 @@ class VectorStore(Transformer):
 
     async def _process_image_embeddings_voyage(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
+    ) -> List[VectorPoint]:
         """Process image embeddings using Voyage AI."""
         batch_size = getattr(self.dense_embeddings, 'batch_size', 7)
         points = []
 
-        async def process_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+        async def process_voyage_batch(batch_start: int, batch_images: List[str]) -> List[VectorPoint]:
             """Process a single batch of images with Voyage AI."""
             try:
                 embeddings = await self.dense_embeddings.aembed_documents(batch_images)
@@ -504,7 +520,7 @@ class VectorStore(Transformer):
                 for i, embedding in enumerate(embeddings):
                     chunk_idx = batch_start + i
                     image_chunk = image_chunks[chunk_idx]
-                    point = PointStruct(
+                    point = VectorPoint(
                         id=str(uuid.uuid4()),
                         vector={"dense": embedding},
                         payload={
@@ -532,7 +548,7 @@ class VectorStore(Transformer):
         concurrency_limit = 5
         semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def limited_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+        async def limited_voyage_batch(batch_start: int, batch_images: List[str]) -> List[VectorPoint]:
             async with semaphore:
                 return await process_voyage_batch(batch_start, batch_images)
 
@@ -549,7 +565,7 @@ class VectorStore(Transformer):
 
     async def _process_image_embeddings_bedrock(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
+    ) -> List[VectorPoint]:
         """Process image embeddings using AWS Bedrock."""
         import json
 
@@ -574,7 +590,7 @@ class VectorStore(Transformer):
 
         points = []
 
-        async def embed_single_bedrock_image(i: int, image_ref: str) -> Optional[PointStruct]:
+        async def embed_single_bedrock_image(i: int, image_ref: str) -> Optional[VectorPoint]:
             """Embed a single image with AWS Bedrock."""
             normalized_b64 = await self._normalize_image_to_base64(image_ref)
             if not normalized_b64:
@@ -603,7 +619,7 @@ class VectorStore(Transformer):
                 image_embedding = response_body['embedding']
 
                 image_chunk = image_chunks[i]
-                return PointStruct(
+                return VectorPoint(
                     id=str(uuid.uuid4()),
                     vector={"dense": image_embedding},
                     payload={
@@ -625,7 +641,7 @@ class VectorStore(Transformer):
         concurrency_limit = 10
         semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def limited_bedrock_embed(i: int, image_ref: str) -> Optional[PointStruct]:
+        async def limited_bedrock_embed(i: int, image_ref: str) -> Optional[VectorPoint]:
             async with semaphore:
                 return await embed_single_bedrock_image(i, image_ref)
 
@@ -633,7 +649,7 @@ class VectorStore(Transformer):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for result in results:
-            if isinstance(result, PointStruct):
+            if isinstance(result, VectorPoint):
                 points.append(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Failed to embed image with Bedrock: {str(result)}")
@@ -642,13 +658,13 @@ class VectorStore(Transformer):
 
     async def _process_image_embeddings_jina(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
+    ) -> List[VectorPoint]:
         """Process image embeddings using Jina AI."""
 
         batch_size = 32
         points = []
 
-        async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+        async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: List[str]) -> List[VectorPoint]:
             """Process a single batch of images with Jina AI."""
             try:
                 url = 'https://api.jina.ai/v1/embeddings'
@@ -691,7 +707,7 @@ class VectorStore(Transformer):
                     # Use the tracked valid index instead of simple increment
                     chunk_idx = valid_indices[i]
                     image_chunk = image_chunks[chunk_idx]
-                    point = PointStruct(
+                    point = VectorPoint(
                         id=str(uuid.uuid4()),
                         vector={"dense": embedding},
                         payload={
@@ -720,7 +736,7 @@ class VectorStore(Transformer):
             concurrency_limit = 5
             semaphore = asyncio.Semaphore(concurrency_limit)
 
-            async def limited_process_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+            async def limited_process_batch(batch_start: int, batch_images: List[str]) -> List[VectorPoint]:
                 async with semaphore:
                     return await process_jina_batch(client, batch_start, batch_images)
 
@@ -737,7 +753,7 @@ class VectorStore(Transformer):
 
     async def _process_image_embeddings(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
+    ) -> List[VectorPoint]:
         """Process image embeddings based on the configured provider."""
         if self.embedding_provider == EmbeddingProvider.COHERE.value:
             return await self._process_image_embeddings_cohere(image_chunks, image_base64s)
@@ -751,7 +767,7 @@ class VectorStore(Transformer):
             self.logger.warning(f"Unsupported embedding provider for images: {self.embedding_provider}")
             return []
 
-    async def _store_image_points(self, points: List[PointStruct]) -> None:
+    async def _store_image_points(self, points: List[VectorPoint]) -> None:
         """Store image embedding points in the vector database."""
         if points:
             start_time = time.perf_counter()
@@ -782,20 +798,54 @@ class VectorStore(Transformer):
             or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
         )
 
+    async def _embed_and_upsert_documents(self, documents: List[Document]) -> None:
+        """Embed documents and upsert directly via vector_db_service (non-Qdrant path)."""
+        texts = [doc.page_content for doc in documents]
+        loop = asyncio.get_running_loop()
+        embeddings = await loop.run_in_executor(
+            None, self.dense_embeddings.embed_documents, texts
+        )
+
+        points: List[VectorPoint] = []
+        for doc, vector in zip(documents, embeddings):
+            points.append(
+                VectorPoint(
+                    id=str(uuid.uuid4()),
+                    dense_vector=vector,
+                    sparse_vector=None,
+                    payload={
+                        "page_content": doc.page_content,
+                        "metadata": doc.metadata,
+                    },
+                )
+            )
+
+        await loop.run_in_executor(
+            None,
+            lambda: self.vector_db_service.upsert_points(
+                collection_name=self.collection_name, points=points
+            ),
+        )
+
     async def _process_document_chunks(self, langchain_document_chunks: List[Document]) -> None:
         """Process and store document chunks in the vector store."""
         time.perf_counter()
-        self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
+        self.logger.info(f"⏱️ Starting document embeddings insertion for {len(langchain_document_chunks)} documents")
 
         use_local_sequential = self._is_local_cpu_embedding()
         batch_size = (
             _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
         )
 
+        use_langchain_store = self._backend == "qdrant" and self.vector_store is not None
+
         async def process_document_batch(batch_start: int, batch_documents: List[Document]) -> int:
             """Process a single batch of documents."""
             try:
-                await self.vector_store.aadd_documents(batch_documents)
+                if use_langchain_store:
+                    await self.vector_store.aadd_documents(batch_documents)
+                else:
+                    await self._embed_and_upsert_documents(batch_documents)
                 self.logger.info(
                     f"✅ Processed document batch starting at {batch_start}: {len(batch_documents)} documents"
                 )
@@ -813,7 +863,6 @@ class VectorStore(Transformer):
             batches.append((batch_start, batch_documents))
 
         if use_local_sequential:
-            # Process one batch at a time, no concurrent tasks - avoids CPU/memory thrashing
             for i, (batch_start, batch_documents) in enumerate(batches):
                 try:
                     await process_document_batch(batch_start, batch_documents)

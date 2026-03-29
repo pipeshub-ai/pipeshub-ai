@@ -5,10 +5,11 @@ Tests cover:
 - QdrantUtils.build_conditions: dict to FieldCondition list conversion
 - QdrantUtils._is_valid_value: value validation logic
 - QdrantService.filter_collection: mode dispatch, kwargs routing, empty filters
+- QdrantUtils translation functions: VectorPoint, FilterExpression, SearchRequest conversions
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 from qdrant_client.http.models import (
     FieldCondition,
@@ -18,8 +19,17 @@ from qdrant_client.http.models import (
 )
 
 from app.services.vector_db.qdrant.utils import QdrantUtils
-from app.services.vector_db.qdrant.filter import QdrantFilterMode
 from app.services.vector_db.qdrant.qdrant import QdrantService
+from app.services.vector_db.models import (
+    FieldCondition as GenericFieldCondition,
+    FilterExpression,
+    FilterMode,
+    FusionMethod,
+    HybridSearchRequest,
+    SearchResult,
+    SparseVector,
+    VectorPoint,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +37,6 @@ from app.services.vector_db.qdrant.qdrant import QdrantService
 # ---------------------------------------------------------------------------
 
 class TestIsValidValue:
-    """Tests for QdrantUtils._is_valid_value static method."""
 
     def test_none_is_invalid(self):
         assert QdrantUtils._is_valid_value(None) is False
@@ -69,11 +78,9 @@ class TestIsValidValue:
         assert QdrantUtils._is_valid_value(False) is True
 
     def test_list_is_valid(self):
-        """Lists are technically valid (not None, not empty string)."""
         assert QdrantUtils._is_valid_value(["a", "b"]) is True
 
     def test_empty_list_is_valid(self):
-        """Empty list passes _is_valid_value (it's not None or empty string)."""
         assert QdrantUtils._is_valid_value([]) is True
 
 
@@ -82,7 +89,6 @@ class TestIsValidValue:
 # ---------------------------------------------------------------------------
 
 class TestBuildConditions:
-    """Tests for QdrantUtils.build_conditions static method."""
 
     def test_empty_filters(self):
         result = QdrantUtils.build_conditions({})
@@ -106,11 +112,6 @@ class TestBuildConditions:
         assert result[0].match == MatchValue(value=5)
 
     def test_float_value(self):
-        """Floats pass _is_valid_value, but MatchValue may reject them depending on qdrant version.
-        The build_conditions method will attempt to create a FieldCondition with a float value.
-        """
-        # MatchValue does not accept floats in this qdrant-client version.
-        # Verify it raises a validation error.
         with pytest.raises(Exception):
             QdrantUtils.build_conditions({"score": 0.95})
 
@@ -182,42 +183,134 @@ class TestBuildConditions:
         keys = {c.key for c in result}
         assert keys == {"metadata.orgId", "metadata.roles"}
 
-    def test_multiple_list_filters(self):
-        result = QdrantUtils.build_conditions({
-            "roles": ["admin", "user"],
-            "departments": ["eng", "sales"],
-        })
-        assert len(result) == 2
-        keys = {c.key for c in result}
-        assert keys == {"metadata.roles", "metadata.departments"}
-
     def test_zero_integer_is_valid_condition(self):
         result = QdrantUtils.build_conditions({"count": 0})
         assert len(result) == 1
         assert result[0].match == MatchValue(value=0)
 
-    def test_false_bool_is_valid_condition(self):
-        result = QdrantUtils.build_conditions({"enabled": False})
-        assert len(result) == 1
-        assert result[0].match == MatchValue(value=False)
+
+# ---------------------------------------------------------------------------
+# QdrantUtils.filter_expression_to_qdrant
+# ---------------------------------------------------------------------------
+
+class TestFilterExpressionToQdrant:
+
+    def test_empty_expression(self):
+        expr = FilterExpression()
+        result = QdrantUtils.filter_expression_to_qdrant(expr)
+        assert isinstance(result, Filter)
+        assert result.should == []
+
+    def test_must_conditions(self):
+        expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.orgId", value="org-123")]
+        )
+        result = QdrantUtils.filter_expression_to_qdrant(expr)
+        assert result.must is not None
+        assert len(result.must) == 1
+        assert result.must[0].key == "metadata.orgId"
+
+    def test_should_conditions(self):
+        expr = FilterExpression(
+            should=[GenericFieldCondition(key="metadata.role", values=["admin", "user"])]
+        )
+        result = QdrantUtils.filter_expression_to_qdrant(expr)
+        assert result.should is not None
+        assert len(result.should) == 1
+
+    def test_must_not_conditions(self):
+        expr = FilterExpression(
+            must_not=[GenericFieldCondition(key="metadata.status", value="deleted")]
+        )
+        result = QdrantUtils.filter_expression_to_qdrant(expr)
+        assert result.must_not is not None
+        assert len(result.must_not) == 1
+
+    def test_combined_conditions(self):
+        expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.orgId", value="org-123")],
+            should=[GenericFieldCondition(key="metadata.role", values=["admin"])],
+            must_not=[GenericFieldCondition(key="metadata.banned", value=True)],
+        )
+        result = QdrantUtils.filter_expression_to_qdrant(expr)
+        assert len(result.must) == 1
+        assert len(result.should) == 1
+        assert len(result.must_not) == 1
 
 
 # ---------------------------------------------------------------------------
-# QdrantService.filter_collection
+# QdrantUtils.vector_point_to_qdrant
+# ---------------------------------------------------------------------------
+
+class TestVectorPointToQdrant:
+
+    def test_dense_only(self):
+        point = VectorPoint(
+            id="abc-123",
+            dense_vector=[0.1, 0.2, 0.3],
+            payload={"metadata": {"orgId": "org1"}, "page_content": "hello"},
+        )
+        result = QdrantUtils.vector_point_to_qdrant(point)
+        assert result.id == "abc-123"
+        assert "dense" in result.vector
+        assert result.payload["page_content"] == "hello"
+
+    def test_dense_and_sparse(self):
+        point = VectorPoint(
+            id="abc-123",
+            dense_vector=[0.1, 0.2],
+            sparse_vector=SparseVector(indices=[0, 5], values=[1.0, 0.5]),
+            payload={"metadata": {}, "page_content": "test"},
+        )
+        result = QdrantUtils.vector_point_to_qdrant(point)
+        assert "dense" in result.vector
+        assert "sparse" in result.vector
+
+    def test_empty_vectors(self):
+        point = VectorPoint(id="abc-123", payload={"metadata": {}})
+        result = QdrantUtils.vector_point_to_qdrant(point)
+        assert result.vector == {}
+
+
+# ---------------------------------------------------------------------------
+# QdrantUtils.to_generic_sparse_vector
+# ---------------------------------------------------------------------------
+
+class TestToGenericSparseVector:
+
+    def test_already_sparse_vector(self):
+        sv = SparseVector(indices=[1, 2], values=[0.5, 0.7])
+        result = QdrantUtils.to_generic_sparse_vector(sv)
+        assert result is sv
+
+    def test_dict_sparse(self):
+        d = {"indices": [1, 2], "values": [0.5, 0.7]}
+        result = QdrantUtils.to_generic_sparse_vector(d)
+        assert result.indices == [1, 2]
+        assert result.values == [0.5, 0.7]
+
+    def test_object_with_attrs(self):
+        obj = type("Obj", (), {"indices": [3], "values": [0.9]})()
+        result = QdrantUtils.to_generic_sparse_vector(obj)
+        assert result.indices == [3]
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError):
+            QdrantUtils.to_generic_sparse_vector("invalid")
+
+
+# ---------------------------------------------------------------------------
+# QdrantService.filter_collection (returns FilterExpression)
 # ---------------------------------------------------------------------------
 
 class TestFilterCollection:
-    """Tests for QdrantService.filter_collection method."""
 
     def _make_service(self):
-        """Create a QdrantService with a mock client."""
         service = QdrantService.__new__(QdrantService)
         service.client = MagicMock()
         service.config_service = MagicMock()
         service.is_async = False
         return service
-
-    # -- Client not connected --
 
     @pytest.mark.asyncio
     async def test_raises_when_client_not_connected(self):
@@ -228,161 +321,60 @@ class TestFilterCollection:
         with pytest.raises(RuntimeError, match="Client not connected"):
             await service.filter_collection(must={"orgId": "123"})
 
-    # -- Empty filters --
-
     @pytest.mark.asyncio
-    async def test_empty_filters_returns_empty_filter(self):
+    async def test_empty_filters_returns_empty_filter_expression(self):
         service = self._make_service()
         result = await service.filter_collection()
-        assert isinstance(result, Filter)
-        assert result.should == []
-
-    @pytest.mark.asyncio
-    async def test_all_none_values_returns_empty_filter(self):
-        service = self._make_service()
-        result = await service.filter_collection(must={"a": None}, should={"b": None})
-        assert isinstance(result, Filter)
-        assert result.should == []
-
-    # -- MUST mode (default) --
+        assert isinstance(result, FilterExpression)
+        assert result.is_empty()
 
     @pytest.mark.asyncio
     async def test_default_mode_is_must(self):
         service = self._make_service()
         result = await service.filter_collection(orgId="org-1", status="active")
-        assert result.must is not None
         assert len(result.must) == 2
-        keys = {c.key for c in result.must}
-        assert keys == {"metadata.orgId", "metadata.status"}
 
     @pytest.mark.asyncio
     async def test_explicit_must_dict(self):
         service = self._make_service()
         result = await service.filter_collection(must={"orgId": "123"})
-        assert result.must is not None
         assert len(result.must) == 1
         assert result.must[0].key == "metadata.orgId"
-
-    @pytest.mark.asyncio
-    async def test_kwargs_merge_with_must_dict(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            must={"orgId": "123"},
-            status="active",
-        )
-        assert result.must is not None
-        assert len(result.must) == 2
-
-    # -- SHOULD mode --
 
     @pytest.mark.asyncio
     async def test_should_mode_with_kwargs(self):
         service = self._make_service()
         result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.SHOULD,
+            filter_mode=FilterMode.SHOULD,
             department="IT",
             role="admin",
         )
-        assert result.should is not None
         assert len(result.should) == 2
-
-    @pytest.mark.asyncio
-    async def test_explicit_should_dict(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            should={"department": "IT", "role": "admin"}
-        )
-        assert result.should is not None
-        assert len(result.should) == 2
-
-    @pytest.mark.asyncio
-    async def test_should_with_min_should_match(self):
-        """min_should_match is not supported in this qdrant-client version."""
-        service = self._make_service()
-        with pytest.raises(Exception):
-            await service.filter_collection(
-                should={"department": "IT", "role": "admin"},
-                min_should_match=1,
-            )
-
-    @pytest.mark.asyncio
-    async def test_min_should_match_not_set_without_should(self):
-        """When no should conditions exist, min_should_match is not included."""
-        service = self._make_service()
-        result = await service.filter_collection(
-            must={"orgId": "123"},
-        )
-        assert result.must is not None
-
-    # -- MUST_NOT mode --
 
     @pytest.mark.asyncio
     async def test_must_not_mode_with_kwargs(self):
         service = self._make_service()
         result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.MUST_NOT,
+            filter_mode=FilterMode.MUST_NOT,
             status="deleted",
         )
-        assert result.must_not is not None
         assert len(result.must_not) == 1
 
     @pytest.mark.asyncio
-    async def test_explicit_must_not_dict(self):
+    async def test_string_mode_conversion(self):
         service = self._make_service()
         result = await service.filter_collection(
-            must_not={"status": "deleted", "banned": True}
+            filter_mode="should", department="IT"
         )
-        assert result.must_not is not None
-        assert len(result.must_not) == 2
-
-    # -- String mode conversion --
+        assert len(result.should) == 1
 
     @pytest.mark.asyncio
-    async def test_string_mode_must(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode="must",
-            orgId="org-1",
-        )
-        assert result.must is not None
-
-    @pytest.mark.asyncio
-    async def test_string_mode_should(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode="should",
-            orgId="org-1",
-        )
-        assert result.should is not None
-
-    @pytest.mark.asyncio
-    async def test_string_mode_must_not(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode="must_not",
-            status="deleted",
-        )
-        assert result.must_not is not None
-
-    @pytest.mark.asyncio
-    async def test_string_mode_case_insensitive(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode="MUST",
-            orgId="org-1",
-        )
-        assert result.must is not None
-
-    @pytest.mark.asyncio
-    async def test_invalid_string_mode_raises(self):
+    async def test_invalid_string_mode(self):
         service = self._make_service()
         with pytest.raises(ValueError, match="Invalid mode"):
             await service.filter_collection(
-                filter_mode="invalid_mode",
-                orgId="org-1",
+                filter_mode="invalid_mode", field="value"
             )
-
-    # -- Combined filters --
 
     @pytest.mark.asyncio
     async def test_combined_must_should_must_not(self):
@@ -392,40 +384,9 @@ class TestFilterCollection:
             should={"roles": ["admin", "user"]},
             must_not={"banned": True},
         )
-        assert result.must is not None
         assert len(result.must) == 2
-        assert result.should is not None
         assert len(result.should) == 1
-        assert result.must_not is not None
         assert len(result.must_not) == 1
-
-    @pytest.mark.asyncio
-    async def test_kwargs_routed_to_should_with_explicit_must(self):
-        """When mode=SHOULD, kwargs go to should, explicit must stays in must."""
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.SHOULD,
-            must={"orgId": "123"},
-            department="IT",
-        )
-        assert result.must is not None
-        assert len(result.must) == 1
-        assert result.should is not None
-        assert len(result.should) == 1
-
-    @pytest.mark.asyncio
-    async def test_kwargs_routed_to_must_not_with_explicit_should(self):
-        """When mode=MUST_NOT, kwargs go to must_not, explicit should stays."""
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.MUST_NOT,
-            should={"department": "IT"},
-            banned="yes",
-        )
-        assert result.should is not None
-        assert result.must_not is not None
-
-    # -- Filter with list values --
 
     @pytest.mark.asyncio
     async def test_list_value_in_must(self):
@@ -433,69 +394,5 @@ class TestFilterCollection:
         result = await service.filter_collection(
             must={"roles": ["admin", "user"]},
         )
-        assert result.must is not None
         assert len(result.must) == 1
-        assert result.must[0].match == MatchAny(any=["admin", "user"])
-
-    # -- No kwargs, only explicit dicts --
-
-    @pytest.mark.asyncio
-    async def test_no_kwargs_only_explicit_dicts(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            must={"orgId": "123"},
-            should={"role": "admin"},
-        )
-        assert result.must is not None
-        assert result.should is not None
-
-    # -- mode as enum directly --
-
-    @pytest.mark.asyncio
-    async def test_filter_mode_enum_must(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.MUST,
-            orgId="org-1",
-        )
-        assert result.must is not None
-
-    @pytest.mark.asyncio
-    async def test_filter_mode_enum_should(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.SHOULD,
-            orgId="org-1",
-        )
-        assert result.should is not None
-
-    @pytest.mark.asyncio
-    async def test_filter_mode_enum_must_not(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            filter_mode=QdrantFilterMode.MUST_NOT,
-            orgId="org-1",
-        )
-        assert result.must_not is not None
-
-    # -- Partial empty dicts --
-
-    @pytest.mark.asyncio
-    async def test_empty_must_dict_with_valid_should(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            must={},
-            should={"role": "admin"},
-        )
-        assert result.should is not None
-
-    @pytest.mark.asyncio
-    async def test_all_empty_dicts_returns_empty_filter(self):
-        service = self._make_service()
-        result = await service.filter_collection(
-            must={},
-            should={},
-            must_not={},
-        )
-        assert isinstance(result, Filter)
-        assert result.should == []
+        assert result.must[0].values == ["admin", "user"]

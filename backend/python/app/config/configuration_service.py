@@ -140,6 +140,19 @@ class ConfigurationService:
                     "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6333")),
                     "apiKey": os.getenv("QDRANT_API_KEY", "qdrant")
                 }
+        elif key == config_node_constants.OPENSEARCH.value:
+            # OpenSearch configuration fallback
+            opensearch_host = os.getenv("OPENSEARCH_HOST")
+            if opensearch_host:
+                return {
+                    "host": opensearch_host,
+                    "port": int(os.getenv("OPENSEARCH_PORT", "9200")),
+                    "username": os.getenv("OPENSEARCH_USERNAME", "admin"),
+                    "password": os.getenv("OPENSEARCH_PASSWORD", "admin"),
+                    "useSsl": os.getenv("OPENSEARCH_USE_SSL", "false").lower() == "true",
+                    "verifyCerts": os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true",
+                    "timeout": int(os.getenv("OPENSEARCH_TIMEOUT", "300")),
+                }
         return None
 
     def _start_watch(self) -> None:
