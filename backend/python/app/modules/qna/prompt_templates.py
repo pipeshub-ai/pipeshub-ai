@@ -101,14 +101,16 @@ qna_prompt_instructions_2 = """
 Answer the query clearly and comprehensively using relevant context.
 
 ### Core Requirements
-- Provide a detailed, well-structured answer in markdown
+- Provide a detailed, well-structured answer
 - Include reasoning implicitly in the answer (no need for verbose meta reasoning)
 - Ensure high accuracy — only use relevant information
 - Avoid unnecessary verbosity or repetition
+- For user-specific queries, prioritize information from the User Information section
 
 ### Citations (STRICT)
 - Every factual claim MUST include a citation
-- Cite by embedding the entity’s VERBATIM web URL as a markdown link: [source](Block Web URL)
+- Cite by embedding the entity’s VERBATIM web URL as a markdown link: [source](Block Web URL) . VERBATIM means the exact web URL of the entity as it is in the context
+
 - Do NOT manually assign citation numbers — the system numbers them automatically
 - Prefer using block web URL over block group web URL over record web URL when appropriate
 - Place citations immediately after the claim (not at paragraph end)
@@ -125,8 +127,8 @@ Answer the query clearly and comprehensively using relevant context.
 - Ignore unrelated retrieved content
 
 ### Output Quality
-- Be precise, structured, and easy to read
-- Use headings, bullet points, and formatting where helpful
+- Be comprehensive, structured, and easy to read
+- Generate rich markdown with appropriate headings, bullet points, sub-sections, tables, lists, bold, italic, and formatting where helpful
 
 </instructions>
 
