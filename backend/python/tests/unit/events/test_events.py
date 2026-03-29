@@ -526,19 +526,11 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_pymupdf = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
-            with patch("app.events.events.fitz") as mock_fitz:
-                mock_page = MagicMock()
-                mock_doc = MagicMock()
-                mock_doc.__enter__ = MagicMock(return_value=mock_doc)
-                mock_doc.__exit__ = MagicMock(return_value=False)
-                mock_doc.__iter__ = MagicMock(return_value=iter([mock_page]))
-                mock_doc.__len__ = MagicMock(return_value=1)
-                mock_fitz.open.return_value = mock_doc
-                with patch("app.events.events.OCRStrategy.needs_ocr", return_value=False):
-                    with patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "true"}):
-                        event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-                        events = await _drain(ep.on_event(event_data))
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "true"}):
+            event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
+            events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 2
         processor.process_pdf_with_pymupdf.assert_called_once()
@@ -556,19 +548,11 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_pymupdf = MagicMock(side_effect=pymupdf_fails)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
-            with patch("app.events.events.fitz") as mock_fitz:
-                mock_page = MagicMock()
-                mock_doc = MagicMock()
-                mock_doc.__enter__ = MagicMock(return_value=mock_doc)
-                mock_doc.__exit__ = MagicMock(return_value=False)
-                mock_doc.__iter__ = MagicMock(return_value=iter([mock_page]))
-                mock_doc.__len__ = MagicMock(return_value=1)
-                mock_fitz.open.return_value = mock_doc
-                with patch("app.events.events.OCRStrategy.needs_ocr", return_value=False):
-                    with patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "true"}):
-                        event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-                        events = await _drain(ep.on_event(event_data))
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "true"}):
+            event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
+            events = await _drain(ep.on_event(event_data))
 
         processor.process_pdf_document_with_ocr.assert_called_once()
 

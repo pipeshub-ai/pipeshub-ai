@@ -1207,7 +1207,7 @@ class TestDiscoverToolsetsWithRealClass:
 
     def test_discover_module_with_toolset_class(self):
         """When a module contains a class with _toolset_metadata, it gets registered."""
-        import inspect as real_inspect
+        from types import ModuleType
         from app.agents.registry.toolset_registry import Toolset
 
         @Toolset(
@@ -1219,12 +1219,12 @@ class TestDiscoverToolsetsWithRealClass:
         class DiscoveredToolset:
             pass
 
-        mock_module = MagicMock()
-        mock_module.__name__ = "test_module"
+        # Use a real module object so inspect.getmembers works without mocking
+        fake_module = ModuleType("test_module")
+        fake_module.DiscoveredToolset = DiscoveredToolset
 
-        with patch("importlib.import_module", return_value=mock_module):
-            with patch("inspect.getmembers", return_value=[("DiscoveredToolset", DiscoveredToolset)]):
-                self.registry.discover_toolsets(["test_module"])
+        with patch("importlib.import_module", return_value=fake_module):
+            self.registry.discover_toolsets(["test_module"])
 
         assert "discovered" in self.registry.list_toolsets()
 

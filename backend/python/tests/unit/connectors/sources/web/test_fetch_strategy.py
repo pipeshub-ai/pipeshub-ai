@@ -138,8 +138,12 @@ class TestSyncCurlCffiFetch:
                 # The function handles ImportError internally
 
     def test_empty_pool(self, log):
-        result = _sync_curl_cffi_fetch("https://example.com", {}, 15, True, profiles=[], logger=log)
-        assert result is None
+        # profiles=[] is falsy, so `profiles or _CURL_PROFILES` falls back to
+        # the module-level list.  We must also patch that list to be empty so
+        # the "not pool" early-return is triggered and no real HTTP request is made.
+        with patch("app.connectors.sources.web.fetch_strategy._CURL_PROFILES", []):
+            result = _sync_curl_cffi_fetch("https://example.com", {}, 15, True, profiles=[], logger=log)
+            assert result is None
 
     def test_with_profiles_all_fail(self, log):
         mock_session_cls = MagicMock()
