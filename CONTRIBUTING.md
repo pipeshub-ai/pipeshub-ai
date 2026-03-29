@@ -250,6 +250,56 @@ Our project consists of three main components:
 - Include integration tests where appropriate
 - Document manual testing steps for complex features
 
+### Running Node.js Unit Tests
+
+Tests use **Mocha** as the test runner with **c8** for code coverage. Test files are located in `backend/nodejs/apps/tests/` and follow the `*.test.ts` naming convention.
+
+```bash
+cd backend/nodejs/apps
+
+# Run all unit tests (parallel, 4 workers)
+npm run test
+
+# Run tests with detailed coverage report (text + lcov + html)
+npm run test:coverage
+
+# Run tests with coverage thresholds (90% lines/functions/statements, 80% branches)
+npm run test:coverage-check
+
+# Run a specific test file
+npx mocha --require ts-node/register tests/libs/utils/password.utils.test.ts
+```
+
+### Running Python Unit Tests
+
+Tests use **pytest** and are located in `backend/python/tests/`. Test files follow the `test_*.py` naming convention.
+
+```bash
+cd backend/python
+source venv/bin/activate
+
+# Run all unit tests
+pytest
+
+# Run tests with verbose output
+pytest -v
+
+# Run a specific test file
+pytest tests/unit/connectors/sources/test_dropbox_connector.py
+
+# Run a specific test function
+pytest tests/unit/connectors/sources/test_dropbox_connector.py::test_function_name
+
+# Run tests matching a keyword expression
+pytest -k "gmail"
+
+# Run tests with coverage
+pytest --cov=app --cov-report=term-missing
+
+# Run tests in parallel (requires pytest-xdist)
+pytest -n auto
+```
+
 ## Documentation
 
 - Update documentation for any new features or changes

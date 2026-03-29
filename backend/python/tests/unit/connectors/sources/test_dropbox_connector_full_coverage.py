@@ -1675,16 +1675,13 @@ class TestHandleGroupRenamedEvent:
 
     async def test_missing_info(self, connector):
         """When group_id is None (no group participant) and get_group_rename_details
-        is not available, the source code tries to reference 'new_name' in a warning
-        message, but 'new_name' is only defined inside the hasattr block. This causes
-        an UnboundLocalError."""
+        is not available, the method returns early without calling _update_group_name."""
         up = _make_user_participant()
         event = _make_event("group_rename", participants=[up])
         event.details = MagicMock(spec=[])
 
         connector._update_group_name = AsyncMock()
-        with pytest.raises(UnboundLocalError):
-            await connector._handle_group_renamed_event(event)
+        await connector._handle_group_renamed_event(event)
         connector._update_group_name.assert_not_called()
 
     async def test_exception(self, connector):

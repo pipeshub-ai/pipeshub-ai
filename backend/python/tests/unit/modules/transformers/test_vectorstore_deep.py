@@ -1092,7 +1092,6 @@ class TestIndexDocumentsTableBlocks:
         vs._create_embeddings.assert_awaited_once()
         chunks = vs._create_embeddings.call_args[0][0]
         assert any("Summary of sales" in getattr(c, "page_content", "") for c in chunks)
-<<<<<<< HEAD
 
 
 # ===================================================================
@@ -1588,5 +1587,3 @@ class TestCreateEmbeddingsUnexpectedException:
 
         with pytest.raises(VectorStoreError):
             await vs._create_embeddings(docs, "rec-1", "vr-1")
-=======
->>>>>>> 28ea8a05 (added UTs for py module)

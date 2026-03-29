@@ -1189,9 +1189,9 @@ class TestCheckAndFetchUpdatedRecord:
 
 class TestRunIncrementalSync:
     async def test_delegates_to_run_sync(self, connector):
-        connector._run_sync = AsyncMock()
+        connector.run_sync = AsyncMock()
         await connector.run_incremental_sync()
-        connector._run_sync.assert_called_once()
+        connector.run_sync.assert_called_once()
 
 
 # ===========================================================================

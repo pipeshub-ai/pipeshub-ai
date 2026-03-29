@@ -585,6 +585,8 @@ class GoogleGmailTeamConnector(BaseConnector):
             seen_drive_file_ids = set()  # Track to avoid duplicates
 
             for part in parts_list:
+                if not isinstance(part, dict):
+                    continue
                 body = part.get('body', {})
                 part_id = part.get('partId', 'unknown')
                 mime_type = part.get('mimeType', '')
@@ -1145,6 +1147,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     start_history_id,
                     "INBOX"
                 )
+            except HttpError:
+                raise
             except Exception as inbox_error:
                 self.logger.error(f"Error fetching INBOX history changes: {inbox_error}")
                 inbox_changes = {'history': []}
@@ -1157,6 +1161,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     start_history_id,
                     "SENT"
                 )
+            except HttpError:
+                raise
             except Exception as sent_error:
                 self.logger.error(f"Error fetching SENT history changes: {sent_error}")
                 sent_changes = {'history': []}
@@ -2847,7 +2853,7 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Gmail workspace."""
         self.logger.info("Running incremental sync for Google Gmail workspace")
-        await self._run_sync()
+        await self.run_sync()
 
 
     def handle_webhook_notification(self, notification: Dict) -> None:

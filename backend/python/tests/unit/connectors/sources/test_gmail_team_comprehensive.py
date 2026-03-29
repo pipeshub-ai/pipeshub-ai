@@ -562,11 +562,9 @@ class TestGmailMisc:
 
     @pytest.mark.asyncio
     async def test_run_incremental_sync(self, connector):
-        # Gmail incremental sync calls _run_sync which doesn't exist on the class
-        # Patch it to avoid AttributeError
-        connector._run_sync = AsyncMock()
+        connector.run_sync = AsyncMock()
         await connector.run_incremental_sync()
-        connector._run_sync.assert_awaited_once()
+        connector.run_sync.assert_awaited_once()
 
 
 # ===========================================================================

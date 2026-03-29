@@ -1350,8 +1350,7 @@ class TestRunSyncWithHistoryId:
 
     @pytest.mark.asyncio
     async def test_handles_http_error_gracefully(self, connector):
-        """Source code catches all exceptions from _fetch_history_changes internally,
-        so HttpError should not propagate out of _run_sync_with_history_id."""
+        """HttpError from _fetch_history_changes is re-raised by _run_sync_with_history_id."""
         client = AsyncMock()
         client.users_get_profile = AsyncMock(return_value={"historyId": "200"})
         resp = MagicMock()
@@ -1362,8 +1361,8 @@ class TestRunSyncWithHistoryId:
         connector._merge_history_changes = MagicMock(return_value={"history": []})
         connector.gmail_delta_sync_point = AsyncMock()
         connector.gmail_delta_sync_point.update_sync_point = AsyncMock()
-        # Should complete without raising
-        await connector._run_sync_with_history_id("u@t.com", client, "100", "sync-key")
+        with pytest.raises(HttpError):
+            await connector._run_sync_with_history_id("u@t.com", client, "100", "sync-key")
 
 
 class TestGetExistingRecord:
