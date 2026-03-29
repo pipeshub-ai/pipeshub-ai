@@ -34,8 +34,7 @@ def _get_pdf_ocr_detection_worker_count() -> int:
         except ValueError:
             return 1
 
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(4, cpu_count))
+    return 1
 
 PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
 
