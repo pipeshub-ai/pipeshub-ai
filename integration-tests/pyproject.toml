@@ -2,7 +2,7 @@
 name = "pipeshub-integration-tests"
 version = "0.2.0"
 description = "Full lifecycle integration test suite for Pipeshub connectors against test.pipeshub.com and remote Neo4j."
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21.0",

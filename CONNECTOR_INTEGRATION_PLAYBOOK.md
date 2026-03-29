@@ -192,7 +192,7 @@ Before starting connector development, ensure your local development environment
 
 **Required tools:**
 
-- Python 3.12
+- Python 3.10+ (3.12 recommended)
 - Node.js 22.15
 - Docker
 - MongoDB Compass
