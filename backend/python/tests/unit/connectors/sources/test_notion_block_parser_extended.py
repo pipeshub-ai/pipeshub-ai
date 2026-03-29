@@ -842,3 +842,354 @@ class TestExtractPropertyValueWithResolution:
         prop = {"type": "people", "people": []}
         result = await parser._extract_property_value_with_resolution(prop)
         assert result == ""
+
+
+# ===========================================================================
+# _extract_property_value
+# ===========================================================================
+class TestExtractPropertyValue:
+    def test_title(self):
+        parser = _make_parser()
+        prop = {"type": "title", "title": [{"plain_text": "Hello"}, {"plain_text": " World"}]}
+        assert parser._extract_property_value(prop) == "Hello World"
+
+    def test_rich_text(self):
+        parser = _make_parser()
+        prop = {"type": "rich_text", "rich_text": [{"plain_text": "Some text"}]}
+        assert parser._extract_property_value(prop) == "Some text"
+
+    def test_number(self):
+        parser = _make_parser()
+        assert parser._extract_property_value({"type": "number", "number": 42}) == "42"
+
+    def test_number_none(self):
+        parser = _make_parser()
+        assert parser._extract_property_value({"type": "number", "number": None}) == ""
+
+    def test_select(self):
+        parser = _make_parser()
+        prop = {"type": "select", "select": {"name": "Option A"}}
+        assert parser._extract_property_value(prop) == "Option A"
+
+    def test_select_none(self):
+        parser = _make_parser()
+        prop = {"type": "select", "select": None}
+        assert parser._extract_property_value(prop) == ""
+
+    def test_multi_select(self):
+        parser = _make_parser()
+        prop = {"type": "multi_select", "multi_select": [{"name": "A"}, {"name": "B"}]}
+        assert parser._extract_property_value(prop) == "A, B"
+
+    def test_status(self):
+        parser = _make_parser()
+        prop = {"type": "status", "status": {"name": "In Progress"}}
+        assert parser._extract_property_value(prop) == "In Progress"
+
+    def test_status_none(self):
+        parser = _make_parser()
+        prop = {"type": "status", "status": None}
+        assert parser._extract_property_value(prop) == ""
+
+    def test_date_with_end(self):
+        parser = _make_parser()
+        prop = {"type": "date", "date": {"start": "2025-01-01", "end": "2025-01-31"}}
+        assert parser._extract_property_value(prop) == "2025-01-01 - 2025-01-31"
+
+    def test_date_no_end(self):
+        parser = _make_parser()
+        prop = {"type": "date", "date": {"start": "2025-01-01"}}
+        assert parser._extract_property_value(prop) == "2025-01-01"
+
+    def test_date_none(self):
+        parser = _make_parser()
+        prop = {"type": "date", "date": None}
+        assert parser._extract_property_value(prop) == ""
+
+    def test_people(self):
+        parser = _make_parser()
+        prop = {"type": "people", "people": [{"id": "user-1"}, {"id": "user-2"}]}
+        assert parser._extract_property_value(prop) == "user-1, user-2"
+
+    def test_relation(self):
+        parser = _make_parser()
+        prop = {"type": "relation", "relation": [{"id": "page-1"}]}
+        assert parser._extract_property_value(prop) == "page-1"
+
+    def test_checkbox_true(self):
+        parser = _make_parser()
+        prop = {"type": "checkbox", "checkbox": True}
+        assert "✓" in parser._extract_property_value(prop)
+
+    def test_checkbox_false(self):
+        parser = _make_parser()
+        prop = {"type": "checkbox", "checkbox": False}
+        assert "✗" in parser._extract_property_value(prop)
+
+    def test_url(self):
+        parser = _make_parser()
+        prop = {"type": "url", "url": "https://example.com"}
+        assert parser._extract_property_value(prop) == "https://example.com"
+
+    def test_url_none(self):
+        parser = _make_parser()
+        prop = {"type": "url", "url": None}
+        assert parser._extract_property_value(prop) == ""
+
+    def test_email(self):
+        parser = _make_parser()
+        prop = {"type": "email", "email": "test@test.com"}
+        assert parser._extract_property_value(prop) == "test@test.com"
+
+    def test_phone_number(self):
+        parser = _make_parser()
+        prop = {"type": "phone_number", "phone_number": "+1234567890"}
+        assert parser._extract_property_value(prop) == "+1234567890"
+
+    def test_formula_string(self):
+        parser = _make_parser()
+        prop = {"type": "formula", "formula": {"type": "string", "string": "result"}}
+        assert parser._extract_property_value(prop) == "result"
+
+    def test_formula_number(self):
+        parser = _make_parser()
+        prop = {"type": "formula", "formula": {"type": "number", "number": 99}}
+        assert parser._extract_property_value(prop) == "99"
+
+    def test_formula_boolean(self):
+        parser = _make_parser()
+        prop = {"type": "formula", "formula": {"type": "boolean", "boolean": True}}
+        assert "✓" in parser._extract_property_value(prop)
+
+    def test_formula_date(self):
+        parser = _make_parser()
+        prop = {"type": "formula", "formula": {"type": "date", "date": {"start": "2025-01-01"}}}
+        assert parser._extract_property_value(prop) == "2025-01-01"
+
+    def test_formula_unknown_type(self):
+        parser = _make_parser()
+        prop = {"type": "formula", "formula": {"type": "unknown"}}
+        assert parser._extract_property_value(prop) == ""
+
+    def test_rollup_number(self):
+        parser = _make_parser()
+        prop = {"type": "rollup", "rollup": {"type": "number", "number": 10}}
+        assert parser._extract_property_value(prop) == "10"
+
+    def test_rollup_array(self):
+        parser = _make_parser()
+        prop = {
+            "type": "rollup",
+            "rollup": {
+                "type": "array",
+                "array": [
+                    {"type": "number", "number": 1},
+                    {"type": "number", "number": 2},
+                ]
+            }
+        }
+        assert "1" in parser._extract_property_value(prop)
+
+    def test_created_time(self):
+        parser = _make_parser()
+        prop = {"type": "created_time", "created_time": "2025-01-01T00:00:00Z"}
+        assert parser._extract_property_value(prop) == "2025-01-01T00:00:00Z"
+
+    def test_created_by(self):
+        parser = _make_parser()
+        prop = {"type": "created_by", "created_by": {"id": "user-1"}}
+        assert parser._extract_property_value(prop) == "user-1"
+
+    def test_last_edited_time(self):
+        parser = _make_parser()
+        prop = {"type": "last_edited_time", "last_edited_time": "2025-06-01T00:00:00Z"}
+        assert parser._extract_property_value(prop) == "2025-06-01T00:00:00Z"
+
+    def test_last_edited_by(self):
+        parser = _make_parser()
+        prop = {"type": "last_edited_by", "last_edited_by": {"id": "user-2"}}
+        assert parser._extract_property_value(prop) == "user-2"
+
+    def test_files(self):
+        parser = _make_parser()
+        prop = {"type": "files", "files": [{"name": "doc.pdf"}, {"name": "", "external": {"url": "https://ext.com/f.txt"}}]}
+        result = parser._extract_property_value(prop)
+        assert "doc.pdf" in result
+
+    def test_unknown_type(self):
+        parser = _make_parser()
+        prop = {"type": "mystery", "mystery": "value"}
+        result = parser._extract_property_value(prop)
+        assert result == "value"
+
+
+# ===========================================================================
+# _parse_timestamp
+# ===========================================================================
+class TestParseTimestamp:
+    def test_valid_timestamp(self):
+        parser = _make_parser()
+        result = parser._parse_timestamp("2025-01-01T00:00:00.000Z")
+        assert result is not None
+        assert isinstance(result, object)
+
+    def test_none(self):
+        parser = _make_parser()
+        result = parser._parse_timestamp(None)
+        assert result is None
+
+    def test_empty(self):
+        parser = _make_parser()
+        result = parser._parse_timestamp("")
+        assert result is None
+
+
+# ===========================================================================
+# post_process_blocks / _finalize_indices_and_metadata
+# ===========================================================================
+class TestPostProcessBlocks:
+    def test_empty_blocks(self):
+        parser = _make_parser()
+        blocks = []
+        block_groups = []
+        parser.post_process_blocks(blocks, block_groups)
+
+    def test_with_blocks_and_groups(self):
+        parser = _make_parser()
+        b1 = Block(index=0, type=BlockType.TEXT.value, sub_type=BlockSubType.PARAGRAPH.value,
+                    data="text", format=DataFormat.MARKDOWN.value)
+        bg1 = BlockGroup(index=0, name="group", type=GroupType.TEXT_SECTION.value)
+        parser.post_process_blocks([b1], [bg1])
+        # Should not crash; indices get finalized
+
+    def test_list_items_get_indent(self):
+        parser = _make_parser()
+        b1 = Block(index=0, type=BlockType.BULLET_LIST.value,
+                    sub_type=BlockSubType.LIST_ITEM.value,
+                    data="item 1", format=DataFormat.MARKDOWN.value)
+        b2 = Block(index=1, type=BlockType.BULLET_LIST.value,
+                    sub_type=BlockSubType.LIST_ITEM.value,
+                    data="item 2", format=DataFormat.MARKDOWN.value,
+                    parent_index=0)
+        bg = BlockGroup(index=0, name="list group", type=GroupType.LIST.value)
+        parser.post_process_blocks([b1, b2], [bg])
+
+
+# ===========================================================================
+# _generate_data_source_markdown
+# ===========================================================================
+class TestGenerateDataSourceMarkdown:
+    def test_basic(self):
+        parser = _make_parser()
+        columns = ["Name", "Value"]
+        rows = [
+            {"properties": {"Name": {"type": "title", "title": [{"plain_text": "A"}]}, "Value": {"type": "number", "number": 1}}},
+            {"properties": {"Name": {"type": "title", "title": [{"plain_text": "B"}]}, "Value": {"type": "number", "number": 2}}},
+        ]
+        result = parser._generate_data_source_markdown(columns, rows)
+        assert "Name" in result
+        assert "Value" in result
+        assert "A" in result
+        assert "2" in result
+
+    def test_empty_rows(self):
+        parser = _make_parser()
+        result = parser._generate_data_source_markdown(["Col1"], [])
+        assert "Col1" in result
+
+    def test_empty_columns(self):
+        parser = _make_parser()
+        result = parser._generate_data_source_markdown([], [])
+        assert result == ""
+
+
+# ===========================================================================
+# _parse_equation
+# ===========================================================================
+class TestParseEquation:
+    @pytest.mark.asyncio
+    async def test_equation_block(self):
+        parser = _make_parser()
+        block = _make_notion_block("equation", {"expression": "E = mc^2"})
+        result = await parser.parse_block(block, parent_page_url="https://notion.so/page")
+        assert result is not None
+
+
+# ===========================================================================
+# _parse_breadcrumb / _parse_table_of_contents
+# ===========================================================================
+class TestParseBreadcrumbAndTOC:
+    @pytest.mark.asyncio
+    async def test_breadcrumb(self):
+        parser = _make_parser()
+        block = _make_notion_block("breadcrumb", {})
+        result = await parser.parse_block(block, parent_page_url="https://notion.so/page")
+
+    @pytest.mark.asyncio
+    async def test_table_of_contents(self):
+        parser = _make_parser()
+        block = _make_notion_block("table_of_contents", {"color": "default"})
+        result = await parser.parse_block(block, parent_page_url="https://notion.so/page")
+
+
+# ===========================================================================
+# _parse_link_to_page
+# ===========================================================================
+class TestParseLinkToPage:
+    @pytest.mark.asyncio
+    async def test_page_id_link(self):
+        parser = _make_parser()
+        block = _make_notion_block("link_to_page", {"type": "page_id", "page_id": "abc123"})
+        result = await parser.parse_block(block, parent_page_url="https://notion.so/page")
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_database_id_link(self):
+        parser = _make_parser()
+        block = _make_notion_block("link_to_page", {"type": "database_id", "database_id": "db123"})
+        result = await parser.parse_block(block, parent_page_url="https://notion.so/page")
+        assert result is not None
+
+
+# ===========================================================================
+# extract_plain_text
+# ===========================================================================
+class TestExtractPlainText:
+    def test_empty_array(self):
+        parser = _make_parser()
+        result = parser.extract_plain_text([])
+        assert result == ""
+
+    def test_array_with_text(self):
+        parser = _make_parser()
+        result = parser.extract_plain_text([
+            {"plain_text": "Hello "},
+            {"plain_text": "World"}
+        ])
+        assert result == "Hello World"
+
+    def test_missing_plain_text_key(self):
+        parser = _make_parser()
+        result = parser.extract_plain_text([{"text": "no plain_text key"}])
+        assert result == ""
+
+
+# ===========================================================================
+# extract_rich_text with plain_text flag
+# ===========================================================================
+class TestExtractRichTextPlainFlag:
+    def test_plain_text_mode(self):
+        parser = _make_parser()
+        result = parser.extract_rich_text(
+            [{"type": "text", "plain_text": "Hello", "text": {"content": "Hello"}, "annotations": {}}],
+            plain_text=True
+        )
+        assert result == "Hello"
+
+    def test_markdown_mode(self):
+        parser = _make_parser()
+        result = parser.extract_rich_text(
+            [{"type": "text", "plain_text": "Hello", "text": {"content": "Hello"}, "annotations": {"bold": True, "italic": False, "strikethrough": False, "underline": False, "code": False, "color": "default"}}],
+            plain_text=False
+        )
+        assert "Hello" in result

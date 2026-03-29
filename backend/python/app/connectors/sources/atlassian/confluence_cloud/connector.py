@@ -1832,7 +1832,7 @@ class ConfluenceConnector(BaseConnector):
                 weburl=web_url,
                 author_source_id=author,
                 resolution_status=resolution_status,
-                inline_original_selection=inline_original_selection,
+                comment_selection=inline_original_selection,
                 is_dependent_node=True,  # Comments are dependent nodes
                 parent_node_id=parent_node_id,  # Internal record ID of parent page
             )

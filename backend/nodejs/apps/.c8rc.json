@@ -4,10 +4,7 @@
   "include": ["src/**/*.ts"],
   "exclude": [
     "src/**/*.d.ts",
-    "src/index.ts",
-    "src/app.ts",
     "src/integrations/**",
-    "src/modules/mcp/**",
     "src/modules/api-docs/docs.routes.ts"
   ],
   "reporter": ["text", "lcov", "html"],

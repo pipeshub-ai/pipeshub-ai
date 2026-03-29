@@ -697,6 +697,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             seen_drive_file_ids = set()  # Track to avoid duplicates
 
             for part in parts_list:
+                if not isinstance(part, dict):
+                    continue
                 body = part.get('body', {})
                 part_id = part.get('partId', 'unknown')
                 mime_type = part.get('mimeType', '')

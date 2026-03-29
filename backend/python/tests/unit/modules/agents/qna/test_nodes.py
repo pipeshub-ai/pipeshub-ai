@@ -5122,6 +5122,29 @@ from app.modules.agents.qna.nodes import (
     prepare_retry_node,
     respond_node,
 )
+from app.modules.agents.qna.nodes import (
+    NodeConfig,
+    PlaceholderResolver,
+    ToolResultExtractor,
+    _build_tool_results_context,
+    _check_if_task_needs_continue,
+    _check_primary_tool_success,
+    _create_fallback_plan,
+    _detect_tool_result_status,
+    _extract_missing_params_from_error,
+    _extract_urls_for_reference_data,
+    _get_tool_status_message,
+    _is_retrieval_tool,
+    _is_semantically_empty,
+    _parse_planner_response,
+    _underscore_to_dotted,
+    check_for_error,
+    clean_tool_result,
+    format_result_for_llm,
+    merge_and_number_retrieval_results,
+    route_after_reflect,
+    should_execute_tools,
+)
 
 
 # ============================================================================
@@ -10669,3 +10692,1330 @@ class TestFormatResultForLlmTypeError:
 
         assert isinstance(result, str)
         assert "key" in result
+
+
+# ============================================================================
+# ADDITIONAL COVERAGE TESTS (55-74)
+# ============================================================================
+
+class TestExtractFieldDeeper2:
+    def test_results_fb(self): assert ToolResultExtractor.extract_field_from_data({"data": [{"id": "A"}]}, ["results", "0", "id"]) == "A"
+    def test_data_skip_num(self): assert ToolResultExtractor.extract_field_from_data({"items": [{"n": "f"}]}, ["data", "0", "n"]) == "f"
+    def test_data_skip_nonum(self): assert ToolResultExtractor.extract_field_from_data({"name": "T"}, ["data", "name"]) == "T"
+    def test_body_al(self): assert ToolResultExtractor.extract_field_from_data({"body": "v"}, ["content"]) == "v"
+    def test_content_al(self): assert ToolResultExtractor.extract_field_from_data({"content": "v"}, ["body"]) == "v"
+    def test_empty_list(self): assert ToolResultExtractor.extract_field_from_data({"d": []}, ["d", "0"]) is None
+    def test_oob(self): assert ToolResultExtractor.extract_field_from_data({"d": [{"i":1}]}, ["d", "5"]) is None
+    def test_wc(self): assert ToolResultExtractor.extract_field_from_data([{"id": "A"}], ["?", "id"]) == "A"
+    def test_wc_empty(self): assert ToolResultExtractor.extract_field_from_data([], ["?"]) is None
+    def test_lst_body(self): assert ToolResultExtractor.extract_field_from_data([{"body": "v"}], ["content"]) == "v"
+    def test_json_str(self): assert ToolResultExtractor.extract_field_from_data(json.dumps({"k": "v"}), ["k"]) == "v"
+    def test_json_body(self): assert ToolResultExtractor.extract_field_from_data(json.dumps({"body": "b"}), ["content"]) == "b"
+    def test_confl_storage(self): assert ToolResultExtractor.extract_field_from_data({"c": {"storage": {"value": "h"}}}, ["c"]) == "h"
+    def test_val_dict(self): assert ToolResultExtractor.extract_field_from_data({"f": {"value": "v"}}, ["f"]) == "v"
+    def test_id_key_fb(self): assert ToolResultExtractor.extract_field_from_data({"s": {"id": None, "key": "K"}}, ["s", "id"]) == "K"
+    def test_id_key_lst(self): assert ToolResultExtractor.extract_field_from_data({"s": [{"id": None, "key": "S"}]}, ["s", "0", "id"]) == "S"
+    def test_non_nav(self): assert ToolResultExtractor.extract_field_from_data(42, ["f"]) is None
+
+class TestSemEmptyDeep2:
+    def test_inner_r(self): assert _is_semantically_empty({"data": {"results": []}}) is True
+    def test_inner_dl(self): assert _is_semantically_empty({"data": []}) is True
+    def test_records(self): assert _is_semantically_empty({"records": []}) is True
+
+class TestConvMsgsUncov2:
+    def test_bot_no_user(self):
+        from app.modules.agents.qna.nodes import _build_conversation_messages
+        assert len(_build_conversation_messages([{"role": "bot_response", "content": "Hi"}, {"role": "user_query", "content": "Q"}], _mock_log())) >= 1
+    def test_sliding(self):
+        from app.modules.agents.qna.nodes import MAX_CONVERSATION_HISTORY, _build_conversation_messages
+        c = []
+        for i in range(MAX_CONVERSATION_HISTORY + 5):
+            c.extend([{"role": "user_query", "content": f"Q{i}"}, {"role": "bot_response", "content": f"A{i}"}])
+        assert len(_build_conversation_messages(c, _mock_log())) <= MAX_CONVERSATION_HISTORY * 2
+
+class TestUserCtxJira2:
+    def test_jira(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        assert "currentUser()" in _format_user_context({"user_info": {"fullName": "A"}, "user_email": "a@t", "agent_toolsets": [{"name": "jira"}]})
+    def test_org(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        assert "Ent" in _format_user_context({"user_info": {"fullName": "B"}, "user_email": "b@t", "org_info": {"accountType": "Ent"}, "agent_toolsets": []})
+
+class TestContinueDeep2:
+    def test_retrieval_fr(self):
+        from app.modules.agents.qna.nodes import _build_continue_context
+        assert "KB" in _build_continue_context({"all_tool_results": [{"tool_name": "retrieval.search_internal_knowledge", "status": "success", "result": "k"}], "final_results": [{"text": "KB"}]}, _mock_log())
+
+class TestRetryDeep2:
+    def test_val(self):
+        from app.modules.agents.qna.nodes import _build_retry_context
+        assert "Missing" in _build_retry_context({"execution_errors": [{"tool_name": "j", "args": {}, "error": "page_title\n  Field required  validation error"}], "reflection": {"fix_instruction": "F"}})
+
+class TestKnowCtxND2:
+    def test_skip(self):
+        from app.modules.agents.qna.nodes import _build_knowledge_context
+        assert "KB" in _build_knowledge_context({"agent_knowledge": ["x", {"displayName": "KB", "type": "KB"}], "agent_toolsets": []}, _mock_log())
+
+class TestFieldTypeV1_2:
+    def test_str(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name_v1
+        f = MagicMock(); f.outer_type_ = str; assert _get_field_type_name_v1(f) == "str"
+    def test_opt(self):
+        from typing import Optional
+        from app.modules.agents.qna.nodes import _get_field_type_name_v1
+        f = MagicMock(); f.outer_type_ = Optional[int]; assert _get_field_type_name_v1(f) == "int"
+
+class TestFieldTypeOpt2:
+    def test_opt(self):
+        from typing import Optional
+        from app.modules.agents.qna.nodes import _get_field_type_name
+        f = MagicMock(); f.annotation = Optional[str]; assert _get_field_type_name(f) == "str"
+
+class TestReflectDec2:
+    @pytest.mark.asyncio
+    async def test_cascade(self):
+        from app.modules.agents.qna.nodes import reflect_node
+        s = {"all_tool_results": [{"tool_name": "a.s1", "status": "success", "result": {"d": []}}, {"tool_name": "a.s2", "status": "error", "result": "Error: foo"}], "planned_tool_calls": [{"name": "a.s1", "args": {}}, {"name": "a.s2", "args": {"id": "{{a.s1.d[0].id}}"}}], "retry_count": 2, "max_retries": 1, "iteration_count": 0, "max_iterations": 3, "query": "q", "logger": _mock_log(), "llm": None}
+        assert (await reflect_node(s, {}, MagicMock()))["reflection_decision"] in ("respond_success", "respond_error")
+
+class TestFallbackInt2:
+    def test_email(self):
+        t = MagicMock(); t.name = "gmail.send_email"
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[t]):
+            assert _create_fallback_plan("send email", {"all_tool_results": [{"tool_name": "retrieval.search_internal_knowledge"}], "has_knowledge": True})["tools"][0]["name"] == "gmail.send_email"
+    def test_ticket(self):
+        t = MagicMock(); t.name = "jira.add_comment"
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[t]):
+            assert _create_fallback_plan("comment jira ticket", {"all_tool_results": [{"tool_name": "retrieval.search_internal_knowledge"}], "has_knowledge": True})["tools"][0]["name"] == "jira.add_comment"
+    def test_no_intent(self):
+        t = MagicMock(); t.name = "calc.c"
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[t]):
+            assert _create_fallback_plan("policy?", {"all_tool_results": [{"tool_name": "retrieval.search_internal_knowledge"}], "has_knowledge": True})["can_answer_directly"]
+    def test_exc(self):
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", side_effect=ImportError()):
+            assert _create_fallback_plan("email", {"all_tool_results": [{"tool_name": "retrieval.search_internal_knowledge"}], "has_knowledge": True})["can_answer_directly"]
+
+class TestValidateOrig2:
+    def test_orig(self):
+        from app.modules.agents.qna.nodes import _validate_planned_tools
+        t = MagicMock(); t.name = "j_c"; t._original_name = "j.c"
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[t]):
+            ok, _, avail = _validate_planned_tools([{"name": "j.c"}], {"llm": None}, _mock_log())
+        assert ok
+
+class TestPlanRetryFb2:
+    @pytest.mark.asyncio
+    async def test_to(self):
+        from app.modules.agents.qna.nodes import _plan_with_validation_retry
+        llm = AsyncMock(); llm.ainvoke = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch("app.modules.agents.qna.nodes._validate_planned_tools", return_value=(False, ["x"], [])):
+            assert (await _plan_with_validation_retry(llm, "s", [HumanMessage(content="t")], {"has_knowledge": False, "agent_toolsets": [], "llm": llm}, _mock_log(), "q", MagicMock(), {})).get("can_answer_directly")
+    @pytest.mark.asyncio
+    async def test_ex(self):
+        from app.modules.agents.qna.nodes import _plan_with_validation_retry
+        llm = AsyncMock(); llm.ainvoke = AsyncMock(side_effect=RuntimeError())
+        with patch("app.modules.agents.qna.nodes._validate_planned_tools", return_value=(True, [], [])):
+            assert isinstance(await _plan_with_validation_retry(llm, "s", [HumanMessage(content="t")], {"has_knowledge": False, "agent_toolsets": [], "llm": llm}, _mock_log(), "q", MagicMock(), {}), dict)
+
+class TestSeqStatusMsgs2:
+    async def _r(self, n, rv=(True, {"d": "ok"})):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        t = AsyncMock(); t.arun = AsyncMock(return_value=rv); t.args_schema = None
+        return await ToolExecutor._execute_sequential([{"name": n, "args": {}}], {n: t}, None, {}, _mock_log(), MagicMock(), {})
+    @pytest.mark.asyncio
+    async def test_retrieval(self): assert len(await self._r("retrieval_search")) == 1
+    @pytest.mark.asyncio
+    async def test_conf_create(self): assert len(await self._r("confluence_create_page")) == 1
+    @pytest.mark.asyncio
+    async def test_jira_update(self): assert len(await self._r("jira_update_issue")) == 1
+    @pytest.mark.asyncio
+    async def test_generic(self): assert len(await self._r("custom_tool")) == 1
+    @pytest.mark.asyncio
+    async def test_fail(self): assert (await self._r("custom_tool", (False, "E")))[0]["status"] == "error"
+    @pytest.mark.asyncio
+    async def test_notfound(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        assert (await ToolExecutor._execute_sequential([{"name": "m", "args": {}}], {}, None, {}, _mock_log(), MagicMock(), {}))[0]["status"] == "error"
+    @pytest.mark.asyncio
+    async def test_multi(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        c = [0]
+        async def run(a): c[0] += 1; return (True, {"c": c[0]})
+        t = AsyncMock(); t.arun = run; t.args_schema = None
+        assert len(await ToolExecutor._execute_sequential([{"name": "t", "args": {}}, {"name": "t", "args": {}}], {"t": t}, None, {}, _mock_log(), MagicMock(), {})) == 2
+
+class TestParallelNotFound2:
+    @pytest.mark.asyncio
+    async def test_nf(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        assert (await ToolExecutor._execute_parallel([{"name": "m", "args": {}}], {}, None, {}, _mock_log()))[0]["status"] == "error"
+
+class TestRunToolFb2:
+    @pytest.mark.asyncio
+    async def test_run(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        t = MagicMock(spec=[]); t.run = MagicMock(return_value="r")
+        assert (await ToolExecutor._run_tool(t, {"a": 1})) == "r"
+
+class TestExecNodeStatus2:
+    async def _r(self, name):
+        from app.modules.agents.qna.nodes import ToolExecutor, execute_node
+        t = MagicMock(); t.name = name.replace(".", "_"); t._original_name = name
+        s = {"planned_tool_calls": [{"name": name, "args": {}}], "llm": None, "logger": _mock_log(), "messages": []}
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[t]), \
+             patch.object(ToolExecutor, "execute_tools", new_callable=AsyncMock, return_value=[{"tool_name": name, "status": "success", "result": "ok", "tool_id": "c0"}]):
+            return await execute_node(s, {}, MagicMock())
+    @pytest.mark.asyncio
+    async def test_ret(self): assert not (await self._r("retrieval.search"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_cc(self): assert not (await self._r("confluence.create_page"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_cu(self): assert not (await self._r("confluence.update_page"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_cg(self): assert not (await self._r("confluence.get_page"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_jc(self): assert not (await self._r("jira.create_issue"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_ju(self): assert not (await self._r("jira.update_issue"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_jg(self): assert not (await self._r("jira.get_issue"))["pending_tool_calls"]
+    @pytest.mark.asyncio
+    async def test_gen(self): assert not (await self._r("calculator.calc"))["pending_tool_calls"]
+
+class TestParsePlannerM2:
+    def test_tools(self): assert "tools" in _parse_planner_response('{"f": 1}\n{"tools": [{"name": "a"}]}', _mock_log())
+
+
+# ============================================================================
+# Additional coverage tests for uncovered paths
+# ============================================================================
+
+
+class TestExtractFieldFromDataDeep:
+    """Cover deep paths in extract_field_from_data"""
+
+    def test_none_data_returns_none(self):
+        assert ToolResultExtractor.extract_field_from_data(None, ["data"]) is None
+
+    def test_empty_field_path(self):
+        data = {"key": "value"}
+        result = ToolResultExtractor.extract_field_from_data(data, [])
+        assert result == data
+
+    def test_dict_field_not_found(self):
+        assert ToolResultExtractor.extract_field_from_data({"a": 1}, ["b"]) is None
+
+    def test_nested_dict(self):
+        data = {"data": {"key": "value"}}
+        assert ToolResultExtractor.extract_field_from_data(data, ["data", "key"]) == "value"
+
+    def test_array_index(self):
+        data = {"items": [{"id": 1}, {"id": 2}]}
+        assert ToolResultExtractor.extract_field_from_data(data, ["items", "1", "id"]) == 2
+
+    def test_array_index_out_of_bounds(self):
+        data = {"items": [{"id": 1}]}
+        assert ToolResultExtractor.extract_field_from_data(data, ["items", "5", "id"]) is None
+
+    def test_empty_list_returns_none(self):
+        data = {"items": []}
+        assert ToolResultExtractor.extract_field_from_data(data, ["items", "0"]) is None
+
+    def test_list_auto_first_element(self):
+        data = [{"id": 1}, {"id": 2}]
+        assert ToolResultExtractor.extract_field_from_data(data, ["0", "id"]) == 1
+
+    def test_wildcard_index(self):
+        data = [{"id": "abc"}]
+        assert ToolResultExtractor.extract_field_from_data(data, ["?", "id"]) == "abc"
+
+    def test_star_wildcard(self):
+        data = [{"id": "abc"}]
+        assert ToolResultExtractor.extract_field_from_data(data, ["*", "id"]) == "abc"
+
+    def test_wildcard_on_empty_list(self):
+        data = []
+        assert ToolResultExtractor.extract_field_from_data(data, ["?"]) is None
+
+    def test_json_string_parsing(self):
+        data = '{"key": "value"}'
+        assert ToolResultExtractor.extract_field_from_data(data, ["key"]) == "value"
+
+    def test_json_string_invalid(self):
+        data = "not json"
+        assert ToolResultExtractor.extract_field_from_data(data, ["key"]) is None
+
+    def test_json_string_not_dict(self):
+        data = "[1, 2, 3]"
+        assert ToolResultExtractor.extract_field_from_data(data, ["key"]) is None
+
+    def test_confluence_storage_format(self):
+        data = {"body": {"storage": {"value": "<p>content</p>"}}}
+        result = ToolResultExtractor.extract_field_from_data(data, ["body"])
+        assert result == "<p>content</p>"
+
+    def test_single_value_dict(self):
+        data = {"wrapper": {"value": "hello"}}
+        result = ToolResultExtractor.extract_field_from_data(data, ["wrapper"])
+        assert result == "hello"
+
+    def test_content_body_alias(self):
+        data = {"body": "actual content"}
+        result = ToolResultExtractor.extract_field_from_data(data, ["content"])
+        assert result == "actual content"
+
+    def test_body_content_alias(self):
+        data = {"content": "actual body"}
+        result = ToolResultExtractor.extract_field_from_data(data, ["body"])
+        assert result == "actual body"
+
+    def test_id_fallback_to_key(self):
+        data = {"id": None, "key": "PROJ-1"}
+        result = ToolResultExtractor.extract_field_from_data(data, ["id"])
+        assert result == "PROJ-1"
+
+    def test_data_prefix_skip(self):
+        data = {"items": [{"id": 1}, {"id": 2}]}
+        result = ToolResultExtractor.extract_field_from_data(data, ["data", "0", "id"])
+        assert result == 1
+
+    def test_results_fallback_to_data(self):
+        data = {"data": [{"id": 1}]}
+        result = ToolResultExtractor.extract_field_from_data(data, ["results", "0", "id"])
+        assert result == 1
+
+    def test_non_navigable_type(self):
+        data = {"value": 42}
+        assert ToolResultExtractor.extract_field_from_data(data, ["value", "sub"]) is None
+
+    def test_list_field_access_on_first_item(self):
+        data = [{"name": "first"}, {"name": "second"}]
+        result = ToolResultExtractor.extract_field_from_data(data, ["name"])
+        assert result == "first"
+
+    def test_list_content_body_alias(self):
+        data = [{"body": "text"}]
+        result = ToolResultExtractor.extract_field_from_data(data, ["content"])
+        assert result == "text"
+
+    def test_json_string_content_body_alias(self):
+        data = '{"body": "text"}'
+        result = ToolResultExtractor.extract_field_from_data(data, ["content"])
+        assert result == "text"
+
+    def test_empty_list_at_end_of_path(self):
+        data = {"items": []}
+        result = ToolResultExtractor.extract_field_from_data(data, ["items"])
+        # Empty list returns None per the implementation
+        assert result is None
+
+    def test_list_with_no_dict_items(self):
+        data = [1, 2, 3]
+        assert ToolResultExtractor.extract_field_from_data(data, ["field"]) is None
+
+
+class TestExtractSourceToolName:
+    def test_dotted_name(self):
+        result = PlaceholderResolver._extract_source_tool_name("jira.search_users.data.results[0].accountId")
+        assert result == "jira.search_users"
+
+    def test_single_part(self):
+        result = PlaceholderResolver._extract_source_tool_name("toolname")
+        assert result == "toolname"
+
+    def test_empty_string(self):
+        result = PlaceholderResolver._extract_source_tool_name("")
+        assert result == ""
+
+
+class TestPlaceholderResolverResolveAll:
+    def test_resolve_nested_dict(self):
+        args = {"config": {"key": "{{tool.data.id}}"}}
+        results = {"tool": {"data": {"id": "123"}}}
+        resolved = PlaceholderResolver.resolve_all(args, results, _mock_log())
+        assert resolved["config"]["key"] == "123"
+
+    def test_resolve_list(self):
+        args = {"ids": ["{{tool.data.id}}", "static"]}
+        results = {"tool": {"data": {"id": "abc"}}}
+        resolved = PlaceholderResolver.resolve_all(args, results, _mock_log())
+        assert resolved["ids"] == ["abc", "static"]
+
+    def test_resolve_list_dict_items(self):
+        args = {"items": [{"id": "{{tool.data.id}}"}]}
+        results = {"tool": {"data": {"id": "xyz"}}}
+        resolved = PlaceholderResolver.resolve_all(args, results, _mock_log())
+        assert resolved["items"][0]["id"] == "xyz"
+
+    def test_resolve_preserves_type_for_single_placeholder(self):
+        args = {"data": "{{tool.result}}"}
+        results = {"tool": {"result": [1, 2, 3]}}
+        resolved = PlaceholderResolver.resolve_all(args, results, _mock_log())
+        assert resolved["data"] == [1, 2, 3]
+
+    def test_unresolved_placeholder_kept(self):
+        args = {"key": "{{missing.data}}"}
+        results = {}
+        resolved = PlaceholderResolver.resolve_all(args, results, _mock_log())
+        assert "{{missing.data}}" in resolved["key"]
+
+    def test_non_placeholder_values_unchanged(self):
+        args = {"num": 42, "flag": True}
+        resolved = PlaceholderResolver.resolve_all(args, {}, _mock_log())
+        assert resolved["num"] == 42
+        assert resolved["flag"] is True
+
+
+class TestPlaceholderResolverParsePlaceholder:
+    def test_exact_match(self):
+        results = {"jira.create_issue": {"key": "PROJ-1"}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "jira.create_issue.key", results
+        )
+        assert tool_name == "jira.create_issue"
+        assert field_path == ["key"]
+
+    def test_underscore_to_dotted_match(self):
+        results = {"jira_search_users": {"data": "v"}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "jira.search_users.data", results
+        )
+        assert tool_name == "jira_search_users"
+        assert field_path == ["data"]
+
+    def test_dotted_to_underscore_match(self):
+        results = {"jira.search_users": {"data": "v"}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "jira_search_users.data", results
+        )
+        assert tool_name == "jira.search_users"
+        assert field_path == ["data"]
+
+    def test_fuzzy_match(self):
+        results = {"jira.create_issue": {"key": "v"}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "jiracreateissue.key", results
+        )
+        assert tool_name == "jira.create_issue"
+
+    def test_no_match(self):
+        results = {"jira.create_issue": {"key": "v"}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "unknown_tool.field", results
+        )
+        assert tool_name is None
+        assert field_path == []
+
+    def test_array_index_parsing(self):
+        results = {"tool": {"data": [{"id": 1}]}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "tool.data[0].id", results
+        )
+        assert tool_name == "tool"
+        assert field_path == ["data", "0", "id"]
+
+    def test_jsonpath_wildcard_normalization(self):
+        results = {"tool": {"data": [{"id": 1}]}}
+        tool_name, field_path = PlaceholderResolver._parse_placeholder(
+            "tool.data[?(@.key=='value')].id", results
+        )
+        assert tool_name == "tool"
+        assert "0" in field_path  # Wildcard normalized to 0
+
+
+class TestPlaceholderResolveSingle:
+    def test_retrieval_tool_returns_full_text(self):
+        results = {"retrieval.search": "full knowledge text here"}
+        result = PlaceholderResolver._resolve_single_placeholder(
+            "retrieval.search.data.results[0].title", results, _mock_log()
+        )
+        assert result == "full knowledge text here"
+
+    def test_tool_not_found(self):
+        result = PlaceholderResolver._resolve_single_placeholder(
+            "missing.tool.field", {}, _mock_log()
+        )
+        assert result is None
+
+    def test_successful_extraction(self):
+        results = {"jira.search_users": {"data": {"results": [{"accountId": "abc"}]}}}
+        result = PlaceholderResolver._resolve_single_placeholder(
+            "jira.search_users.data.results.0.accountId", results, _mock_log()
+        )
+        assert result == "abc"
+
+    def test_failed_extraction_with_debug(self):
+        results = {"jira.search_users": {"data": {"results": []}}}
+        result = PlaceholderResolver._resolve_single_placeholder(
+            "jira.search_users.data.results.0.accountId", results, _mock_log()
+        )
+        assert result is None
+
+
+class TestFormatArgsPreview:
+    def test_short_args(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        result = ToolExecutor._format_args_preview({"key": "value"})
+        assert "key" in result
+
+    def test_long_args_truncated(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        result = ToolExecutor._format_args_preview({"key": "x" * 500}, max_len=50)
+        assert result.endswith("...")
+
+    def test_non_serializable(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+        obj = MagicMock()
+        obj.__str__ = MagicMock(return_value="mock_repr")
+        # This should not raise
+        result = ToolExecutor._format_args_preview({"obj": obj})
+        assert isinstance(result, str)
+
+
+class TestExtractInvalidParamsFromArgs:
+    def test_returns_empty_always(self):
+        from app.modules.agents.qna.nodes import _extract_invalid_params_from_args
+        result = _extract_invalid_params_from_args({"a": 1}, "some error")
+        assert result == []
+
+
+class TestBuildRetryContext:
+    def test_no_errors_returns_empty(self):
+        from app.modules.agents.qna.nodes import _build_retry_context
+        state = {"execution_errors": []}
+        assert _build_retry_context(state) == ""
+
+    def test_with_errors(self):
+        from app.modules.agents.qna.nodes import _build_retry_context
+        state = {
+            "execution_errors": [{
+                "tool_name": "jira.create_issue",
+                "args": {"summary": "test"},
+                "error": "validation error: page_title Field required"
+            }],
+            "reflection": {"fix_instruction": "Add page_title field"},
+        }
+        result = _build_retry_context(state)
+        assert "RETRY MODE" in result
+        assert "jira.create_issue" in result
+        assert "page_title" in result
+
+    def test_with_validation_error_missing_params(self):
+        from app.modules.agents.qna.nodes import _build_retry_context
+        state = {
+            "execution_errors": [{
+                "tool_name": "tool",
+                "args": {},
+                "error": "page_title\n  Field required"
+            }],
+            "reflection": {"fix_instruction": "fix it"},
+        }
+        result = _build_retry_context(state)
+        assert "PARAMETER VALIDATION ERROR" in result
+
+
+class TestBuildContinueContext:
+    def test_no_tool_results_returns_empty(self):
+        from app.modules.agents.qna.nodes import _build_continue_context
+        state = {"all_tool_results": []}
+        assert _build_continue_context(state, _mock_log()) == ""
+
+    def test_with_tool_results(self):
+        from app.modules.agents.qna.nodes import _build_continue_context
+        state = {
+            "all_tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": '{"data": []}'},
+            ],
+            "final_results": [],
+        }
+        result = _build_continue_context(state, _mock_log())
+        assert "jira.search" in result
+
+
+class TestFormatUserContext:
+    def test_empty_user_info(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        state = {"user_info": {}, "org_info": {}}
+        assert _format_user_context(state) == ""
+
+    def test_with_user_email(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        state = {
+            "user_email": "test@example.com",
+            "user_info": {"fullName": "Test User"},
+            "org_info": {},
+            "agent_toolsets": [],
+        }
+        result = _format_user_context(state)
+        assert "Test User" in result
+        assert "test@example.com" in result
+
+    def test_with_account_type(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        state = {
+            "user_email": "test@example.com",
+            "user_info": {},
+            "org_info": {"accountType": "cloud"},
+            "agent_toolsets": [],
+        }
+        result = _format_user_context(state)
+        assert "cloud" in result
+
+    def test_with_jira_tools(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        state = {
+            "user_email": "test@example.com",
+            "user_info": {},
+            "org_info": {},
+            "agent_toolsets": [{"name": "jira"}],
+        }
+        result = _format_user_context(state)
+        assert "currentUser()" in result
+
+    def test_with_firstname_lastname(self):
+        from app.modules.agents.qna.nodes import _format_user_context
+        state = {
+            "user_info": {"firstName": "John", "lastName": "Doe"},
+            "org_info": {},
+            "agent_toolsets": [],
+        }
+        result = _format_user_context(state)
+        assert "John Doe" in result
+
+
+class TestBuildConversationMessages:
+    def test_empty_conversations(self):
+        from app.modules.agents.qna.nodes import _build_conversation_messages
+        assert _build_conversation_messages([], _mock_log()) == []
+
+    def test_user_bot_pair(self):
+        from app.modules.agents.qna.nodes import _build_conversation_messages
+        convs = [
+            {"role": "user_query", "content": "Hello"},
+            {"role": "bot_response", "content": "Hi there"},
+        ]
+        messages = _build_conversation_messages(convs, _mock_log())
+        assert len(messages) == 2
+        assert isinstance(messages[0], HumanMessage)
+        assert isinstance(messages[1], AIMessage)
+
+    def test_bot_without_user(self):
+        from app.modules.agents.qna.nodes import _build_conversation_messages
+        convs = [
+            {"role": "bot_response", "content": "Unprompted response"},
+        ]
+        messages = _build_conversation_messages(convs, _mock_log())
+        assert len(messages) == 1
+
+    def test_reference_data_included(self):
+        from app.modules.agents.qna.nodes import _build_conversation_messages
+        convs = [
+            {"role": "user_query", "content": "Search docs"},
+            {"role": "bot_response", "content": "Found results", "referenceData": [
+                {"name": "Doc1", "url": "http://example.com"}
+            ]},
+        ]
+        messages = _build_conversation_messages(convs, _mock_log())
+        assert len(messages) == 2
+        # Reference data appended to last AI message
+        assert "Reference Data" in messages[-1].content
+
+
+class TestFormatReferenceData:
+    def test_empty_data(self):
+        from app.modules.agents.qna.nodes import _format_reference_data
+        assert _format_reference_data([], _mock_log()) == ""
+
+    def test_with_jira_issues(self):
+        from app.modules.agents.qna.nodes import _format_reference_data
+        data = [{"type": "jira_issue", "key": "PROJ-1", "id": "123", "url": "http://j.com"}]
+        result = _format_reference_data(data, _mock_log())
+        assert "PROJ-1" in result
+
+    def test_with_confluence_pages(self):
+        from app.modules.agents.qna.nodes import _format_reference_data
+        data = [{"type": "confluence_page", "title": "Page1", "id": "p1", "url": "http://c.com"}]
+        result = _format_reference_data(data, _mock_log())
+        assert "Confluence Pages" in result
+        assert "p1" in result
+
+
+class TestExtractUrlsForReferenceData:
+    def test_extract_from_dict(self):
+        from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
+        ref = []
+        content = {"link": "https://example.com/page", "title": "Page"}
+        _extract_urls_for_reference_data(content, ref)
+        assert len(ref) == 1
+        assert ref[0]["url"] == "https://example.com/page"
+
+    def test_extract_from_json_string(self):
+        from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
+        ref = []
+        content = '{"url": "https://example.com"}'
+        _extract_urls_for_reference_data(content, ref)
+        assert len(ref) == 1
+
+    def test_invalid_json_string(self):
+        from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
+        ref = []
+        _extract_urls_for_reference_data("not json", ref)
+        assert ref == []
+
+    def test_nested_dict(self):
+        from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
+        ref = []
+        content = {"data": {"link": "https://example.com"}}
+        _extract_urls_for_reference_data(content, ref)
+        assert len(ref) == 1
+
+    def test_list(self):
+        from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
+        ref = []
+        content = [{"url": "https://a.com"}, {"url": "https://b.com"}]
+        _extract_urls_for_reference_data(content, ref)
+        assert len(ref) == 2
+
+    def test_no_duplicate_urls(self):
+        from app.modules.agents.qna.nodes import _extract_urls_for_reference_data
+        ref = [{"url": "https://example.com"}]
+        content = {"link": "https://example.com"}
+        _extract_urls_for_reference_data(content, ref)
+        assert len(ref) == 1
+
+
+class TestBuildToolResultsContext:
+    def test_all_failed(self):
+        from app.modules.agents.qna.nodes import _build_tool_results_context
+        results = [{"status": "error", "tool_name": "jira.search", "result": "timeout"}]
+        ctx = _build_tool_results_context(results, [])
+        assert "Tools Failed" in ctx
+
+    def test_with_retrieval_and_api(self):
+        from app.modules.agents.qna.nodes import _build_tool_results_context
+        results = [
+            {"status": "success", "tool_name": "retrieval.search", "result": "knowledge"},
+            {"status": "success", "tool_name": "jira.get_issue", "result": '{"key": "P-1"}'},
+        ]
+        ctx = _build_tool_results_context(results, [{"text": "block"}])
+        assert "Knowledge Available" in ctx
+        assert "API Tool Results" in ctx
+        assert "MODE 3" in ctx
+
+    def test_api_only(self):
+        from app.modules.agents.qna.nodes import _build_tool_results_context
+        results = [
+            {"status": "success", "tool_name": "jira.get_issue", "result": '{"key": "P-1"}'},
+        ]
+        ctx = _build_tool_results_context(results, [])
+        assert "API Tool Results" in ctx
+
+    def test_retrieval_in_context_flag(self):
+        from app.modules.agents.qna.nodes import _build_tool_results_context
+        results = [
+            {"status": "success", "tool_name": "jira.get_issue", "result": '{"key": "P-1"}'},
+        ]
+        ctx = _build_tool_results_context(results, [], has_retrieval_in_context=True)
+        assert "Internal Knowledge in Context" in ctx
+
+
+class TestGetFieldTypeName:
+    def test_simple_type(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name
+        mock_field = MagicMock()
+        mock_field.annotation = str
+        assert _get_field_type_name(mock_field) == "str"
+
+    def test_no_name_attr(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name
+
+        class NoName:
+            pass
+
+        # Remove __name__ by using a non-class object
+        mock_field = MagicMock()
+        mock_field.annotation = [1, 2]  # list has no __name__
+        result = _get_field_type_name(mock_field)
+        assert isinstance(result, str)
+
+    def test_exception_returns_any(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name
+        mock_field = MagicMock()
+        del mock_field.annotation  # Will raise AttributeError
+        assert _get_field_type_name(mock_field) == "any"
+
+
+class TestGetFieldTypeNameV1:
+    def test_simple_type(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name_v1
+        mock_field = MagicMock()
+        mock_field.outer_type_ = int
+        assert _get_field_type_name_v1(mock_field) == "int"
+
+    def test_exception_returns_any(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name_v1
+        mock_field = MagicMock()
+        del mock_field.outer_type_
+        assert _get_field_type_name_v1(mock_field) == "any"
+
+
+class TestExtractParametersFromSchema:
+    def test_dict_schema(self):
+        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
+        schema = {
+            "properties": {"name": {"type": "string", "description": "Name"}, "age": {"type": "integer"}},
+            "required": ["name"],
+        }
+        params = _extract_parameters_from_schema(schema, _mock_log())
+        assert params["name"]["required"] is True
+        assert params["age"]["required"] is False
+
+    def test_empty_schema(self):
+        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
+        result = _extract_parameters_from_schema(42, _mock_log())
+        assert result == {}
+
+
+class TestNodeConfig:
+    def test_defaults(self):
+        assert NodeConfig.MAX_PARALLEL_TOOLS == 10
+        assert NodeConfig.TOOL_TIMEOUT_SECONDS == 60.0
+        assert NodeConfig.PLANNER_TIMEOUT_SECONDS == 45.0
+        assert NodeConfig.MAX_RETRIES == 1
+        assert NodeConfig.MAX_ITERATIONS == 3
+
+    def test_has_zoom_tools(self):
+        from app.modules.agents.qna.nodes import _has_zoom_tools
+        state = {"agent_toolsets": [{"name": "zoom"}]}
+        assert _has_zoom_tools(state) is True
+        state2 = {"agent_toolsets": [{"name": "jira"}]}
+        assert _has_zoom_tools(state2) is False
+
+    def test_has_redshift_tools(self):
+        from app.modules.agents.qna.nodes import _has_redshift_tools
+        state = {"agent_toolsets": [{"name": "redshift"}]}
+        assert _has_redshift_tools(state) is True
+
+# =============================================================================
+# Merged from test_nodes_full_coverage.py
+# =============================================================================
+
+def _log():
+    return MagicMock(spec=logging.Logger)
+
+
+class TestHasZoomTools:
+    def test_has_zoom(self):
+        from app.modules.agents.qna.nodes import _has_zoom_tools
+        state = {"agent_toolsets": [{"name": "Zoom Meeting"}]}
+        assert _has_zoom_tools(state) is True
+
+    def test_no_zoom(self):
+        from app.modules.agents.qna.nodes import _has_zoom_tools
+        state = {"agent_toolsets": [{"name": "Slack"}]}
+        assert _has_zoom_tools(state) is False
+
+    def test_empty_toolsets(self):
+        from app.modules.agents.qna.nodes import _has_zoom_tools
+        assert _has_zoom_tools({"agent_toolsets": []}) is False
+
+
+class TestHasRedshiftTools:
+    def test_has_redshift(self):
+        from app.modules.agents.qna.nodes import _has_redshift_tools
+        state = {"agent_toolsets": [{"name": "Amazon Redshift"}]}
+        assert _has_redshift_tools(state) is True
+
+    def test_no_redshift(self):
+        from app.modules.agents.qna.nodes import _has_redshift_tools
+        state = {"agent_toolsets": [{"name": "Jira"}]}
+        assert _has_redshift_tools(state) is False
+
+
+class TestValidatePlannedToolsFullCoverage:
+    def test_exception_returns_valid(self):
+        from app.modules.agents.qna.nodes import _validate_planned_tools
+        state = {}
+        with patch(
+            "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+            side_effect=ImportError("no module"),
+        ):
+            is_valid, invalid, available = _validate_planned_tools([], state, _log())
+            assert is_valid is True
+
+    def test_all_tools_valid(self):
+        from app.modules.agents.qna.nodes import _validate_planned_tools
+        mock_tool = MagicMock()
+        mock_tool.name = "jira.search_issues"
+        mock_tool._original_name = "jira.search_issues"
+        state = {"llm": MagicMock()}
+        with patch(
+            "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+            return_value=[mock_tool],
+        ):
+            with patch("app.modules.agents.qna.tool_system._sanitize_tool_name_if_needed", return_value="jira.search_issues"):
+                is_valid, invalid, available = _validate_planned_tools(
+                    [{"name": "jira.search_issues"}], state, _log()
+                )
+                assert is_valid is True
+                assert invalid == []
+
+    def test_invalid_tool_detected(self):
+        from app.modules.agents.qna.nodes import _validate_planned_tools
+        mock_tool = MagicMock()
+        mock_tool.name = "jira.search"
+        mock_tool._original_name = "jira.search"
+        state = {"llm": MagicMock()}
+        with patch(
+            "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+            return_value=[mock_tool],
+        ):
+            with patch("app.modules.agents.qna.tool_system._sanitize_tool_name_if_needed", return_value="nonexistent"):
+                is_valid, invalid, available = _validate_planned_tools(
+                    [{"name": "nonexistent_tool"}], state, _log()
+                )
+                assert is_valid is False
+                assert "nonexistent_tool" in invalid
+
+
+class TestBuildToolSchemaReferenceFullCoverage:
+    def test_no_tools(self):
+        from app.modules.agents.qna.nodes import _build_tool_schema_reference
+        state = {}
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[]):
+            result = _build_tool_schema_reference(state, _log())
+            assert result == ""
+
+    def test_with_tools_and_schema(self):
+        from app.modules.agents.qna.nodes import _build_tool_schema_reference
+        mock_tool = MagicMock()
+        mock_tool.name = "jira.search"
+        mock_schema = MagicMock()
+        mock_tool.args_schema = mock_schema
+
+        state = {}
+        with patch(
+            "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+            return_value=[mock_tool],
+        ):
+            with patch("app.modules.agents.qna.nodes._extract_parameters_from_schema", return_value={
+                "query": {"type": "string", "required": True, "description": "Search query"},
+                "limit": {"type": "int", "required": False, "description": "Max results"},
+            }):
+                result = _build_tool_schema_reference(state, _log())
+                assert "jira.search" in result
+                assert "Required" in result
+                assert "Optional" in result
+
+    def test_exception_returns_empty(self):
+        from app.modules.agents.qna.nodes import _build_tool_schema_reference
+        state = {}
+        with patch(
+            "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+            side_effect=Exception("err"),
+        ):
+            result = _build_tool_schema_reference(state, _log())
+            assert result == ""
+
+    def test_tool_without_schema(self):
+        from app.modules.agents.qna.nodes import _build_tool_schema_reference
+        mock_tool = MagicMock()
+        mock_tool.name = "simple_tool"
+        mock_tool.args_schema = None
+        state = {}
+        with patch(
+            "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+            return_value=[mock_tool],
+        ):
+            result = _build_tool_schema_reference(state, _log())
+            assert "no schema available" in result
+
+
+class TestBuildWorkflowPatternsFullCoverage:
+    def test_no_patterns(self):
+        from app.modules.agents.qna.nodes import _build_workflow_patterns
+        state = {"agent_toolsets": []}
+        result = _build_workflow_patterns(state)
+        assert result == ""
+
+    def test_outlook_and_confluence(self):
+        from app.modules.agents.qna.nodes import _build_workflow_patterns
+        state = {"agent_toolsets": [
+            {"name": "Outlook"},
+            {"name": "Confluence"},
+        ]}
+        result = _build_workflow_patterns(state)
+        assert "Cross-Service Pattern" in result
+        assert "Holiday" in result
+
+    def test_teams_and_slack(self):
+        from app.modules.agents.qna.nodes import _build_workflow_patterns
+        state = {"agent_toolsets": [
+            {"name": "Microsoft Teams"},
+            {"name": "Slack"},
+        ]}
+        result = _build_workflow_patterns(state)
+        assert "Transcript" in result
+
+    def test_outlook_only(self):
+        from app.modules.agents.qna.nodes import _build_workflow_patterns
+        state = {"agent_toolsets": [{"name": "Outlook"}]}
+        result = _build_workflow_patterns(state)
+        assert "Extend a Recurring Event" in result
+
+
+class TestBuildToolResultsContextModes:
+    def test_all_failed(self):
+        results = [{"status": "error", "tool_name": "jira.search", "result": "timeout"}]
+        ctx = _build_tool_results_context(results, [])
+        assert "Tools Failed" in ctx
+        assert "DO NOT fabricate" in ctx
+
+    def test_retrieval_only_from_final_results(self):
+        results = [{"status": "success", "tool_name": "retrieval", "result": "data"}]
+        ctx = _build_tool_results_context(results, [{"text": "block1"}])
+        assert "Internal Knowledge Available" in ctx
+
+    def test_retrieval_in_context_flag(self):
+        results = [{"status": "success", "tool_name": "retrieval", "result": "data"}]
+        ctx = _build_tool_results_context(results, [], has_retrieval_in_context=True)
+        assert "Internal Knowledge in Context" in ctx
+
+    def test_combined_mode(self):
+        results = [
+            {"status": "success", "tool_name": "retrieval", "result": "data"},
+            {"status": "success", "tool_name": "jira.search", "result": {"key": "PROJ-1"}},
+        ]
+        ctx = _build_tool_results_context(results, [{"text": "block"}])
+        assert "MODE 3" in ctx
+
+    def test_api_only(self):
+        results = [{"status": "success", "tool_name": "jira.search", "result": {"key": "PROJ-1"}}]
+        ctx = _build_tool_results_context(results, [])
+        assert "API DATA" in ctx
+
+    def test_multiple_non_retrieval(self):
+        results = [
+            {"status": "success", "tool_name": "jira.search", "result": {"key": "A"}},
+            {"status": "success", "tool_name": "slack.send", "result": {"ok": True}},
+        ]
+        ctx = _build_tool_results_context(results, [])
+        assert "MULTIPLE tools" in ctx
+
+
+class TestExtractUrlsForReferenceDataEdgeCases:
+    def test_json_string_input(self):
+        ref = []
+        _extract_urls_for_reference_data('{"url": "https://example.com", "title": "Test"}', ref)
+        assert len(ref) == 1
+        assert ref[0]["url"] == "https://example.com"
+
+    def test_invalid_json_string(self):
+        ref = []
+        _extract_urls_for_reference_data("not json", ref)
+        assert len(ref) == 0
+
+    def test_no_duplicate_urls(self):
+        ref = [{"url": "https://example.com"}]
+        _extract_urls_for_reference_data({"link": "https://example.com"}, ref)
+        assert len(ref) == 1
+
+    def test_nested_dict_with_urls(self):
+        ref = []
+        _extract_urls_for_reference_data({
+            "item": {"webUrl": "https://test.com/page", "name": "Page"}
+        }, ref)
+        assert len(ref) == 1
+
+    def test_list_input(self):
+        ref = []
+        _extract_urls_for_reference_data([
+            {"link": "https://a.com", "title": "A"},
+            {"link": "https://b.com", "title": "B"},
+        ], ref)
+        assert len(ref) == 2
+
+
+class TestExtractFieldFromDataDeepBranches:
+    def test_data_prefix_skip_with_numeric_index(self):
+        data = {"items": [{"id": "123"}, {"id": "456"}]}
+        result = ToolResultExtractor.extract_field_from_data(data, ["data", "0", "id"])
+        assert result == "123"
+
+    def test_results_fallback_to_data_list(self):
+        data = {"data": [{"id": "abc"}]}
+        result = ToolResultExtractor.extract_field_from_data(data, ["results", "0", "id"])
+        assert result == "abc"
+
+    def test_content_body_alias(self):
+        data = {"body": "hello world"}
+        result = ToolResultExtractor.extract_field_from_data(data, ["content"])
+        assert result == "hello world"
+
+    def test_body_content_alias(self):
+        data = {"content": "test data"}
+        result = ToolResultExtractor.extract_field_from_data(data, ["body"])
+        assert result == "test data"
+
+    def test_list_with_wildcard_index(self):
+        data = [{"id": "first"}, {"id": "second"}]
+        result = ToolResultExtractor.extract_field_from_data(data, ["?", "id"])
+        assert result == "first"
+
+    def test_list_with_star_wildcard(self):
+        data = [{"name": "item1"}]
+        result = ToolResultExtractor.extract_field_from_data(data, ["*", "name"])
+        assert result == "item1"
+
+    def test_empty_list_returns_none(self):
+        data = {"items": []}
+        result = ToolResultExtractor.extract_field_from_data(data, ["items", "0"])
+        assert result is None
+
+    def test_json_string_field(self):
+        data = json.dumps({"key": "value"})
+        result = ToolResultExtractor.extract_field_from_data(data, ["key"])
+        assert result == "value"
+
+    def test_json_string_content_alias(self):
+        data = json.dumps({"body": "content here"})
+        result = ToolResultExtractor.extract_field_from_data(data, ["content"])
+        assert result == "content here"
+
+    def test_none_in_path(self):
+        result = ToolResultExtractor.extract_field_from_data(None, ["field"])
+        assert result is None
+
+    def test_index_out_of_bounds(self):
+        data = {"items": [{"id": 1}]}
+        result = ToolResultExtractor.extract_field_from_data(data, ["items", "5"])
+        assert result is None
+
+    def test_list_auto_extract_first_element(self):
+        data = {"results": [{"id": "first"}, {"id": "second"}]}
+        result = ToolResultExtractor.extract_field_from_data(data, ["results", "id"])
+        assert result == "first"
+
+    def test_non_numeric_list_field_no_dict(self):
+        data = [[1, 2], [3, 4]]
+        result = ToolResultExtractor.extract_field_from_data(data, ["field"])
+        assert result is None
+
+
+class TestGetFieldTypeNameFullCoverage:
+    def test_simple_type(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name
+        field = MagicMock()
+        field.annotation = str
+        assert _get_field_type_name(field) == "str"
+
+    def test_exception(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name
+        field = MagicMock()
+        field.annotation = property(fget=lambda self: (_ for _ in ()).throw(Exception("err")))
+        del field.annotation
+        result = _get_field_type_name(field)
+        assert result == "any"
+
+
+class TestGetFieldTypeNameV1FullCoverage:
+    def test_simple_type(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name_v1
+        field = MagicMock()
+        field.outer_type_ = int
+        assert _get_field_type_name_v1(field) == "int"
+
+    def test_exception(self):
+        from app.modules.agents.qna.nodes import _get_field_type_name_v1
+        field = MagicMock(spec=[])
+        result = _get_field_type_name_v1(field)
+        assert result == "any"
+
+
+class TestExtractParametersFromSchemaFullCoverage:
+    def test_json_schema_dict(self):
+        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
+        schema = {
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "limit": {"type": "integer", "description": "Max results"},
+            },
+            "required": ["query"],
+        }
+        result = _extract_parameters_from_schema(schema, _log())
+        assert result["query"]["required"] is True
+        assert result["limit"]["required"] is False
+
+    def test_unrecognized_schema(self):
+        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
+        result = _extract_parameters_from_schema("not a schema", _log())
+        assert result == {}
+
+
+class TestGetCachedToolDescriptionsFullCoverage:
+    def test_no_cache(self):
+        from app.modules.agents.qna import nodes as nodes_mod
+        from app.modules.agents.qna.nodes import _get_cached_tool_descriptions
+
+        state = {}
+        nodes_mod._tool_description_cache.clear()
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[]):
+            result = _get_cached_tool_descriptions(state, _log())
+            assert result is not None
+
+    def test_cache_hit(self):
+        from app.modules.agents.qna import nodes as nodes_mod
+        from app.modules.agents.qna.nodes import _get_cached_tool_descriptions
+
+        state = {"org_id": "org1", "agent_toolsets": [], "has_knowledge": False}
+        cache_key = f"org1_{hash(tuple())}_other_False"
+        nodes_mod._tool_description_cache.clear()
+        nodes_mod._tool_description_cache[cache_key] = "cached descriptions"
+        result = _get_cached_tool_descriptions(state, _log())
+        assert result == "cached descriptions"
+
+
+class TestProcessRetrievalOutput:
+    def test_returns_string(self):
+        from app.modules.agents.qna.nodes import _process_retrieval_output
+        state = {"final_results": []}
+        with patch("app.agents.actions.retrieval.retrieval.RetrievalToolOutput") as mock_rto:
+            mock_rto.return_value.formatted_output = "formatted"
+            mock_rto.return_value.results = []
+            result = _process_retrieval_output("raw result", state, _log())
+            assert isinstance(result, str)
+
+
+class TestExtractInvalidParamsFromArgsFullCoverage:
+    def test_extracts_params(self):
+        from app.modules.agents.qna.nodes import _extract_invalid_params_from_args
+        args = {"query": "test", "invalid_field": "val"}
+        error_msg = "Unexpected keyword argument 'invalid_field'"
+        result = _extract_invalid_params_from_args(args, error_msg)
+        assert isinstance(result, list)
+
+
+class TestBuildRetryContextFull:
+    def test_with_failed_tools(self):
+        from app.modules.agents.qna.nodes import _build_retry_context
+        state = {
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "error", "result": "timeout", "args": {"q": "test"}},
+            ],
+            "retry_count": 0,
+            "max_retries": 2,
+            "planned_tool_calls": [{"name": "jira.search", "args": {"q": "test"}}],
+        }
+        result = _build_retry_context(state)
+        assert isinstance(result, str)
+
+
+class TestBuildContinueContextFull:
+    def test_with_completed_tools(self):
+        from app.modules.agents.qna.nodes import _build_continue_context
+        state = {
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {"key": "PROJ-1"}},
+            ],
+            "continue_plan": {"next_tools": [{"name": "jira.get_issue"}]},
+            "planned_tool_calls": [],
+        }
+        result = _build_continue_context(state, _log())
+        assert isinstance(result, str)
+
+
+class TestFormatToolDescriptionsFull:
+    def test_with_schema_params(self):
+        from app.modules.agents.qna.nodes import _format_tool_descriptions
+        mock_tool = MagicMock()
+        mock_tool.name = "jira.search"
+        mock_tool.description = "Search Jira issues"
+        mock_schema = MagicMock()
+        mock_tool.args_schema = mock_schema
+        with patch("app.modules.agents.qna.nodes._extract_parameters_from_schema", return_value={
+            "query": {"type": "string", "required": True, "description": "The search query"},
+        }):
+            result = _format_tool_descriptions([mock_tool], _log())
+            assert "jira.search" in result
+            assert "query" in result
+
+    def test_tool_without_schema(self):
+        from app.modules.agents.qna.nodes import _format_tool_descriptions
+        mock_tool = MagicMock()
+        mock_tool.name = "simple"
+        mock_tool.description = "A tool"
+        mock_tool.args_schema = None
+        result = _format_tool_descriptions([mock_tool], _log())
+        assert "simple" in result
+
+
+class TestPlaceholderResolverExtractSourceToolNameBranches:
+    def test_dotted_tool_name(self):
+        result = PlaceholderResolver._extract_source_tool_name("jira.search_issues.data.key")
+        assert result == "jira.search_issues"
+
+    def test_underscored_name(self):
+        result = PlaceholderResolver._extract_source_tool_name("search_issues.key")
+        assert result == "search_issues.key"
+
+    def test_simple_name(self):
+        result = PlaceholderResolver._extract_source_tool_name("simple")
+        assert result == "simple"
+
+
+class TestFormatResultForLlmDictFallback:
+    def test_non_serializable_in_dict(self):
+        class Custom:
+            def __repr__(self):
+                return "Custom()"
+        result = format_result_for_llm({"obj": Custom()})
+        assert "Custom()" in result
+
+
+class TestCleanToolResultDeepNesting:
+    def test_deeply_nested_list_of_dicts(self):
+        data = {"items": [{"nested": {"debug": "drop", "keep": "this"}}]}
+        result = clean_tool_result(data)
+        assert result == {"items": [{"nested": {"keep": "this"}}]}
+
+    def test_tuple_with_list_data(self):
+        data = (True, [{"id": 1, "trace": "x"}])
+        result = clean_tool_result(data)
+        assert result[0] is True
+        assert result[1] == [{"id": 1}]
+
+
+class TestBuildReactSystemPromptPartial:
+    def test_with_instructions(self):
+        from app.modules.agents.qna.nodes import _build_react_system_prompt
+        state = {
+            "instructions": "Always be polite",
+            "agent_toolsets": [],
+            "agent_knowledge": [],
+            "query": "hello",
+        }
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas", return_value=[]):
+            with patch("app.modules.agents.qna.nodes._build_tool_schema_reference", return_value=""):
+                with patch("app.modules.agents.qna.nodes._build_knowledge_context", return_value=""):
+                    with patch("app.modules.agents.qna.nodes._build_workflow_patterns", return_value=""):
+                        result = _build_react_system_prompt(state, _log())
+                        assert "Always be polite" in result
+
+
+class TestExtractFinalResponseEdge:
+    def test_empty_messages(self):
+        from app.modules.agents.qna.nodes import _extract_final_response
+        result = _extract_final_response([], _log())
+        assert isinstance(result, str)
+
+    def test_ai_message_content(self):
+        from app.modules.agents.qna.nodes import _extract_final_response
+        msgs = [AIMessage(content="Here is the answer")]
+        result = _extract_final_response(msgs, _log())
+        assert "Here is the answer" in result
+
+    def test_tool_message_only(self):
+        from app.modules.agents.qna.nodes import _extract_final_response
+        msgs = [ToolMessage(content="tool output", tool_call_id="tc1")]
+        result = _extract_final_response(msgs, _log())
+        assert isinstance(result, str)

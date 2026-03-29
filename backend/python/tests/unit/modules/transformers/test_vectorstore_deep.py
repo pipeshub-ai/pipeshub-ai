@@ -1092,3 +1092,498 @@ class TestIndexDocumentsTableBlocks:
         vs._create_embeddings.assert_awaited_once()
         chunks = vs._create_embeddings.call_args[0][0]
         assert any("Summary of sales" in getattr(c, "page_content", "") for c in chunks)
+
+
+# ===================================================================
+# _get_shared_nlp exception in custom_sentence_boundary pipe (line 50)
+# ===================================================================
+
+class TestGetSharedNlpCustomPipeException:
+    def test_custom_pipe_exception_handled(self):
+        """When custom_sentence_boundary pipe fails to add, should not raise."""
+        with patch(
+            "app.modules.transformers.vectorstore.spacy.load"
+        ) as mock_load:
+            mock_nlp = MagicMock()
+            mock_nlp.pipe_names = []  # No pipes present
+
+            def add_pipe_side_effect(name, **kwargs):
+                if name == "custom_sentence_boundary":
+                    raise ValueError("pipe already exists")
+                mock_nlp.pipe_names.append(name)
+
+            mock_nlp.add_pipe = MagicMock(side_effect=add_pipe_side_effect)
+            mock_load.return_value = mock_nlp
+
+            from app.modules.transformers.vectorstore import _get_shared_nlp
+            # Clear cache
+            if hasattr(_get_shared_nlp, "_cached_nlp"):
+                delattr(_get_shared_nlp, "_cached_nlp")
+
+            result = _get_shared_nlp()
+            assert result is mock_nlp
+
+            # Clean up cache
+            if hasattr(_get_shared_nlp, "_cached_nlp"):
+                delattr(_get_shared_nlp, "_cached_nlp")
+
+
+# ===================================================================
+# __init__ sparse embeddings failure (lines 106-107)
+# ===================================================================
+
+class TestVectorStoreInitSparseFailure:
+    def test_sparse_embeddings_exception_raises_indexing_error(self):
+        """When sparse embeddings init fails with generic exception, should raise IndexingError."""
+        with patch(
+            "app.modules.transformers.vectorstore.FastEmbedSparse",
+            side_effect=RuntimeError("sparse init fail"),
+        ), patch(
+            "app.modules.transformers.vectorstore._get_shared_nlp",
+            return_value=MagicMock(),
+        ):
+            from app.modules.transformers.vectorstore import VectorStore
+            with pytest.raises(IndexingError, match="Failed to initialize"):
+                VectorStore(
+                    logger=MagicMock(),
+                    config_service=AsyncMock(),
+                    graph_provider=AsyncMock(),
+                    collection_name="test",
+                    vector_db_service=AsyncMock(),
+                )
+
+
+# ===================================================================
+# _normalize_image_to_base64 edge cases (lines 151-152)
+# ===================================================================
+
+class TestNormalizeImageToBase64:
+    @pytest.mark.asyncio
+    async def test_none_input(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64(None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_empty_string(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64("")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_non_string_input(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64(123)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_data_url_without_comma(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64("data:image/png;base64")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_data_url_with_base64(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64("data:image/png;base64,AAAA")
+        assert result == "AAAA"
+
+    @pytest.mark.asyncio
+    async def test_data_url_with_padding_fix(self):
+        vs = _make_vectorstore()
+        # 5 chars needs 3 padding chars to be multiple of 4
+        result = await vs._normalize_image_to_base64("data:image/png;base64,AAAAA")
+        assert result.endswith("=")
+        assert len(result) % 4 == 0
+
+    @pytest.mark.asyncio
+    async def test_raw_base64(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64("SGVsbG8=")
+        assert result == "SGVsbG8="
+
+    @pytest.mark.asyncio
+    async def test_raw_base64_with_whitespace(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64("  SGVs bG8=  ")
+        assert "SGVs" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_characters_returns_none(self):
+        vs = _make_vectorstore()
+        result = await vs._normalize_image_to_base64("not!valid@base64")
+        assert result is None
+
+
+# ===================================================================
+# custom_sentence_boundary heading detection (lines 234-235)
+# ===================================================================
+
+class TestCustomSentenceBoundaryHeading:
+    """Cover the all-caps heading detection branch."""
+
+    def test_all_caps_heading_prevents_sentence_start(self):
+        """All-caps text followed by next token should not be sentence start."""
+        from app.modules.transformers.vectorstore import VectorStore
+
+        # Use the existing _make_mock_doc from TestCustomSentenceBoundary
+        tokens_data = [
+            {"text": "INTRODUCTION"},
+            {"text": "."},
+            {"text": "Next"},
+        ]
+        tokens = []
+        for i, data in enumerate(tokens_data):
+            tok = MagicMock()
+            tok.i = i
+            tok.text = data["text"]
+            tok.like_num = data.get("like_num", False)
+            tok.is_sent_start = data.get("is_sent_start", None)
+            tokens.append(tok)
+
+        class DocSlice:
+            def __init__(self, toks):
+                self._tokens = toks
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    return DocSlice(self._tokens[key])
+                return self._tokens[key]
+            def __iter__(self):
+                return iter(self._tokens)
+            def __len__(self):
+                return len(self._tokens)
+
+        doc = DocSlice(tokens)
+
+        result = VectorStore.custom_sentence_boundary(doc)
+        # The period (tokens[1]) should have is_sent_start set to False
+        assert tokens[1].is_sent_start is False
+
+    def test_all_caps_with_digits_not_heading(self):
+        """All-caps text with digits should not be treated as heading."""
+        from app.modules.transformers.vectorstore import VectorStore
+
+        tokens_data = [
+            {"text": "ABC123"},
+            {"text": "."},
+            {"text": "Next"},
+        ]
+        tokens = []
+        for i, data in enumerate(tokens_data):
+            tok = MagicMock()
+            tok.i = i
+            tok.text = data["text"]
+            tok.like_num = data.get("like_num", False)
+            tok.is_sent_start = data.get("is_sent_start", None)
+            tokens.append(tok)
+
+        class DocSlice:
+            def __init__(self, toks):
+                self._tokens = toks
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    return DocSlice(self._tokens[key])
+                return self._tokens[key]
+            def __iter__(self):
+                return iter(self._tokens)
+            def __len__(self):
+                return len(self._tokens)
+
+        doc = DocSlice(tokens)
+
+        result = VectorStore.custom_sentence_boundary(doc)
+        # tokens[1].is_sent_start should remain None (not modified by heading rule)
+
+
+# ===================================================================
+# _process_image_embeddings_voyage exception handling (lines 545-546)
+# ===================================================================
+
+class TestProcessImageEmbeddingsVoyageException:
+    @pytest.mark.asyncio
+    async def test_voyage_batch_exception_logged(self):
+        """When a Voyage batch raises, should log warning and continue."""
+        vs = _make_vectorstore()
+        vs.api_key = "test-key"
+
+        # Voyage uses self.dense_embeddings.aembed_documents, make it raise
+        mock_embeddings = AsyncMock()
+        mock_embeddings.aembed_documents = AsyncMock(side_effect=RuntimeError("Voyage API error"))
+        mock_embeddings.batch_size = 7
+        vs.dense_embeddings = mock_embeddings
+
+        result = await vs._process_image_embeddings_voyage(
+            image_chunks=[{"metadata": {}}],
+            image_base64s=["data:image/png;base64,AAAA"],
+        )
+
+        assert result == []
+        vs.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_voyage_gather_returns_exception(self):
+        """When asyncio.gather returns an Exception object, should log and skip."""
+        vs = _make_vectorstore()
+        vs.api_key = "test-key"
+
+        # Patch gather to return exception objects
+        mock_embeddings = AsyncMock()
+        mock_embeddings.batch_size = 7
+        # The batch processing will succeed but we'll simulate gather returning an exception
+        mock_embeddings.aembed_documents = AsyncMock(side_effect=RuntimeError("gather error"))
+        vs.dense_embeddings = mock_embeddings
+
+        result = await vs._process_image_embeddings_voyage(
+            image_chunks=[{"metadata": {}}],
+            image_base64s=["img1"],
+        )
+
+        # Should be empty since the batch failed
+        assert result == []
+
+
+# ===================================================================
+# _process_image_embeddings_bedrock error paths (lines 614-623, 639)
+# ===================================================================
+
+class TestProcessImageEmbeddingsBedrockErrors:
+    @pytest.mark.asyncio
+    async def test_bedrock_client_error_returns_none(self):
+        """ClientError should be caught and return None for that image."""
+        from botocore.exceptions import ClientError
+
+        vs = _make_vectorstore()
+        vs.aws_access_key_id = "key"
+        vs.aws_secret_access_key = "secret"
+        vs.region_name = "us-east-1"
+
+        with patch("boto3.client") as mock_boto_client:
+            mock_client = MagicMock()
+            mock_boto_client.return_value = mock_client
+            mock_client.invoke_model.side_effect = ClientError(
+                {"Error": {"Code": "400", "Message": "bad request"}},
+                "InvokeModel",
+            )
+
+            with patch.object(vs, "_normalize_image_to_base64", new_callable=AsyncMock, return_value="AAAA"):
+                result = await vs._process_image_embeddings_bedrock(
+                    image_chunks=[{"metadata": {}}],
+                    image_base64s=["AAAA"],
+                )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_bedrock_unexpected_error_returns_none(self):
+        """Unexpected errors should be caught and return None."""
+        vs = _make_vectorstore()
+        vs.aws_access_key_id = "key"
+        vs.aws_secret_access_key = "secret"
+        vs.region_name = "us-east-1"
+
+        with patch("boto3.client") as mock_boto_client:
+            mock_client = MagicMock()
+            mock_boto_client.return_value = mock_client
+            mock_client.invoke_model.side_effect = RuntimeError("unexpected bedrock error")
+
+            with patch.object(vs, "_normalize_image_to_base64", new_callable=AsyncMock, return_value="AAAA"):
+                result = await vs._process_image_embeddings_bedrock(
+                    image_chunks=[{"metadata": {}}],
+                    image_base64s=["AAAA"],
+                )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_bedrock_gather_exception_logged(self):
+        """Exception in gather results should be logged."""
+        vs = _make_vectorstore()
+        vs.aws_access_key_id = "key"
+        vs.aws_secret_access_key = "secret"
+        vs.region_name = "us-east-1"
+
+        with patch("boto3.client") as mock_boto_client:
+            mock_client = MagicMock()
+            mock_boto_client.return_value = mock_client
+            mock_client.invoke_model.side_effect = Exception("gather level error")
+
+            with patch.object(vs, "_normalize_image_to_base64", new_callable=AsyncMock, return_value="AAAA"):
+                result = await vs._process_image_embeddings_bedrock(
+                    image_chunks=[{"metadata": {}}],
+                    image_base64s=["AAAA"],
+                )
+
+        assert result == []
+
+
+# ===================================================================
+# _process_image_embeddings_jina exception handling (lines 733-734)
+# ===================================================================
+
+class TestProcessImageEmbeddingsJinaException:
+    @pytest.mark.asyncio
+    async def test_jina_batch_exception_logged(self):
+        """When a Jina batch raises, should log warning and continue."""
+        vs = _make_vectorstore()
+        vs.api_key = "test-key"
+
+        with patch("app.modules.transformers.vectorstore.httpx.AsyncClient") as mock_httpx:
+            mock_client = AsyncMock()
+            mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            mock_response = MagicMock()
+            mock_response.status_code = 500
+            mock_response.json.return_value = {"detail": "error"}
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            with patch.object(vs, "_normalize_image_to_base64", new_callable=AsyncMock, return_value="AAAA"):
+                result = await vs._process_image_embeddings_jina(
+                    image_chunks=[{"metadata": {}}],
+                    image_base64s=["data:image/png;base64,AAAA"],
+                )
+
+        assert result == []
+
+
+# ===================================================================
+# index_documents unexpected exception (lines 908-909, 1051-1052, 1104-1105, 1156-1158)
+# ===================================================================
+
+class TestIndexDocumentsExceptions:
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_raises_indexing_error(self):
+        """Generic exceptions during indexing should be wrapped in IndexingError."""
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(side_effect=RuntimeError("unexpected"))
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_llm",
+            return_value=(MagicMock(), {"isMultimodal": False}),
+        ):
+            with pytest.raises(IndexingError):
+                await vs.index_documents(
+                    BlocksContainer(blocks=[], block_groups=[]),
+                    "org-1", "rec-1", "vr-1", "text/plain",
+                )
+
+    @pytest.mark.asyncio
+    async def test_text_document_processing_error(self):
+        """Exception during text block processing should raise DocumentProcessingError."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+
+        # Make nlp raise to trigger DocumentProcessingError
+        vs.nlp = MagicMock(side_effect=RuntimeError("nlp failed"))
+
+        text_block = Block(
+            type=BlockType.TEXT,
+            format=DataFormat.MARKDOWN,
+            data="some text content",
+            index=0,
+        )
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_llm",
+            return_value=(MagicMock(), {"isMultimodal": False}),
+        ):
+            with pytest.raises(DocumentProcessingError, match="Failed to create text document"):
+                await vs.index_documents(
+                    BlocksContainer(blocks=[text_block], block_groups=[]),
+                    "org-1", "rec-1", "vr-1", "text/plain",
+                )
+
+    @pytest.mark.asyncio
+    async def test_image_document_processing_error(self):
+        """Exception during image block processing should raise DocumentProcessingError."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+
+        mock_doc = MagicMock()
+        mock_doc.sents = []
+        vs.nlp = MagicMock(return_value=mock_doc)
+
+        image_block = Block(
+            type=BlockType.IMAGE,
+            format=DataFormat.JSON,
+            data={"uri": "data:image/png;base64,AAAA"},
+            index=0,
+        )
+
+        # Make describe_images raise
+        vs.describe_images = AsyncMock(side_effect=RuntimeError("describe failed"))
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_llm",
+            return_value=(MagicMock(), {"isMultimodal": True}),
+        ):
+            with pytest.raises(DocumentProcessingError, match="Failed to create image document"):
+                await vs.index_documents(
+                    BlocksContainer(blocks=[image_block], block_groups=[]),
+                    "org-1", "rec-1", "vr-1", "image/png",
+                )
+
+    @pytest.mark.asyncio
+    async def test_embedding_creation_exception_wraps(self):
+        """Exception during _create_embeddings should raise EmbeddingError."""
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock(side_effect=RuntimeError("embed failed"))
+
+        mock_doc = MagicMock()
+        mock_doc.sents = []
+        vs.nlp = MagicMock(return_value=mock_doc)
+
+        text_block = Block(
+            type=BlockType.TEXT,
+            format=DataFormat.MARKDOWN,
+            data="hello world",
+            index=0,
+        )
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_llm",
+            return_value=(MagicMock(), {"isMultimodal": False}),
+        ):
+            with pytest.raises(EmbeddingError, match="Failed to create or store embeddings"):
+                await vs.index_documents(
+                    BlocksContainer(blocks=[text_block], block_groups=[]),
+                    "org-1", "rec-1", "vr-1", "text/plain",
+                )
+
+
+# ===================================================================
+# _create_embeddings unexpected exception (line 908-909)
+# ===================================================================
+
+class TestCreateEmbeddingsUnexpectedException:
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_in_create_embeddings(self):
+        """Generic exception in _create_embeddings should raise IndexingError."""
+        from langchain_core.documents import Document
+
+        vs = _make_vectorstore()
+        vs.dense_embeddings = MagicMock()
+        vs.vector_store = MagicMock()
+
+        # Mock _is_local_cpu_embedding
+        vs._is_local_cpu_embedding = MagicMock(return_value=False)
+
+        # Make the documents contain something that triggers an error in the batching
+        # by mocking aadd_documents to raise
+        vs.vector_store.aadd_documents = AsyncMock(side_effect=RuntimeError("batch fail"))
+
+        docs = [Document(page_content="test", metadata={"orgId": "o1"})]
+
+        with pytest.raises(VectorStoreError):
+            await vs._create_embeddings(docs, "rec-1", "vr-1")

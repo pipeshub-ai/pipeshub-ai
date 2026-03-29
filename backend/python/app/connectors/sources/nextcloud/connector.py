@@ -328,7 +328,7 @@ def extract_response_body(response) -> Optional[bytes]:
             logger = logging.getLogger(__name__)
             logger.debug(f"Failed to extract text from response: {e}")
 
-    if hasattr(response, 'response') and hasattr(response.response, 'content'):
+    if hasattr(response, 'response'):
         try:
             content = response.response.content
             if content is not None:
