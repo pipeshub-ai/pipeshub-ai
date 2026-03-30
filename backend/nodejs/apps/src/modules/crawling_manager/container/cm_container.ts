@@ -11,6 +11,12 @@ import { CrawlingSchedulerService } from '../services/crawling_service';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { ConnectorsCrawlingService } from '../services/connectors/connectors';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
+import { IMessageProducer } from '../../../libs/types/messaging.types';
+import {
+  getMessageBrokerType,
+  createMessageProducer,
+  buildRedisBrokerConfig,
+} from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Crawling Manager Container',
@@ -71,8 +77,22 @@ export class CrawlingManagerContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
 
+      // Create broker-agnostic message producer
+      const brokerType = getMessageBrokerType();
+      const messageProducer = createMessageProducer(
+        brokerType,
+        brokerType === 'kafka' ? appConfig.kafka : undefined,
+        brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
+        container.get('Logger'),
+      );
+      await messageProducer.connect();
+
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
+
       const syncEventsService = new SyncEventProducer(
-        appConfig.kafka,
+        messageProducer,
         container.get('Logger'),
       );
       await syncEventsService.start();
@@ -111,13 +131,12 @@ export class CrawlingManagerContainer {
   static async dispose(): Promise<void> {
     if (this.instance) {
       try {
-        // Get specific services that need to be disconnected
         const redisService = this.instance.isBound('RedisService')
           ? this.instance.get<RedisService>('RedisService')
           : null;
 
-        const syncEventsService = this.instance.isBound('SyncEventProducer')
-          ? this.instance.get<SyncEventProducer>('SyncEventProducer')
+        const messageProducer = this.instance.isBound('MessageProducer')
+          ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
           
         if (redisService && redisService.isConnected()) {
@@ -141,9 +160,9 @@ export class CrawlingManagerContainer {
           this.logger.info('KeyValueStoreService disconnected successfully');
         }
 
-        if (syncEventsService && syncEventsService.isConnected()) {
-          await syncEventsService.disconnect();
-          this.logger.info('SyncEventProducer disconnected successfully');
+        if (messageProducer && messageProducer.isConnected()) {
+          await messageProducer.disconnect();
+          this.logger.info('MessageProducer disconnected successfully');
         }
 
         this.logger.info(
@@ -167,26 +186,18 @@ export function setupCrawlingDependencies(
   container: Container,
   redisConfig: RedisConfig,
 ): void {
-  // Bind Redis config
   container.bind<RedisConfig>('RedisConfig').toConstantValue(redisConfig);
-
-  // Bind crawling connector services
 
   container
     .bind<ConnectorsCrawlingService>(ConnectorsCrawlingService)
     .to(ConnectorsCrawlingService)
     .inSingletonScope();
 
-  // Bind task factory
-  // Removed CrawlingTaskFactory; inject ConnectorsCrawlingService directly
-
-  // Bind core services
   container
     .bind<CrawlingSchedulerService>(CrawlingSchedulerService)
     .to(CrawlingSchedulerService)
     .inSingletonScope();
 
-  // Bind crawling worker service
   container
     .bind<CrawlingWorkerService>(CrawlingWorkerService)
     .to(CrawlingWorkerService)

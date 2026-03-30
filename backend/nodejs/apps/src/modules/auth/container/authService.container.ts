@@ -14,6 +14,12 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
 import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
+import { IMessageProducer } from '../../../libs/types/messaging.types';
+import {
+  getMessageBrokerType,
+  createMessageProducer,
+  buildRedisBrokerConfig,
+} from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Auth Service Container',
@@ -83,9 +89,22 @@ export class AuthServiceContainer {
         .bind<ConfigurationManagerService>('ConfigurationManagerService')
         .toConstantValue(configurationService);
 
-      // Initialize event producer for JIT provisioning
+      // Create broker-agnostic message producer
+      const brokerType = getMessageBrokerType();
+      const messageProducer = createMessageProducer(
+        brokerType,
+        brokerType === 'kafka' ? appConfig.kafka : undefined,
+        brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
+        logger,
+      );
+      await messageProducer.connect();
+
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
+
       const entityEventsService = new EntitiesEventProducer(
-        appConfig.kafka,
+        messageProducer,
         logger,
       );
       container
@@ -137,7 +156,6 @@ export class AuthServiceContainer {
   static async dispose(): Promise<void> {
     if (this.instance) {
       try {
-        // Get specific services that need to be disconnected
         const redisService = this.instance.isBound('RedisService')
           ? this.instance.get<RedisService>('RedisService')
           : null;
@@ -148,13 +166,10 @@ export class AuthServiceContainer {
           ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
           : null;
 
-        const entityEventsService = this.instance.isBound(
-          'EntitiesEventProducer',
-        )
-          ? this.instance.get<EntitiesEventProducer>('EntitiesEventProducer')
+        const messageProducer = this.instance.isBound('MessageProducer')
+          ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
 
-        // Disconnect services if they have a disconnect method
         if (redisService && redisService.isConnected()) {
           await redisService.disconnect();
         }
@@ -163,8 +178,8 @@ export class AuthServiceContainer {
           await keyValueStoreService.disconnect();
         }
 
-        if (entityEventsService && entityEventsService.isConnected()) {
-          await entityEventsService.stop();
+        if (messageProducer && messageProducer.isConnected()) {
+          await messageProducer.disconnect();
         }
 
         this.logger.info('All auth services disconnected successfully');
