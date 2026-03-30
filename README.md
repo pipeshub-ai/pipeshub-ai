@@ -85,10 +85,10 @@
 - [Connectors](#connectors)
 - [File Formats Supported](#file-formats-supported)
 - [Tech Stack](#tech-stack)
+- [Deployment Guide](#-deployment-guide)
 - [MCP Server](#mcp-server)
 - [SDKs](#sdks)
 - [RoadMap](#roadmap)
-- [Deployment Guide](#-deployment-guide)
 - [Contributing](#-contributing)
 - [Star Us on GitHub](#star--us-on-github)
 
@@ -202,16 +202,6 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **pandas** - Data analysis and manipulation
 - **etcd3** - Distributed key-value configuration store
 
-## RoadMap
-
-- Code Search
-- Workplace AI Agents
-- MCP
-- APIs and SDKs
-- Personalized Search
-- Highly available and scalable Kubernetes deployment
-- PageRank
-
 ## 🚀 Deployment Guide
 
 PipesHub (the Workplace AI Platform) can be run locally or deployed on the cloud using Docker Compose.
@@ -280,6 +270,16 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 | **Go SDK** | Go SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go) |
 
 > Need an SDK in another language? Reach out to us at developer@pipeshub.com
+
+## RoadMap
+
+- [ ] Code Search
+- [x] Workplace AI Agents
+- [x] MCP
+- [x] APIs and SDKs
+- [ ] Personalized Search
+- [ ] Highly available and scalable Kubernetes deployment
+- [ ] PageRank
 
 ## 👥 Contributing
 
