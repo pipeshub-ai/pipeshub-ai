@@ -105,14 +105,6 @@ spec:
                   key: neo4j-auth
             - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
               value: "yes"
-            - name: NEO4J_dbms_mode
-              value: "CORE"
-            - name: NEO4J_causal__clustering_minimum__core__cluster__size__at__formation
-              value: {{ .Values.neo4j.replicaCount | quote }}
-            - name: NEO4J_causal__clustering_minimum__core__cluster__size__at__runtime
-              value: {{ .Values.neo4j.replicaCount | quote }}
-            - name: NEO4J_causal__clustering_initial__discovery__members
-              value: "{{ include "pipeshub-ai.fullname" . }}-neo4j-0.{{ include "pipeshub-ai.fullname" . }}-neo4j-headless.{{ .Release.Namespace }}.svc.cluster.local:5000,{{ include "pipeshub-ai.fullname" . }}-neo4j-1.{{ include "pipeshub-ai.fullname" . }}-neo4j-headless.{{ .Release.Namespace }}.svc.cluster.local:5000,{{ include "pipeshub-ai.fullname" . }}-neo4j-2.{{ include "pipeshub-ai.fullname" . }}-neo4j-headless.{{ .Release.Namespace }}.svc.cluster.local:5000"
             - name: NEO4J_dbms_connector_bolt_advertised__address
               value: "$(POD_NAME).{{ include "pipeshub-ai.fullname" . }}-neo4j-headless.{{ .Release.Namespace }}.svc.cluster.local:7687"
             - name: NEO4J_dbms_connector_http_advertised__address

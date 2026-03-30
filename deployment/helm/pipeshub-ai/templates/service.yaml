@@ -16,9 +16,9 @@ spec:
       protocol: TCP
       name: connector
     - port: 3000
-      targetPort: frontend
+      targetPort: backend
       protocol: TCP
-      name: frontend
+      name: backend
     - port: 8000
       targetPort: query
       protocol: TCP
@@ -29,3 +29,4 @@ spec:
       name: indexing
   selector:
     {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: main

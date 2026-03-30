@@ -269,7 +269,7 @@ ingress:
       paths:
         - path: /
           pathType: Prefix
-          port: 3000
+          port: 3001
           serviceName: pipeshub-ai
   tls:
     - secretName: pipeshub-tls

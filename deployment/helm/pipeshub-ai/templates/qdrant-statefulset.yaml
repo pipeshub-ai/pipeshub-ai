@@ -103,11 +103,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "pipeshub-ai.fullname" . }}-secrets
                   key: qdrant-api-key
+          {{- if gt (int .Values.qdrant.replicaCount) 1 }}
             - name: QDRANT__CLUSTER__ENABLED
-              value: "{{ gt (int .Values.qdrant.replicaCount) 1 }}"
+              value: "true"
             - name: QDRANT__CLUSTER__P2P__PORT
               value: "6335"
-          {{- if gt (int .Values.qdrant.replicaCount) 1 }}
             - name: QDRANT__CLUSTER__P2P__PEERS
               value: "{{- range $i := until (int .Values.qdrant.replicaCount) }}{{ include "pipeshub-ai.fullname" $ }}-qdrant-{{ $i }}.{{ include "pipeshub-ai.fullname" $ }}-qdrant-headless.{{ $.Release.Namespace }}.svc.cluster.local:6335{{ if lt $i (sub (int $.Values.qdrant.replicaCount) 1) }},{{ end }}{{- end }}"
           {{- end }}

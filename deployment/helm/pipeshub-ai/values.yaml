@@ -4,7 +4,7 @@ replicaCount: 3  # High Availability: 3 replicas for fault tolerance
 image:
   repository: pipeshubai/pipeshub-ai
   pullPolicy: IfNotPresent
-  tag: "v0.3.0"  # Using stable git tag version
+  tag: "latest"  # v0.3.0 is not available on Docker Hub
 
 imagePullSecrets: []
 nameOverride: ""
@@ -13,19 +13,9 @@ fullnameOverride: ""
 podAnnotations: {}
 podLabels: {}
 
-podSecurityContext:
-  runAsUser: 1000
-  fsGroup: 1000
-  fsGroupChangePolicy: "OnRootMismatch"
-  runAsNonRoot: true
-  seccompProfile:
-    type: RuntimeDefault
+podSecurityContext: {}
 
-securityContext:
-  allowPrivilegeEscalation: false
-  capabilities:
-    drop:
-      - ALL
+securityContext: {}
 
 service:
   type: ClusterIP
@@ -39,7 +29,7 @@ ingress:
     #   paths:
     #     - path: /
     #       pathType: ImplementationSpecific
-    #       port: 3000
+    #       port: 3001
     #       serviceName: pipeshub-ai
     # - host: pipeshub-connector.example.com
     #   paths:
@@ -114,7 +104,7 @@ config:
   logLevel: "debug"
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
   # Example: "https://app.example.com,https://admin.example.com"
-  # For development: --set config.allowedOrigins="http://localhost:3000"
+  # For development: --set config.allowedOrigins="http://localhost:3001"
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
@@ -124,6 +114,7 @@ secretKey: "" # Fill
 
 mongodb:
   replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
+  replicaSetAvailable: false  # Set true only when MongoDB is configured as a replica set
   tls:
     enabled: false
     securityContext:
@@ -315,18 +306,8 @@ qdrant:
     requests:
       cpu: 500m
       memory: 512Mi
-  podSecurityContext:
-    runAsUser: 1000
-    fsGroup: 1000
-    fsGroupChangePolicy: OnRootMismatch
-    runAsNonRoot: true
-    seccompProfile:
-      type: RuntimeDefault
-  securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop:
-      - ALL 
+  podSecurityContext: {}
+  securityContext: {}
   nodeSelector: {}
   tolerations: []
   affinity: {}

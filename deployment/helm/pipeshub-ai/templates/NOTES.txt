@@ -58,10 +58,13 @@ Configuration:
      NOTE: It may take a few minutes for the LoadBalancer IP to be available.
            You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "pipeshub-ai.fullname" . }}'
   export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "pipeshub-ai.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo http://$SERVICE_IP:3000
+  echo "Frontend: http://$SERVICE_IP:3001"
+  echo "Backend:  http://$SERVICE_IP:3000"
 {{- else if contains "ClusterIP" .Values.service.type }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "pipeshub-ai.fullname" . }} 3001:3001 &
   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "pipeshub-ai.fullname" . }} 3000:3000 &
-  echo "Visit http://127.0.0.1:3000 to access the application"
+  echo "Visit frontend at http://127.0.0.1:3001"
+  echo "Backend API available at http://127.0.0.1:3000"
 {{- end }}
 
 🔐 SECURITY REMINDERS:

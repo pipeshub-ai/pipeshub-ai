@@ -8,6 +8,11 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
@@ -19,6 +24,7 @@ spec:
       {{- end }}
       labels:
         {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: main
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -42,7 +48,7 @@ spec:
             - name: connector
               containerPort: 8088
               protocol: TCP
-            - name: frontend
+            - name: backend
               containerPort: 3000
               protocol: TCP
             - name: query
@@ -57,6 +63,8 @@ spec:
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: KV_STORE_TYPE
+              value: "redis"
             - name: ALLOWED_ORIGINS
               value: {{ .Values.config.allowedOrigins | quote }}
             
@@ -127,8 +135,9 @@ spec:
               value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
             
             # Redis config
+            {{- if eq .Values.redis.architecture "standalone" }}
             - name: REDIS_HOST
-              value: "{{ include "pipeshub-ai.fullname" . }}-redis"
+              value: "{{ include "pipeshub-ai.fullname" . }}-redis-master"
             - name: REDIS_PORT
               value: "6379"
             {{- if .Values.redis.auth.enabled }}
@@ -138,12 +147,33 @@ spec:
                   name: {{ include "pipeshub-ai.fullname" . }}-secrets
                   key: redis-password
             - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis:6379"
+              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
             {{- else }}
             - name: REDIS_PASSWORD
               value: ""
             - name: REDIS_URL
-              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis:6379"
+              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+            {{- end }}
+            {{- else }}
+            {{- /* Replication+Sentinel: connect to node-0 (master) via headless DNS */}}
+            - name: REDIS_HOST
+              value: "{{ include "pipeshub-ai.fullname" . }}-redis-node-0.{{ include "pipeshub-ai.fullname" . }}-redis-headless"
+            - name: REDIS_PORT
+              value: "6379"
+            {{- if .Values.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: redis-password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis-node-0.{{ include "pipeshub-ai.fullname" . }}-redis-headless:6379"
+            {{- else }}
+            - name: REDIS_PASSWORD
+              value: ""
+            - name: REDIS_URL
+              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis-node-0.{{ include "pipeshub-ai.fullname" . }}-redis-headless:6379"
+            {{- end }}
             {{- end }}
             
             # MongoDB config
@@ -167,7 +197,7 @@ spec:
             - name: MONGO_DB_NAME
               value: "es"
             - name: REPLICA_SET_AVAILABLE
-              value: "true"  # MongoDB replica set enabled for HA
+              value: {{ .Values.mongodb.replicaSetAvailable | toString | quote }}
             
             # Qdrant config
             - name: QDRANT_API_KEY
@@ -207,7 +237,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /api/v1/health
-              port: frontend
+              port: backend
             initialDelaySeconds: 90
             periodSeconds: 10
             timeoutSeconds: 5
@@ -215,7 +245,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /api/v1/health
-              port: frontend
+              port: backend
             initialDelaySeconds: 120
             periodSeconds: 15
             timeoutSeconds: 5
