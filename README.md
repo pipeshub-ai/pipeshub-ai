@@ -74,7 +74,27 @@
   </a>
 </p>
 
+<!--Table of Contents-->
+
+## Table of Contents
+
+- [About PipesHub](#about-pipeshub)
+- [High Level Architecture Diagram](#high-level-architecture-diagram)
+- [Spotlight Features](#spotlight-features)
+- [Unmatched Value of PipesHub](#unmatched-value-of-pipeshub)
+- [Connectors](#connectors)
+- [File Formats Supported](#file-formats-supported)
+- [Tech Stack](#tech-stack)
+- [MCP Server](#mcp-server)
+- [SDKs](#sdks)
+- [RoadMap](#roadmap)
+- [Deployment Guide](#-deployment-guide)
+- [Contributing](#-contributing)
+- [Star Us on GitHub](#star--us-on-github)
+
 <!--Intro-->
+
+<h2 id="about-pipeshub">About PipesHub</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> is a fully extensible and explainable workplace AI platform for enterprise search and workflow automation.
 In most companies, important work data is spread across multiple apps like Google Workspace, Microsoft 365, Slack, Jira, Confluence, and more. PipesHub AI helps you quickly find the right information using natural language search—just like Google.
