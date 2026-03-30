@@ -1,7 +1,7 @@
 """Execute SQL Query Tool for chatbot agent.
 
 This module provides a tool for executing SQL queries against external data sources
-like PostgreSQL and Snowflake. The tool takes a SQL query and source name,
+like PostgreSQL, Snowflake, and MariaDB. The tool takes a SQL query and source name,
 determines the appropriate client to use, executes the query, and returns
 results as markdown.
 """
@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.utils.conversation_tasks import register_task
+from app.utils.conversation_tasks import register_task, _rows_to_csv_bytes
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -37,7 +37,11 @@ class ExecuteQueryArgs(BaseModel):
     )
     source_name: str = Field(
         ...,
-        description="Name of the data source to query (e.g., 'PostgreSQL', 'Snowflake'). Case-insensitive."
+        description="Name of the data source to query (e.g., 'PostgreSQL', 'Snowflake', 'MariaDB'). Case-insensitive."
+    )
+    connector_id: Optional[str] = Field(
+        default=None,
+        description="Optional connector instance ID to force query execution on a specific connector. If omitted, the tool falls back to default connector resolution by source type."
     )
     reason: str = Field(
         default="Executing SQL query to retrieve data",
@@ -51,6 +55,8 @@ def _detect_source_type(source_name: str) -> str:
         return "postgres"
     elif "snowflake" in source_lower:
         return "snowflake"
+    elif "mariadb" in source_lower:
+        return "mariadb"
     else:
         return "unknown"
 
@@ -181,17 +187,12 @@ def _source_type_to_connector_type(source_type: str) -> Optional[str]:
     mapping = {
         "postgres": "PostgreSQL",  # Matches app.type in ArangoDB
         "snowflake": "Snowflake",  # Matches app.type in ArangoDB
+        "mariadb": "MariaDB",  # Matches app.type in ArangoDB
     }
     return mapping.get(source_type)
 
 
-def _rows_to_csv_bytes(columns: List[str], rows: List[tuple]) -> bytes:
-    """Serialise columns + rows into UTF-8 encoded CSV bytes."""
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(columns)
-    writer.writerows(rows)
-    return buf.getvalue().encode("utf-8")
+
 
 
 def _results_to_markdown(columns: List[str], rows: List[tuple]) -> str:
@@ -409,6 +410,63 @@ async def _execute_snowflake_query(
         }
 
 
+async def _execute_mariadb_query(
+    query: str,
+    config_service: "ConfigurationService",
+    connector_instance_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute a query against MariaDB.
+    
+    Args:
+        query: SQL query to execute
+        config_service: Configuration service
+        connector_instance_id: Optional connector instance ID
+        
+    Returns:
+        Dict with 'ok', 'columns', 'rows' or 'error'
+    """
+    try:
+        from app.sources.client.mariadb.mariadb import MariaDBClientBuilder
+
+        logger.debug("🔍 [_execute_mariadb_query] Building client from services...")
+        client_builder = await MariaDBClientBuilder.build_from_services(
+            logger=logger,
+            config_service=config_service,
+            connector_instance_id=connector_instance_id,
+        )
+
+        client = client_builder.get_client()
+        logger.debug(f"🔍 [_execute_mariadb_query] Client built: {client.get_connection_info()}")
+
+        with client:
+            connection_info = client.get_connection_info()
+            logger.info(
+                "🔍 [_execute_mariadb_query] Connected to MariaDB: "
+                f"host={connection_info.get('host')}, "
+                f"port={connection_info.get('port')}, "
+                f"database={connection_info.get('database')}, "
+                f"user={connection_info.get('user')}"
+            )
+            logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
+
+            columns, rows = client.execute_query_raw(query)
+
+            logger.info(
+                f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
+            )
+
+            return {
+                "ok": True,
+                "columns": columns,
+                "rows": rows,
+            }
+    except Exception as e:
+        logger.error(f"MariaDB query execution failed: {e}", exc_info=True)
+        return {
+            "ok": False,
+            "error": f"MariaDB query failed: {str(e)}"
+        }
+
 async def _execute_query_impl(
     query: str,
     source_name: str,
@@ -442,10 +500,11 @@ async def _execute_query_impl(
     if source_type == "unknown":
         return {
             "ok": False,
-            "error": f"Unknown data source type: '{source_name}'. Supported types: PostgreSQL, Snowflake."
+            "error": f"Unknown data source type: '{source_name}'. Supported types: PostgreSQL, Snowflake, MariaDB."
         }
     
-    # Look up connector_instance_id if not provided
+    # Normalize connector id input and look up fallback if not provided
+    connector_instance_id = (connector_instance_id or "").strip() or None
     logger.debug(
         f"Connector lookup check: connector_instance_id={connector_instance_id}, "
         f"graph_provider={'present' if graph_provider else 'None'}, org_id={org_id}"
@@ -481,6 +540,12 @@ async def _execute_query_impl(
         )
     elif source_type == "snowflake":
         result = await _execute_snowflake_query(
+            query=query,
+            config_service=config_service,
+            connector_instance_id=connector_instance_id,
+        )
+    elif source_type == "mariadb":
+        result = await _execute_mariadb_query(
             query=query,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
@@ -546,18 +611,25 @@ def create_execute_query_tool(
     async def execute_sql_query_tool(
         query: str,
         source_name: str,
+        connector_id: Optional[str] = None,
         reason: str = "Executing SQL query to retrieve data",
     ) -> Dict[str, Any]:
-        """Execute a SQL query against an external data source (PostgreSQL, Snowflake, etc.).
+        """Execute a SQL query against an external data source (PostgreSQL, Snowflake, MariaDB, etc.).
         
         Use this tool when you need to:
         - Query a database directly to retrieve specific data
         - Execute SQL queries provided in the context or generated based on table schemas
         - Get live data from connected data sources
+
+        Important orchestration rule:
+        - This tool executes against one connector/database context per call.
+        - If required tables are from different connectors/databases, make separate tool calls and aggregate results in the model.
+        - Do not attempt cross-connector or cross-database joins in a single SQL statement.
         
         Args:
             query: The SQL query to execute (SELECT queries only for safety)
-            source_name: Name of the data source (e.g., 'PostgreSQL', 'Snowflake')
+            source_name: Name of the data source (e.g., 'PostgreSQL', 'Snowflake', 'MariaDB')
+            connector_id: Optional connector instance ID to target a specific connector
             reason: Explanation of why this query is needed
             
         Returns:
@@ -569,16 +641,23 @@ def create_execute_query_tool(
             }
             or {"ok": false, "error": "..."}
         """
-        logger.info(f"🔍 [execute_sql_query_tool] Called with source_name={source_name}, reason={reason}")
+        logger.info(
+            "🔍 [execute_sql_query_tool] Called with source_name=%s, connector_id=%s, reason=%s",
+            source_name,
+            connector_id,
+            reason,
+        )
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
         
         try:
+            requested_connector_id = (connector_id or "").strip() or None
+            effective_connector_id = requested_connector_id or connector_instance_id
             result = await _execute_query_impl(
                 query=query,
                 source_name=source_name,
                 config_service=config_service,
                 graph_provider=graph_provider,
-                connector_instance_id=connector_instance_id,
+                connector_instance_id=effective_connector_id,
                 org_id=org_id,
             )
             
@@ -591,20 +670,32 @@ def create_execute_query_tool(
             # Fire background CSV export task when all prerequisites are met
             raw_columns = result.pop("raw_columns", None)
             raw_rows = result.pop("raw_rows", None)
+            resolved_blob_store = blob_store
+            if not conversation_id:
+                logger.warning("Cannot register background CSV export task: conversation_id is missing")
+            if not org_id:
+                logger.warning("Cannot register background CSV export task: org_id is missing")
+            if not resolved_blob_store:
+                from app.modules.transformers.blob_storage import BlobStorage
 
+                resolved_blob_store = BlobStorage(
+                    logger=logger,
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                )
             if (
                 result.get("ok")
                 and raw_columns
                 and raw_rows
                 and conversation_id
-                and blob_store
+                and resolved_blob_store
                 and org_id
             ):
                 async def _save_csv_to_blob() -> Optional[Dict[str, Any]]:
                     try:
                         csv_bytes = _rows_to_csv_bytes(raw_columns, raw_rows)
                         file_name = f"query_result_{int(time.time())}.csv"
-                        upload_info = await blob_store.save_conversation_file_to_storage(
+                        upload_info = await resolved_blob_store.save_conversation_file_to_storage(
                             org_id=org_id,
                             conversation_id=conversation_id,
                             file_name=file_name,

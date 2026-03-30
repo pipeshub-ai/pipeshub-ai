@@ -515,7 +515,6 @@ def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     Get all agent tools (cached).
 
     Returns internal tools + user's configured toolset tools.
-    Also adds dynamic tools like fetch_full_record_tool.
     """
     tools = ToolLoader.load_tools(state)
 
@@ -772,6 +771,31 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
+
+        # Add dynamic execute_sql_query tool for database queries
+        config_service = state.get("config_service")
+        if config_service:
+            try:
+                from app.utils.execute_query import create_execute_query_tool
+                graph_provider = state.get("graph_provider")
+                org_id = state.get("org_id")
+                conversation_id = state.get("conversation_id")
+                blob_store = state.get("blob_store")
+                execute_query_tool = create_execute_query_tool(
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    conversation_id=conversation_id,
+                    blob_store=blob_store,
+                )
+                structured_tools.append(execute_query_tool)
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.debug("✅ Added execute_sql_query_tool for database queries")
+            except Exception as e:
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
 
         # Cache the StructuredTools for reuse
         state["_cached_schema_tools"] = structured_tools

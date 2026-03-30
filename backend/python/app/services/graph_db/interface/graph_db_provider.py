@@ -710,7 +710,7 @@ class IGraphDBProvider(ABC):
         record_id: str,
         relation_type: str,
         transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
         with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
@@ -731,7 +731,7 @@ class IGraphDBProvider(ABC):
         record_id: str,
         relation_type: str,
         transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
         with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
@@ -749,9 +749,9 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_virtual_record_ids_for_record_ids(
         self,
-        record_ids: List[str],
+        record_ids: list[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """
         Resolve record _keys to virtualRecordIds (e.g. to fetch blob for child records).
 

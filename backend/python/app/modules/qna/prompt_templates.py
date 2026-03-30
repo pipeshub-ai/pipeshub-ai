@@ -90,11 +90,15 @@ qna_prompt_instructions_1 = """
 
     **How to use:**
     - query: The SQL query to execute
-    - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake") - case-insensitive
+    - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake", "MariaDB") - case-insensitive
+    - connector_id: Connector instance ID from record metadata (Connector Id) when multiple connectors of same source type exist
     - reason: Brief explanation of why you need this data
 
     **CRITICAL RULES:**
     - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
+    - **ALWAYS pass the connector_id when present in retrieved record context. If connector_id is unavailable, call the tool without it and rely on default connector resolution.**
+    - **NEVER write a single SQL query that joins tables from different connector_id values or different databases/connectors.**
+    - **If data is split across connectors/databases, make separate execute_sql_query calls (one per connector/database), then combine/aggregate the results yourself in reasoning.**
     - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
     - The user wants to see data results.. Formulate the query internally and execute it via the tool.
     - After receiving results, present them in a clear markdown format (tables, lists, summaries).

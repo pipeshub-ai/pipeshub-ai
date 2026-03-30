@@ -70,6 +70,7 @@ class Connectors(Enum):
     GITLAB = "GITLAB"
     SNOWFLAKE = "SNOWFLAKE"
     POSTGRESQL = "POSTGRESQL"
+    MARIADB = "MARIADB"
 
     UNKNOWN = "UNKNOWN"
 
@@ -105,7 +106,8 @@ class AppGroups(Enum):
     GITLAB = "GitLab"
 
     SNOWFLAKE = "Snowflake"
-    POSTGRESQL = "PostgreSQL"  
+    POSTGRESQL = "PostgreSQL"
+    MARIADB = "MariaDB"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -312,7 +314,7 @@ RECONCILIATION_ENABLED_MIME_TYPES = {
     MimeTypes.PDF.value,
     MimeTypes.DOCX.value,
     MimeTypes.DOC.value,
-    MimeTypes.TEXT.value,
+    MimeTypes.PLAIN_TEXT.value,
     MimeTypes.HTML.value,
 }
 

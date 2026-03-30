@@ -40,6 +40,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -66,7 +67,7 @@ from app.connectors.sources.snowflake.data_fetcher import (
 )
 from app.models.entities import (
     FileRecord,
-    IndexingStatus,
+    ProgressStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -353,7 +354,7 @@ class SyncStats:
             default_value=True
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 120)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -1514,7 +1515,7 @@ class SnowflakeConnector(BaseConnector):
                 
                 # Use the correct filter key as defined in connector config
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
-                    record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 yield (record, [])  # Empty permissions - will inherit from parent
                 # Allow event loop to process other tasks
@@ -1579,7 +1580,7 @@ class SnowflakeConnector(BaseConnector):
                 )
                 # Use the correct filter key as defined in connector config
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.VIEWS.value):
-                    record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 # Enrich view with definition and source tables (for streaming later)
                 view.definition = definition
                 view.source_tables = source_tables
@@ -1647,7 +1648,7 @@ class SnowflakeConnector(BaseConnector):
                 
                 # Use the correct filter key as defined in connector config
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.STAGE_FILES.value):
-                    record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 yield (record, [])  
                 await asyncio.sleep(0)

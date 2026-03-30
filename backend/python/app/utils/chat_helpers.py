@@ -462,6 +462,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         rec["record_type"] = graph_rec.get("recordType") or rec.get("record_type", "")
                         rec["origin"] = graph_rec.get("origin") or rec.get("origin", "")
                         rec["connector_name"] = graph_rec.get("connectorName") or rec.get("connector_name", "")
+                        rec["connector_id"] = graph_rec.get("connectorId") or rec.get("connector_id", "")
                         rec["mime_type"] = graph_rec.get("mimeType") or rec.get("mime_type", "")
                         rec["weburl"] = graph_rec.get("webUrl") or rec.get("weburl", "")
                         rec["hide_weburl"] = graph_rec.get("hideWeburl", False)
@@ -568,6 +569,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         "mimeType": rec.get("mime_type", ""),
                         "orgId": rec.get("org_id", ""),
                         "connector": rec.get("connector_name", ""),
+                        "connectorId": rec.get("connector_id", ""),
                         "webUrl": rec.get("weburl", ""),
                         "hideWeburl": rec.get("hide_weburl", False),
                     },
@@ -1142,6 +1144,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[s
                         "recordVersion": record.get("version", ""),
                         "origin": origin,
                         "connector": meta.get("connector") or record.get("connector_name", ""),
+                        "connectorId": meta.get("connectorId") or record.get("connector_id", ""),
                         "blockText": block_text,
                         "blockType": str(block_type),
                         "bounding_box": extract_bounding_boxes(block.get("citation_metadata")),
@@ -1203,6 +1206,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["version"] = graphDb_record.get("version")
                 record["origin"] = graphDb_record.get("origin")
                 record["connector_name"] = graphDb_record.get("connectorName")
+                record["connector_id"] = graphDb_record.get("connectorId") or record.get("connector_id", "")
                 record["weburl"] = graphDb_record.get("webUrl")
                 record["preview_renderable"] = graphDb_record.get("previewRenderable", True)
                 record["hide_weburl"] = graphDb_record.get("hideWeburl", False)
@@ -1285,6 +1289,7 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
             "version": metadata.get("version",""),
             "origin": metadata.get("origin",""),
             "connector_name": metadata.get("connector") or metadata.get("connectorName",""),
+            "connector_id": metadata.get("connectorId", ""),
             "virtual_record_id": virtual_record_id,
             "mime_type": metadata.get("mimeType",""),
             "created_at": metadata.get("createdAtTimestamp", ""),
@@ -1899,6 +1904,13 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             content.append({
                 "type": "text",
                 "text": rendered_form
+            })
+            content.append({
+                "type": "text",
+                "text": (
+                    f"* Connector Name: {record.get('connector_name', '')}\n"
+                    f"* Connector Id: {record.get('connector_id', '')}\n"
+                )
             })
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"

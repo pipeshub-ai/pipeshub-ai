@@ -925,6 +925,7 @@ const FiltersSection = forwardRef<HTMLDivElement, FiltersSectionProps>(
                             size="small"
                             onClick={handleLoadMore}
                             disabled={isLoading}
+                            onMouseDown={(e) => e.preventDefault()}
                             sx={{ 
                               textTransform: 'none',
                               fontSize: '0.75rem',
