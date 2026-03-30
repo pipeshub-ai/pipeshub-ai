@@ -422,6 +422,8 @@ def nextcloud_connector(mock_logger_fullcov, mock_data_entities_processor_fullco
             data_store_provider=mock_data_store_provider_fullcov,
             config_service=mock_config_service,
             connector_id="nc-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 

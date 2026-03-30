@@ -84,6 +84,8 @@ def connector(mock_logger, mock_dep, mock_dsp, mock_cs):
             data_store_provider=mock_dsp,
             config_service=mock_cs,
             connector_id="s3-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -203,14 +205,14 @@ class TestHelperFunctions:
 class TestCreateS3Permissions:
     @pytest.mark.asyncio
     async def test_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -218,7 +220,7 @@ class TestCreateS3Permissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -226,7 +228,7 @@ class TestCreateS3Permissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
         mock_tx.get_user_by_id = AsyncMock(side_effect=Exception("DB error"))
@@ -236,7 +238,7 @@ class TestCreateS3Permissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
         mock_tx.get_user_by_id = AsyncMock(return_value={"email": ""})

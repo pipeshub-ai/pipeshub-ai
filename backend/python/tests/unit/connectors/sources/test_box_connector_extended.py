@@ -71,6 +71,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="personal",
+        created_by="test-user-id",
     )
     return connector
 

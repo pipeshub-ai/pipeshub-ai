@@ -92,6 +92,8 @@ def connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="zm-fc-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 

@@ -106,6 +106,8 @@ def azure_files_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="az-files-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -398,6 +400,8 @@ def connector(mock_logger_cov, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="azf-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -734,7 +738,7 @@ class TestAzureFilesExtensionFilter:
 class TestAzureFilesRecordGroups:
     @pytest.mark.asyncio
     async def test_create_record_groups_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_shares(["share1", "share2"])
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
@@ -742,7 +746,7 @@ class TestAzureFilesRecordGroups:
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_with_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = "creator@test.com"
         connector.created_by = "user-1"
         await connector._create_record_groups_for_shares(["share1"])
@@ -753,7 +757,7 @@ class TestAzureFilesRecordGroups:
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = None
         connector.created_by = None
         await connector._create_record_groups_for_shares(["share1"])
@@ -769,7 +773,7 @@ class TestAzureFilesRecordGroups:
 
     @pytest.mark.asyncio
     async def test_create_record_groups_none_share(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_shares([None, "valid"])
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         assert len(args) == 1
@@ -943,6 +947,8 @@ def conn(logger, proc, provider, cfg):
             data_store_provider=provider,
             config_service=cfg,
             connector_id="azf-95",
+            scope="personal",
+            created_by="test-user-id",
         )
     c.account_name = "teststorage"
     return c
@@ -1075,7 +1081,7 @@ class TestInitBranches:
         })
         result = await conn.init()
         assert result is True
-        assert conn.connector_scope == "TEAM"
+        assert conn.scope == "TEAM"
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
@@ -1107,7 +1113,7 @@ class TestInitBranches:
         })
         result = await conn.init()
         assert result is True
-        assert conn.connector_scope == ConnectorScope.PERSONAL.value
+        assert conn.scope == ConnectorScope.PERSONAL.value
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
@@ -1528,9 +1534,11 @@ class TestProcessAzureFilesItem:
                 logger=logger, data_entities_processor=proc,
                 data_store_provider=provider, config_service=cfg,
                 connector_id="azf-95",
+                scope="personal",
+                created_by="test-user-id",
             )
         c.account_name = "teststorage"
-        c.connector_scope = ConnectorScope.TEAM.value
+        c.scope = ConnectorScope.TEAM.value
 
         item = _file_item("file.txt", "file.txt", size=100, etag='"new-etag"')
         record, perms = await c._process_azure_files_item(item, "myshare")
@@ -1554,9 +1562,11 @@ class TestProcessAzureFilesItem:
                 logger=logger, data_entities_processor=proc,
                 data_store_provider=provider, config_service=cfg,
                 connector_id="azf-95",
+                scope="personal",
+                created_by="test-user-id",
             )
         c.account_name = "teststorage"
-        c.connector_scope = ConnectorScope.TEAM.value
+        c.scope = ConnectorScope.TEAM.value
 
         item = _file_item("path.txt", "new/path.txt", size=100, etag='"0xABC"')
         record, perms = await c._process_azure_files_item(item, "myshare")
@@ -1684,9 +1694,11 @@ class TestProcessAzureFilesItem:
                 logger=logger, data_entities_processor=proc,
                 data_store_provider=provider, config_service=cfg,
                 connector_id="azf-95",
+                scope="personal",
+                created_by="test-user-id",
             )
         c.account_name = "teststorage"
-        c.connector_scope = ConnectorScope.TEAM.value
+        c.scope = ConnectorScope.TEAM.value
         item = _file_item("f.txt", "f.txt")
         record, _ = await c._process_azure_files_item(item, "share")
         assert record is not None
@@ -1707,9 +1719,11 @@ class TestProcessAzureFilesItem:
                 logger=logger, data_entities_processor=proc,
                 data_store_provider=provider, config_service=cfg,
                 connector_id="azf-95",
+                scope="personal",
+                created_by="test-user-id",
             )
         c.account_name = "teststorage"
-        c.connector_scope = ConnectorScope.TEAM.value
+        c.scope = ConnectorScope.TEAM.value
         item = _file_item("f.txt", "f.txt")
         item["etag"] = None
         item["file_id"] = None
@@ -1724,14 +1738,14 @@ class TestProcessAzureFilesItem:
 class TestCreatePermissions:
     @pytest.mark.asyncio
     async def test_team_scope(self, conn):
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
         assert len(perms) == 1
         assert perms[0].entity_type == EntityType.ORG
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
-        conn.connector_scope = ConnectorScope.PERSONAL.value
+        conn.scope = ConnectorScope.PERSONAL.value
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
@@ -1740,7 +1754,7 @@ class TestCreatePermissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
-        conn.connector_scope = ConnectorScope.PERSONAL.value
+        conn.scope = ConnectorScope.PERSONAL.value
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
@@ -1749,7 +1763,7 @@ class TestCreatePermissions:
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         type(conn).data_entities_processor = PropertyMock(side_effect=Exception("fail"))
         try:
             perms = await conn._create_azure_files_permissions("share", "path")
@@ -2209,7 +2223,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(external_revision_id="0xOLD")
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is not None
@@ -2227,7 +2241,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": True,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(
             external_revision_id="0xOLD",
             is_file=False,
@@ -2267,7 +2281,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(external_revision_id="0xOLD")
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is not None
@@ -2282,7 +2296,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(external_revision_id="0xOLD")
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is not None
@@ -2297,7 +2311,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(external_revision_id="0xOLD")
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is not None
@@ -2311,7 +2325,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(external_revision_id="0xOLD")
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is not None
@@ -2327,7 +2341,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "content_md5": b"\xAB\xCD",
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(external_revision_id="0xOLD")
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is not None
@@ -2344,7 +2358,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(
             external_revision_id="0xOLD",
             external_record_id="share1/rootfile.txt",
@@ -2365,7 +2379,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         idx_filters = MagicMock()
         idx_filters.is_enabled.return_value = False
         idx_filters.__bool__ = MagicMock(return_value=True)
@@ -2394,7 +2408,7 @@ class TestCheckAndFetchUpdatedRecord:
                 "is_directory": False,
             })
         )
-        conn.connector_scope = ConnectorScope.TEAM.value
+        conn.scope = ConnectorScope.TEAM.value
         record = _make_file_record(
             external_record_id="folder/file.txt",
             external_record_group_id="share1",
@@ -2505,6 +2519,8 @@ class TestCreateConnector:
             data_store_provider=provider,
             config_service=cfg,
             connector_id="new-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert isinstance(result, AzureFilesConnector)
         mock_proc.initialize.assert_awaited_once()
@@ -2525,6 +2541,8 @@ class TestCreateConnector:
             data_store_provider=provider,
             config_service=cfg,
             connector_id="new-2",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert isinstance(result, AzureFilesConnector)
         call_kwargs = mock_proc_cls.call_args
@@ -2543,6 +2561,8 @@ class TestCreateConnector:
             data_store_provider=provider,
             config_service=cfg,
             connector_id="new-3",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert isinstance(result, AzureFilesConnector)
         call_kwargs = mock_proc_cls.call_args

@@ -100,7 +100,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov")
+    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
 
 
 def _make_mock_response(status=200, data=None):

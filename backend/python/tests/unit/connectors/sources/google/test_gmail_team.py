@@ -1366,6 +1366,8 @@ def connector_fullcov():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="gmail-fc-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()

@@ -588,6 +588,8 @@ def _make_connector_cov():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="personal",
+        created_by="test-user-id",
     )
     connector._tx_store = mock_tx_store
     return connector
@@ -2506,6 +2508,8 @@ class TestLinearCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-conn",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, LinearConnector)
 
@@ -2552,6 +2556,8 @@ def _make_connector_fullcov():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="personal",
+        created_by="test-user-id",
     )
     connector._tx_store = mock_tx_store
     return connector

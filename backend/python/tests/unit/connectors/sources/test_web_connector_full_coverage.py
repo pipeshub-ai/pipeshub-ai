@@ -47,6 +47,8 @@ def _make_connector():
         data_store_provider=dsp,
         config_service=cs,
         connector_id="web-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     return connector
 

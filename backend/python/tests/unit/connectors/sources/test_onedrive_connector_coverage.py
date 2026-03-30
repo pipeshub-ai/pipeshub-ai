@@ -97,7 +97,7 @@ def _make_connector():
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-cov")
+    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-cov", "team", "test-user-id")
     return connector
 
 

@@ -114,6 +114,8 @@ def s3_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -257,20 +259,20 @@ class TestGetAppUsers:
 class TestCreateRecordGroupsForBuckets:
     @pytest.mark.asyncio
     async def test_team_scope(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
@@ -282,13 +284,13 @@ class TestCreateRecordGroupsForBuckets:
 
     @pytest.mark.asyncio
     async def test_none_bucket_names_skipped(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         await s3_connector._create_record_groups_for_buckets([None, "bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_lookup_fails(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         # Make user lookup fail
         provider = _make_mock_data_store_provider(user=None)
@@ -386,19 +388,19 @@ class TestGetBucketRegion:
 class TestProcessS3Object:
     @pytest.mark.asyncio
     async def test_empty_key(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         record, perms = await s3_connector._process_s3_object({"Key": ""}, "mybucket")
         assert record is None
 
     @pytest.mark.asyncio
     async def test_missing_key(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         record, perms = await s3_connector._process_s3_object({}, "mybucket")
         assert record is None
 
     @pytest.mark.asyncio
     async def test_new_file(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "path/file.txt",
             "LastModified": datetime.now(timezone.utc),
@@ -413,7 +415,7 @@ class TestProcessS3Object:
 
     @pytest.mark.asyncio
     async def test_folder_object(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "folder/",
             "LastModified": datetime.now(timezone.utc),
@@ -432,7 +434,7 @@ class TestProcessS3Object:
         existing.version = 1
         existing.source_created_at = 1700000000000
         s3_connector.data_store_provider = _make_mock_data_store_provider(existing)
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
             "Key": "path/file.txt",
@@ -456,7 +458,7 @@ class TestProcessS3Object:
         s3_connector.data_store_provider = _make_mock_data_store_provider(
             existing_record=None, existing_revision_record=existing
         )
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
             "Key": "new/path/file.txt",
@@ -470,7 +472,7 @@ class TestProcessS3Object:
 
     @pytest.mark.asyncio
     async def test_root_level_file(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "file.txt",
             "LastModified": datetime.now(timezone.utc),
@@ -483,7 +485,7 @@ class TestProcessS3Object:
 
     @pytest.mark.asyncio
     async def test_no_etag(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "path/file.txt",
             "LastModified": datetime.now(timezone.utc),
@@ -494,7 +496,7 @@ class TestProcessS3Object:
 
     @pytest.mark.asyncio
     async def test_no_last_modified(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {"Key": "path/file.txt", "ETag": '"abc"', "Size": 50}
         record, perms = await s3_connector._process_s3_object(obj, "mybucket")
         assert record is not None
@@ -506,14 +508,14 @@ class TestProcessS3Object:
 class TestCreateS3Permissions:
     @pytest.mark.asyncio
     async def test_team_scope(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         perms = await s3_connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -521,7 +523,7 @@ class TestCreateS3Permissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
         perms = await s3_connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -799,7 +801,7 @@ class TestSyncBucket:
 
     @pytest.mark.asyncio
     async def test_with_objects(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_objects_v2 = AsyncMock(
             return_value=_make_response(True, {
@@ -828,7 +830,7 @@ class TestSyncBucket:
 
     @pytest.mark.asyncio
     async def test_with_continuation_token(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         s3_connector.data_source = MagicMock()
         # First call: truncated with token
         first_response = _make_response(True, {
@@ -854,7 +856,7 @@ class TestSyncBucket:
     @pytest.mark.asyncio
     async def test_extension_filter(self, s3_connector):
         from app.connectors.core.registry.filters import Filter, FilterCollection, FilterType
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         ext_filter = Filter(key="file_extensions", value=["txt", "pdf"], type=FilterType.LIST, operator="in")
         filter_coll = FilterCollection(filters=[ext_filter])
         s3_connector.sync_filters = filter_coll
@@ -1036,7 +1038,7 @@ class TestCheckAndFetchUpdatedRecord:
 
     @pytest.mark.asyncio
     async def test_no_change(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="bucket/file.txt",
@@ -1056,7 +1058,7 @@ class TestCheckAndFetchUpdatedRecord:
 
     @pytest.mark.asyncio
     async def test_changed(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="bucket/file.txt",
@@ -1164,7 +1166,7 @@ class TestProcessS3ObjectIndexingFilters:
     @pytest.mark.asyncio
     async def test_indexing_off_sets_status(self, s3_connector):
         from app.connectors.core.registry.filters import FilterCollection
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         idx_filters = MagicMock(spec=FilterCollection)
         idx_filters.is_enabled = MagicMock(return_value=False)
         s3_connector.indexing_filters = idx_filters
@@ -1180,7 +1182,7 @@ class TestProcessS3ObjectIndexingFilters:
 
     @pytest.mark.asyncio
     async def test_non_datetime_last_modified(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "path/file.txt",
             "LastModified": "not-a-datetime",
@@ -1192,7 +1194,7 @@ class TestProcessS3ObjectIndexingFilters:
 
     @pytest.mark.asyncio
     async def test_leading_slash_key(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "/leading/slash/file.txt",
             "LastModified": datetime.now(timezone.utc),
@@ -1210,7 +1212,7 @@ class TestProcessS3ObjectIndexingFilters:
 class TestCreateS3PermissionsEdgeCases:
     @pytest.mark.asyncio
     async def test_personal_creator_lookup_fails(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         # Mock tx_store to return None for user lookup so no email is found
         tx = AsyncMock()
@@ -1227,7 +1229,7 @@ class TestCreateS3PermissionsEdgeCases:
 
     @pytest.mark.asyncio
     async def test_exception_fallback(self, s3_connector):
-        s3_connector.connector_scope = "INVALID"
+        s3_connector.scope = "INVALID"
         # Force an exception in permissions logic
         s3_connector.data_entities_processor.org_id = "org-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
@@ -1290,6 +1292,8 @@ def connector(mock_logger_fullcov, mock_dep, mock_dsp, mock_cs):
             data_store_provider=mock_dsp,
             config_service=mock_cs,
             connector_id="s3-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -1409,14 +1413,14 @@ class TestHelperFunctions:
 class TestCreateS3PermissionsFullCoverage:
     @pytest.mark.asyncio
     async def test_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -1424,7 +1428,7 @@ class TestCreateS3PermissionsFullCoverage:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -1432,7 +1436,7 @@ class TestCreateS3PermissionsFullCoverage:
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
         mock_tx.get_user_by_id = AsyncMock(side_effect=Exception("DB error"))
@@ -1442,7 +1446,7 @@ class TestCreateS3PermissionsFullCoverage:
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
         mock_tx.get_user_by_id = AsyncMock(return_value={"email": ""})

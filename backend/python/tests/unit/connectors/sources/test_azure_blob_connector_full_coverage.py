@@ -109,9 +109,11 @@ def connector(mock_logger, mock_dep, mock_provider, mock_config):
             data_store_provider=mock_provider,
             config_service=mock_config,
             connector_id="az-fc-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     c.account_name = "teststorage"
-    c.connector_scope = ConnectorScope.TEAM.value
+    c.scope = ConnectorScope.TEAM.value
     return c
 
 
@@ -681,14 +683,14 @@ class TestProcessAzureBlobExtended:
 class TestCreateAzureBlobPermissions:
     @pytest.mark.asyncio
     async def test_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_azure_blob_permissions("c", "file.txt")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_with_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = "user@test.com"
         connector.created_by = "uid-1"
         perms = await connector._create_azure_blob_permissions("c", "file.txt")
@@ -697,7 +699,7 @@ class TestCreateAzureBlobPermissions:
 
     @pytest.mark.asyncio
     async def test_personal_no_creator_fallback(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = None
         perms = await connector._create_azure_blob_permissions("c", "file.txt")
         assert len(perms) == 1
@@ -705,19 +707,19 @@ class TestCreateAzureBlobPermissions:
 
     @pytest.mark.asyncio
     async def test_exception_fallback(self, connector):
-        connector.connector_scope = None
+        connector.scope = None
         connector.creator_email = "u@t.com"
-        original_scope = connector.connector_scope
+        original_scope = connector.scope
 
         async def _bad_perms(c, b):
             raise Exception("perm err")
 
         connector._create_azure_blob_permissions = AsyncMock(side_effect=_bad_perms)
         connector._create_azure_blob_permissions.reset_mock()
-        connector.connector_scope = original_scope
+        connector.scope = original_scope
 
         connector2 = connector
-        connector2.connector_scope = "INVALID"
+        connector2.scope = "INVALID"
         connector2.creator_email = None
         perms = await AzureBlobConnector._create_azure_blob_permissions(connector2, "c", "file.txt")
         assert len(perms) == 1
@@ -1251,6 +1253,8 @@ class TestCreateConnector:
             data_store_provider=mock_provider,
             config_service=mock_config,
             connector_id="az-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert isinstance(result, AzureBlobConnector)
 
@@ -1268,6 +1272,8 @@ class TestCreateConnector:
             data_store_provider=mock_provider,
             config_service=config_svc,
             connector_id="az-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert isinstance(result, AzureBlobConnector)
 
@@ -1285,6 +1291,8 @@ class TestCreateConnector:
             data_store_provider=mock_provider,
             config_service=config_svc,
             connector_id="az-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert isinstance(result, AzureBlobConnector)
 

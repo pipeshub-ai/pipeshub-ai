@@ -2116,6 +2116,8 @@ def _make_connector_fullcov():
         data_store_provider=dsp,
         config_service=cs,
         connector_id="notion-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     conn._mock_tx = mock_tx
     return conn

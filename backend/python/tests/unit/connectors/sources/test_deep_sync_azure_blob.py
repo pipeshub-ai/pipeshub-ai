@@ -82,6 +82,8 @@ def connector(mock_logger, mock_dep, mock_ds_provider, mock_config):
             data_store_provider=mock_ds_provider,
             config_service=mock_config,
             connector_id="az-deep-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     conn.data_source = AsyncMock()
     conn.account_name = "teststorage"

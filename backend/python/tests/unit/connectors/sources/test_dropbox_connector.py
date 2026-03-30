@@ -1610,7 +1610,7 @@ def _make_connector():
     dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
     cs = AsyncMock()
-    return DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1")
+    return DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1", "team", "test-user-id")
 
 
 def _make_file_metadata(name="test.pdf"):
@@ -1847,6 +1847,8 @@ class TestDropboxCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-dbx",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, DropboxConnector)
 
@@ -2060,6 +2062,8 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="conn-123",
+            scope="personal",
+            created_by="test-user-id",
         )
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()

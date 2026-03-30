@@ -1113,7 +1113,7 @@ def _make_mock_deps_cov():
 
 def _conn():
     logger, dep, dsp, cs = _make_mock_deps_cov()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-cov-1")
+    return ConfluenceConnector(logger, dep, dsp, cs, "conn-cov-1", "team", "test-user-id")
 
 
 def _resp(status=200, data=None):
@@ -2997,7 +2997,7 @@ def _make_mock_deps_fullcov():
 
 def _c():
     logger, dep, dsp, cs, _ = _make_mock_deps_fullcov()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-1")
+    return ConfluenceConnector(logger, dep, dsp, cs, "conn-1", "team", "test-user-id")
 
 
 def _resp(status=200, data=None):

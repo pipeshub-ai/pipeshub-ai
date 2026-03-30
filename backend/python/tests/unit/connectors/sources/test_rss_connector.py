@@ -62,6 +62,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="personal",
+        created_by="test-user-id",
     )
     return connector
 
@@ -527,6 +529,8 @@ class TestRSSConnectorFactory:
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id="rss-conn-1",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, RSSConnector)
             mock_proc.initialize.assert_awaited_once()
@@ -556,6 +560,8 @@ def _make_connector_cov():
         data_store_provider=ds_provider,
         config_service=config_service,
         connector_id="rss-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
 
 

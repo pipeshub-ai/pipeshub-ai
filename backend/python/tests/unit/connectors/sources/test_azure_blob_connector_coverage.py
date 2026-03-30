@@ -106,6 +106,8 @@ def azure_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="az-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -408,13 +410,13 @@ class TestPassExtensionFilter:
 class TestCreateRecordGroupsForContainers:
     @pytest.mark.asyncio
     async def test_team_scope(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         await azure_connector._create_record_groups_for_containers(["container1"])
         azure_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_personal_with_creator_email(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.PERSONAL.value
+        azure_connector.scope = ConnectorScope.PERSONAL.value
         azure_connector.creator_email = "user@test.com"
         azure_connector.created_by = "user-1"
         await azure_connector._create_record_groups_for_containers(["container1"])
@@ -422,7 +424,7 @@ class TestCreateRecordGroupsForContainers:
 
     @pytest.mark.asyncio
     async def test_personal_no_creator(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.PERSONAL.value
+        azure_connector.scope = ConnectorScope.PERSONAL.value
         azure_connector.creator_email = None
         azure_connector.created_by = None
         await azure_connector._create_record_groups_for_containers(["container1"])
@@ -435,7 +437,7 @@ class TestCreateRecordGroupsForContainers:
 
     @pytest.mark.asyncio
     async def test_none_items_skipped(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         await azure_connector._create_record_groups_for_containers([None, "container1"])
         azure_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
@@ -446,13 +448,13 @@ class TestCreateRecordGroupsForContainers:
 class TestProcessAzureBlob:
     @pytest.mark.asyncio
     async def test_empty_name(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         record, perms = await azure_connector._process_azure_blob({"name": ""}, "container")
         assert record is None
 
     @pytest.mark.asyncio
     async def test_new_file(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
         blob = {
             "name": "path/file.txt",
@@ -468,7 +470,7 @@ class TestProcessAzureBlob:
 
     @pytest.mark.asyncio
     async def test_folder_blob(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
         blob = {
             "name": "folder/",
@@ -483,7 +485,7 @@ class TestProcessAzureBlob:
 
     @pytest.mark.asyncio
     async def test_string_timestamps(self, azure_connector):
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
         blob = {
             "name": "file.txt",
@@ -504,7 +506,7 @@ class TestProcessAzureBlob:
         existing.version = 1
         existing.source_created_at = 1700000000000
         azure_connector.data_store_provider = _make_mock_data_store_provider(existing)
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
 
         blob = {
@@ -530,7 +532,7 @@ class TestProcessAzureBlob:
         azure_connector.data_store_provider = _make_mock_data_store_provider(
             existing_record=None, existing_revision_record=existing
         )
-        azure_connector.connector_scope = ConnectorScope.TEAM.value
+        azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
 
         blob = {
