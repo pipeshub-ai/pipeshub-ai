@@ -15,7 +15,7 @@ spec:
       targetPort: connector
       protocol: TCP
       name: connector
-    - port: 3000
+    - port: 3001
       targetPort: backend
       protocol: TCP
       name: backend

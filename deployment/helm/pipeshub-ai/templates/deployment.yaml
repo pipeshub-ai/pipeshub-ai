@@ -49,7 +49,7 @@ spec:
               containerPort: 8088
               protocol: TCP
             - name: backend
-              containerPort: 3000
+              containerPort: 3001
               protocol: TCP
             - name: query
               containerPort: 8000
@@ -59,6 +59,8 @@ spec:
               protocol: TCP
           env:
             # Core environment settings
+            - name: PORT
+              value: "3001"
             - name: NODE_ENV
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
