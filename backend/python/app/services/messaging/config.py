@@ -22,12 +22,17 @@ def get_message_broker_type() -> str:
 
 
 @dataclass
-class RedisStreamsConfig:
-    """Redis Streams configuration"""
+class RedisConfig:
+    """Base Redis connection configuration"""
     host: str = "localhost"
     port: int = 6379
     password: Optional[str] = None
     db: int = 0
+
+
+@dataclass
+class RedisStreamsConfig(RedisConfig):
+    """Redis Streams configuration (extends RedisConfig)"""
     max_len: int = 10000
     block_ms: int = 2000
     client_id: str = "pipeshub"

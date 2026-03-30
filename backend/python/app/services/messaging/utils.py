@@ -12,7 +12,7 @@ from app.config.constants.service import config_node_constants
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
-from app.services.messaging.config import RedisStreamsConfig, get_message_broker_type
+from app.services.messaging.config import RedisConfig, RedisStreamsConfig, get_message_broker_type
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -29,34 +29,23 @@ class MessagingUtils:
     @staticmethod
     async def _get_redis_config(
         app_container: Union[ConnectorAppContainer, IndexingAppContainer, QueryAppContainer],
-    ) -> dict:
+    ) -> RedisConfig:
         """Get Redis config from the configuration service."""
         config_service = app_container.config_service()
-        redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
-        )
-        if not redis_config:
-            # Fall back to environment variables
-            return {
-                "host": os.getenv("REDIS_HOST", "localhost"),
-                "port": int(os.getenv("REDIS_PORT", "6379")),
-                "password": os.getenv("REDIS_PASSWORD") or None,
-                "db": int(os.getenv("REDIS_DB", "0")),
-            }
-        return redis_config
+        return await config_service.get_redis_config()
 
     @staticmethod
     def _build_redis_streams_config(
-        redis_config: dict,
+        redis_config: RedisConfig,
         client_id: str,
         group_id: str,
         topics: list[str],
     ) -> RedisStreamsConfig:
         return RedisStreamsConfig(
-            host=redis_config.get("host", "localhost"),
-            port=int(redis_config.get("port", 6379)),
-            password=redis_config.get("password"),
-            db=int(redis_config.get("db", 0)),
+            host=redis_config.host,
+            port=redis_config.port,
+            password=redis_config.password,
+            db=redis_config.db,
             max_len=int(os.getenv("REDIS_STREAMS_MAXLEN", "10000")),
             client_id=client_id,
             group_id=group_id,
@@ -157,9 +146,7 @@ class MessagingUtils:
                 sasl=kafka_config.get("sasl"),
             )
         else:
-            redis_config = await config_service.get_config(
-                config_node_constants.REDIS.value
-            ) or {}
+            redis_config = await config_service.get_redis_config()
             return MessagingUtils._build_redis_streams_config(
                 redis_config, client_id, "", []
             )

@@ -11,6 +11,7 @@ from cachetools import LRUCache
 
 from app.config.constants.service import config_node_constants
 from app.config.key_value_store import KeyValueStore
+from app.services.messaging.config import RedisConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
 dotenv.load_dotenv()
@@ -415,6 +416,16 @@ class ConfigurationService:
                     self.cache.pop(key, None)
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))
+
+    async def get_redis_config(self) -> RedisConfig:
+        """Get typed Redis connection configuration."""
+        raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        return RedisConfig(
+            host=raw.get("host", os.getenv("REDIS_HOST", "localhost")),
+            port=int(raw.get("port", os.getenv("REDIS_PORT", "6379"))),
+            password=raw.get("password", os.getenv("REDIS_PASSWORD")) or None,
+            db=int(raw.get("db", os.getenv("REDIS_DB", "0"))),
+        )
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
         """List all keys in a directory"""
