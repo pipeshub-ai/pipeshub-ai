@@ -1281,6 +1281,9 @@ def _make_tx(existing_record=None, revision_record=None, user=None):
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_record_by_external_revision_id = AsyncMock(return_value=revision_record)
     tx.get_user_by_id = AsyncMock(return_value=user or {"email": "creator@test.com"})
+    tx.get_user_by_user_id = AsyncMock(
+        return_value=user or {"email": "creator@test.com"}
+    )
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -1358,7 +1361,6 @@ def connector(mock_logger_fullcov, mock_dep, mock_provider, mock_config):
             created_by="test-user-id",
         )
     c.account_name = "teststorage"
-    c.scope = ConnectorScope.TEAM.value
     return c
 
 

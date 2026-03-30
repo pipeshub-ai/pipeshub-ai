@@ -1430,7 +1430,7 @@ class TestCreateConnector:
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
         mock_dep.initialize.assert_awaited_once()

@@ -1164,7 +1164,13 @@ class TestOrgCreatedBusinessAccount:
             },
         )
         assert result is True
-        call_data = svc.graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        org_nodes = [
+            c[0][0][0]
+            for c in svc.graph_provider.batch_upsert_nodes.call_args_list
+            if len(c[0]) >= 2 and c[0][1] == CollectionNames.ORGS.value
+        ]
+        assert org_nodes, "expected batch_upsert_nodes for ORGS"
+        call_data = org_nodes[0]
         assert call_data["accountType"] == AccountType.ENTERPRISE.value
 
 

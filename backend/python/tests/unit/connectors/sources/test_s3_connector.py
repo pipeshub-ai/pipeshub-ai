@@ -206,7 +206,7 @@ class TestS3ConnectorInit:
         result = await s3_connector.init()
         assert result is True
         assert s3_connector.bucket_name == "mybucket"
-        assert s3_connector.scope == "PERSONAL"
+        assert s3_connector.scope == ConnectorScope.PERSONAL.value
 
 
 # ===========================================================================

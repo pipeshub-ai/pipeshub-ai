@@ -33,6 +33,9 @@ def _make_connector():
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    _creator = MagicMock()
+    _creator.email = "user@test.com"
+    data_entities_processor.get_user_by_user_id = AsyncMock(return_value=_creator)
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -549,6 +552,9 @@ def _make_connector_cov():
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.get_all_active_users = AsyncMock(return_value=[])
+    _creator = MagicMock()
+    _creator.email = "user@test.com"
+    dep.get_user_by_user_id = AsyncMock(return_value=_creator)
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()

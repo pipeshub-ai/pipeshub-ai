@@ -880,6 +880,9 @@ def _make_tx(existing_record=None, revision_record=None, user=None):
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_record_by_external_revision_id = AsyncMock(return_value=revision_record)
     tx.get_user_by_id = AsyncMock(return_value=user or {"email": "creator@test.com"})
+    tx.get_user_by_user_id = AsyncMock(
+        return_value=user or {"email": "creator@test.com"}
+    )
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -1081,7 +1084,8 @@ class TestInitBranches:
         })
         result = await conn.init()
         assert result is True
-        assert conn.scope == "TEAM"
+        # Instance scope is set at connector construction, not overwritten from etcd config.
+        assert conn.scope == ConnectorScope.PERSONAL.value
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)

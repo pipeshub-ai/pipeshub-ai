@@ -40,6 +40,7 @@ def _make_mock_tx_store(existing_record=None, existing_revision_record=None, use
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_record_by_external_revision_id = AsyncMock(return_value=existing_revision_record)
     tx.get_user_by_id = AsyncMock(return_value=user or {"email": "user@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value=user or {"email": "user@test.com"})
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -72,6 +73,9 @@ def mock_data_entities_processor():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
+    u = MagicMock()
+    u.email = "user@test.com"
+    proc.get_user_by_user_id = AsyncMock(return_value=u)
     return proc
 
 
@@ -244,7 +248,7 @@ class TestInit95:
         ):
             mock_build.return_value = MagicMock()
             await connector.init()
-            assert connector.scope == "TEAM"
+            assert connector.scope == ConnectorScope.PERSONAL.value
 
 
 class TestRunSync95:
