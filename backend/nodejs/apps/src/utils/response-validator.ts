@@ -1,4 +1,3 @@
-import { HTTP_STATUS } from "../libs/enums/http-status.enum";
 import { Response } from "express";
 import { z } from "zod";
 import { ValidationError } from "../libs/errors/validation.error";
@@ -10,6 +9,10 @@ export const sendValidatedJson = (
     payload: unknown,
     statusCode: number,
   ): Response => {
+    if (statusCode < 200 || statusCode >= 300) {
+      return res.status(statusCode).json(payload);
+    }
+
     const result = schema.safeParse(payload);
     if (!result.success) {
       throw new ValidationError('Validation failed', ValidationUtils.formatZodError(result.error));

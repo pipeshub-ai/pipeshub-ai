@@ -1,12 +1,13 @@
+import { ZodTypeAny } from 'zod';
 import { Logger } from '../../../libs/services/logger.service';
 import {
-  BadRequestError,
   ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
   ServiceUnavailableError,
   UnauthorizedError,
+  BadRequestError,
 } from '../../../libs/errors/http.errors';
 import {
   ConnectorServiceCommand,
@@ -14,6 +15,7 @@ import {
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
+import { sendValidatedJson } from '../../../utils/response-validator';
 
 const logger = Logger.getInstance({
   service: 'Connector Utils',
@@ -108,6 +110,7 @@ export const handleConnectorResponse = (
   res: Response,
   operation: string,
   failureMessage: string,
+  responseSchema?: ZodTypeAny,
 ) => {
   const statusCode = connectorResponse?.statusCode;
   const isSuccess = statusCode >= 200 && statusCode < 300;
@@ -117,6 +120,10 @@ export const handleConnectorResponse = (
   const connectorsData = connectorResponse.data;
   if (!connectorsData) {
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
+  }
+  if (responseSchema) {
+    sendValidatedJson(res, responseSchema, connectorsData, statusCode ?? 200);
+    return;
   }
   res.status(statusCode ?? 200).json(connectorsData);
 };

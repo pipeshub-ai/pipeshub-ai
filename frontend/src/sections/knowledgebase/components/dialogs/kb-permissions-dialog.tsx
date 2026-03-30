@@ -32,6 +32,7 @@ const makeKbApi = (kbId: string, reloadTeamsRef: React.MutableRefObject<(() => P
     }));
     return users;
   },
+
   loadTeams: async () => {
     // Load all teams the user is a member of
     const { data } = await axios.get(`/api/v1/teams/user/teams?limit=100`);
@@ -49,13 +50,8 @@ const makeKbApi = (kbId: string, reloadTeamsRef: React.MutableRefObject<(() => P
     }));
     return teams;
   },
-  createTeam: async ({ name, description, userIds, role, memberRoles }) => {
+  createTeam: async ({ name, description, memberRoles }) => {
     try {
-      // Filter out any empty, null, or undefined values from userIds
-      const validUserIds = (userIds || []).filter(
-        (id: any) => id != null && typeof id === 'string' && id.trim() !== ''
-      );
-
       const body: any = {
         name: name.trim(),
       };
@@ -64,32 +60,20 @@ const makeKbApi = (kbId: string, reloadTeamsRef: React.MutableRefObject<(() => P
         body.description = description.trim();
       }
 
-      // Use new format with individual user roles if provided, otherwise use legacy format
       if (memberRoles && memberRoles.length > 0) {
         body.userRoles = memberRoles;
-      } else if (validUserIds.length > 0) {
-        // Legacy format: single role for all users
-        body.userIds = validUserIds;
-        body.role = role || 'READER';
       }
 
       const { data } = await axios.post('/api/v1/teams', body);
       
-      // Handle different response structures
-      // Python backend returns: { status: "success", message: "...", data: team }
-      // Node.js might return: { status: "success", data: { status: "success", data: team } }
       let created = data;
-      
-      // Navigate through nested response structures
       if (created?.data) {
         created = created.data;
-        // If still nested (Node.js proxy case)
         if (created?.data && typeof created.data === 'object') {
           created = created.data;
         }
       }
       
-      // Extract team ID - try multiple possible fields
       const teamId = created?.id || created?._key || created?._id || '';
       
       if (!teamId) {
