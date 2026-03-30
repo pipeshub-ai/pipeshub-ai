@@ -144,6 +144,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         try:
             self.running = True
             self.message_handler = message_handler
+            self.main_loop = asyncio.get_running_loop()
 
             if not self.redis:
                 await self.initialize()
@@ -369,11 +370,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.indexing_semaphore.release()
                         indexing_held = False
 
-                # Acknowledge the message after successful processing
-                if self.redis:
-                    await self.redis.xack(  # type: ignore
-                        stream_name, self.config.group_id, message_id
+                # Acknowledge on the main loop where self.redis was created
+                if self.redis and self.main_loop:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.redis.xack(stream_name, self.config.group_id, message_id),  # type: ignore
+                        self.main_loop,
                     )
+                    future.result(timeout=10)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
                 return False
