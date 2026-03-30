@@ -20,6 +20,7 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
     - [Neo4j (graph validation)](#neo4j-graph-validation)
     - [Storage credentials (per connector)](#storage-credentials-per-connector)
     - [Sample data (optional)](#sample-data-optional)
+    - [Secret masking in pytest output](#secret-masking-in-pytest-output)
   - [Setup: step-by-step](#setup-step-by-step)
     - [1. Clone and enter the repo](#1-clone-and-enter-the-repo)
     - [2. Create virtualenv and install deps](#2-create-virtualenv-and-install-deps)
@@ -144,6 +145,20 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 |--------------------------------------|---------|
 | `PIPESHUB_INTEGRATION_TEST_REPO_URL` | Override GitHub repo URL for sample data (default: `https://github.com/pipeshub-ai/integration-test.git`). |
 | `PIPESHUB_INTEGRATION_TEST_CACHE_DIR` | Override directory for cloning the repo (default: repo root’s `.integration-test-cache`). |
+
+---
+
+### Secret masking in pytest output
+
+Set **`MASK_SECRETS`** to a comma-separated list of **environment variable names** whose **values** should be redacted in pytest output and in the HTML report (same mechanism as [pytest-mask-secrets](https://github.com/mganisin/pytest-mask-secrets)). Put it in `.env.local` or `.env.prod` next to your secrets, or export it in the shell.
+
+Example:
+
+```bash
+MASK_SECRETS=PIPESHUB_TEST_USER_PASSWORD,TEST_NEO4J_PASSWORD,CLIENT_ID,CLIENT_SECRET,S3_ACCESS_KEY,S3_SECRET_KEY,GCS_SERVICE_ACCOUNT_JSON,AZURE_BLOB_CONNECTION_STRING,AZURE_FILES_CONNECTION_STRING
+```
+
+The GitHub Actions workflow sets **`MASK_SECRETS`** for CI. Include **`CLIENT_ID`** and **`CLIENT_SECRET`** if they are created at runtime (local OAuth flow) so those values get masked too.
 
 ---
 

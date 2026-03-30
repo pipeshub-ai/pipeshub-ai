@@ -23,21 +23,21 @@ from pipeshub_client import PipeshubClient  # noqa: E402
 
 # Module-level ref so pytest_runtest_logreport can append even when report.config is missing (e.g. some pytest versions)
 _integration_test_reports: List[TestReportEntry] = []
-_SENSITIVE_KEY_PATTERN = re.compile(
-    r"(SECRET|PASSWORD|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|CONNECTION[_-]?STRING|PRIVATE[_-]?KEY|CREDENTIAL)",
-    re.IGNORECASE,
-)
 
 
 def _collect_secret_values() -> List[str]:
-    values: List[str] = []
-    for key, raw_value in os.environ.items():
-        if not _SENSITIVE_KEY_PATTERN.search(key):
+    """Values of env vars listed in MASK_SECRETS (comma-separated names), for HTML/log redaction."""
+    raw = os.environ.get("MASK_SECRETS", "").strip()
+    if not raw:
+        return []
+    values: list[str] = []
+    for name in raw.split(","):
+        name = name.strip()
+        if not name:
             continue
-        value = (raw_value or "").strip()
-        if value and len(value) >= 4:
-            values.append(value)
-    # Sort longest-first to avoid partial replacements.
+        v = os.environ.get(name, "").strip()
+        if v:
+            values.append(v)
     return sorted(set(values), key=len, reverse=True)
 
 
@@ -195,7 +195,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Collect pass/fail/skip + full failure text and duration for HTML report."""
+    """Collect pass/fail/skip + failure text for HTML report (pytest-mask-secrets handles pytest output)."""
     if report.when != "call":
         return
     config = getattr(report, "config", None)
