@@ -438,12 +438,7 @@ describe('Application', () => {
       const app = new Application();
       stubAllContainers(sandbox);
 
-      // Make the oauth container throw when getting OAuthTokenService
-      const oauthContainer = (OAuthProviderContainer.initialize as sinon.SinonStub).firstCall
-        ? undefined
-        : undefined;
-
-      // Instead, stub registerOAuthTokenService to throw
+      // Stub registerOAuthTokenService to throw
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService').throws(
         new Error('Registration failed'),
       );
@@ -566,25 +561,6 @@ describe('Application', () => {
       await app.initialize();
       expressApp = (app as any).app;
     });
-
-    function getRoutePaths(): string[] {
-      const paths: string[] = [];
-      const stack = (expressApp as any)._router?.stack || [];
-      for (const layer of stack) {
-        if (layer.regexp && layer.regexp.source !== '^\\/?$' && layer.regexp.source !== '^\\/?(?=\\/|$)') {
-          if (layer.path) {
-            paths.push(layer.path);
-          } else if (layer.regexp) {
-            // Extract path from regexp
-            const match = layer.regexp.source.match(/^\^\\\/([^\\?]+)/);
-            if (match) {
-              paths.push('/' + match[1].replace(/\\\//g, '/'));
-            }
-          }
-        }
-      }
-      return paths;
-    }
 
     const expectedRoutes = [
       '/api/v1/health',

@@ -36,9 +36,16 @@ describe('index.ts - Application Bootstrap', () => {
   describe('Environment', () => {
     it('should be possible to set NODE_ENV', () => {
       const original = process.env.NODE_ENV;
-      process.env.NODE_ENV = 'test';
-      expect(process.env.NODE_ENV).to.equal('test');
-      process.env.NODE_ENV = original;
+      try {
+        process.env.NODE_ENV = 'test';
+        expect(process.env.NODE_ENV).to.equal('test');
+      } finally {
+        if (original === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = original;
+        }
+      }
     });
 
     it('should be possible to load dotenv config', () => {
