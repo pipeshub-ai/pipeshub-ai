@@ -1,22 +1,22 @@
 import { Kafka, Admin, ITopicConfig } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
+import {
+  IMessageAdmin,
+  TopicDefinition,
+} from '../types/messaging.types';
 import { Logger } from './logger.service';
 
-export interface TopicDefinition {
-  topic: string;
-  numPartitions?: number;
-  replicationFactor?: number;
-}
-
-// Required topics for the application
-export const REQUIRED_KAFKA_TOPICS: TopicDefinition[] = [
+export const REQUIRED_TOPICS: TopicDefinition[] = [
   { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'entity-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'sync-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'health-check', numPartitions: 1, replicationFactor: 1 },
 ];
 
-export class KafkaAdminService {
+/** @deprecated Use REQUIRED_TOPICS instead */
+export const REQUIRED_KAFKA_TOPICS = REQUIRED_TOPICS;
+
+export class KafkaAdminService implements IMessageAdmin {
   private kafka: Kafka;
   private admin: Admin;
   private logger: Logger;
@@ -32,13 +32,8 @@ export class KafkaAdminService {
     this.admin = this.kafka.admin();
   }
 
-  /**
-   * Ensures all required topics exist in the Kafka cluster.
-   * Creates any missing topics with the specified configuration.
-   * This is especially important for AWS MSK where auto.create.topics.enable is disabled by default.
-   */
   async ensureTopicsExist(
-    topics: TopicDefinition[] = REQUIRED_KAFKA_TOPICS,
+    topics: TopicDefinition[] = REQUIRED_TOPICS,
   ): Promise<void> {
     try {
       await this.admin.connect();
@@ -76,7 +71,6 @@ export class KafkaAdminService {
         this.logger.info('Topics may already exist or creation was skipped');
       }
     } catch (error: any) {
-      // Handle the case where topics already exist (race condition)
       if (error.type === 'TOPIC_ALREADY_EXISTS') {
         this.logger.info('Topics already exist (concurrent creation detected)');
         return;
@@ -98,9 +92,6 @@ export class KafkaAdminService {
     }
   }
 
-  /**
-   * Lists all topics in the Kafka cluster
-   */
   async listTopics(): Promise<string[]> {
     try {
       await this.admin.connect();
@@ -111,9 +102,6 @@ export class KafkaAdminService {
     }
   }
 
-  /**
-   * Describes the configuration of specified topics
-   */
   async describeTopics(topics: string[]): Promise<any> {
     try {
       await this.admin.connect();
@@ -125,10 +113,6 @@ export class KafkaAdminService {
   }
 }
 
-/**
- * Utility function to ensure Kafka topics exist during application startup.
- * Safe to call multiple times - will only create topics that don't exist.
- */
 export async function ensureKafkaTopicsExist(
   kafkaConfig: {
     brokers: string[];

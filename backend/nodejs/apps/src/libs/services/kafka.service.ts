@@ -7,9 +7,13 @@ import {
   KafkaConfig,
   IKafkaConnection,
   IKafkaProducer,
-  KafkaMessage,
   IKafkaConsumer,
 } from '../types/kafka.types';
+import {
+  IMessageProducer,
+  IMessageConsumer,
+  StreamMessage,
+} from '../types/messaging.types';
 import { BadRequestError } from '../errors/http.errors';
 
 @injectable()
@@ -58,7 +62,7 @@ export abstract class BaseKafkaConnection implements IKafkaConnection {
 @injectable()
 export abstract class BaseKafkaProducerConnection
   extends BaseKafkaConnection
-  implements IKafkaProducer
+  implements IKafkaProducer, IMessageProducer
 {
   protected producer: Producer;
 
@@ -99,14 +103,14 @@ export abstract class BaseKafkaProducerConnection
     }
   }
 
-  async publish<T>(topic: string, message: KafkaMessage<T>): Promise<void> {
+  async publish<T>(topic: string, message: StreamMessage<T>): Promise<void> {
     await this.ensureConnection();
     await this.sendToKafka(topic, [this.formatMessage(message)]);
   }
 
   async publishBatch<T>(
     topic: string,
-    messages: KafkaMessage<T>[],
+    messages: StreamMessage<T>[],
   ): Promise<void> {
     await this.ensureConnection();
     await this.sendToKafka(
@@ -134,7 +138,7 @@ export abstract class BaseKafkaProducerConnection
     }
   }
 
-  protected formatMessage<T>(message: KafkaMessage<T>) {
+  protected formatMessage<T>(message: StreamMessage<T>) {
     return {
       key: message.key,
       value: JSON.stringify(message.value),
@@ -165,7 +169,7 @@ export abstract class BaseKafkaProducerConnection
 @injectable()
 export abstract class BaseKafkaConsumerConnection
   extends BaseKafkaConnection
-  implements IKafkaConsumer
+  implements IKafkaConsumer, IMessageConsumer
 {
   protected consumer: Consumer;
 
@@ -229,7 +233,7 @@ export abstract class BaseKafkaConsumerConnection
   }
 
   async consume<T>(
-    handler: (message: KafkaMessage<T>) => Promise<void>,
+    handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     await this.ensureConnection();
     try {
@@ -240,10 +244,9 @@ export abstract class BaseKafkaConsumerConnection
               throw new BadRequestError('Empty message value');
             }
 
-            const parsedMessage: KafkaMessage<T> = {
+            const parsedMessage: StreamMessage<T> = {
               key: message.key?.toString() || '',
               value: JSON.parse(message.value.toString()),
-              // headers: message.headers as Record<string, string | Buffer>,
             };
 
             await handler(parsedMessage);

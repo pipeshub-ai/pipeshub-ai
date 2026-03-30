@@ -1,4 +1,5 @@
 import { SASLOptions } from 'kafkajs';
+import { StreamMessage } from './messaging.types';
 
 export interface KafkaConfig {
   clientId?: string;
@@ -11,11 +12,8 @@ export interface KafkaConfig {
   maxRetryTime?: number;
 }
 
-export interface KafkaMessage<T> {
-  key: string;
-  value: T;
-  headers?: Record<string, string>;
-}
+/** @deprecated Use StreamMessage from messaging.types instead */
+export type KafkaMessage<T> = StreamMessage<T>;
 
 export interface IKafkaConnection {
   connect(): Promise<void>;
@@ -24,13 +22,13 @@ export interface IKafkaConnection {
 }
 
 export interface IKafkaProducer<T = any> {
-  publish(topic: string, message: KafkaMessage<T>): Promise<void>;
-  publishBatch(topic: string, messages: KafkaMessage<T>[]): Promise<void>;
+  publish(topic: string, message: StreamMessage<T>): Promise<void>;
+  publishBatch(topic: string, messages: StreamMessage<T>[]): Promise<void>;
 }
 
 export interface IKafkaConsumer<T = any> {
   subscribe(topics: string[]): Promise<void>;
-  consume(handler: (message: KafkaMessage<T>) => Promise<void>): Promise<void>;
+  consume(handler: (message: StreamMessage<T>) => Promise<void>): Promise<void>;
   pause(topics: string[]): void;
   resume(topics: string[]): void;
 }

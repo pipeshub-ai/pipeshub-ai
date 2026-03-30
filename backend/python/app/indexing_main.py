@@ -20,8 +20,10 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -235,19 +237,19 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
         logger.warning("⚠️ Continuing to start Kafka consumers despite recovery errors")
 
 async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any]:
-    """Start all Kafka consumers at application level"""
+    """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
+    broker_type = get_message_broker_type()
 
     try:
-        # 1. Create Entity Consumer
-        logger.info("🚀 Starting Entity Kafka Consumer...")
-        record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
+        logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
+        record_consumer_config = await MessagingUtils.create_record_consumer_config(app_container)
 
         record_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+            broker_type=broker_type,
             logger=logger,
-            config=record_kafka_consumer_config,
+            config=record_consumer_config,
             consumer_type="indexing"
         )
 

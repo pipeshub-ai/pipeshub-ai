@@ -65,6 +65,10 @@ services:
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
       # Ensure we use the same password as configured for the ArangoDB service
 
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
@@ -126,8 +130,6 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      kafka-1:
-        condition: service_started
       redis:
         condition: service_started
       mongodb:
@@ -207,6 +209,7 @@ services:
       - etcd_data:/etcd-data
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -216,6 +219,7 @@ services:
       - ZOOKEEPER_TICK_TIME=2000
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
