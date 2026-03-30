@@ -583,3 +583,144 @@ class TestGroupToolsByDomain:
 
         assert "slack" in groups
         assert state["cached_structured_tools"] == [t1]
+
+
+# ============================================================================
+# Additional coverage tests for tool_router
+# ============================================================================
+
+class TestAssignToolsToTasksEdgeCases:
+    """Cover uncovered branches in assign_tools_to_tasks and _filter_tools_by_relevance."""
+
+    def _make_state(self, has_knowledge=False, schema_tool_map=None):
+        return {
+            "logger": log,
+            "has_knowledge": has_knowledge,
+            "schema_tool_map": schema_tool_map or {},
+        }
+
+    def test_domain_not_normalized_falls_back_to_original(self):
+        """When normalized domain not in groups, falls back to original domain (line 145-146)."""
+        tasks = [{"task_id": "t1", "domains": ["custom_domain"]}]
+        groups = {"custom_domain": ["custom_domain.tool1"], "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "custom_domain.tool1" in result[0]["tools"]
+
+    def test_filtering_triggered_with_many_tools(self):
+        """When domain has > _MAX_TOOLS_PER_TASK tools, filtering kicks in (lines 151-154)."""
+        tools = [f"outlook.tool_{i}" for i in range(20)]
+        tasks = [{"task_id": "t1", "domains": ["outlook"],
+                  "description": "search for events matching calendar"}]
+        groups = {"outlook": tools, "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        # Should be filtered down
+        outlook_tools = [t for t in result[0]["tools"] if t.startswith("outlook.")]
+        assert len(outlook_tools) <= _MAX_TOOLS_PER_TASK
+
+    def test_no_utility_group_doesnt_crash(self):
+        """When no utility group exists, no crash (line 159→163)."""
+        tasks = [{"task_id": "t1", "domains": ["slack"]}]
+        groups = {"slack": ["slack.send"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "slack.send" in result[0]["tools"]
+
+
+class TestBuildDomainDescriptionEdgeCases:
+    """Cover uncovered branches in build_domain_description."""
+
+    def test_tool_without_schema_in_map(self):
+        """Tool not in schema_tool_map (line 273-275)."""
+        state = {"schema_tool_map": {"other_tool": MagicMock()}}
+        groups = {"slack": ["slack.send_message"]}
+        result = build_domain_description(groups, state=state)
+        assert "send_message" in result
+
+    def test_tool_with_params(self):
+        """Tool with args_schema produces parameter output (line 273)."""
+        from pydantic import BaseModel, Field
+
+        class TestSchema(BaseModel):
+            query: str = Field(description="Search text")
+
+        tool = MagicMock()
+        tool.description = "Search messages"
+        tool.args_schema = TestSchema
+        state = {"schema_tool_map": {"slack.search": tool}}
+        groups = {"slack": ["slack.search"]}
+        result = build_domain_description(groups, state=state)
+        assert "Parameters:" in result
+
+
+class TestExtractParamsEdgeCases:
+    """Cover uncovered branches in _extract_params."""
+
+    def test_pydantic_v1_style_fields(self):
+        """Test _extract_params with Pydantic v1-style __fields__ (lines 358-365)."""
+        mock_schema = MagicMock(spec=[])
+        mock_schema.model_fields = None
+        del mock_schema.model_fields  # Remove v2 field
+
+        field_info = MagicMock()
+        field_info.required = True
+        field_info.field_info = MagicMock()
+        field_info.field_info.description = "A search query"
+        field_info.outer_type_ = str
+
+        mock_schema.__fields__ = {"query": field_info}
+
+        params = _extract_params(mock_schema)
+        assert "query" in params
+        assert params["query"]["required"] is True
+        assert params["query"]["description"] == "A search query"
+
+    def test_exception_in_extract_returns_empty(self):
+        """_extract_params returns {} on exception (line 380)."""
+        result = _extract_params(None)
+        assert result == {}
+
+
+class TestGetTypeNameV1EdgeCases:
+    """Cover uncovered branches in _get_type_name_v1."""
+
+    def test_optional_type_v1(self):
+        """Pydantic v1 Optional[str] -> 'str' (lines 410-412)."""
+        from typing import Optional
+        field = MagicMock()
+        field.outer_type_ = Optional[str]
+        result = _get_type_name_v1(field)
+        assert result == "str"
+
+    def test_non_named_type_v1(self):
+        """Type without __name__ uses str() fallback (line 415)."""
+        from typing import List
+        field = MagicMock()
+        field.outer_type_ = List[str]
+        result = _get_type_name_v1(field)
+        assert "list" in result.lower()
+
+    def test_annotation_without_name(self):
+        """_get_type_name with type lacking __name__ uses str() (line 398)."""
+        from typing import List
+        field = MagicMock()
+        field.annotation = List[str]
+        result = _get_type_name(field)
+        assert "list" in result.lower()
+
+
+class TestFilterToolsEdgeCases:
+    """Cover remaining _filter_tools_by_relevance branches."""
+
+    def test_tool_with_schema_description(self):
+        """Tool description from schema_tool_map is used for scoring (lines 466-471)."""
+        schema_tool = MagicMock()
+        schema_tool.description = "Search for calendar events with specific criteria"
+        tools = [f"outlook.tool_{i}" for i in range(15)]
+        tools[0] = "outlook.search_events"
+        task = {"description": "search calendar events", "task_id": "t1"}
+        result = _filter_tools_by_relevance(
+            tools, task, {"outlook.search_events": schema_tool}, log
+        )
+        assert "outlook.search_events" in result

@@ -216,6 +216,13 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     fields: COMMON_API_FIELDS,
   },
   {
+    id: 'minimax',
+    label: 'MiniMax',
+    description: 'Enter your MiniMax API credentials to get started.',
+    modelPlaceholder: 'e.g., MiniMax-M2.7, MiniMax-M2.7-highspeed',
+    fields: COMMON_API_FIELDS,
+  },
+  {
     id: 'fireworks',
     label: 'Fireworks',
     description: 'Enter your Fireworks API credentials to get started.',

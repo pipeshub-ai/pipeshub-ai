@@ -459,6 +459,7 @@ export const llmProvider = z.enum([
   'fireworks',
   'gemini',
   'groq',
+  'minimax',
   'mistral',
   'ollama',
   'openAI',

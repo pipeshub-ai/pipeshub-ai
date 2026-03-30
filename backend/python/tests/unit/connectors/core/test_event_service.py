@@ -203,6 +203,16 @@ class TestUnsubscribeFromEvents:
         await svc.unsubscribe_from_events("sub_456")
         svc.logger.info.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_unsubscribe_exception_returns_false(self):
+        """Exception during unsubscribe returns False (lines 51-53)."""
+        svc = _make_event_service()
+        # Make logger.info raise to force the except branch
+        svc.logger.info.side_effect = RuntimeError("log error")
+        result = await svc.unsubscribe_from_events("sub_789")
+        assert result is False
+        svc.logger.error.assert_called()
+
 
 # ===========================================================================
 # process_event
@@ -223,6 +233,15 @@ class TestProcessEvent:
         svc = _make_event_service()
         await svc.process_event("sync_start", {})
         svc.logger.info.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_process_exception_returns_false(self):
+        """Exception during process_event returns False (lines 61-63)."""
+        svc = _make_event_service()
+        svc.logger.info.side_effect = RuntimeError("log error")
+        result = await svc.process_event("sync_start", {})
+        assert result is False
+        svc.logger.error.assert_called()
 
 
 # ===========================================================================

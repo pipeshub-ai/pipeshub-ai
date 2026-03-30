@@ -630,3 +630,557 @@ class TestWaitForConnection:
             result = await store.wait_for_connection(timeout=0.01)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_success_after_retries(self):
+        """Ping fails initially but succeeds on retry, covering line 217 branch."""
+        store = _make_store()
+        call_count = 0
+
+        async def _ping():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("not ready")
+            return True
+
+        store._mock_client.ping = _ping
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await store.wait_for_connection(timeout=60.0)
+
+        assert result is True
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_remaining_time_exhausted_mid_retry(self):
+        """When remaining <= 0 during retry loop, exits with False (line 217)."""
+        store = _make_store()
+        store._mock_client.ping = AsyncMock(side_effect=Exception("down"))
+
+        # Simulate time progressing rapidly by making loop.time() return
+        # increasing values that exceed timeout
+        loop = asyncio.get_running_loop()
+        original_time = loop.time
+
+        call_idx = [0]
+
+        def mock_time():
+            call_idx[0] += 1
+            # First call: start_time = 0, second call: 0.5, third call: already past timeout
+            return original_time() + (call_idx[0] * 100)
+
+        with patch.object(loop, "time", side_effect=mock_time):
+            result = await store.wait_for_connection(timeout=0.001)
+
+        assert result is False
+
+
+# ============================================================================
+# _get_client — lazy client creation and stale detection
+# ============================================================================
+
+class TestGetClient:
+    """Cover lines 105-159: _get_client lazy client creation and stale detection."""
+
+    def _make_raw_store(self):
+        """Create a store with redis.Redis patched throughout."""
+        import threading
+        from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+
+        serializer = lambda v: json.dumps(v).encode("utf-8")  # noqa: E731
+        deserializer = lambda b: json.loads(b.decode("utf-8"))  # noqa: E731
+
+        with patch("app.config.providers.redis.redis_store.redis.Redis"):
+            store = RedisDistributedKeyValueStore(
+                serializer=serializer,
+                deserializer=deserializer,
+                host="localhost",
+                port=6379,
+            )
+        return store
+
+    def test_creates_new_client_on_first_call(self):
+        """First call to _get_client creates a new Redis client (lines 134-157)."""
+        import threading
+
+        store = self._make_raw_store()
+        store._clients.clear()
+
+        mock_client = MagicMock()
+        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client):
+            result = store._get_client()
+
+        assert result is mock_client
+        tid = threading.get_ident()
+        assert tid in store._clients
+
+    def test_returns_existing_client(self):
+        """Subsequent calls return existing client (line 114-115 hit, 134 skip)."""
+        store = self._make_raw_store()
+        store._clients.clear()
+
+        mock_client = MagicMock()
+        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client):
+            client1 = store._get_client()
+            client2 = store._get_client()
+
+        assert client1 is client2
+
+    def test_discards_stale_client_closed_loop(self):
+        """Discards client when event loop has been closed (lines 118-132)."""
+        import threading
+
+        store = self._make_raw_store()
+        store._clients.clear()
+
+        mock_client_old = MagicMock()
+        closed_loop = MagicMock()
+        closed_loop.is_closed.return_value = True
+
+        tid = threading.get_ident()
+        store._clients[tid] = (mock_client_old, closed_loop)
+
+        mock_client_new = MagicMock()
+        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client_new):
+            result = store._get_client()
+
+        assert result is mock_client_new
+
+    def test_discards_stale_client_changed_loop(self):
+        """Discards client when a different event loop is running (lines 119-132)."""
+        import threading
+
+        store = self._make_raw_store()
+        store._clients.clear()
+
+        mock_client_old = MagicMock()
+        old_loop = MagicMock()
+        old_loop.is_closed.return_value = False
+        tid = threading.get_ident()
+        store._clients[tid] = (mock_client_old, old_loop)
+
+        current_loop = MagicMock()
+        current_loop.is_closed.return_value = False
+
+        mock_client_new = MagicMock()
+        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client_new):
+            with patch(
+                "app.config.providers.redis.redis_store.asyncio.get_running_loop",
+                return_value=current_loop,
+            ):
+                result = store._get_client()
+
+        assert result is mock_client_new
+
+    def test_no_running_loop(self):
+        """When no event loop is running, current_loop is None (lines 108-111)."""
+        store = self._make_raw_store()
+        store._clients.clear()
+
+        mock_client = MagicMock()
+        with patch("app.config.providers.redis.redis_store.redis.Redis", return_value=mock_client):
+            with patch(
+                "app.config.providers.redis.redis_store.asyncio.get_running_loop",
+                side_effect=RuntimeError("no running loop"),
+            ):
+                result = store._get_client()
+
+        assert result is mock_client
+
+
+class TestClientProperty:
+    """Cover line 164: client property."""
+
+    def test_client_property_returns_redis_client(self):
+        """The client property delegates to _get_client."""
+        store = _make_store()
+        result = store.client
+        assert result is store._mock_client
+
+
+# ============================================================================
+# close — error handling during client close
+# ============================================================================
+
+class TestCloseErrorHandling:
+    """Cover lines 455, 469-470: close error handling for client close."""
+
+    @pytest.mark.asyncio
+    async def test_close_handles_client_close_error(self):
+        """When client.close() raises, error is logged but not propagated."""
+        import threading
+
+        store = _make_store()
+
+        tid = threading.get_ident()
+        mock_client = AsyncMock()
+        mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+        store._clients[tid] = (mock_client, None)
+
+        # Should not raise
+        await store.close()
+
+        assert store._is_closing is True
+        assert len(store._clients) == 0
+
+
+# ============================================================================
+# cancel_watch — when key not in watchers
+# ============================================================================
+
+class TestCancelWatchEdgeCases:
+    """Cover line 409->411: cancel_watch when key already removed."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_watch_key_not_in_watchers(self):
+        """Canceling a watch for a key that doesn't exist in _watchers."""
+        store = _make_store()
+        # Key is not in _watchers at all
+        assert "nonexistent_key" not in store._watchers
+        await store.cancel_watch("nonexistent_key", "some_id")
+        # No error raised
+
+
+# ============================================================================
+# list_keys_in_directory — bytes decode
+# ============================================================================
+
+class TestListKeysInDirectoryBytes:
+    """Cover lines 424->426: bytes decode in list_keys_in_directory."""
+
+    @pytest.mark.asyncio
+    async def test_handles_bytes_keys(self):
+        """Bytes keys are properly decoded in list_keys_in_directory."""
+        store = _make_store()
+
+        async def _scan_iter(match=None):
+            for key in [b"pipeshub:kv:dir/key1", b"pipeshub:kv:dir/key2"]:
+                yield key
+
+        store._mock_client.scan_iter = _scan_iter
+        keys = await store.list_keys_in_directory("dir")
+        assert sorted(keys) == ["dir/key1", "dir/key2"]
+
+    @pytest.mark.asyncio
+    async def test_handles_string_keys(self):
+        """String keys (non-bytes) are handled in list_keys_in_directory."""
+        store = _make_store()
+
+        async def _scan_iter(match=None):
+            for key in ["pipeshub:kv:dir/key1"]:
+                yield key
+
+        store._mock_client.scan_iter = _scan_iter
+        keys = await store.list_keys_in_directory("dir")
+        assert keys == ["dir/key1"]
+
+
+# ============================================================================
+# subscribe_cache_invalidation — reconnection, error handling, cleanup
+# ============================================================================
+
+class TestSubscribeCacheInvalidationAdvanced:
+    """Cover lines 541, 542->539, 544->546, 549-575, 577->531, 581."""
+
+    @pytest.mark.asyncio
+    async def test_reconnects_on_error(self):
+        """Pub/Sub listener reconnects after connection error (lines 555-575)."""
+        store = _make_store()
+
+        attempt = [0]
+
+        def make_mock_pubsub():
+            ps = AsyncMock()
+            ps.subscribe = AsyncMock()
+            ps.unsubscribe = AsyncMock()
+            ps.close = AsyncMock()
+
+            async def _listen():
+                attempt[0] += 1
+                if attempt[0] == 1:
+                    raise ConnectionError("connection lost")
+                yield {"type": "message", "data": b"key1"}
+                store._is_closing = True
+
+            ps.listen = _listen
+            return ps
+
+        store._mock_client.pubsub = MagicMock(side_effect=make_mock_pubsub)
+
+        callback = MagicMock()
+
+        with patch("app.config.providers.redis.redis_store.asyncio.sleep", new_callable=AsyncMock):
+            with patch("app.config.providers.redis.redis_store.random.random", return_value=0.5):
+                task = await store.subscribe_cache_invalidation(callback)
+                # Wait for the background task to complete
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+        callback.assert_called_with("key1")
+
+    @pytest.mark.asyncio
+    async def test_callback_error_handled(self):
+        """Error in callback is caught and logged (lines 549-550)."""
+        store = _make_store()
+
+        mock_pubsub = AsyncMock()
+        mock_pubsub.subscribe = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock()
+        mock_pubsub.close = AsyncMock()
+
+        async def _listen():
+            yield {"type": "message", "data": b"bad_key"}
+            store._is_closing = True
+
+        mock_pubsub.listen = _listen
+        store._mock_client.pubsub = MagicMock(return_value=mock_pubsub)
+
+        bad_callback = MagicMock(side_effect=RuntimeError("callback boom"))
+        task = await store.subscribe_cache_invalidation(bad_callback)
+
+        # Wait for the task
+        await asyncio.sleep(0.05)
+
+        # Should not crash; error is logged
+        bad_callback.assert_called_once_with("bad_key")
+
+        store._is_closing = True
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_string_data_not_decoded(self):
+        """When message data is already a string (not bytes), it's used directly (line 544 branch)."""
+        store = _make_store()
+
+        mock_pubsub = AsyncMock()
+        mock_pubsub.subscribe = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock()
+        mock_pubsub.close = AsyncMock()
+
+        async def _listen():
+            yield {"type": "message", "data": "already_string_key"}
+            store._is_closing = True
+
+        mock_pubsub.listen = _listen
+        store._mock_client.pubsub = MagicMock(return_value=mock_pubsub)
+
+        callback = MagicMock()
+        task = await store.subscribe_cache_invalidation(callback)
+
+        await asyncio.sleep(0.05)
+
+        callback.assert_called_once_with("already_string_key")
+
+        store._is_closing = True
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_non_message_type_ignored(self):
+        """Non-message type messages are ignored (line 542 branch miss)."""
+        store = _make_store()
+
+        mock_pubsub = AsyncMock()
+        mock_pubsub.subscribe = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock()
+        mock_pubsub.close = AsyncMock()
+
+        async def _listen():
+            yield {"type": "subscribe", "data": 1}  # Not a "message" type
+            store._is_closing = True
+
+        mock_pubsub.listen = _listen
+        store._mock_client.pubsub = MagicMock(return_value=mock_pubsub)
+
+        callback = MagicMock()
+        task = await store.subscribe_cache_invalidation(callback)
+
+        await asyncio.sleep(0.05)
+
+        # callback should NOT have been called since type != "message"
+        callback.assert_not_called()
+
+        store._is_closing = True
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_exits_cleanly(self):
+        """CancelledError during listen exits cleanly (line 552-554)."""
+        store = _make_store()
+
+        mock_pubsub = AsyncMock()
+        mock_pubsub.subscribe = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock()
+        mock_pubsub.close = AsyncMock()
+
+        async def _listen():
+            raise asyncio.CancelledError()
+            yield  # noqa: E501
+
+        mock_pubsub.listen = _listen
+        store._mock_client.pubsub = MagicMock(return_value=mock_pubsub)
+
+        callback = MagicMock()
+        task = await store.subscribe_cache_invalidation(callback)
+
+        await asyncio.sleep(0.05)
+
+        # Task should have finished cleanly
+        assert task.done()
+
+    @pytest.mark.asyncio
+    async def test_is_closing_during_error_exits(self):
+        """When _is_closing is True during error, loop exits (line 556-557)."""
+        store = _make_store()
+
+        mock_pubsub = AsyncMock()
+        mock_pubsub.subscribe = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock()
+        mock_pubsub.close = AsyncMock()
+
+        async def _listen():
+            store._is_closing = True
+            raise ConnectionError("lost")
+            yield  # noqa: E501
+
+        mock_pubsub.listen = _listen
+        store._mock_client.pubsub = MagicMock(return_value=mock_pubsub)
+
+        callback = MagicMock()
+        task = await store.subscribe_cache_invalidation(callback)
+
+        await asyncio.sleep(0.05)
+
+        # Task should have exited due to _is_closing
+        callback.assert_not_called()
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_pubsub_cleanup_on_error(self):
+        """Pubsub is cleaned up (unsubscribe + close) in finally block (lines 577-582)."""
+        store = _make_store()
+
+        attempt = [0]
+        first_pubsub = AsyncMock()
+        first_pubsub.subscribe = AsyncMock()
+        first_pubsub.unsubscribe = AsyncMock()
+        first_pubsub.close = AsyncMock()
+
+        second_pubsub = AsyncMock()
+        second_pubsub.subscribe = AsyncMock()
+        second_pubsub.unsubscribe = AsyncMock()
+        second_pubsub.close = AsyncMock()
+
+        def make_mock_pubsub():
+            attempt[0] += 1
+            if attempt[0] == 1:
+                async def _listen_err():
+                    raise ConnectionError("lost")
+                    yield  # noqa: E501
+                first_pubsub.listen = _listen_err
+                return first_pubsub
+            async def _listen_ok():
+                store._is_closing = True
+                return
+                yield  # noqa: E501
+            second_pubsub.listen = _listen_ok
+            return second_pubsub
+
+        store._mock_client.pubsub = MagicMock(side_effect=make_mock_pubsub)
+
+        callback = MagicMock()
+
+        with patch("app.config.providers.redis.redis_store.asyncio.sleep", new_callable=AsyncMock):
+            with patch("app.config.providers.redis.redis_store.random.random", return_value=0.5):
+                task = await store.subscribe_cache_invalidation(callback)
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+        # First pubsub should have been cleaned up in the finally block
+        first_pubsub.unsubscribe.assert_called()
+        first_pubsub.close.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_pubsub_cleanup_error_ignored(self):
+        """Errors during pubsub cleanup (unsubscribe/close) are silently ignored (line 581-582)."""
+        store = _make_store()
+
+        attempt = [0]
+
+        def make_mock_pubsub():
+            ps = AsyncMock()
+            ps.subscribe = AsyncMock()
+            # First pubsub: cleanup will fail
+            ps.unsubscribe = AsyncMock(side_effect=RuntimeError("cleanup fail"))
+            ps.close = AsyncMock(side_effect=RuntimeError("close fail"))
+
+            attempt[0] += 1
+            if attempt[0] == 1:
+                async def _listen_err():
+                    raise ConnectionError("connection lost")
+                    yield  # noqa: E501
+                ps.listen = _listen_err
+            else:
+                async def _listen_ok():
+                    store._is_closing = True
+                    return
+                    yield  # noqa: E501
+                ps.listen = _listen_ok
+            return ps
+
+        store._mock_client.pubsub = MagicMock(side_effect=make_mock_pubsub)
+
+        callback = MagicMock()
+
+        with patch("app.config.providers.redis.redis_store.asyncio.sleep", new_callable=AsyncMock):
+            with patch("app.config.providers.redis.redis_store.random.random", return_value=0.5):
+                task = await store.subscribe_cache_invalidation(callback)
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+        # Should not crash even though unsubscribe and close both raised
+        assert task.done()
+
+
+# ============================================================================
+# publish_cache_invalidation — edge cases
+# ============================================================================
+
+class TestPublishCacheInvalidationEdgeCases:
+    """Cover line 485->exit: publish success on retry, line 541 publish retry."""
+
+    @pytest.mark.asyncio
+    async def test_success_on_second_try(self):
+        """Publish succeeds on second attempt after first failure."""
+        store = _make_store()
+        store._mock_client.publish = AsyncMock(
+            side_effect=[Exception("fail1"), None]
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await store.publish_cache_invalidation("retry_key")
+
+        assert store._mock_client.publish.call_count == 2

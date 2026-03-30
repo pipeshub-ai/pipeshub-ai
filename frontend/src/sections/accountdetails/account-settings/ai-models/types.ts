@@ -133,6 +133,14 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     color: '#F55036',
   },
   {
+    id: 'minimax',
+    name: 'MiniMax',
+    description: 'MiniMax M2.7 models with 1M context',
+    src: '/assets/icons/ai-models/minimax.svg',
+    supportedTypes: ['llm'],
+    color: '#1A1A2E',
+  },
+  {
     id: 'xai',
     name: 'XAI',
     description: 'Grok models with real-time capabilities',

@@ -3480,6 +3480,9 @@ class JiraConnector(BaseConnector):
 
         # Pre-scan comments to identify which attachments are used in comments
         comments_data = issue_data.get("comments", [])
+        # Handle both formats: direct list or nested structure
+        if isinstance(comments_data, dict):
+            comments_data = comments_data.get("comments", [])
         for comment in comments_data:
             comment_body_adf = comment.get("body")
             if comment_body_adf and isinstance(comment_body_adf, dict):

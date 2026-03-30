@@ -8,6 +8,7 @@ import pytest
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
+from app.connectors.sources.google.common.connector_google_exceptions import GoogleDriveError
 from app.models.entities import FileRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 
@@ -407,3 +408,188 @@ class TestSyncUserPersonalDrive:
         with patch.object(connector, "_perform_incremental_sync", new_callable=AsyncMock) as mock_inc:
             await connector._sync_user_personal_drive("drive-1")
             mock_inc.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# run_sync
+# ---------------------------------------------------------------------------
+class TestRunSync:
+    @patch("app.connectors.sources.google.drive.individual.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_not_initialized(self, mock_filters, connector):
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        connector.drive_data_source = None
+        with pytest.raises(GoogleDriveError):
+            await connector.run_sync()
+
+    @patch("app.connectors.sources.google.drive.individual.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_successful_sync(self, mock_filters, connector):
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        connector.drive_data_source = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(return_value={
+            "user": {"permissionId": "pid-1", "emailAddress": "user@example.com", "displayName": "User"},
+            "storageQuota": {},
+        })
+        connector.drive_data_source.files_get = AsyncMock(return_value={"id": "drive-root-id"})
+        connector._get_fresh_datasource = AsyncMock()
+        connector._create_app_user = AsyncMock()
+        connector._create_personal_record_group = AsyncMock(return_value=MagicMock())
+        connector._sync_user_personal_drive = AsyncMock()
+        await connector.run_sync()
+        connector._sync_user_personal_drive.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# run_incremental_sync
+# ---------------------------------------------------------------------------
+class TestRunIncrementalSync:
+    async def test_delegates_to_run_sync(self, connector):
+        connector._sync_user_personal_drive = AsyncMock()
+        await connector.run_incremental_sync()
+        connector._sync_user_personal_drive.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# test_connection_and_access
+# ---------------------------------------------------------------------------
+class TestTestConnectionAndAccess:
+    async def test_not_initialized(self, connector):
+        connector.drive_data_source = None
+        result = await connector.test_connection_and_access()
+        assert result is False
+
+    async def test_success(self, connector):
+        connector.drive_data_source.about_get = AsyncMock(return_value={
+            "user": {"emailAddress": "user@example.com"}
+        })
+        result = await connector.test_connection_and_access()
+        assert result is True
+
+    async def test_exception(self, connector):
+        connector.google_client.get_client = MagicMock(side_effect=Exception("err"))
+        result = await connector.test_connection_and_access()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# get_signed_url
+# ---------------------------------------------------------------------------
+class TestGetSignedUrl:
+    def test_returns_none(self, connector):
+        with pytest.raises(NotImplementedError):
+            connector.get_signed_url(MagicMock())
+
+
+# ---------------------------------------------------------------------------
+# cleanup
+# ---------------------------------------------------------------------------
+class TestCleanup:
+    async def test_cleanup(self, connector):
+        connector.drive_data_source = MagicMock()
+        connector.google_client = MagicMock()
+        await connector.cleanup()
+        assert connector.drive_data_source is None
+
+
+# ---------------------------------------------------------------------------
+# handle_webhook_notification
+# ---------------------------------------------------------------------------
+class TestHandleWebhookNotification:
+    def test_raises(self, connector):
+        with pytest.raises(NotImplementedError):
+            connector.handle_webhook_notification({})
+
+
+# ---------------------------------------------------------------------------
+# _create_personal_record_group
+# ---------------------------------------------------------------------------
+class TestCreatePersonalRecordGroup:
+    async def test_creates_group(self, connector):
+        result = await connector._create_personal_record_group("uid-1", "u@test.com", "My Drive", "drive-1")
+        assert result is not None
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _create_app_user
+# ---------------------------------------------------------------------------
+class TestCreateAppUser:
+    async def test_creates_user(self, connector):
+        user_about = {
+            "user": {"permissionId": "pid-1", "emailAddress": "u@test.com", "displayName": "User"}
+        }
+        await connector._create_app_user(user_about)
+        connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _parse_datetime edge cases
+# ---------------------------------------------------------------------------
+class TestParseDatetimeEdgeCases:
+    def test_integer_value(self, connector):
+        result = connector._parse_datetime(12345)
+        assert result is None
+
+    def test_empty_string(self, connector):
+        result = connector._parse_datetime("")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _pass_date_filters edge cases
+# ---------------------------------------------------------------------------
+class TestPassDateFiltersEdgeCases:
+    def test_folder_always_passes(self, connector):
+        meta = {"mimeType": "application/vnd.google-apps.folder"}
+        assert connector._pass_date_filters(meta) is True
+
+    def test_no_filters_passes(self, connector):
+        meta = _make_file_metadata()
+        assert connector._pass_date_filters(meta) is True
+
+
+# ---------------------------------------------------------------------------
+# _pass_extension_filter edge cases
+# ---------------------------------------------------------------------------
+class TestPassExtensionFilterEdgeCases:
+    def test_no_filter(self, connector):
+        meta = _make_file_metadata()
+        assert connector._pass_extension_filter(meta) is True
+
+    def test_folder_always_passes(self, connector):
+        meta = _make_file_metadata(mime_type="application/vnd.google-apps.folder")
+        assert connector._pass_extension_filter(meta) is True
+
+
+# ---------------------------------------------------------------------------
+# reindex_records
+# ---------------------------------------------------------------------------
+class TestReindexRecords:
+    async def test_empty_records(self, connector):
+        await connector.reindex_records([])
+
+    async def test_not_initialized(self, connector):
+        connector.drive_data_source = None
+        with pytest.raises(Exception, match="not initialized"):
+            await connector.reindex_records([MagicMock()])
+
+    async def test_updated_and_non_updated(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(return_value={
+            "user": {"permissionId": "pid-1", "emailAddress": "user@example.com"}
+        })
+        connector._check_and_fetch_updated_record = AsyncMock(
+            side_effect=[(MagicMock(), []), None]
+        )
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        await connector.reindex_records([MagicMock(id="r1"), MagicMock(id="r2")])
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# get_filter_options
+# ---------------------------------------------------------------------------
+class TestGetFilterOptions:
+    async def test_unsupported(self, connector):
+        with pytest.raises(NotImplementedError):
+            await connector.get_filter_options("invalid")

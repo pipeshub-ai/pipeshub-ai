@@ -56,6 +56,7 @@ class LLMProvider(Enum):
     FIREWORKS = "fireworks"
     GEMINI = "gemini"
     GROQ = "groq"
+    MINIMAX = "minimax"
     MISTRAL = "mistral"
     OLLAMA = "ollama"
     OPENAI = "openAI"
@@ -481,6 +482,20 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
+            )
+
+    elif provider == LLMProvider.MINIMAX.value:
+        from langchain_openai import ChatOpenAI
+
+        # MiniMax temperature must be in (0.0, 1.0]
+        temperature = max(0.01, min(1.0, configuration.get("temperature", 0.2)))
+        return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration["apiKey"],
+                base_url="https://api.minimax.io/v1",
+                stream_usage=True,
             )
 
     elif provider == LLMProvider.MISTRAL.value:

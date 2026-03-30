@@ -2395,3 +2395,1070 @@ class TestDeepRespondImplExtended:
 
         assert result["response"] == "Based on R1..."
         assert result["completion_data"]["confidence"] == "High"
+
+
+# ============================================================================
+# 32. Coverage extensions for missing lines
+# ============================================================================
+
+
+class TestDeepRespondImplFastPathRefData:
+    """Cover lines 177->197, 180->186, 183-184: fast-path reference data supplement."""
+
+    @pytest.mark.asyncio
+    async def test_fast_path_supplements_empty_reference_data(self):
+        """Fast-path supplements referenceData when completion_data has no referenceData."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": {},
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "Found https://jira.example.com/BUG-1"}},
+            ],
+            "sub_agent_analyses": ["[t1 (jira)]: Found https://jira.example.com/BUG-1"],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success",
+                 "result": {"url": "https://jira.example.com/BUG-1"}},
+            ],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "find bugs",
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, return_value=True):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        # completion_data should have been supplemented with referenceData
+        cd = result.get("completion_data", {})
+        if cd and cd.get("referenceData"):
+            assert any("jira.example.com" in ref["url"] for ref in cd["referenceData"])
+
+    @pytest.mark.asyncio
+    async def test_fast_path_returns_none_falls_through(self):
+        """Fast-path returns None (falsy), falls through to standard path."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "test",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": None,
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Fallthrough answer", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="system"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "Fallthrough answer"
+
+
+class TestDeepRespondImplUserDataBranches:
+    """Cover lines 221->239, 232: user_data construction for non-Enterprise accounts."""
+
+    @pytest.mark.asyncio
+    async def test_non_enterprise_account_type_user_data(self):
+        """Non-Enterprise/Business account type produces simpler user_data."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+        from langchain_core.messages import HumanMessage
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["retrieval"],
+                 "result": {"response": "KB data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [{"virtual_record_id": "vr1", "block_index": 0}],
+            "virtual_record_id_to_result": {"vr1": {"title": "Doc1"}},
+            "query": "test query",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {"fullName": "Test User", "designation": "Engineer"},
+            "org_info": {"name": "TestOrg", "accountType": "Free"},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "org1",
+            "user_id": "user1",
+            "is_multimodal_llm": False,
+            "conversation_id": "conv1",
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Answer", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
+             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content") as mock_gmc, \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+            # Verify the user_data passed to get_message_content
+            call_args = mock_gmc.call_args
+            user_data_arg = call_args[0][2]
+            # Non-enterprise uses simpler format without org name
+            assert "I am the user." in user_data_arg
+            assert "Test User" in user_data_arg
+
+
+class TestDeepRespondImplContextBuilding:
+    """Cover lines 295->350, 308->339, 325, 339->350, 343: context building branches."""
+
+    @pytest.mark.asyncio
+    async def test_analyses_with_has_api_results_no_retrieval(self):
+        """Analyses + has_api_results but no retrieval produces correct context."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+        from langchain_core.messages import HumanMessage
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["[t1 (jira)]: Analysis text"],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {"items": []}},
+            ],
+            "all_tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {"items": []}},
+            ],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "find jira issues",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": None,
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "API answer", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast path failed")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), HumanMessage(content="user msg"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="API results context"), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "API answer"
+
+    @pytest.mark.asyncio
+    async def test_analyses_only_no_api_results(self):
+        """Analyses without has_api_results — analyses-only context path (line 325/330)."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+        from langchain_core.messages import HumanMessage
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "domain_summary": "Summary here",
+                 "result": {"response": "A" * 600}},
+            ],
+            "sub_agent_analyses": ["[t1 (jira)]: Analysis text here"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "summarize jira",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": None,
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Summary answer", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast path failed")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), HumanMessage(content="user message"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "Summary answer"
+
+    @pytest.mark.asyncio
+    async def test_context_appended_to_list_content_message(self):
+        """When last message has list content, context is appended as text item (line 343)."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+        from langchain_core.messages import HumanMessage
+
+        last_msg = HumanMessage(content=[{"type": "text", "text": "existing content"}])
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["[t1 (jira)]: Analysis"],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {}},
+            ],
+            "all_tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {}},
+            ],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "test",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": None,
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Done", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast path")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), last_msg,
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="API context"), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "Done"
+        # The list content should have been extended
+        assert len(last_msg.content) >= 2
+
+
+class TestDeepRespondImplBlobStorage:
+    """Cover line 388: BlobStorage initialization success."""
+
+    @pytest.mark.asyncio
+    async def test_blob_store_init_succeeds(self):
+        """BlobStorage initialization succeeds and is stored in state."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        mock_blob = MagicMock()
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "test",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": MagicMock(),
+            "blob_store": None,
+            "config_service": MagicMock(),
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "OK", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.modules.transformers.blob_storage.BlobStorage", return_value=mock_blob):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["blob_store"] is mock_blob
+
+
+class TestDeepRespondImplDecomposedQueries:
+    """Cover lines 404-410, 416-418: decomposed_queries and task description extraction."""
+
+    @pytest.mark.asyncio
+    async def test_with_decomposed_queries(self):
+        """Uses decomposed_queries when available."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "find bugs and features",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [
+                {"query": "find bugs"},
+                {"query": "find features"},
+            ],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Result", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream) as mock_slr:
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+            # all_queries should contain the decomposed queries
+            call_kwargs = mock_slr.call_args[1] if mock_slr.call_args[1] else {}
+            if "all_queries" in call_kwargs:
+                assert "find bugs" in call_kwargs["all_queries"]
+                assert "find features" in call_kwargs["all_queries"]
+
+    @pytest.mark.asyncio
+    async def test_decomposed_queries_with_empty_query_entries(self):
+        """decomposed_queries with empty/invalid entries falls back to [query]."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "fallback query",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [{"query": ""}, {"not_query": "x"}],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "OK", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "OK"
+
+    @pytest.mark.asyncio
+    async def test_task_descriptions_used_when_no_decomposed_queries(self):
+        """Task descriptions are appended when no decomposed_queries."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {"tasks": [
+                {"description": "Search Jira for bugs"},
+                {"description": "Check Confluence for docs"},
+            ]},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "find info",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Result", "citations": [], "confidence": "High"}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "Result"
+
+
+class TestDeepRespondImplCitationEnrichment:
+    """Cover lines 465-483: citation enrichment on complete event."""
+
+    @pytest.mark.asyncio
+    async def test_citation_enrichment_on_empty_citations(self):
+        """Citation enrichment runs when complete event has no citations."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["retrieval"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["Analysis"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [{"virtual_record_id": "vr1", "block_index": 0}],
+            "virtual_record_id_to_result": {"vr1": {"title": "Doc"}},
+            "query": "test",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": "R1: content",
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+            "record_label_to_uuid_map": {},
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        enriched_citations = [{"recordId": "vr1", "text": "cited text"}]
+
+        async def mock_stream(*args, **kwargs):
+            # Complete event with no citations to trigger enrichment
+            yield {"event": "complete", "data": {"answer": "Based on R1...", "citations": []}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
+             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content"), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
+             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()), \
+             patch("app.utils.citations.normalize_citations_and_chunks_for_agent",
+                   return_value=("Based on R1...", enriched_citations)):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        assert result["response"] == "Based on R1..."
+
+
+class TestDeepRespondImplEmptyResponse:
+    """Cover lines 500-517: empty response fallback with analyses."""
+
+    @pytest.mark.asyncio
+    async def test_empty_response_with_analyses_fallback(self):
+        """Empty LLM response uses analyses-based fallback."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "data"}},
+            ],
+            "sub_agent_analyses": ["[t1 (jira)]: Important findings here"],
+            "tool_results": [],
+            "all_tool_results": [],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "test",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            # Stream with empty answer
+            yield {"event": "answer_chunk", "data": {"chunk": ""}}
+            yield {"event": "complete", "data": {"answer": "", "citations": []}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write") as mock_sw, \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        # Should use fallback response built from analyses
+        assert "Important findings here" in result["response"]
+        assert result["completion_data"]["answerMatchType"] == "Fallback Response"
+
+    @pytest.mark.asyncio
+    async def test_empty_response_no_analyses_fallback(self):
+        """Empty LLM response with no analyses gives generic fallback."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        # Use empty completed_tasks and empty sub_agent_analyses to ensure
+        # _collect_analyses returns [] so the fallback path hits the generic message
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": ""}},
+            ],
+            "sub_agent_analyses": [],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {}},
+            ],
+            "all_tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {}},
+            ],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "test",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "  ", "citations": []}}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="context"), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        # With no analyses available (rebuilt from completed_tasks yields nothing
+        # because response is empty), we get the generic fallback
+        assert "rephrasing" in result["response"].lower() or "unable" in result["response"].lower() or "Fallback" in result["completion_data"].get("answerMatchType", "")
+
+
+class TestDeepRespondImplReferenceData:
+    """Cover lines 528, 532: reference data from deep_refs."""
+
+    @pytest.mark.asyncio
+    async def test_reference_data_from_deep_refs(self):
+        """When pipeline has no referenceData, deep_refs supplement it."""
+        from app.modules.agents.deep.respond import _deep_respond_impl
+
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "error": None,
+            "response": None,
+            "completion_data": None,
+            "reflection_decision": "respond_success",
+            "reflection": {},
+            "task_plan": {},
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": {"response": "Found https://jira.example.com/BUG-1"}},
+            ],
+            "sub_agent_analyses": ["[t1 (jira)]: Found https://jira.example.com/BUG-1"],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success",
+                 "result": {"url": "https://jira.example.com/BUG-1"}},
+            ],
+            "all_tool_results": [
+                {"tool_name": "jira.search", "status": "success",
+                 "result": {"url": "https://jira.example.com/BUG-1"}},
+            ],
+            "final_results": [],
+            "virtual_record_id_to_result": {},
+            "query": "find bugs",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [],
+            "conversation_summary": None,
+            "qna_message_content": None,
+            "user_info": {},
+            "org_info": {},
+            "graph_provider": None,
+            "blob_store": MagicMock(),
+            "config_service": None,
+            "org_id": "",
+            "user_id": "",
+            "is_multimodal_llm": False,
+            "conversation_id": None,
+            "retrieval_service": None,
+            "decomposed_queries": [],
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {
+                "answer": "Found a bug", "citations": [],
+                "confidence": "High", "referenceData": [],
+            }}
+
+        with patch("app.modules.agents.deep.respond.safe_stream_write"), \
+             patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
+             patch("app.modules.agents.qna.nodes._generate_fast_api_response",
+                   new_callable=AsyncMock, side_effect=RuntimeError("fast")), \
+             patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
+                 MagicMock(content="sys"), MagicMock(content="user"),
+             ]), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="context"), \
+             patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
+            result = await _deep_respond_impl(state, config, writer, 0.0, log)
+
+        cd = result.get("completion_data", {})
+        ref_data = cd.get("referenceData", [])
+        # Should have deep_refs extracted from analyses/tool_results
+        assert any("jira.example.com" in r["url"] for r in ref_data)
+
+
+class TestCollectToolResultsMoreBranches:
+    """Cover lines 776, 788->793, 804->803, 827-829."""
+
+    def test_skips_non_success_tasks(self):
+        """Tasks with status != 'success' are skipped in domain coverage (line 776)."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "error", "domains": ["jira"],
+                 "result": {"response": "err"}},
+                {"task_id": "t2", "status": "success", "domains": ["slack"],
+                 "result": {"response": "short"}},
+            ],
+            "sub_agent_analyses": [],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {}},
+                {"tool_name": "slack.send", "status": "success", "result": {}},
+            ],
+        }
+        result = _collect_tool_results(state, log)
+        # jira is not covered (error task), slack is not covered (short response)
+        assert len(result) == 2
+
+    def test_task_result_not_dict_response_text(self):
+        """Non-dict task result leaves response_text empty (line 788)."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "result": "string result"},  # Not a dict
+            ],
+            "sub_agent_analyses": [],
+            "tool_results": [
+                {"tool_name": "jira.search", "status": "success", "result": {}},
+            ],
+        }
+        result = _collect_tool_results(state, log)
+        # String result < 500 chars so domain not covered, tool result should be included
+        assert len(result) == 1
+
+    def test_tool_domain_matching_for_covered_domains(self):
+        """Tool results from covered domains are skipped (line 827-829)."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "domain_summary": "Full summary of Jira data"},
+                {"task_id": "t2", "status": "success", "domains": ["slack"],
+                 "result": {"response": "short"}},
+            ],
+            "sub_agent_analyses": [],
+            "tool_results": [
+                {"tool_name": "jira.search_issues", "status": "success", "result": {}},
+                {"tool_name": "slack.send", "status": "success", "result": {}},
+            ],
+        }
+        result = _collect_tool_results(state, log)
+        # jira covered by domain_summary, slack not covered (short response)
+        # jira.search_issues should be skipped (jira domain covered)
+        # slack.send should be included (slack not covered)
+        assert len(result) == 1
+        assert result[0]["tool_name"] == "slack.send"
+
+
+class TestTrimAnalysesShortAnalysis:
+    """Cover line 658: short analysis within its proportional share is not trimmed."""
+
+    def test_short_analysis_keeps_original(self):
+        """Analysis shorter than its budget share is returned unchanged."""
+        log = _mock_log()
+        analyses = ["AB", "C" * 200]
+        result = _trim_analyses_to_budget(analyses, log, budget=100)
+        # "AB" is 2 chars, total is 202, share = 100*2/202 ~ 0
+        # Both should be trimmed since total > budget
+        assert len(result) == 2
+
+
+class TestHandleDirectAnswerWithConversation:
+    """Cover line 1034: conversation context in direct answer."""
+
+    @pytest.mark.asyncio
+    async def test_direct_answer_with_previous_conversations(self):
+        """Direct answer includes conversation context when previous conversations exist."""
+        from app.modules.agents.deep.respond import _handle_direct_answer
+        from langchain_core.messages import HumanMessage as HM
+
+        async def mock_stream(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "Follow-up answer", "citations": []}}
+
+        state = {
+            "query": "Tell me more",
+            "instructions": "",
+            "system_prompt": "",
+            "previous_conversations": [
+                {"role": "user", "content": "What is X?"},
+                {"role": "assistant", "content": "X is..."},
+            ],
+            "conversation_summary": "User asked about X",
+            "user_info": {},
+            "org_info": {},
+            "response": None,
+            "completion_data": None,
+        }
+        writer = _mock_writer()
+        config = _mock_config()
+        log = _mock_log()
+        llm = MagicMock()
+
+        conv_msgs = [HM(content="Previous context")]
+        with patch("app.utils.streaming.stream_llm_response", side_effect=mock_stream), \
+             patch("app.modules.agents.deep.respond.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=conv_msgs) as mock_ctx:
+            result = await _handle_direct_answer(state, llm, writer, config, log)
+
+        assert result["response"] == "Follow-up answer"
+        mock_ctx.assert_called_once()

@@ -260,6 +260,357 @@ class TestGraphTransactionStore:
         await tx_store.get_record_path("rec1")
         mock_graph_provider.get_record_path.assert_awaited_once_with("rec1", transaction="txn-123")
 
+    # --- Delegation methods that were previously uncovered ---
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_nodes(self, tx_store, mock_graph_provider):
+        await tx_store.batch_upsert_nodes([{"_key": "n1"}], "records")
+        mock_graph_provider.batch_upsert_nodes.assert_awaited_once_with(
+            [{"_key": "n1"}], "records", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_record_by_path(self, tx_store, mock_graph_provider):
+        await tx_store.get_record_by_path("conn1", "/some/path")
+        mock_graph_provider.get_record_by_path.assert_awaited_once_with(
+            "conn1", "/some/path", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_record_group_by_external_id(self, tx_store, mock_graph_provider):
+        await tx_store.get_record_group_by_external_id("conn1", "ext1")
+        mock_graph_provider.get_record_group_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_file_record_by_id(self, tx_store, mock_graph_provider):
+        await tx_store.get_file_record_by_id("file1")
+        mock_graph_provider.get_file_record_by_id.assert_awaited_once_with("file1", transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_get_record_group_by_id(self, tx_store, mock_graph_provider):
+        await tx_store.get_record_group_by_id("grp1")
+        mock_graph_provider.get_record_group_by_id.assert_awaited_once_with("grp1", transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_create_record_groups_relation(self, tx_store, mock_graph_provider):
+        await tx_store.create_record_groups_relation("child1", "parent1")
+        mock_graph_provider.create_record_groups_relation.assert_awaited_once_with(
+            "child1", "parent1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_app_user_by_email(self, tx_store, mock_graph_provider):
+        await tx_store.get_app_user_by_email("test@test.com", "conn1")
+        mock_graph_provider.get_app_user_by_email.assert_awaited_once_with(
+            "test@test.com", "conn1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_record_owner_source_user_email(self, tx_store, mock_graph_provider):
+        await tx_store.get_record_owner_source_user_email("rec1")
+        mock_graph_provider.get_record_owner_source_user_email.assert_awaited_once_with(
+            "rec1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_user_id(self, tx_store, mock_graph_provider):
+        await tx_store.get_user_by_user_id("user1")
+        mock_graph_provider.get_user_by_user_id.assert_awaited_once_with("user1")
+
+    @pytest.mark.asyncio
+    async def test_delete_record_by_external_id(self, tx_store, mock_graph_provider):
+        await tx_store.delete_record_by_external_id("conn1", "ext1", "user1")
+        mock_graph_provider.delete_record_by_external_id.assert_awaited_once_with("conn1", "ext1", "user1")
+
+    @pytest.mark.asyncio
+    async def test_remove_user_access_to_record(self, tx_store, mock_graph_provider):
+        await tx_store.remove_user_access_to_record("conn1", "ext1", "user1")
+        mock_graph_provider.remove_user_access_to_record.assert_awaited_once_with("conn1", "ext1", "user1")
+
+    @pytest.mark.asyncio
+    async def test_delete_record_group_by_external_id(self, tx_store, mock_graph_provider):
+        await tx_store.delete_record_group_by_external_id("conn1", "ext1")
+        mock_graph_provider.delete_record_group_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_nodes(self, tx_store, mock_graph_provider):
+        await tx_store.delete_nodes(["k1", "k2"], "records")
+        mock_graph_provider.delete_nodes.assert_awaited_with(["k1", "k2"], "records", transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_delete_edges_from(self, tx_store, mock_graph_provider):
+        await tx_store.delete_edges_from("from1", "from_coll", "edge_coll")
+        mock_graph_provider.delete_edges_from.assert_awaited_once_with(
+            "from1", "from_coll", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_edges_to(self, tx_store, mock_graph_provider):
+        await tx_store.delete_edges_to("to1", "to_coll", "edge_coll")
+        mock_graph_provider.delete_edges_to.assert_awaited_once_with(
+            "to1", "to_coll", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_edges_to_groups(self, tx_store, mock_graph_provider):
+        await tx_store.delete_edges_to_groups("from1", "from_coll", "edge_coll")
+        mock_graph_provider.delete_edges_to_groups.assert_awaited_once_with(
+            "from1", "from_coll", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_edges_between_collections(self, tx_store, mock_graph_provider):
+        await tx_store.delete_edges_between_collections("from1", "from_coll", "edge_coll", "to_coll")
+        mock_graph_provider.delete_edges_between_collections.assert_awaited_once_with(
+            "from1", "from_coll", "edge_coll", "to_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_nodes_and_edges(self, tx_store, mock_graph_provider):
+        await tx_store.delete_nodes_and_edges(["k1"], "records")
+        mock_graph_provider.delete_nodes_and_edges.assert_awaited_once_with(
+            ["k1"], "records", graph_name="knowledgeGraph", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_user_group_by_external_id(self, tx_store, mock_graph_provider):
+        await tx_store.get_user_group_by_external_id("conn1", "ext1")
+        mock_graph_provider.get_user_group_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_user_group_by_id(self, tx_store, mock_graph_provider):
+        await tx_store.delete_user_group_by_id("grp1")
+        mock_graph_provider.delete_nodes_and_edges.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_app_role_by_external_id(self, tx_store, mock_graph_provider):
+        await tx_store.get_app_role_by_external_id("conn1", "role1")
+        mock_graph_provider.get_app_role_by_external_id.assert_awaited_once_with(
+            "conn1", "role1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_users_with_data(self, tx_store, mock_graph_provider):
+        mock_user = {"_key": "u1", "email": "test@test.com", "firstName": "Test", "lastName": "User",
+                     "orgId": "org1", "status": "active", "createdAtTimestamp": 123, "updatedAtTimestamp": 123}
+        mock_graph_provider.get_users.return_value = [mock_user]
+        result = await tx_store.get_users("org1")
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_app_users_with_data(self, tx_store, mock_graph_provider):
+        mock_app_user = {"_key": "au1", "email": "test@test.com", "firstName": "Test", "lastName": "User",
+                         "fullName": "Test User", "orgId": "org1", "connectorId": "conn1",
+                         "sourceUserId": "src1", "appName": "UNKNOWN",
+                         "createdAtTimestamp": 123, "updatedAtTimestamp": 123}
+        mock_graph_provider.get_app_users.return_value = [mock_app_user]
+        result = await tx_store.get_app_users("org1", "conn1")
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_user_groups(self, tx_store, mock_graph_provider):
+        await tx_store.get_user_groups("conn1", "org1")
+        mock_graph_provider.get_user_groups.assert_awaited_once_with("conn1", "org1", transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_batch_create_user_app_edges(self, tx_store, mock_graph_provider):
+        result = await tx_store.batch_create_user_app_edges([{"edge": "data"}])
+        assert result == 5
+        mock_graph_provider.batch_create_user_app_edges.assert_awaited_once_with([{"edge": "data"}])
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_user_groups(self, tx_store, mock_graph_provider):
+        await tx_store.batch_upsert_user_groups([])
+        mock_graph_provider.batch_upsert_user_groups.assert_awaited_once_with([], transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_app_roles(self, tx_store, mock_graph_provider):
+        await tx_store.batch_upsert_app_roles([])
+        mock_graph_provider.batch_upsert_app_roles.assert_awaited_once_with([], transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_app_users(self, tx_store, mock_graph_provider):
+        await tx_store.batch_upsert_app_users([])
+        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_get_first_user_with_permission_to_node(self, tx_store, mock_graph_provider):
+        await tx_store.get_first_user_with_permission_to_node("node1", "records")
+        mock_graph_provider.get_first_user_with_permission_to_node.assert_awaited_once_with(
+            "node1", "records", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_users_with_permission_to_node(self, tx_store, mock_graph_provider):
+        await tx_store.get_users_with_permission_to_node("node1", "records")
+        mock_graph_provider.get_users_with_permission_to_node.assert_awaited_once_with(
+            "node1", "records", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edge(self, tx_store, mock_graph_provider):
+        mock_graph_provider.get_edge = AsyncMock(return_value=None)
+        await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll")
+        mock_graph_provider.get_edge.assert_awaited_once_with(
+            "from1", "from_coll", "to1", "to_coll", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_record_by_conversation_index(self, tx_store, mock_graph_provider):
+        await tx_store.get_record_by_conversation_index("conn1", "idx1", "thread1", "org1", "user1")
+        mock_graph_provider.get_record_by_conversation_index.assert_awaited_once_with(
+            "conn1", "idx1", "thread1", "org1", "user1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_record_by_weburl(self, tx_store, mock_graph_provider):
+        await tx_store.get_record_by_weburl("https://example.com", org_id="org1")
+        mock_graph_provider.get_record_by_weburl.assert_awaited_once_with(
+            "https://example.com", "org1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_app_creator_user(self, tx_store, mock_graph_provider):
+        await tx_store.get_app_creator_user("conn1")
+        mock_graph_provider.get_app_creator_user.assert_awaited_once_with("conn1", transaction="txn-123")
+
+    @pytest.mark.asyncio
+    async def test_create_inherit_permissions_relation_record_group(self, tx_store, mock_graph_provider):
+        await tx_store.create_inherit_permissions_relation_record_group("rec1", "grp1")
+        mock_graph_provider.create_inherit_permissions_relation_record_group.assert_awaited_once_with(
+            "rec1", "grp1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_inherit_permissions_relation_record_group(self, tx_store, mock_graph_provider):
+        await tx_store.delete_inherit_permissions_relation_record_group("rec1", "grp1")
+        mock_graph_provider.delete_inherit_permissions_relation_record_group.assert_awaited_once_with(
+            "rec1", "grp1", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_inherit_permissions_relation_record(self, tx_store, mock_graph_provider):
+        await tx_store.create_inherit_permissions_relation_record("child1", "parent1")
+        mock_graph_provider.batch_create_edges.assert_awaited_once()
+        call_args = mock_graph_provider.batch_create_edges.call_args
+        edges = call_args[0][0]
+        assert len(edges) == 1
+        assert edges[0]["from_id"] == "child1"
+        assert edges[0]["to_id"] == "parent1"
+
+    @pytest.mark.asyncio
+    async def test_get_sync_point(self, tx_store, mock_graph_provider):
+        await tx_store.get_sync_point("sp1")
+        mock_graph_provider.get_sync_point.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_all_orgs(self, tx_store, mock_graph_provider):
+        result = await tx_store.get_all_orgs()
+        assert result == []
+        mock_graph_provider.get_all_orgs.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_user_groups(self, tx_store, mock_graph_provider):
+        group = MagicMock()
+        group.to_arango_base_user_group.return_value = {"_key": "g1"}
+        await tx_store.create_user_groups([group])
+        mock_graph_provider.batch_upsert_nodes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_users(self, tx_store, mock_graph_provider):
+        user = MagicMock()
+        user.to_arango_base_user.return_value = {"_key": "u1"}
+        await tx_store.create_users([user])
+        mock_graph_provider.batch_upsert_nodes.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_orgs(self, tx_store, mock_graph_provider):
+        org = MagicMock()
+        org.to_arango_base_org.return_value = {"_key": "o1"}
+        await tx_store.create_orgs([org])
+        mock_graph_provider.batch_upsert_nodes.assert_awaited_once()
+
+    # Note: create_domains, create_anyone, create_anyone_with_link, create_anyone_same_org
+    # reference CollectionNames enum values (DOMAINS, ANYONE, etc.) that don't exist,
+    # so those methods are dead code and not testable.
+
+    @pytest.mark.asyncio
+    async def test_batch_create_edges(self, tx_store, mock_graph_provider):
+        await tx_store.batch_create_edges([{"edge": "data"}], "edge_coll")
+        mock_graph_provider.batch_create_edges.assert_awaited_once_with(
+            [{"edge": "data"}], collection="edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_batch_create_entity_relations(self, tx_store, mock_graph_provider):
+        await tx_store.batch_create_entity_relations([{"edge": "data"}])
+        mock_graph_provider.batch_create_entity_relations.assert_awaited_once_with(
+            [{"edge": "data"}], transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_to_node(self, tx_store, mock_graph_provider):
+        await tx_store.get_edges_to_node("node1", "edge_coll")
+        mock_graph_provider.get_edges_to_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node(self, tx_store, mock_graph_provider):
+        await tx_store.get_edges_from_node("node1", "edge_coll")
+        mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_related_node_field(self, tx_store, mock_graph_provider):
+        await tx_store.get_related_node_field("node1", "edge_coll", "target_coll", "name", direction="outbound")
+        mock_graph_provider.get_related_node_field.assert_awaited_once_with(
+            "node1", "edge_coll", "target_coll", "name", "outbound", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_records_and_relations(self, tx_store, mock_graph_provider):
+        await tx_store.delete_records_and_relations("rec1", hard_delete=True)
+        mock_graph_provider.delete_records_and_relations.assert_awaited_once_with(
+            "rec1", hard_delete=True, transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_file_permissions(self, tx_store, mock_graph_provider):
+        await tx_store.process_file_permissions("org1", "file1", [{"perm": "data"}])
+        mock_graph_provider.process_file_permissions.assert_awaited_once_with(
+            "org1", "file1", [{"perm": "data"}], transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_field_in(self, tx_store, mock_graph_provider):
+        await tx_store.get_nodes_by_field_in("records", "status", ["active"], return_fields=["_key"])
+        mock_graph_provider.get_nodes_by_field_in.assert_awaited_once_with(
+            "records", "status", ["active"], ["_key"], transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_remove_nodes_by_field(self, tx_store, mock_graph_provider):
+        result = await tx_store.remove_nodes_by_field("records", "status", "deleted")
+        assert result == 0
+        mock_graph_provider.remove_nodes_by_field.assert_awaited_once_with(
+            "records", "status", "deleted", transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_filters(self, tx_store, mock_graph_provider):
+        await tx_store.get_nodes_by_filters("records", {"status": "active"}, return_fields=["_key"])
+        mock_graph_provider.get_nodes_by_filters.assert_awaited_once_with(
+            collection="records", filters={"status": "active"}, return_fields=["_key"], transaction="txn-123"
+        )
+
 
 class TestGraphTransactionStoreUserGroupHierarchy:
     """Tests for create_user_group_hierarchy."""
