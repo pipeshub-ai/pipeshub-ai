@@ -61,9 +61,7 @@ import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
-  getMessageBrokerType,
-  ensureMessageTopicsExist,
-  buildRedisBrokerConfig,
+  ensureMessageTopicsExistFromConfig,
   REQUIRED_TOPICS,
 } from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
@@ -111,15 +109,8 @@ export class Application {
 
       // Ensure message broker topics/streams exist
       try {
-        const brokerType = getMessageBrokerType();
-        this.logger.info(`Ensuring message broker topics exist (broker: ${brokerType})...`);
-        await ensureMessageTopicsExist(
-          brokerType,
-          brokerType === 'kafka' ? appConfig.kafka : undefined,
-          brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
-          this.logger,
-          REQUIRED_TOPICS,
-        );
+        this.logger.info('Ensuring message broker topics exist...');
+        await ensureMessageTopicsExistFromConfig(appConfig, this.logger, REQUIRED_TOPICS);
         this.logger.info('Message broker topics check completed');
       } catch (brokerError: any) {
         this.logger.warn(

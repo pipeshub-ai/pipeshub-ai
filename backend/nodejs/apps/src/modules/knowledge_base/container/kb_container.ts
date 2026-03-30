@@ -9,9 +9,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  getMessageBrokerType,
-  createMessageProducer,
-  buildRedisBrokerConfig,
+  createMessageProducerFromConfig,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -59,13 +57,7 @@ export class KnowledgeBaseContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerType = getMessageBrokerType();
-      const messageProducer = createMessageProducer(
-        brokerType,
-        brokerType === 'kafka' ? appConfig.kafka : undefined,
-        brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
-        this.logger,
-      );
+      const messageProducer = createMessageProducerFromConfig(appConfig, this.logger);
       await messageProducer.connect();
 
       container

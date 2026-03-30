@@ -15,9 +15,7 @@ import { ConfigurationManagerService } from '../services/cm.service';
 import { TeamsController } from '../controller/teams.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  getMessageBrokerType,
-  createMessageProducer,
-  buildRedisBrokerConfig,
+  createMessageProducerFromConfig,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -76,13 +74,7 @@ export class UserManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerType = getMessageBrokerType();
-      const messageProducer = createMessageProducer(
-        brokerType,
-        brokerType === 'kafka' ? appConfig.kafka : undefined,
-        brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
-        container.get('Logger'),
-      );
+      const messageProducer = createMessageProducerFromConfig(appConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container

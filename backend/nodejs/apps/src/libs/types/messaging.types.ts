@@ -20,6 +20,15 @@ export interface KafkaBrokerConfig extends MessageBrokerConfig {
   ssl?: boolean;
 }
 
+export interface RedisConfig {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  tls?: boolean;
+  db?: number;
+}
+
 export interface RedisBrokerConfig extends MessageBrokerConfig {
   type: 'redis';
   host: string;

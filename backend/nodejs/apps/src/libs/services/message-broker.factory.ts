@@ -5,6 +5,7 @@ import {
   IMessageProducer,
   IMessageConsumer,
   MessageBrokerType,
+  RedisConfig,
   RedisBrokerConfig,
   TopicDefinition,
 } from '../types/messaging.types';
@@ -107,12 +108,10 @@ export function createMessageAdmin(
   }
 }
 
-export function buildRedisBrokerConfig(redisConfig: {
-  host: string;
-  port: number;
-  password?: string;
-  db?: number;
-}, options?: { clientId?: string; groupId?: string }): RedisBrokerConfig {
+export function buildRedisBrokerConfig(
+  redisConfig: RedisConfig,
+  options?: { clientId?: string; groupId?: string },
+): RedisBrokerConfig {
   return {
     type: 'redis',
     host: redisConfig.host,
@@ -124,6 +123,19 @@ export function buildRedisBrokerConfig(redisConfig: {
     clientId: options?.clientId,
     groupId: options?.groupId,
   };
+}
+
+export function createMessageProducerFromConfig(
+  appConfig: { kafka?: KafkaConfig; redis?: RedisConfig },
+  logger: Logger,
+): IMessageProducer {
+  const brokerType = getMessageBrokerType();
+  return createMessageProducer(
+    brokerType,
+    brokerType === 'kafka' ? appConfig.kafka : undefined,
+    brokerType === 'redis' && appConfig.redis ? buildRedisBrokerConfig(appConfig.redis) : undefined,
+    logger,
+  );
 }
 
 export async function ensureMessageTopicsExist(
@@ -140,4 +152,19 @@ export async function ensureMessageTopicsExist(
     logger,
   );
   await admin.ensureTopicsExist(topics || REQUIRED_TOPICS);
+}
+
+export async function ensureMessageTopicsExistFromConfig(
+  appConfig: { kafka?: KafkaConfig; redis?: RedisConfig },
+  logger: Logger,
+  topics?: TopicDefinition[],
+): Promise<void> {
+  const brokerType = getMessageBrokerType();
+  await ensureMessageTopicsExist(
+    brokerType,
+    brokerType === 'kafka' ? appConfig.kafka : undefined,
+    brokerType === 'redis' && appConfig.redis ? buildRedisBrokerConfig(appConfig.redis) : undefined,
+    logger,
+    topics,
+  );
 }
