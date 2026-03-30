@@ -52,6 +52,10 @@ services:
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
       # Ensure we use the same password as configured for the ArangoDB service
 
+      # Message broker config
+      - MESSAGE_BROKER=kafka
+      - REDIS_STREAMS_MAXLEN=10000
+
       # Kafka config
       - KAFKA_BROKERS=kafka-1:9092
 
@@ -110,8 +114,6 @@ services:
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
     depends_on:
       qdrant:
-        condition: service_healthy
-      kafka-1:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -207,6 +209,7 @@ services:
       retries: 5
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     container_name: zookeeper
     restart: always
@@ -217,6 +220,7 @@ services:
       - ZOOKEEPER_TICK_TIME=2000
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     container_name: kafka-1
     restart: always

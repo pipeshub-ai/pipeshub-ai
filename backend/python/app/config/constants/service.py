@@ -11,6 +11,8 @@ class config_node_constants(Enum):
     REDIS = "/services/redis"
     AI_MODELS = "/services/aiModels"
     KAFKA = "/services/kafka"
+    REDIS_STREAMS = "/services/redis-streams"
+    MESSAGE_BROKER = "/services/message-broker"
     ENDPOINTS = "/services/endpoints"
     SECRET_KEYS = "/services/secretKeys"
     STORAGE = "/services/storage"

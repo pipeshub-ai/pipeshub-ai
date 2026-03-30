@@ -18,8 +18,10 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
+from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
@@ -67,23 +69,23 @@ async def get_initialized_container() -> QueryAppContainer:
     return container
 
 async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
-    """Start all Kafka consumers at application level"""
+    """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
+    broker_type = get_message_broker_type()
 
     try:
-    # 1. Create AI Config Consumer
-        logger.info("🚀 Starting AI Config Kafka Consumer...")
-        aiconfig_kafka_config = await KafkaUtils.create_aiconfig_kafka_consumer_config(app_container)
-        aiconfig_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+        logger.info(f"🚀 Starting AI Config Consumer (broker: {broker_type})...")
+        aiconfig_config = await MessagingUtils.create_aiconfig_consumer_config(app_container)
+        aiconfig_consumer = MessagingFactory.create_consumer(
+            broker_type=broker_type,
             logger=logger,
-            config=aiconfig_kafka_config
+            config=aiconfig_config
         )
         aiconfig_message_handler = await KafkaUtils.create_aiconfig_message_handler(app_container)
-        await aiconfig_kafka_consumer.start(aiconfig_message_handler)
-        consumers.append(("aiconfig", aiconfig_kafka_consumer))
-        logger.info("✅ AI Config Kafka consumer started")
+        await aiconfig_consumer.start(aiconfig_message_handler)
+        consumers.append(("aiconfig", aiconfig_consumer))
+        logger.info("✅ AI Config consumer started")
 
         logger.info(f"✅ All {len(consumers)} Kafka consumers started successfully")
         return consumers

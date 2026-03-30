@@ -64,6 +64,10 @@ services:
       - ARANGO_USERNAME=root
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
 
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
@@ -132,8 +136,6 @@ services:
 
     depends_on:
       qdrant:
-        condition: service_healthy
-      kafka-1:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -231,6 +233,7 @@ services:
       retries: 5
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -245,6 +248,7 @@ services:
       retries: 5
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
