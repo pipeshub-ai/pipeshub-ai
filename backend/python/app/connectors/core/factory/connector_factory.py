@@ -60,6 +60,7 @@ from app.connectors.sources.zammad.connector import ZammadConnector
 
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
+from app.connectors.sources.mariadb.connector import MariaDBConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -94,6 +95,7 @@ class ConnectorFactory:
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,
+        "mariadb": MariaDBConnector,
     }
 
     # Beta connector definitions - single source of truth

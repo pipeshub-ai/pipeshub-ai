@@ -371,6 +371,7 @@ class RetrievalService:
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
+                        result["metadata"]["connectorId"] = record.get("connectorId", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
                         if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):

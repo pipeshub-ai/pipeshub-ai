@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict
 
 import aiohttp
-import httpx
+# import httpx
 import jwt
 from yarl import URL
 
@@ -438,60 +438,119 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unexpected error getting signed URL: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
+    # async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
+    #     """Upload data to a pre-signed URL using httpx.
+    #     Uses httpx instead of aiohttp because aiohttp's yarl URL parser
+    #     normalises percent-encoded characters (e.g. %2F → /) in query
+    #     strings even with encoded=True, which invalidates S3/Azure
+    #     pre-signed signatures
+    #     """
+    #     try:
+    #         json_bytes = json.dumps(data).encode('utf-8')
+
+    #         async with httpx.AsyncClient() as client:
+    #             response = await client.put(
+    #                 signed_url,
+    #                 content=json_bytes,
+    #                 headers={
+    #                     "Content-Type": "application/json",
+    #                 },
+    #             )
+
+    #             if response.status_code != HttpStatusCode.SUCCESS.value:
+    #                 response_text = response.text[:200]
+    #                 self.logger.error(
+    #                     "❌ Failed to upload to signed URL. Status: %d, Response: %s",
+    #                     response.status_code, response_text,
+    #                 )
+    #                 raise aiohttp.ClientError(f"Failed to upload with status {response.status_code}")
+
+    #             self.logger.debug("✅ Successfully uploaded to signed URL")
+    #             return response.status_code
+    #     except aiohttp.ClientError:
+    #         raise
+    #     except Exception as e:
+    #         self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
+    #         raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    # async def _upload_raw_to_signed_url(
+    #     self, signed_url: str, content: bytes, content_type: str
+    # ) -> None:
+    #     """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
+    #     try:
+    #         async with httpx.AsyncClient() as client:
+    #             response = await client.put(
+    #                 signed_url,
+    #                 content=content,
+    #                 headers={"Content-Type": content_type},
+    #             )
+    #             if response.status_code != HttpStatusCode.SUCCESS.value:
+    #                 response_text = response.text[:200]
+    #                 self.logger.error(
+    #                     "❌ Failed to upload raw content. Status: %d, Response: %s",
+    #                     response.status_code, response_text,
+    #                 )
+    #                 raise aiohttp.ClientError(
+    #                     f"Failed to upload with status {response.status_code}"
+    #                 )
+    #             self.logger.debug("✅ Successfully uploaded raw content to signed URL")
+    #     except aiohttp.ClientError:
+    #         raise
+    #     except Exception as e:
+    #         self.logger.error("❌ Unexpected error uploading raw content: %s", str(e))
+    #         raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
     async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
-        """Upload data to a pre-signed URL using httpx.
-        Uses httpx instead of aiohttp because aiohttp's yarl URL parser
-        normalises percent-encoded characters (e.g. %2F → /) in query
-        strings even with encoded=True, which invalidates S3/Azure
-        pre-signed signatures
-        """
+        """Helper method to upload to signed URL with retry logic"""
         try:
-            json_bytes = json.dumps(data).encode('utf-8')
-
-            async with httpx.AsyncClient() as client:
-                response = await client.put(
-                    signed_url,
-                    content=json_bytes,
-                    headers={
-                        "Content-Type": "application/json",
-                    },
-                )
-
-                if response.status_code != HttpStatusCode.SUCCESS.value:
-                    response_text = response.text[:200]
-                    self.logger.error(
-                        "❌ Failed to upload to signed URL. Status: %d, Response: %s",
-                        response.status_code, response_text,
-                    )
-                    raise aiohttp.ClientError(f"Failed to upload with status {response.status_code}")
+            async with session.put(
+                signed_url,
+                json=data,
+                headers={"Content-Type": "application/json"}
+            ) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    try:
+                        error_response = await response.json()
+                        self.logger.error("❌ Failed to upload to signed URL. Status: %d, Error: %s",
+                                        response.status, error_response)
+                    except aiohttp.ContentTypeError:
+                        error_text = await response.text()
+                        self.logger.error("❌ Failed to upload to signed URL. Status: %d, Response: %s",
+                                        response.status, error_text[:200])
+                    raise aiohttp.ClientError(f"Failed to upload with status {response.status}")
 
                 self.logger.debug("✅ Successfully uploaded to signed URL")
-                return response.status_code
-        except aiohttp.ClientError:
+                return response.status
+        except aiohttp.ClientError as e:
+            self.logger.error("❌ Network error uploading to signed URL: %s", str(e))
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _upload_raw_to_signed_url(
-        self, signed_url: str, content: bytes, content_type: str
+        self,
+        session: aiohttp.ClientSession,
+        signed_url: str,
+        content: bytes,
+        content_type: str,
     ) -> None:
         """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.put(
-                    signed_url,
-                    content=content,
-                    headers={"Content-Type": content_type},
-                )
-                if response.status_code != HttpStatusCode.SUCCESS.value:
-                    response_text = response.text[:200]
+            async with session.put(
+                signed_url,
+                data=content,
+                headers={"Content-Type": content_type},
+            ) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    response_text = (await response.text())[:200]
                     self.logger.error(
                         "❌ Failed to upload raw content. Status: %d, Response: %s",
-                        response.status_code, response_text,
+                        response.status,
+                        response_text,
                     )
                     raise aiohttp.ClientError(
-                        f"Failed to upload with status {response.status_code}"
+                        f"Failed to upload with status {response.status}"
                     )
                 self.logger.debug("✅ Successfully uploaded raw content to signed URL")
         except aiohttp.ClientError:
@@ -1275,6 +1334,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error creating metadata document: %s", str(e))
             raise e
 
+
     async def save_conversation_file_to_storage(
         self,
         org_id: str,
@@ -1375,7 +1435,12 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL for conversation file upload")
 
-                    await self._upload_raw_to_signed_url(signed_url, file_bytes, content_type)
+                    await self._upload_raw_to_signed_url(
+                        session,
+                        signed_url,
+                        file_bytes,
+                        content_type,
+                    )
 
                     download_api = (
                         f"{nodejs_endpoint}"
@@ -1410,7 +1475,7 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Error saving conversation file: %s", str(e))
             raise
-
+                       
     async def get_reconciliation_metadata(self, virtual_record_id: str, org_id: str) -> dict | None:
         """
         Args:

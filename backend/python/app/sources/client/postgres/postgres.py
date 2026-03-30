@@ -10,7 +10,7 @@ psycopg2 Documentation: https://www.psycopg.org/docs/
 
 import logging
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -266,7 +266,11 @@ class PostgreSQLConfig(BaseModel):
     host: str = Field(..., description="PostgreSQL server host")
     port: int = Field(default=5432, description="PostgreSQL server port", ge=1, le=65535)
     database: str = Field(..., description="Database name to connect to")
-    user: str = Field(..., description="Username for authentication")
+    user: str = Field(
+        ...,
+        description="Username for authentication",
+        validation_alias=AliasChoices("username", "user"),
+    )
     password: str = Field(default="", description="Password for authentication")
     timeout: int = Field(default=30, description="Connection timeout in seconds", gt=0)
     sslmode: str = Field(
@@ -293,7 +297,11 @@ class AuthConfig(BaseModel):
     host: str = Field(..., description="PostgreSQL server host")
     port: int = Field(default=5432, description="PostgreSQL server port")
     database: str = Field(..., description="Database name")
-    user: str = Field(..., description="Username")
+    user: str = Field(
+        ...,
+        description="Username",
+        validation_alias=AliasChoices("username", "user"),
+    )
     password: str = Field(default="", description="Password")
     sslmode: str = Field(default="prefer", description="SSL mode")
 

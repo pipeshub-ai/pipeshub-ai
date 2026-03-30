@@ -17,6 +17,8 @@ from app.sources.client.postgres.postgres import PostgreSQLClient, PostgreSQLRes
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_TABLE_ROW_FETCH_LIMIT = 1000
+
 class PostgreSQLDataSource:
     """PostgreSQL DataSource for database operations.
     
@@ -612,6 +614,37 @@ class PostgreSQLDataSource:
                 error=str(e),
                 message="Query execution failed"
             )
+
+    async def fetch_table_rows(
+        self,
+        schema_name: str,
+        table_name: str,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return up to ``limit`` rows from a table (full row scan capped).
+
+        Args:
+            schema_name: Schema name
+            table_name: Table name
+            limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
+
+        Returns:
+            List of row dicts, or empty list on failure.
+        """
+        row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
+        query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {row_limit}'
+        try:
+            response = await self.execute_query(query)
+            if response.success and response.data:
+                return response.data
+        except Exception as e:
+            logger.warning(
+                "🔧 [PostgreSQLDataSource] fetch_table_rows failed for %s.%s: %s",
+                schema_name,
+                table_name,
+                e,
+            )
+        return []
 
     async def get_table_stats(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
         """Get table statistics for change detection.

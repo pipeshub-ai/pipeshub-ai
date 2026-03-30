@@ -1689,7 +1689,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_record_relations(
         self,
-        edges: List[Dict],
+        edges: list[dict],
         transaction: Optional[str] = None
     ) -> bool:
         """
@@ -2537,7 +2537,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         relation_type: str,
         transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
         with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
@@ -2581,7 +2581,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         relation_type: str,
         transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
         with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
@@ -2622,9 +2622,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_virtual_record_ids_for_record_ids(
         self,
-        record_ids: List[str],
+        record_ids: list[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """
         Resolve record _keys to virtualRecordIds. Used to fetch blob for child records by id.
 
