@@ -2,7 +2,6 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
-import { Logger } from '../../../src/libs/services/logger.service'
 import {
   BadRequestError,
   UnauthorizedError,
@@ -56,20 +55,28 @@ function createMockNext(): sinon.SinonStub {
 
 describe('ErrorMiddleware', () => {
   let handler: ReturnType<typeof ErrorMiddleware.handleError>
-  // The ErrorMiddleware class captures Logger.getInstance() in a static field at import time.
-  // We stub the methods on the actual singleton so the already-captured reference uses our stubs.
-  let loggerInstance: Logger
+  // Replace ErrorMiddleware's static logger with a fake to avoid stubbing the
+  // shared Logger singleton (which causes "already stubbed" errors when other
+  // test suites touch the same singleton).
   let loggerErrorStub: sinon.SinonStub
   let loggerWarnStub: sinon.SinonStub
+  let originalLogger: any
 
   beforeEach(() => {
-    loggerInstance = Logger.getInstance()
-    loggerErrorStub = sinon.stub(loggerInstance, 'error')
-    loggerWarnStub = sinon.stub(loggerInstance, 'warn')
+    loggerErrorStub = sinon.stub()
+    loggerWarnStub = sinon.stub()
+    originalLogger = (ErrorMiddleware as any).logger
+    ;(ErrorMiddleware as any).logger = {
+      error: loggerErrorStub,
+      warn: loggerWarnStub,
+      info: sinon.stub(),
+      debug: sinon.stub(),
+    }
     handler = ErrorMiddleware.handleError()
   })
 
   afterEach(() => {
+    (ErrorMiddleware as any).logger = originalLogger
     sinon.restore()
   })
 

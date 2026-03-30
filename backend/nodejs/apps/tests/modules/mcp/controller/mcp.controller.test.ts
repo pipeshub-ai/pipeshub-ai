@@ -22,10 +22,6 @@ const sdkTransportExports = require.cache[
   require.resolve('@modelcontextprotocol/sdk/server/streamableHttp.js')
 ]!.exports
 
-// The controller creates its logger at module-load time via Logger.getInstance.
-// We grab the same singleton so we can stub its methods in error-logging tests.
-const controllerLogger = Logger.getInstance({ service: 'MCPController' })
-
 describe('MCP Controller — handleMCPRequest', () => {
   let appConfig: any
 
@@ -469,6 +465,20 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Error handling — negative tests
   // =========================================================================
   describe('error handling', () => {
+    // Logger is a singleton shared across test suites. Instead of stubbing
+    // the singleton instance (which causes "already stubbed" errors when
+    // other suites touch it), stub Logger.prototype.error so every instance
+    // picks up the stub regardless of identity.
+    let errorStub: sinon.SinonStub
+
+    beforeEach(() => {
+      // Defensively restore any lingering stub from other suites
+      if (typeof (Logger.prototype.error as any).restore === 'function') {
+        (Logger.prototype.error as any).restore()
+      }
+      errorStub = sinon.stub(Logger.prototype, 'error')
+    })
+
     it('should call next(error) when createMCPServer throws', async () => {
       const error = new Error('createMCPServer failed')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
@@ -559,9 +569,6 @@ describe('MCP Controller — handleMCPRequest', () => {
       const error = new Error('test error message')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
 
-      // Stub the real controller logger (module-level singleton)
-      const errorStub = sinon.stub(controllerLogger, 'error')
-
       const req = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
         method: 'POST',
         headers: { authorization: 'Bearer tok' },
@@ -585,8 +592,6 @@ describe('MCP Controller — handleMCPRequest', () => {
       const error = new Error('no-user error')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
 
-      const errorStub = sinon.stub(controllerLogger, 'error')
-
       const req = createMockRequest({
         method: 'GET',
         headers: {},
@@ -606,8 +611,6 @@ describe('MCP Controller — handleMCPRequest', () => {
       const error = new Error('partial user')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
 
-      const errorStub = sinon.stub(controllerLogger, 'error')
-
       const req = createMockRequest({
         method: 'POST',
         headers: {},
@@ -625,8 +628,6 @@ describe('MCP Controller — handleMCPRequest', () => {
     it('should log the request method in error metadata', async () => {
       const error = new Error('method test')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
-
-      const errorStub = sinon.stub(controllerLogger, 'error')
 
       const req = createMockRequest({ method: 'DELETE', headers: {}, body: {} })
       const res = createMockResponse()
