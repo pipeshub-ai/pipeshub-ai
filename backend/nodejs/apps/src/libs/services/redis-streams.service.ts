@@ -344,12 +344,11 @@ export abstract class BaseRedisStreamsConsumerConnection implements IMessageCons
   }
 
   pause(_topics: string[]): void {
-    this.logger.debug('Pausing Redis Streams consumption (setting running=false temporarily)');
-    this.running = false;
+    // No-op: Redis Streams does not support pause/resume natively.
   }
 
   resume(_topics: string[]): void {
-    this.logger.debug('Resume requested for Redis Streams — requires re-calling consume()');
+    // No-op: Redis Streams does not support pause/resume natively.
   }
 
   async healthCheck(): Promise<boolean> {
