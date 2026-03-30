@@ -3172,7 +3172,12 @@ class TestCreateConnector:
         mock_processor_cls.return_value = proc
 
         conn = await DropboxConnector.create_connector(
-            mock_logger, mock_data_store_provider, mock_config_service, "conn-123"
+            mock_logger,
+            mock_data_store_provider,
+            mock_config_service,
+            "conn-123",
+            "team",
+            "test-user-id",
         )
         assert isinstance(conn, DropboxConnector)
         proc.initialize.assert_called_once()

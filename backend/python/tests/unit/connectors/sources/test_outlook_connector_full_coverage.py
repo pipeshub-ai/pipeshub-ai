@@ -2508,7 +2508,9 @@ class TestCreateConnector:
             dsp = MagicMock()
             cs = MagicMock()
 
-            connector = await OutlookConnector.create_connector(logger, dsp, cs, "conn-1")
+            connector = await OutlookConnector.create_connector(
+                logger, dsp, cs, "conn-1", "team", "test-user-id"
+            )
             assert isinstance(connector, OutlookConnector)
             instance.initialize.assert_awaited_once()
 

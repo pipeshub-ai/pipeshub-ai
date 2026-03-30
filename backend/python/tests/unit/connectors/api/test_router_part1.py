@@ -3300,18 +3300,12 @@ class TestUpdateConnectorInstanceConfig:
             body={"filters": {"sync": {"types": ["FILE"]}}},
         )
 
-        graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={
-            "scope": "personal",
-            "createdBy": "user-1",
-        })
-        
         with patch("app.connectors.api.router.get_validated_connector_instance", new_callable=AsyncMock, return_value={
             "type": "slack", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
             "isActive": False, "name": "Slack", "authType": "API_TOKEN"
         }):
             with patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=999):
-                result = await update_connector_instance_config("c1", request, graph_provider)
+                result = await update_connector_instance_config("c1", request)
         assert result["success"] is True
 
 

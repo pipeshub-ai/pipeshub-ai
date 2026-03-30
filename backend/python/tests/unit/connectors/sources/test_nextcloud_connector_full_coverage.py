@@ -796,7 +796,9 @@ class TestCreateConnectorFactory:
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
-            conn = await NextcloudConnector.create_connector(logger, dsp, cs, "nc-factory")
+            conn = await NextcloudConnector.create_connector(
+                logger, dsp, cs, "nc-factory", "team", "test-user-id"
+            )
             assert isinstance(conn, NextcloudConnector)
 
 

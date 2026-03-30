@@ -2827,7 +2827,9 @@ class TestCreateConnector:
             logger=logger,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
-            connector_id="zm-test"
+            connector_id="zm-test",
+            scope="team",
+            created_by="test-user-id",
         )
         assert isinstance(result, ZammadConnector)
         mock_proc.initialize.assert_awaited_once()

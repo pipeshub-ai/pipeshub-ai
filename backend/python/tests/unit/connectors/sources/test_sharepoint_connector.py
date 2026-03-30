@@ -2379,7 +2379,7 @@ class TestCreateConnector:
             mock_dep.return_value = mock_instance
 
             connector = await SharePointConnector.create_connector(
-                logger, dsp, cs, "conn-sp-new"
+                logger, dsp, cs, "conn-sp-new", "team", "test-user-id"
             )
 
             assert isinstance(connector, SharePointConnector)

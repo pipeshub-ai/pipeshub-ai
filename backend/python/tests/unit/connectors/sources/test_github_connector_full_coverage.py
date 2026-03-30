@@ -774,7 +774,9 @@ class TestCreateConnectorFactory:
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
-            conn = await GithubConnector.create_connector(logger, dsp, cs, "gh-factory")
+            conn = await GithubConnector.create_connector(
+                logger, dsp, cs, "gh-factory", "team", "test-user-id"
+            )
             assert isinstance(conn, GithubConnector)
 
 

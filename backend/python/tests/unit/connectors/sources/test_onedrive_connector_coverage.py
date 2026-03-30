@@ -2353,7 +2353,9 @@ class TestCreateConnector:
             dsp = MagicMock()
             cs = MagicMock()
 
-            result = await OneDriveConnector.create_connector(logger, dsp, cs, "conn-1")
+            result = await OneDriveConnector.create_connector(
+                logger, dsp, cs, "conn-1", "team", "test-user-id"
+            )
             assert isinstance(result, OneDriveConnector)
             mock_instance.initialize.assert_awaited_once()
 

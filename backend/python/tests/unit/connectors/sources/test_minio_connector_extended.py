@@ -44,6 +44,8 @@ def minio_connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="minio-conn-1",
+            scope="personal",
+            created_by="user-1",
             endpoint_url="http://localhost:9000",
         )
     return connector
@@ -204,6 +206,7 @@ class TestCreateConnector:
         connector = await MinIOConnector.create_connector(
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
+            scope="team", created_by="test-user-id",
         )
         assert connector is not None
 
@@ -224,6 +227,7 @@ class TestCreateConnector:
         connector = await MinIOConnector.create_connector(
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
+            scope="team", created_by="test-user-id",
         )
         assert connector.endpoint_url == "https://minio.prod.com:9000"
 

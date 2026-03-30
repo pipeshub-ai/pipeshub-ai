@@ -5218,7 +5218,9 @@ class TestCreateConnector:
             dsp.transaction.return_value = mock_tx
             cs = AsyncMock()
 
-            connector = await NotionConnector.create_connector(logger, dsp, cs, "conn-1")
+            connector = await NotionConnector.create_connector(
+                logger, dsp, cs, "conn-1", "team", "test-user-id"
+            )
             assert isinstance(connector, NotionConnector)
             mock_dep.initialize.assert_awaited_once()
 

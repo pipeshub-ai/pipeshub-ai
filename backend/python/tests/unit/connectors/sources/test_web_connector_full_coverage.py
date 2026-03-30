@@ -957,5 +957,7 @@ class TestCreateConnectorFactory:
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
-            conn = await WebConnector.create_connector(logger, dsp, cs, "wc-factory")
+            conn = await WebConnector.create_connector(
+                logger, dsp, cs, "wc-factory", "team", "test-user-id"
+            )
             assert isinstance(conn, WebConnector)

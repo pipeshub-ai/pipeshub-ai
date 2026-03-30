@@ -2676,7 +2676,9 @@ class TestCreateConnector:
             dsp.transaction.return_value = mock_tx
             cs = MagicMock()
 
-            connector = await ConfluenceConnector.create_connector(logger, dsp, cs, "c1")
+            connector = await ConfluenceConnector.create_connector(
+                logger, dsp, cs, "c1", "team", "test-user-id"
+            )
             assert isinstance(connector, ConfluenceConnector)
             mock_instance.initialize.assert_awaited_once()
 
