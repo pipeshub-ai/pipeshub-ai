@@ -1374,7 +1374,7 @@ class DataSourceEntitiesProcessor:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw
 
-    async def get_all_app_users(self, connector_id: str) -> AppUser | None:
+    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_users(self.org_id, connector_id)
 

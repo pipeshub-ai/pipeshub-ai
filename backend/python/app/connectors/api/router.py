@@ -2137,8 +2137,6 @@ async def _prepare_connector_config(
         "filters": config.get("filters", {}) if config else {},
         "credentials": None,
         "oauth": None,
-        "scope": scope,
-        "createdBy": user_id,
     }
 
     # ============================================================
@@ -2965,18 +2963,6 @@ async def update_connector_instance_auth_config(
             connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
             new_config["auth"]["connectorScope"] = connector_doc.get("scope", "")
 
-        # Preserve scope and createdBy (connector instance metadata) so connectors receive them in config
-        if "scope" not in new_config and existing_config.get("scope"):
-            new_config["scope"] = existing_config["scope"]
-        if "createdBy" not in new_config and existing_config.get("createdBy"):
-            new_config["createdBy"] = existing_config["createdBy"]
-        if "scope" not in new_config or "createdBy" not in new_config:
-            connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-            if "scope" not in new_config:
-                new_config["scope"] = connector_doc.get("scope", "personal")
-            if "createdBy" not in new_config:
-                new_config["createdBy"] = connector_doc.get("createdBy", "")
-
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated auth config for instance {connector_id}")
@@ -3376,18 +3362,6 @@ async def update_connector_instance_config(
                     "redirectUri": redirect_uri,
                     "authType": auth_type,  # Keep existing auth type (cannot be changed)
                 })
-
-        # Preserve scope and createdBy (connector instance metadata) so connectors receive them in config
-        if "scope" not in new_config and existing_config.get("scope"):
-            new_config["scope"] = existing_config["scope"]
-        if "createdBy" not in new_config and existing_config.get("createdBy"):
-            new_config["createdBy"] = existing_config["createdBy"]
-        if "scope" not in new_config or "createdBy" not in new_config:
-            connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-            if "scope" not in new_config:
-                new_config["scope"] = connector_doc.get("scope", "personal")
-            if "createdBy" not in new_config:
-                new_config["createdBy"] = connector_doc.get("createdBy", "")
 
         # Save configuration
         await config_service.set_config(config_path, new_config)
