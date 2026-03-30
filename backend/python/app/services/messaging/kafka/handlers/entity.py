@@ -729,12 +729,18 @@ class EntityEventService(BaseEventService):
             if not hasattr(self.app_container, 'connectors_map'):
                 self.logger.info(f"Creating connectors_map for org: {org_id}")
                 self.app_container.connectors_map = {}
+
+            scope = instance_document.get("scope", "personal")
+            created_by = instance_document.get("createdBy", "")
+
             connector = await ConnectorFactory.create_and_start_sync(
                 name="kb",
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id=instance_key,
+                scope=scope,
+                created_by=created_by,
             )
             if connector:
                 self.app_container.connectors_map[instance_key] = connector

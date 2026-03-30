@@ -321,10 +321,12 @@ class WebConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> None:
         super().__init__(
-            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id
+            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
         self.connector_name = Connectors.WEB
         self.connector_id = connector_id
@@ -350,7 +352,6 @@ class WebConnector(BaseConnector):
         self.batch_size: int = 50
 
         # Scope and creator (loaded from DB during init)
-        self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
         self.creator_email: Optional[str] = None
 
@@ -374,23 +375,8 @@ class WebConnector(BaseConnector):
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
 
-            # Read scope and createdBy from database App node (source of truth)
-            app = await self.data_entities_processor.get_app_by_id(self.connector_id)
-            if not app:
-                raise ValueError(f"App document not found in database for connector {self.connector_id}")
-            self.connector_scope = app.scope
-            self.created_by = app.created_by or ""
-            self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
-
-            # Cache creator email for personal scope (avoids DB query for each record)
-            if self.connector_scope == ConnectorScope.PERSONAL.value and self.created_by:
-                try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        user = await tx_store.get_user_by_user_id(self.created_by)
-                        if user and user.get("email"):
-                            self.creator_email = user.get("email")
-                except Exception as e:
-                    self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+            # Load creator email if needed (for personal scope permission creation)
+            await self._load_creator_email()
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -438,7 +424,7 @@ class WebConnector(BaseConnector):
         try:
             permissions = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -667,7 +653,7 @@ class WebConnector(BaseConnector):
             )
 
             # Create READ permissions: TEAM scope uses org; PERSONAL uses app_users
-            if not app_users and getattr(self, "connector_scope", None) == ConnectorScope.TEAM.value:
+            if not app_users and self.scope == ConnectorScope.TEAM.value:
                 permissions = [
                     Permission(
                         type=PermissionType.READ,
@@ -761,7 +747,7 @@ class WebConnector(BaseConnector):
 
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 async with self.data_store_provider.transaction() as tx_store:
                     await tx_store.ensure_team_app_edge(
                         self.connector_id,
@@ -1949,7 +1935,9 @@ class WebConnector(BaseConnector):
     async def create_connector(
         cls, logger: Logger, data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1957,7 +1945,7 @@ class WebConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return WebConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
 
     async def cleanup(self) -> None:

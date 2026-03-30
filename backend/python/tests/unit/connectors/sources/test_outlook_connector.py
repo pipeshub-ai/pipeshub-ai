@@ -73,7 +73,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1")
+    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "org", "user-1")
 
 
 def _make_graph_response(success=True, data=None, error=None):

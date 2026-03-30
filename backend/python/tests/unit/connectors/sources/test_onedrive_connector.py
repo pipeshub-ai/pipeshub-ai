@@ -63,7 +63,7 @@ def _make_mock_deps():
 def _make_connector():
     """Create an OneDrive connector with mocked dependencies."""
     logger, dep, dsp, cs = _make_mock_deps()
-    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-1")
+    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-1", "team", "test-user")
     return connector
 
 

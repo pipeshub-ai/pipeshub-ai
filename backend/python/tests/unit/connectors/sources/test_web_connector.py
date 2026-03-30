@@ -1329,7 +1329,7 @@ class TestWebConnectorRunSyncDeep:
         connector.reload_config = AsyncMock()
         connector._crawl_single_page = AsyncMock()
         connector.process_retry_urls = AsyncMock()
-        connector.connector_scope = "PERSONAL"
+        connector.scope = "PERSONAL"
         connector.created_by = "user-1"
         connector.creator_email = "user@test.com"
         from app.models.entities import User

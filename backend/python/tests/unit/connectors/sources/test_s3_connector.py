@@ -204,7 +204,7 @@ class TestS3ConnectorInit:
         result = await s3_connector.init()
         assert result is True
         assert s3_connector.bucket_name == "mybucket"
-        assert s3_connector.connector_scope == "PERSONAL"
+        assert s3_connector.scope == "PERSONAL"
 
 
 # ===========================================================================
@@ -331,18 +331,18 @@ class TestS3RecordGroups:
         await s3_connector._create_record_groups_for_buckets([])
 
     async def test_create_record_groups_team_scope(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_personal_with_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_personal_no_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited()

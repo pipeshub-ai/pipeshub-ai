@@ -133,6 +133,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             for app in enabled_apps:
                 connector_id = app.get("_key")
+                scope = app.get("scope", "personal")
+                created_by = app.get("createdBy", "")
 
                 connector_name = app["type"].lower().replace(" ", "")
                 connector = await ConnectorFactory.create_and_start_sync(
@@ -140,7 +142,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                     logger=logger,
                     data_store_provider=data_store,
                     config_service=config_service,
-                    connector_id=connector_id
+                    connector_id=connector_id,
+                    scope=scope,
+                    created_by=created_by
                 )
                 if connector:
                     # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)

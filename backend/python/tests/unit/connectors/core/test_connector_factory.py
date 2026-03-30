@@ -204,6 +204,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-1",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -229,6 +231,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-2",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is expected_connector
@@ -252,6 +256,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-3",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -275,6 +281,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-4",
+            scope="personal",
+            created_by="user-123",
             custom_param="value123",
         )
 
@@ -309,6 +317,10 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-5",
+            scope="personal",
+            created_by="user-123",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is mock_connector
@@ -333,6 +345,10 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-6",
+            scope="personal",
+            created_by="user-123",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -356,6 +372,10 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-7",
+            scope="personal",
+            created_by="user-123",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -373,6 +393,10 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-8",
+            scope="personal",
+            created_by="user-123",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None

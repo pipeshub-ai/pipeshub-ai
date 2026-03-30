@@ -306,6 +306,8 @@ class AzureBlobConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=AzureBlobApp(connector_id),
@@ -314,6 +316,8 @@ class AzureBlobConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.AZURE_BLOB
@@ -335,7 +339,6 @@ class AzureBlobConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.container_name: str | None = None
-        self.connector_scope: str | None = None
         self.created_by: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
@@ -380,23 +383,8 @@ class AzureBlobConnector(BaseConnector):
         # Container name is no longer stored in config - it's determined at sync time
         self.container_name = None
 
-        # Read scope and createdBy from database App node (source of truth)
-        app = await self.data_entities_processor.get_app_by_id(self.connector_id)
-        if not app:
-            raise ValueError(f"App document not found in database for connector {self.connector_id}")
-        self.connector_scope = app.scope
-        self.created_by = app.created_by or ""
-        self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
-
-        # Fetch creator email once to avoid repeated DB queries during sync
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_user_id(self.created_by)
-                    if user and user.get("email"):
-                        self.creator_email = user.get("email")
-            except Exception as e:
-                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
+        # Load creator email if needed (for personal scope permission creation)
+        await self._load_creator_email()
 
         try:
             client = await AzureBlobClient.build_from_services(
@@ -474,7 +462,7 @@ class AzureBlobConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 async with self.data_store_provider.transaction() as tx_store:
                     await tx_store.ensure_team_app_edge(
                         self.connector_id,
@@ -567,7 +555,7 @@ class AzureBlobConnector(BaseConnector):
                 continue
 
             permissions = []
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1223,7 +1211,7 @@ class AzureBlobConnector(BaseConnector):
         try:
             permissions = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1693,6 +1681,8 @@ class AzureBlobConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs: object,
     ) -> "AzureBlobConnector":
         """Factory method to create and initialize connector."""
@@ -1725,5 +1715,7 @@ class AzureBlobConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 

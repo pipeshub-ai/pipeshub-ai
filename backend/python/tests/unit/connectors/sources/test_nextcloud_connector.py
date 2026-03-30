@@ -91,6 +91,8 @@ def nextcloud_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="nc-conn-1",
+            scope="team",
+            created_by="test-user",
         )
     return connector
 

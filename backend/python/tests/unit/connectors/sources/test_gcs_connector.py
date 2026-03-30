@@ -354,18 +354,18 @@ class TestGCSRecordGroupsForBuckets:
         await gcs_connector._create_record_groups_for_buckets([])
 
     async def test_create_record_groups_team_scope(self, gcs_connector):
-        gcs_connector.connector_scope = ConnectorScope.TEAM.value
+        gcs_connector.scope = ConnectorScope.TEAM.value
         await gcs_connector._create_record_groups_for_buckets(["bucket1"])
         gcs_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_personal_scope_with_creator(self, gcs_connector, mock_data_store_provider):
-        gcs_connector.connector_scope = ConnectorScope.PERSONAL.value
+        gcs_connector.scope = ConnectorScope.PERSONAL.value
         gcs_connector.created_by = "user-1"
         await gcs_connector._create_record_groups_for_buckets(["bucket1"])
         gcs_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_retry_on_lock(self, gcs_connector):
-        gcs_connector.connector_scope = ConnectorScope.TEAM.value
+        gcs_connector.scope = ConnectorScope.TEAM.value
         gcs_connector.data_entities_processor.on_new_record_groups = AsyncMock(
             side_effect=[Exception("timeout waiting to lock"), None]
         )

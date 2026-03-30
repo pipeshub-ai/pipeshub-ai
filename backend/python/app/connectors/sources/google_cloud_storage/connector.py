@@ -304,6 +304,8 @@ class GCSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=GCSApp(connector_id),
@@ -312,6 +314,8 @@ class GCSConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.GCS
@@ -333,7 +337,6 @@ class GCSConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.bucket_name: str | None = None
-        self.connector_scope: str | None = None
         self.created_by: str | None = None
         self.project_id: str | None = None
 
@@ -374,14 +377,6 @@ class GCSConnector(BaseConnector):
         if not service_account_json:
             self.logger.error("GCS service account JSON not found in configuration.")
             return False
-
-        # Read scope and createdBy from database App node (source of truth)
-        app = await self.data_entities_processor.get_app_by_id(self.connector_id)
-        if not app:
-            raise ValueError(f"App document not found in database for connector {self.connector_id}")
-        self.connector_scope = app.scope
-        self.created_by = app.created_by or ""
-        self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
 
         try:
             client = await GCSClient.build_from_services(
@@ -425,7 +420,7 @@ class GCSConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 async with self.data_store_provider.transaction() as tx_store:
                     await tx_store.ensure_team_app_edge(
                         self.connector_id,
@@ -512,7 +507,7 @@ class GCSConnector(BaseConnector):
 
         # Get user info once upfront to avoid repeated transactions
         creator_email = None
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
+        if self.created_by and self.scope != ConnectorScope.TEAM.value:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
                     user = await tx_store.get_user_by_user_id(self.created_by)
@@ -530,7 +525,7 @@ class GCSConnector(BaseConnector):
                 continue
 
             permissions = []
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1156,7 +1151,7 @@ class GCSConnector(BaseConnector):
         try:
             permissions = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1641,6 +1636,8 @@ class GCSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs: object,
     ) -> "GCSConnector":
         """Factory method to create and initialize connector."""
@@ -1655,5 +1652,7 @@ class GCSConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 

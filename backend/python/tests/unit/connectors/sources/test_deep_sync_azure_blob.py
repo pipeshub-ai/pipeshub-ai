@@ -183,14 +183,14 @@ class TestAzureBlobRunSync:
 
 class TestCreateRecordGroups:
     async def test_team_scope_uses_org_permission(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
         assert permissions[0].entity_type == EntityType.ORG
 
     async def test_personal_scope_uses_creator_permission(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = "creator@t.com"
         connector.created_by = "uid-1"
         await connector._create_record_groups_for_containers(["c1"])
@@ -200,7 +200,7 @@ class TestCreateRecordGroups:
         assert permissions[0].type == PermissionType.OWNER
 
     async def test_personal_scope_no_creator_falls_back_to_org(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = None
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]

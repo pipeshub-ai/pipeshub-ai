@@ -78,7 +78,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1")
+    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
 
 
 def _make_mock_response(status=200, data=None):

@@ -380,7 +380,7 @@ class TestRunSync:
     async def test_run_sync_processes_feeds(self):
         conn = _make_connector()
         conn.feed_urls = ["https://feed1.com/rss"]
-        conn.connector_scope = "PERSONAL"
+        conn.scope = "PERSONAL"
         conn.created_by = "user-1"
         conn.creator_email = "user@test.com"
         with patch.object(conn, "_process_feed", new_callable=AsyncMock, return_value=5):
@@ -396,7 +396,7 @@ class TestRunSync:
 
     async def test_run_sync_exception_raises(self):
         conn = _make_connector()
-        conn.connector_scope = "PERSONAL"
+        conn.scope = "PERSONAL"
         conn.created_by = "user-1"
         conn.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("error")

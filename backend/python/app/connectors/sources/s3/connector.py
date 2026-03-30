@@ -118,6 +118,8 @@ class S3Connector(S3CompatibleBaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=S3App(connector_id),
@@ -126,6 +128,8 @@ class S3Connector(S3CompatibleBaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             connector_name=Connectors.S3,
             filter_key="s3",
             base_console_url="https://s3.console.aws.amazon.com",
@@ -148,14 +152,6 @@ class S3Connector(S3CompatibleBaseConnector):
         if not access_key or not secret_key:
             self.logger.error("S3 access key or secret key not found in configuration.")
             return False
-
-        # Read scope and createdBy from database App node (source of truth)
-        app = await self.data_entities_processor.get_app_by_id(self.connector_id)
-        if not app:
-            raise ValueError(f"App document not found in database for connector {self.connector_id}")
-        self.connector_scope = app.scope
-        self.created_by = app.created_by or ""
-        self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
 
         try:
             client = await S3Client.build_from_services(
@@ -204,6 +200,8 @@ class S3Connector(S3CompatibleBaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
@@ -222,6 +220,8 @@ class S3Connector(S3CompatibleBaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 
         # Update processor with connector-specific URL generator
