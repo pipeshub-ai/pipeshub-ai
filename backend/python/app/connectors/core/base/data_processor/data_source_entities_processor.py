@@ -38,8 +38,8 @@ from app.models.entities import (
     PullRequestRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -104,25 +104,12 @@ class DataSourceEntitiesProcessor:
         self.org_id = ""
 
     async def initialize(self) -> None:
-        producer_config = await self.config_service.get_config(
-            config_node_constants.KAFKA.value
-        )
-
-        # Ensure bootstrap_servers is a list
-        bootstrap_servers = producer_config.get("brokers") or producer_config.get("bootstrap_servers")
-        if isinstance(bootstrap_servers, str):
-            bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
-
-        kafka_producer_config = KafkaProducerConfig(
-            bootstrap_servers=bootstrap_servers,
-            client_id=producer_config.get("client_id", "connectors"),
-            ssl=producer_config.get("ssl", False),
-            sasl=producer_config.get("sasl"),
+        config = await MessagingUtils.create_producer_config_from_service(
+            self.config_service, "connectors"
         )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
-            broker_type="kafka",
             logger=self.logger,
-            config=kafka_producer_config,
+            config=config,
         )
         await self.messaging_producer.initialize()
         async with self.data_store_provider.transaction() as tx_store:

@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, Union
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
@@ -133,6 +134,34 @@ class MessagingUtils:
             redis_config = await MessagingUtils._get_redis_config(app_container)
             return MessagingUtils._build_redis_streams_config(
                 redis_config, "messaging_producer_client", "", []
+            )
+
+    @staticmethod
+    async def create_producer_config_from_service(
+        config_service: ConfigurationService,
+        client_id: str = "messaging_producer_client",
+    ) -> Union[KafkaProducerConfig, RedisStreamsConfig]:
+        """Create producer config using a ConfigurationService directly."""
+        broker_type = get_message_broker_type()
+        if broker_type == "kafka":
+            kafka_config = await config_service.get_config(
+                config_node_constants.KAFKA.value
+            )
+            brokers = kafka_config.get("brokers") or kafka_config.get("bootstrap_servers")
+            if isinstance(brokers, str):
+                brokers = [s.strip() for s in brokers.split(",")]
+            return KafkaProducerConfig(
+                bootstrap_servers=brokers,
+                client_id=client_id,
+                ssl=kafka_config.get("ssl", False),
+                sasl=kafka_config.get("sasl"),
+            )
+        else:
+            redis_config = await config_service.get_config(
+                config_node_constants.REDIS.value
+            ) or {}
+            return MessagingUtils._build_redis_streams_config(
+                redis_config, client_id, "", []
             )
 
     # Convenience methods that mirror KafkaUtils for specific consumer configs
