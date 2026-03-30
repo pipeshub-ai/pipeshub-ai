@@ -1,3 +1,4 @@
+import os
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
@@ -38,6 +39,7 @@ from app.models.entities import (
     PullRequestRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.messaging.config import RedisStreamsConfig, get_message_broker_type
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -104,25 +106,48 @@ class DataSourceEntitiesProcessor:
         self.org_id = ""
 
     async def initialize(self) -> None:
-        producer_config = await self.config_service.get_config(
-            config_node_constants.KAFKA.value
-        )
+        broker_type = get_message_broker_type()
 
-        # Ensure bootstrap_servers is a list
-        bootstrap_servers = producer_config.get("brokers") or producer_config.get("bootstrap_servers")
-        if isinstance(bootstrap_servers, str):
-            bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
+        if broker_type == "redis":
+            redis_config = await self.config_service.get_config(
+                config_node_constants.REDIS.value
+            )
+            if not redis_config:
+                redis_config = {
+                    "host": os.getenv("REDIS_HOST", "localhost"),
+                    "port": int(os.getenv("REDIS_PORT", "6379")),
+                    "password": os.getenv("REDIS_PASSWORD") or None,
+                    "db": int(os.getenv("REDIS_DB", "0")),
+                }
+            producer_cfg = RedisStreamsConfig(
+                host=redis_config.get("host", "localhost"),
+                port=int(redis_config.get("port", 6379)),
+                password=redis_config.get("password"),
+                db=int(redis_config.get("db", 0)),
+                max_len=int(os.getenv("REDIS_STREAMS_MAXLEN", "10000")),
+                client_id="connectors",
+                group_id="",
+                topics=[],
+            )
+        else:
+            kafka_config = await self.config_service.get_config(
+                config_node_constants.KAFKA.value
+            )
+            bootstrap_servers = kafka_config.get("brokers") or kafka_config.get("bootstrap_servers")
+            if isinstance(bootstrap_servers, str):
+                bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
 
-        kafka_producer_config = KafkaProducerConfig(
-            bootstrap_servers=bootstrap_servers,
-            client_id=producer_config.get("client_id", "connectors"),
-            ssl=producer_config.get("ssl", False),
-            sasl=producer_config.get("sasl"),
-        )
+            producer_cfg = KafkaProducerConfig(
+                bootstrap_servers=bootstrap_servers,
+                client_id=kafka_config.get("client_id", "connectors"),
+                ssl=kafka_config.get("ssl", False),
+                sasl=kafka_config.get("sasl"),
+            )
+
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
-            broker_type="kafka",
+            broker_type=broker_type,
             logger=self.logger,
-            config=kafka_producer_config,
+            config=producer_cfg,
         )
         await self.messaging_producer.initialize()
         async with self.data_store_provider.transaction() as tx_store:
