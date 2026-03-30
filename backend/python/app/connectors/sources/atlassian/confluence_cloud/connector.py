@@ -1837,8 +1837,6 @@ class ConfluenceConnector(BaseConnector):
         - administer → OWNER
         - read → READ
         - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content → WRITE
-        - export → READ
         - delete (space) → OWNER
 
         Args:
@@ -1881,8 +1879,6 @@ class ConfluenceConnector(BaseConnector):
         - administer → OWNER
         - read → READ
         - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content → WRITE
-        - export → READ
         - delete (space) → OWNER
         - any other operation → READ (default)
 
@@ -1912,7 +1908,7 @@ class ConfluenceConnector(BaseConnector):
         ):
             return PermissionType.WRITE
 
-        # Everything else = READ
+        # Unrecognized operations default to READ
         return PermissionType.READ
 
     def _map_page_permission(self, operation: str) -> PermissionType:

@@ -136,8 +136,9 @@ class TestMapConfluencePermission:
         c = _c()
         assert c._map_confluence_permission("delete", "attachment") == PermissionType.WRITE
 
-    def test_export_fallback(self):
+    def test_restrict_content_and_export_use_default_read(self):
         c = _c()
+        assert c._map_confluence_permission("restrict_content", "space") == PermissionType.READ
         assert c._map_confluence_permission("export", "space") == PermissionType.READ
 
 
