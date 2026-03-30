@@ -150,15 +150,17 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 
 ### Secret masking in pytest output
 
-Set **`MASK_SECRETS`** to a comma-separated list of **environment variable names** whose **values** should be redacted in pytest output and in the HTML report (same mechanism as [pytest-mask-secrets](https://github.com/mganisin/pytest-mask-secrets)). Put it in `.env.local` or `.env.prod` next to your secrets, or export it in the shell.
+Masking is centralized in [`secret_mask_constants.py`](secret_mask_constants.py):
 
-Example:
+| Mechanism | Purpose |
+|-----------|---------|
+| `SECRET_ENV_KEYS_FOR_MASKING` | Explicit env var names whose values are always registered. |
+| `ENV_KEY_NAME_SUBSTRINGS_FOR_MASKING` | Any env key whose name contains one of these substrings (and value length ≥ `SECRET_ENV_VALUE_MIN_LEN`) is also registered. |
+| `REGEX_REDACTION_PATTERNS_AFTER_LITERALS` | Extra regex passes (PEM blocks, JSON secret fields, Azure fragments, Bearer lines) after literal substitution. |
 
-```bash
-MASK_SECRETS=PIPESHUB_TEST_USER_PASSWORD,TEST_NEO4J_PASSWORD,CLIENT_ID,CLIENT_SECRET,S3_ACCESS_KEY,S3_SECRET_KEY,GCS_SERVICE_ACCOUNT_JSON,AZURE_BLOB_CONNECTION_STRING,AZURE_FILES_CONNECTION_STRING
-```
+Logs use the same literal substitution as [pytest-mask-secrets](https://github.com/mganisin/pytest-mask-secrets) (`*****`). The plugin still masks pytest reports from its stash; `conftest` registers literals from the constants above plus `MASK_SECRETS` / `MASK_SECRETS_AUTO` behavior. Runtime OAuth values from the local flow are added to the stash when obtained.
 
-The GitHub Actions workflow sets **`MASK_SECRETS`** for CI. Include **`CLIENT_ID`** and **`CLIENT_SECRET`** if they are created at runtime (local OAuth flow) so those values get masked too.
+When you add a new credential env var, add its name to `SECRET_ENV_KEYS_FOR_MASKING`, or extend the substring / regex tables if it follows a pattern.
 
 ---
 
