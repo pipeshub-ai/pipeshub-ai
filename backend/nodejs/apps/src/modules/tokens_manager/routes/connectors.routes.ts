@@ -1,16 +1,15 @@
 /**
  * Connector Routes
- * 
+ *
  * RESTful routes for managing connector instances and configurations.
  * These routes follow the new instance-based architecture where multiple
  * instances of the same connector type can be created and managed independently.
- * 
+ *
  * @module connectors/routes
  */
 
 import { Router } from 'express';
 import { Container } from 'inversify';
-import { z } from 'zod';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
 
@@ -41,8 +40,21 @@ import {
   getConnectorSchema,
   getActiveAgentInstances,
 } from '../controllers/connector.controllers';
-
-
+import {
+  createConnectorInstanceSchema,
+  connectorIdParamSchema,
+  connectorListSchema,
+  connectorTypeParamSchema,
+  updateConnectorInstanceNameSchema,
+  updateConnectorInstanceConfigSchema,
+  updateConnectorInstanceAuthConfigSchema,
+  updateConnectorInstanceFiltersSyncConfigSchema,
+  getOAuthAuthorizationUrlSchema,
+  handleOAuthCallbackSchema,
+  saveConnectorInstanceFilterOptionsSchema,
+  getFilterFieldOptionsSchema,
+  connectorToggleSchema,
+} from '../validators/connector.validators';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
@@ -56,178 +68,6 @@ axiosRetry(axios, {
       (error.response && error.response.status >= 500)
     );
   },
-});
-
-// ============================================================================
-// Validation Schemas
-// ============================================================================
-
-/**
- * Schema for creating a new connector instance
- */
-const createConnectorInstanceSchema = z.object({
-  body: z.object({
-    connectorType: z.string().min(1, 'Connector type is required'),
-    instanceName: z.string().min(1, 'Instance name is required'),
-    config: z.object({
-      auth: z.any().optional(),
-      sync: z.any().optional(),
-      filters: z.any().optional(),
-    }).optional(),
-    baseUrl: z.string().optional(),
-    scope: z.enum(['team', 'personal']).refine((val) => val === 'team' || val === 'personal', {
-      message: 'Scope must be either team or personal',
-    }),
-    authType: z.string().optional(), // Auth type selected by user (required for connectors with multiple auth types)
-  }),
-});
-
-/**
- * Schema for validating connectorId parameter
- */
-const connectorIdParamSchema = z.object({
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-});
-
-/**
- * Schema for updating connector instance configuration
- */
-const updateConnectorInstanceConfigSchema = z.object({
-  body: z.object({
-    auth: z.any().optional(),
-    sync: z.any().optional(),
-    filters: z.any().optional(),
-    baseUrl: z.string().optional(),
-  }),
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-});
-
-/**
- * Schema for updating connector instance auth configuration
- */
-const updateConnectorInstanceAuthConfigSchema = z.object({
-  body: z.object({
-    auth: z.any(),
-    baseUrl: z.string().optional(),
-  }),
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-});
-
-/**
- * Schema for updating connector instance filters and sync configuration
- */
-const updateConnectorInstanceFiltersSyncConfigSchema = z.object({
-  body: z.object({
-    sync: z.any().optional(),
-    filters: z.any().optional(),
-  }),
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-});
-
-/**
- * Schema for getting OAuth authorization URL
- */
-const getOAuthAuthorizationUrlSchema = z.object({
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-  query: z.object({
-    baseUrl: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for handling OAuth callback
- */
-const handleOAuthCallbackSchema = z.object({
-  query: z.object({
-    baseUrl: z.string().optional(),
-    code: z.string().optional(),
-    state: z.string().optional(),
-    error: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for saving connector instance filter options
- */
-const saveConnectorInstanceFilterOptionsSchema = z.object({
-  body: z.object({
-    filters: z.any(),
-  }),
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-});
-
-/**
- * Schema for getting filter field options (dynamic with pagination)
- */
-const getFilterFieldOptionsSchema = z.object({
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-    filterKey: z.string().min(1, 'Filter key is required'),
-  }),
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-    cursor: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for validating connector toggle type parameter
- */
-const connectorToggleSchema = z.object({
-  body: z.object({
-    type: z.enum(['sync', 'agent']),
-    fullSync: z.boolean().optional(),
-  }),
-  params: z.object({
-    connectorId: z.string().min(1, 'Connector ID is required'),
-  }),
-});
-/**
- * Schema for validating connector type parameter
- */
-const connectorTypeParamSchema = z.object({
-  params: z.object({
-    connectorType: z.string().min(1, 'Connector type is required'),
-  }),
-});
-
-/**
- * Schema for validating connector list query parameters
- */
-const connectorListSchema = z.object({
-  query: z.object({
-    scope: z
-      .enum(['team', 'personal'])
-      .refine((val) => val === 'team' || val === 'personal', {
-        message: 'Scope must be either team or personal',
-      })
-      .optional(),
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-  }),
 });
 
 // ============================================================================
@@ -333,6 +173,7 @@ export function createConnectorRouter(container: Container): Router {
    * GET /instances/agents/active
    * Get all active agent instances
    */
+    //======================= NOT USED FOR NOW ===============================================
   router.get(
     '/agents/active',
     authMiddleware.authenticate,
@@ -401,6 +242,7 @@ export function createConnectorRouter(container: Container): Router {
    * PUT /instances/:connectorId/config
    * Update configuration for a connector instance
    */
+    //======================= NOT USED FOR NOW ===============================================
   router.put(
     '/:connectorId/config',
     authMiddleware.authenticate,
@@ -445,12 +287,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(
-      z.object({
-        body: z.object({ instanceName: z.string().min(1, 'Instance name is required') }),
-        params: z.object({ connectorId: z.string().min(1, 'Connector ID is required') })
-      })
-    ),
+    ValidationMiddleware.validate(updateConnectorInstanceNameSchema),
     updateConnectorInstanceName(config)
   );
 
@@ -492,6 +329,7 @@ export function createConnectorRouter(container: Container): Router {
    * GET /instances/:connectorId/filters
    * Get filter options for a connector instance
    */
+//======================= NOT USED FOR NOW ================================================
   router.get(
     '/:connectorId/filters',
     authMiddleware.authenticate,
@@ -505,6 +343,7 @@ export function createConnectorRouter(container: Container): Router {
    * POST /instances/:connectorId/filters
    * Save filter selections for a connector instance
    */
+//======================= NOT USED FOR NOW ===============================================
   router.post(
     '/:connectorId/filters',
     authMiddleware.authenticate,
@@ -543,50 +382,6 @@ export function createConnectorRouter(container: Container): Router {
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config)
   );
-
-  // ============================================================================
-  // Legacy Routes (Backward Compatibility)
-  // ============================================================================
-
-  /**
-   * @deprecated Use / instead
-   * GET /
-   * Get all connector instances (backward compatibility)
-   */
-  router.get(
-    '/',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_READ),
-    metricsMiddleware(container),
-    getConnectorInstances(config)
-  );
-
-  /**
-   * @deprecated Use /active instead
-   * GET /active
-   * Get active connector instances (backward compatibility)
-   */
-  router.get(
-    '/active',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_READ),
-    metricsMiddleware(container),
-    getActiveConnectorInstances(config)
-  );
-
-  /**
-   * @deprecated Use /inactive instead
-   * GET /inactive
-   * Get inactive connector instances (backward compatibility)
-   */
-  router.get(
-    '/inactive',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_READ),
-    metricsMiddleware(container),
-    getInactiveConnectorInstances(config)
-  );
-
 
   return router;
 }
