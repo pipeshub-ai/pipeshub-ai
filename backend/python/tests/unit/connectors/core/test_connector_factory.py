@@ -319,8 +319,6 @@ class TestInitializeConnector:
             connector_id="conn-5",
             scope="personal",
             created_by="user-123",
-            scope="personal",
-            created_by="user-123",
         )
 
         assert result is mock_connector
@@ -345,8 +343,6 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-6",
-            scope="personal",
-            created_by="user-123",
             scope="personal",
             created_by="user-123",
         )
@@ -374,8 +370,6 @@ class TestInitializeConnector:
             connector_id="conn-7",
             scope="personal",
             created_by="user-123",
-            scope="personal",
-            created_by="user-123",
         )
 
         assert result is None
@@ -393,8 +387,6 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-8",
-            scope="personal",
-            created_by="user-123",
             scope="personal",
             created_by="user-123",
         )
