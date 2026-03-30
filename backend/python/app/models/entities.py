@@ -1172,7 +1172,7 @@ class ProductRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
-    async def to_llm_context(
+    def to_llm_context(
         self,
         frontend_url: str | None = None,
     ) -> str:
