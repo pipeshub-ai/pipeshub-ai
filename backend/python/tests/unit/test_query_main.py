@@ -164,10 +164,11 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
 
         with (
+            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
         ):
-            MockKU.create_aiconfig_kafka_consumer_config = AsyncMock(return_value={})
             MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
             MockMF.create_consumer.return_value = mock_consumer
 
@@ -187,10 +188,11 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock(side_effect=Exception("kafka error"))
 
         with (
+            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
         ):
-            MockKU.create_aiconfig_kafka_consumer_config = AsyncMock(return_value={})
             MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
             MockMF.create_consumer.return_value = mock_consumer
 
@@ -220,10 +222,11 @@ class TestStartKafkaConsumers:
         logger.info = MagicMock(side_effect=info_side_effect)
 
         with (
+            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
         ):
-            MockKU.create_aiconfig_kafka_consumer_config = AsyncMock(return_value={})
             MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
             MockMF.create_consumer.return_value = mock_consumer
 
@@ -255,10 +258,11 @@ class TestStartKafkaConsumers:
         logger.info = MagicMock(side_effect=info_side_effect)
 
         with (
+            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
         ):
-            MockKU.create_aiconfig_kafka_consumer_config = AsyncMock(return_value={})
             MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
             MockMF.create_consumer.return_value = mock_consumer
 
