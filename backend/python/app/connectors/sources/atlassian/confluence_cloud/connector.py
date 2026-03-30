@@ -88,7 +88,6 @@ from app.models.blocks import (
 from app.models.entities import (
     AppUser,
     AppUserGroup,
-    CommentRecord,
     FileRecord,
     Record,
     RecordGroup,
@@ -871,12 +870,10 @@ class ConfluenceConnector(BaseConnector):
             content_ids_filter = None
             if record_type == RecordType.CONFLUENCE_PAGE:
                 content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
-                self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_COMMENTS)
                 content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_ATTACHMENTS)
                 content_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
             else:  # CONFLUENCE_BLOGPOST
                 content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOSTS)
-                self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_COMMENTS)
                 content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_ATTACHMENTS)
                 content_ids_filter = self.sync_filters.get(SyncFilterKey.BLOGPOST_IDS)
 
@@ -1653,387 +1650,6 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for page {page_id}: {e}")
             return []  # Return empty list on error, page will be created without permissions
 
-    async def _fetch_comments_recursive(
-        self,
-        page_id: str,
-        page_title: str,
-        comment_type: str,
-        page_permissions: list[Permission],
-        parent_space_id: str | None,
-        parent_type: str = "page",
-        parent_node_id: str | None = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
-        """
-        Recursively fetch all comments (footer or inline) for a page or blogpost.
-
-        Fetches top-level comments and all nested replies in a flat list.
-        Each comment inherits permissions from the parent.
-
-        Args:
-            page_id: The page/blogpost ID
-            page_title: The page/blogpost title (for logging)
-            comment_type: "footer" or "inline"
-            page_permissions: Permissions inherited from parent
-            parent_space_id: Space ID for external_record_group_id
-            parent_type: "page" or "blogpost" (determines which API to call)
-            parent_node_id: Internal record ID of parent page
-
-        Returns:
-            List of tuples (CommentRecord, permissions list)
-        """
-        try:
-            all_comments = []
-            batch_size = 100
-            cursor = None
-
-            self.logger.debug(f"Fetching {comment_type} comments for {parent_type}: {page_title}")
-
-            # Fetch top-level comments
-            while True:
-                datasource = await self._get_fresh_datasource()
-
-                # Route to correct API based on parent_type
-                if parent_type == "page":
-                    if comment_type == "footer":
-                        response = await datasource.get_page_footer_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                    else:  # inline
-                        response = await datasource.get_page_inline_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                elif parent_type == "blogpost":
-                    if comment_type == "footer":
-                        response = await datasource.get_blog_post_footer_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                    else:  # inline
-                        response = await datasource.get_blog_post_inline_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                else:
-                    self.logger.error(f"Unknown parent type: {parent_type}")
-                    break
-
-                # Check response
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: {response.status if response else 'No response'}")
-                    break
-
-                response_data = response.json()
-                comments_data = response_data.get("results", [])
-
-                if not comments_data:
-                    break
-
-                # Extract base URL from response level (v2 API) - available in response_data._links.base
-                response_links = response_data.get("_links", {})
-                base_url = response_links.get("base")  # v2 format: base URL at response level
-
-                # Process each comment
-                for comment_data in comments_data:
-                    try:
-                        comment_id = comment_data.get("id")
-
-                        if not comment_id:
-                            continue
-
-                        # Check if comment exists in DB
-                        existing_comment = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=comment_id
-                        )
-
-                        # Transform comment to CommentRecord
-                        comment_record = self._transform_to_comment_record(
-                            comment_data,
-                            page_id,
-                            parent_space_id,
-                            comment_type,
-                            None,  # No parent comment for top-level
-                            base_url=base_url,  # Pass base URL from response level
-                            existing_record=existing_comment,
-                            parent_node_id=parent_node_id
-                        )
-
-                        if comment_record:
-                            all_comments.append((comment_record, page_permissions))
-
-                        # Recursively fetch children
-                        children = await self._fetch_comment_children_recursive(
-                            comment_id,
-                            comment_type,
-                            page_id,
-                            parent_space_id,
-                            page_permissions,
-                            parent_node_id=parent_node_id
-                        )
-                        all_comments.extend(children)
-
-                    except Exception as comment_error:
-                        self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
-                        continue
-
-                # Extract next cursor
-                next_url = response_data.get("_links", {}).get("next")
-                if not next_url:
-                    break
-
-                cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
-
-            self.logger.debug(f"✓ Fetched {len(all_comments)} {comment_type} comments (including replies) for page {page_title}")
-            return all_comments
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
-            return []
-
-    async def _fetch_comment_children_recursive(
-        self,
-        comment_id: str,
-        comment_type: str,
-        page_id: str,
-        parent_space_id: str | None,
-        page_permissions: list[Permission],
-        parent_node_id: str | None = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
-        """
-        Recursively fetch all children (replies) of a comment.
-
-        Args:
-            comment_id: The parent comment ID
-            comment_type: "footer" or "inline"
-            page_id: The parent page ID
-            parent_space_id: Space ID for external_record_group_id
-            page_permissions: Permissions inherited from parent page
-            parent_node_id: Internal record ID of parent page
-
-        Returns:
-            List of tuples (CommentRecord, permissions list)
-        """
-        try:
-            all_children = []
-            batch_size = 100
-            cursor = None
-
-            # Fetch children comments
-            while True:
-                datasource = await self._get_fresh_datasource()
-                if comment_type == "footer":
-                    response = await datasource.get_footer_comment_children(
-                        id=int(comment_id),
-                        cursor=cursor,
-                        limit=batch_size,
-                        body_format="storage"
-                    )
-                else:  # inline
-                    response = await datasource.get_inline_comment_children(
-                        id=int(comment_id),
-                        cursor=cursor,
-                        limit=batch_size,
-                        body_format="storage"
-                    )
-
-                # Check response
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    break
-
-                response_data = response.json()
-                children_data = response_data.get("results", [])
-
-                if not children_data:
-                    break
-
-                # Extract base URL from response level (v2 API) - available in response_data._links.base
-                response_links = response_data.get("_links", {})
-                base_url = response_links.get("base")  # v2 format: base URL at response level
-
-                # Process each child comment
-                for child_data in children_data:
-                    try:
-                        child_id = child_data.get("id")
-
-                        if not child_id:
-                            continue
-
-                        # Check if child comment exists in DB
-                        existing_child = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=child_id
-                        )
-
-                        # Transform child to CommentRecord
-                        child_record = self._transform_to_comment_record(
-                            child_data,
-                            page_id,
-                            parent_space_id,
-                            comment_type,
-                            comment_id,  # Parent comment ID
-                            base_url=base_url,  # Pass base URL from response level
-                            existing_record=existing_child,
-                            parent_node_id=parent_node_id
-                        )
-
-                        if child_record:
-                            all_children.append((child_record, page_permissions))
-
-                        # Recursively fetch grandchildren
-                        grandchildren = await self._fetch_comment_children_recursive(
-                            child_id,
-                            comment_type,
-                            page_id,
-                            parent_space_id,
-                            page_permissions,
-                            parent_node_id=parent_node_id
-                        )
-                        all_children.extend(grandchildren)
-
-                    except Exception as child_error:
-                        self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
-                        continue
-
-                # Extract next cursor
-                next_url = response_data.get("_links", {}).get("next")
-                if not next_url:
-                    break
-
-                cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
-
-            return all_children
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
-            return []
-
-    def _transform_to_comment_record(
-        self,
-        comment_data: dict[str, Any],
-        page_id: str,
-        parent_space_id: str | None,
-        comment_type: str,
-        parent_comment_id: str | None,
-        base_url: str | None = None,
-        existing_record: Record | None = None,
-        parent_node_id: str | None = None
-    ) -> CommentRecord | None:
-        """
-        Transform Confluence comment data to CommentRecord entity.
-
-        Args:
-            comment_data: Raw comment data from Confluence API
-            page_id: Parent page external_record_id
-            parent_space_id: Space ID from parent page
-            comment_type: "footer" or "inline"
-            parent_comment_id: Parent comment ID (None for top-level comments)
-            base_url: Base URL from response level (v2 API) - if None, will extract from _links.self (v1 API)
-            existing_record: Optional existing record to check for updates
-            parent_node_id: Internal record ID of parent page
-
-        Returns:
-            CommentRecord object or None if transformation fails
-        """
-        try:
-            comment_id = comment_data.get("id")
-            title = comment_data.get("title", "")
-
-            if not comment_id:
-                return None
-
-            # Extract author accountId
-            author = comment_data.get("version", {}).get("authorId")
-            if not author:
-                self.logger.warning(f"Comment {comment_id} has no author - skipping")
-                return None
-
-            # Parse timestamps
-            source_created_at = None
-
-            created_at_str = comment_data.get("version", {}).get("createdAt")
-            if created_at_str:
-                source_created_at = self._parse_confluence_datetime(created_at_str)
-
-            # Extract resolution status (for inline comments)
-            resolution_status = None
-            if comment_type == "inline":
-                is_resolved = comment_data.get("resolutionStatus", False)
-                resolution_status = "resolved" if is_resolved else "open"
-
-            # Extract inline original selection (for inline comments)
-            inline_original_selection = None
-            if comment_type == "inline":
-                inline_properties = comment_data.get("properties", {})
-                if inline_properties:
-                    inline_original_selection = inline_properties.get("inlineOriginalSelection")
-
-            # Determine parent record ID and type
-            parent_external_record_id = parent_comment_id if parent_comment_id else page_id
-            parent_record_type = RecordType.COMMENT if parent_comment_id else RecordType.WEBPAGE
-
-            # Determine record ID and version
-            is_new = existing_record is None
-            comment_record_id = str(uuid.uuid4()) if is_new else existing_record.id
-
-            version_number = comment_data.get("version", {}).get("number", 0)
-
-            # Calculate version based on changes
-            record_version = 0
-            if not is_new:
-                # Check if content changed (version number changed)
-                if str(version_number) != existing_record.external_revision_id:
-                    record_version = existing_record.version + 1
-                else:
-                    record_version = existing_record.version
-
-            # Construct web URL for comment
-            links = comment_data.get("_links", {})
-            web_url = self._construct_web_url(links, base_url)
-
-            return CommentRecord(
-                id=comment_record_id,
-                org_id=self.data_entities_processor.org_id,
-                record_name=title,
-                record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
-                external_record_id=comment_id,
-                external_revision_id=str(version_number) if version_number else None,
-                version=record_version,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.CONFLUENCE,
-                connector_id=self.connector_id,
-                mime_type=MimeTypes.HTML.value,
-                parent_external_record_id=parent_external_record_id,
-                parent_record_type=parent_record_type,
-                external_record_group_id=parent_space_id,
-                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
-                source_created_at=source_created_at,
-                source_updated_at=source_created_at,
-                weburl=web_url,
-                author_source_id=author,
-                resolution_status=resolution_status,
-                comment_selection=inline_original_selection,
-                is_dependent_node=True,  # Comments are dependent nodes
-                parent_node_id=parent_node_id,  # Internal record ID of parent page
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform comment: {e}")
-            return None
-
     def _construct_web_url(self, links: dict[str, Any], base_url: str | None = None) -> str | None:
         """
         Construct web URL from _links dictionary.
@@ -2220,7 +1836,6 @@ class ConfluenceConnector(BaseConnector):
         Maps Confluence operations to PermissionType:
         - administer → OWNER
         - read → READ
-        - create/delete (comment) → COMMENT
         - create/delete/archive (page/blogpost/attachment) → WRITE
         - restrict_content/export → OTHER
         - delete (space) → OWNER
@@ -2264,14 +1879,13 @@ class ConfluenceConnector(BaseConnector):
         Mapping logic:
         - administer → OWNER
         - read → READ
-        - create/delete (comment) → COMMENT
         - create/delete/archive (page/blogpost/attachment) → WRITE
         - restrict_content/export → OTHER
         - delete (space) → OWNER
 
         Args:
             operation_key: Operation key (e.g., "read", "create", "delete")
-            target_type: Target type (e.g., "space", "page", "comment")
+            target_type: Target type (e.g., "space", "page")
 
         Returns:
             PermissionType enum value
@@ -2288,10 +1902,6 @@ class ConfluenceConnector(BaseConnector):
         if operation_key == "delete" and target_type == "space":
             return PermissionType.OWNER
 
-        # Comment operations = COMMENT
-        if target_type == "comment" and operation_key in ["create", "delete"]:
-            return PermissionType.COMMENT
-
         # Page/blogpost/attachment operations = WRITE
         if (
             target_type in ["page", "blogpost", "attachment"]
@@ -2300,7 +1910,7 @@ class ConfluenceConnector(BaseConnector):
             return PermissionType.WRITE
 
         # Everything else = OTHER
-        return PermissionType.OTHER
+        return PermissionType.READ
 
     def _map_page_permission(self, operation: str) -> PermissionType:
         """
@@ -3201,74 +2811,6 @@ class ConfluenceConnector(BaseConnector):
                 detail=f"Failed to fetch content: {str(e)}"
             ) from e
 
-    async def _fetch_comment_content(self, record: CommentRecord) -> str:
-        """
-        Fetch comment HTML content from Confluence based on record type.
-
-        Args:
-            record: CommentRecord with external_record_id and record_type
-
-        Returns:
-            str: HTML content of the comment
-
-        Raises:
-            HTTPException: If comment not found or fetch fails
-        """
-        try:
-            comment_id = record.external_record_id
-            self.logger.debug(f"Fetching comment content for {comment_id} (type: {record.record_type})")
-
-            datasource = await self._get_fresh_datasource()
-
-            # Call appropriate API based on record type
-            if record.record_type == RecordType.COMMENT:
-                # Footer comment
-                response = await datasource.get_footer_comment_by_id(
-                    comment_id=int(comment_id),
-                    body_format="storage"
-                )
-            elif record.record_type == RecordType.INLINE_COMMENT:
-                # Inline comment
-                response = await datasource.get_inline_comment_by_id(
-                    comment_id=int(comment_id),
-                    body_format="storage"
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported comment type: {record.record_type}"
-                )
-
-            # Check response
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Comment not found: {comment_id}"
-                )
-
-            response_data = response.json()
-
-            # Extract HTML content from body.storage.value
-            body = response_data.get("body", {})
-            storage = body.get("storage", {})
-            html_content = storage.get("value", "")
-
-            if not html_content:
-                self.logger.warning(f"Comment {comment_id} has no content")
-                html_content = "<p>No content available</p>"
-
-            self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for comment {comment_id}")
-            return html_content
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            self.logger.error(f"Failed to fetch comment content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch comment content: {str(e)}"
-            ) from e
-
     def _resolve_confluence_attachment_id(
         self,
         media_info: dict[str, Any],
@@ -4151,7 +3693,7 @@ class ConfluenceConnector(BaseConnector):
         3. Publishes reindex events for all records via data_entities_processor
 
         Args:
-            records: List of properly typed Record instances (WebpageRecord, FileRecord, CommentRecord, etc.)
+            records: List of properly typed Record instances (WebpageRecord, FileRecord, etc.)
         """
         try:
             if not records:
@@ -4206,6 +3748,8 @@ class ConfluenceConnector(BaseConnector):
     ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from source and return data for reindexing.
 
+        Supports: pages, blogposts, and attachments.
+
         Args:
             org_id: Organization ID
             record: Record to check
@@ -4218,10 +3762,6 @@ class ConfluenceConnector(BaseConnector):
                 return await self._check_and_fetch_updated_page(org_id, record)
             elif record.record_type == RecordType.CONFLUENCE_BLOGPOST:
                 return await self._check_and_fetch_updated_blogpost(org_id, record)
-            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
-                # Comments are no longer synced as separate records (embedded in page blocks)
-                self.logger.debug("Skipping comment record reindex - comments are embedded in page blocks")
-                return None
             elif record.record_type == RecordType.FILE:
                 return await self._check_and_fetch_updated_attachment(org_id, record)
             else:

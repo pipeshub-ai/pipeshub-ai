@@ -124,14 +124,6 @@ class TestMapConfluencePermission:
         c = _c()
         assert c._map_confluence_permission("delete", "space") == PermissionType.OWNER
 
-    def test_create_comment(self):
-        c = _c()
-        assert c._map_confluence_permission("create", "comment") == PermissionType.COMMENT
-
-    def test_delete_comment(self):
-        c = _c()
-        assert c._map_confluence_permission("delete", "comment") == PermissionType.COMMENT
-
     def test_create_page(self):
         c = _c()
         assert c._map_confluence_permission("create", "page") == PermissionType.WRITE
@@ -333,61 +325,6 @@ class TestTransformToAttachmentFileRecord:
         assert rec is not None
 
 
-class TestTransformToCommentRecord:
-    def test_valid_footer_comment(self):
-        c = _c()
-        data = {
-            "id": "c1", "title": "Comment Title",
-            "version": {"authorId": "user-1", "createdAt": "2025-01-01T00:00:00Z", "number": 1},
-            "_links": {"webui": "/comment/c1"},
-        }
-        rec = c._transform_to_comment_record(data, "page-1", "space-1", "footer", None, base_url="https://c.atlassian.net/wiki")
-        assert rec is not None
-        assert rec.record_type == RecordType.COMMENT
-
-    def test_inline_comment_with_resolution(self):
-        c = _c()
-        data = {
-            "id": "c2", "title": "",
-            "version": {"authorId": "user-2", "createdAt": "2025-01-01T00:00:00Z", "number": 1},
-            "resolutionStatus": True,
-            "properties": {"inlineOriginalSelection": "selected text"},
-            "_links": {},
-        }
-        rec = c._transform_to_comment_record(data, "page-1", "space-1", "inline", None)
-        assert rec is not None
-        assert rec.record_type == RecordType.INLINE_COMMENT
-
-    def test_no_author(self):
-        c = _c()
-        data = {"id": "c3", "version": {}, "_links": {}}
-        assert c._transform_to_comment_record(data, "p", "s", "footer", None) is None
-
-    def test_no_id(self):
-        c = _c()
-        assert c._transform_to_comment_record({}, "p", "s", "footer", None) is None
-
-    def test_with_parent_comment(self):
-        c = _c()
-        data = {
-            "id": "c4", "version": {"authorId": "u1", "number": 1}, "_links": {},
-        }
-        rec = c._transform_to_comment_record(data, "page-1", "space-1", "footer", "parent-c1")
-        assert rec.parent_record_type == RecordType.COMMENT
-
-    def test_existing_record_version(self):
-        c = _c()
-        existing = MagicMock()
-        existing.id = "existing-c"
-        existing.version = 1
-        existing.external_revision_id = "1"
-        data = {
-            "id": "c5", "version": {"authorId": "u1", "number": 2}, "_links": {},
-        }
-        rec = c._transform_to_comment_record(data, "p", "s", "footer", None, existing_record=existing)
-        assert rec.version == 2
-
-
 class TestProcessWebpageWithUpdate:
     @pytest.mark.asyncio
     async def test_new_record(self):
@@ -583,22 +520,16 @@ class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_page_stream(self):
         c = _c()
-        c._fetch_page_content = AsyncMock(return_value="<h1>Hello</h1>")
+        c._fetch_page_data_with_adf = AsyncMock(return_value={"id": "p1", "body": {"atlas_doc_format": {"value": "{}"}}})
+        c._process_page_attachments_for_children = AsyncMock(return_value={})
+        c._parse_confluence_page_to_blocks = AsyncMock(return_value=MagicMock(model_dump_json=MagicMock(return_value="{}")))
         record = MagicMock()
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.record_name = "Test"
         record.external_record_id = "p1"
-        resp = await c.stream_record(record)
-        assert resp is not None
-
-    @pytest.mark.asyncio
-    async def test_comment_stream(self):
-        c = _c()
-        c._fetch_comment_content = AsyncMock(return_value="<p>Comment</p>")
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.record_name = "Comment"
-        record.external_record_id = "c1"
+        record.weburl = "http://example.com"
+        record.id = "rec-1"
+        record.external_record_group_id = "space-1"
         resp = await c.stream_record(record)
         assert resp is not None
 
@@ -655,36 +586,6 @@ class TestFetchPageContent:
         assert "No content" in result
 
 
-class TestFetchCommentContent:
-    @pytest.mark.asyncio
-    async def test_footer_comment(self):
-        c = _c()
-        mock_ds = MagicMock()
-        mock_ds.get_footer_comment_by_id = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
-        }))
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "101"
-        result = await c._fetch_comment_content(record)
-        assert "Footer" in result
-
-    @pytest.mark.asyncio
-    async def test_inline_comment(self):
-        c = _c()
-        mock_ds = MagicMock()
-        mock_ds.get_inline_comment_by_id = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
-        }))
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "202"
-        result = await c._fetch_comment_content(record)
-        assert "Inline" in result
-
-
 class TestReindexRecords:
     @pytest.mark.asyncio
     async def test_empty_records(self):
@@ -734,14 +635,6 @@ class TestCheckAndFetchUpdatedRecord:
         record = MagicMock(record_type=RecordType.CONFLUENCE_BLOGPOST)
         await c._check_and_fetch_updated_record("org-1", record)
         c._check_and_fetch_updated_blogpost.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_dispatches_comment(self):
-        c = _c()
-        c._check_and_fetch_updated_comment = AsyncMock(return_value=None)
-        record = MagicMock(record_type=RecordType.COMMENT)
-        await c._check_and_fetch_updated_record("org-1", record)
-        c._check_and_fetch_updated_comment.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_dispatches_file(self):
