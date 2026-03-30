@@ -1,13 +1,3 @@
-/**
- * Toolsets Container
- * 
- * Dependency injection container for the toolsets module.
- * Manages all dependencies required for toolsets functionality including
- * configuration, authentication, logging, and event services.
- * 
- * @module toolsets/container
- */
-
 import { Container } from 'inversify';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Logger } from '../../../libs/services/logger.service';
@@ -16,6 +6,12 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../../tokens_manager/services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { IMessageProducer } from '../../../libs/types/messaging.types';
+import {
+  getMessageBrokerType,
+  createMessageProducer,
+  buildRedisBrokerConfig,
+} from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Toolsets',
@@ -53,7 +49,6 @@ export class ToolsetsContainer {
     config: AppConfig,
   ): Promise<void> {
     try {
-      // Initialize KeyValueStoreService for PrometheusService dependency
       const configurationManagerConfig = container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
       const keyValueStoreService = KeyValueStoreService.getInstance(
         configurationManagerConfig,
@@ -63,13 +58,22 @@ export class ToolsetsContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
 
-      const kafkaConfig = {
-        brokers: config.kafka.brokers,
-        ...(config.kafka.sasl && { sasl: config.kafka.sasl }), // Only includes `sasl` if it exists
-      };
+      // Create broker-agnostic message producer
+      const brokerType = getMessageBrokerType();
+      const messageProducer = createMessageProducer(
+        brokerType,
+        brokerType === 'kafka' ? config.kafka : undefined,
+        brokerType === 'redis' ? buildRedisBrokerConfig(config.redis) : undefined,
+        container.get('Logger'),
+      );
+      await messageProducer.connect();
+
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
 
       const entityEventsService = new EntitiesEventProducer(
-        kafkaConfig,
+        messageProducer,
         container.get('Logger'),
       );
       container
@@ -111,16 +115,12 @@ export class ToolsetsContainer {
   static async dispose(): Promise<void> {
     if (this.instance) {
       try {
-        // Get specific services that need to be disconnected
-        const entityEventsService = this.instance.isBound(
-          'EntitiesEventProducer',
-        )
-          ? this.instance.get<EntitiesEventProducer>('EntitiesEventProducer')
+        const messageProducer = this.instance.isBound('MessageProducer')
+          ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
-        // Disconnect services if they have a disconnect method
 
-        if (entityEventsService && entityEventsService.isConnected()) {
-          await entityEventsService.disconnect();
+        if (messageProducer && messageProducer.isConnected()) {
+          await messageProducer.disconnect();
         }
 
         this.logger.info('All services disconnected successfully');
