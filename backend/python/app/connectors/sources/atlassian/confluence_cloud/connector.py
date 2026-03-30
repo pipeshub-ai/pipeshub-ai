@@ -1837,7 +1837,8 @@ class ConfluenceConnector(BaseConnector):
         - administer → OWNER
         - read → READ
         - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content/export → OTHER
+        - restrict_content → WRITE
+        - export → READ
         - delete (space) → OWNER
 
         Args:
@@ -1880,8 +1881,10 @@ class ConfluenceConnector(BaseConnector):
         - administer → OWNER
         - read → READ
         - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content/export → OTHER
+        - restrict_content → WRITE
+        - export → READ
         - delete (space) → OWNER
+        - any other operation → READ (default)
 
         Args:
             operation_key: Operation key (e.g., "read", "create", "delete")
@@ -1909,7 +1912,7 @@ class ConfluenceConnector(BaseConnector):
         ):
             return PermissionType.WRITE
 
-        # Everything else = OTHER
+        # Everything else = READ
         return PermissionType.READ
 
     def _map_page_permission(self, operation: str) -> PermissionType:
@@ -1919,6 +1922,7 @@ class ConfluenceConnector(BaseConnector):
         Page restrictions only have two operations:
         - read → READ
         - update → WRITE
+        Any other value defaults to READ.
 
         Args:
             operation: Operation string ("read" or "update")
@@ -1931,7 +1935,7 @@ class ConfluenceConnector(BaseConnector):
         elif operation == "update":
             return PermissionType.WRITE
         else:
-            return PermissionType.OTHER
+            return PermissionType.READ
 
     async def _transform_page_restriction_to_permissions(
         self,

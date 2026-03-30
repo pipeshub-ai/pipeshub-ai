@@ -138,7 +138,7 @@ class TestMapConfluencePermission:
 
     def test_export_fallback(self):
         c = _c()
-        assert c._map_confluence_permission("export", "space") == PermissionType.OTHER
+        assert c._map_confluence_permission("export", "space") == PermissionType.READ
 
 
 class TestMapPagePermission:
@@ -152,7 +152,7 @@ class TestMapPagePermission:
 
     def test_unknown(self):
         c = _c()
-        assert c._map_page_permission("magic") == PermissionType.OTHER
+        assert c._map_page_permission("magic") == PermissionType.READ
 
 
 class TestTransformToAppUser:
