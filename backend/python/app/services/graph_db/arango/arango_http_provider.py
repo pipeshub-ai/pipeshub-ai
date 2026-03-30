@@ -72,6 +72,8 @@ from app.schema.arango.documents import (
     ticket_record_schema,
     user_schema,
     webpage_record_schema,
+    deal_record_schema,
+    product_record_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -83,6 +85,14 @@ from app.schema.arango.edges import (
     record_relations_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
+    deal_of_schema,
+    sales_contact_schema,
+    sales_customer_schema,
+    sales_deal_schema,
+    sales_lead_schema,
+    sales_prospect_schema,
+    sold_in_schema,
+    member_of_schema,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
@@ -128,7 +138,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
-    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
+    (CollectionNames.PRODUCTS.value, product_record_schema),
+    (CollectionNames.DEALS.value, deal_record_schema),
 ]
 
 EDGE_COLLECTIONS = [
@@ -148,6 +160,14 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.SALES_PROSPECT.value, sales_prospect_schema),
+    (CollectionNames.SALES_CUSTOMER.value, sales_customer_schema),
+    (CollectionNames.SALES_LEAD.value, sales_lead_schema),
+    (CollectionNames.SALES_CONTACT.value, sales_contact_schema),
+    (CollectionNames.SALES_DEAL.value, sales_deal_schema),
+    (CollectionNames.DEAL_OF.value, deal_of_schema),
+    (CollectionNames.SOLD_IN.value, sold_in_schema),
+    (CollectionNames.MEMBER_OF.value, member_of_schema),
 ]
 
 
@@ -639,6 +659,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return ProjectRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.MEETINGS.value:
                 return MeetingRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(

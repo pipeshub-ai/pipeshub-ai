@@ -2349,8 +2349,6 @@ class SalesforceConnector(BaseConnector):
             preview_renderable=False,
             weburl=str(weburl) if weburl is not None else None,
         )
-        if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
-            product_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return product_record
 
     def _build_deal_record(self, opp: Dict[str, Any]) -> DealRecord:
@@ -2405,8 +2403,6 @@ class SalesforceConnector(BaseConnector):
             preview_renderable=False,
             weburl=weburl,
         )
-        if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
-            deal_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return deal_record
 
     def _build_case_record(self, case_row: Dict[str, Any]) -> TicketRecord:
@@ -2464,8 +2460,6 @@ class SalesforceConnector(BaseConnector):
             preview_renderable=False,
             weburl=str(weburl) if weburl is not None else None,
         )
-        if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
-            case_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return case_record
 
     def _build_task_record(self, task_row: Dict[str, Any]) -> TicketRecord:
@@ -2525,8 +2519,6 @@ class SalesforceConnector(BaseConnector):
             inherit_permissions=False,
             weburl=str(weburl) if weburl is not None else None,
         )
-        if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
-            task_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return task_record
 
     def _build_file_record(
@@ -2576,8 +2568,6 @@ class SalesforceConnector(BaseConnector):
             external_record_group_id=external_record_group_id,
             parent_external_record_id=parent_id,
         )
-        if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
-            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return file_record
 
     async def _fetch_salesforce_record_if_updated(
@@ -2657,6 +2647,16 @@ class SalesforceConnector(BaseConnector):
                 # Pass original external_id to preserve composite identity
                 return self._build_file_record(records[0], ext_id=external_id)
 
+            elif record_type == RecordType.PRODUCT:
+                soql = (
+                    "SELECT Id, Name, ProductCode, Family, CreatedDate, LastModifiedDate FROM Product2 "
+                    f"WHERE Id = '{external_id}' AND LastModifiedDate >= {soql_datetime}"
+                )
+                resp = await self._soql_query_paginated(api_version=api_version, q=soql)
+                records = (resp.data or {}).get("records", [])
+                if not records:
+                    return None
+                return self._build_product_record(records[0])
             else:
                 self.logger.warning(
                     "Unsupported record type for staleness check: %s (external_id=%s)",
@@ -2917,7 +2917,7 @@ class SalesforceConnector(BaseConnector):
         when no sync point is available.
         """
         if tasks_last_ts_ms:
-            soql_datetime = _epoch_ms_to_soql_datetime(tasks_last_ts_ms)
+            soql_datetime = _epoch_ms_to_soql_datetime(tasks_last_ts_ms)    
             soql = f"{base_tasks_soql} WHERE LastModifiedDate >= {soql_datetime} ORDER BY LastModifiedDate ASC"
             self.logger.info("Incremental tasks sync: fetching since %s", soql_datetime)
         else:
@@ -3015,7 +3015,7 @@ class SalesforceConnector(BaseConnector):
         try:
             self.logger.info(f"Fetched {len(account_records)} accounts from Salesforce")
 
-            orgs_with_edges: List[Tuple[Org, Dict, Dict]] = []
+            orgs_with_edges: List[Tuple[Org, RecordGroup, Dict, Dict]] = []
             record_groups_with_perms: List[Tuple[RecordGroup, List[Permission]]] = []
             org_permission = Permission(entity_type=EntityType.ORG, type=PermissionType.READ)
 
@@ -3058,6 +3058,7 @@ class SalesforceConnector(BaseConnector):
                     )
                     record_groups_with_perms.append((record_group, []))
 
+                    updated_time_ms = _parse_salesforce_timestamp(acc.get("LastModifiedDate"))
                     prospect_edge = {
                         "to_id": org_node.id,
                         "rating": rating,
@@ -3065,6 +3066,8 @@ class SalesforceConnector(BaseConnector):
                         "externalId": account_id,
                         "startTime": start_time_ms,
                         "endTime": end_time_ms,
+                        "createdAtTimestamp": start_time_ms,
+                        "updatedAtTimestamp": updated_time_ms,
                     }
                     customer_edge: Optional[Dict] = None
                     if end_time_ms is not None:
@@ -3075,9 +3078,11 @@ class SalesforceConnector(BaseConnector):
                             "activeCustomer": active_customer,
                             "externalId": account_id,
                             "since": end_time_ms,
+                            "createdAtTimestamp": start_time_ms,
+                            "updatedAtTimestamp": updated_time_ms,
                         }
                     
-                    orgs_with_edges.append((org_node, prospect_edge, customer_edge))
+                    orgs_with_edges.append((org_node, record_group, prospect_edge, customer_edge))
 
                 except Exception as e:
                     self.logger.warning(f"Failed to process account {acc.get('Id')}: {e}")
@@ -3088,9 +3093,87 @@ class SalesforceConnector(BaseConnector):
                 self.logger.info(f"Created/updated {len(record_groups_with_perms)} account record groups")
 
             if orgs_with_edges:
-                await self.data_entities_processor.on_new_external_orgs(orgs_with_edges)
+                org_id = self.data_entities_processor.org_id
+                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                    all_orgs = await tx_store.get_all_orgs()
+                    external_org_key_by_name = {
+                        o["name"]: o["_key"]
+                        for o in all_orgs
+                        if o.get("isExternal") is True
+                    }
+
+                    delete_tasks = []
+                    for org, rg, _, _ in orgs_with_edges:
+                        existing_key = external_org_key_by_name.get(org.name)
+                        if existing_key is not None:
+                            org.id = existing_key
+                            delete_tasks.append(tx_store.delete_edges_to(
+                                to_id=existing_key,
+                                to_collection=CollectionNames.ORGS.value,
+                                collection=CollectionNames.SALES_PROSPECT.value,
+                            ))
+                            delete_tasks.append(tx_store.delete_edges_to(
+                                to_id=existing_key,
+                                to_collection=CollectionNames.ORGS.value,
+                                collection=CollectionNames.SALES_CUSTOMER.value,
+                            ))
+                            delete_tasks.append(tx_store.delete_edges_from(
+                                rg.id,
+                                CollectionNames.RECORD_GROUPS.value,
+                                CollectionNames.DEAL_OF.value,
+                            ))
+                    if delete_tasks:
+                        await asyncio.gather(*delete_tasks)
+
+                    await tx_store.batch_upsert_orgs(
+                        [org.to_arango_org() for org, _, _, _ in orgs_with_edges]
+                    )
+
+                    prospect_edges = []
+                    customer_edges = []
+                    dealof_edges = []
+                    for org, rg, prospect_edge_attrs, customer_edge_attrs in orgs_with_edges:
+                        prospect_edges.append({
+                            **prospect_edge_attrs,
+                            "to_id": org.id,
+                            "to_collection": CollectionNames.ORGS.value,
+                            "from_id": org_id,
+                            "from_collection": CollectionNames.ORGS.value,
+                        })
+                        if customer_edge_attrs:
+                            customer_edges.append({
+                                **customer_edge_attrs,
+                                "to_id": org.id,
+                                "to_collection": CollectionNames.ORGS.value,
+                                "from_id": org_id,
+                                "from_collection": CollectionNames.ORGS.value,
+                            })
+                        dealof_edges.append({
+                            "from_id": rg.id,
+                            "from_collection": CollectionNames.RECORD_GROUPS.value,
+                            "to_id": org.id,
+                            "to_collection": CollectionNames.ORGS.value,
+                            "createdAtTimestamp": prospect_edge_attrs.get("createdAtTimestamp"),
+                            "updatedAtTimestamp": prospect_edge_attrs.get("updatedAtTimestamp"),
+                        })
+
+                    await tx_store.batch_create_edges(
+                        prospect_edges,
+                        collection=CollectionNames.SALES_PROSPECT.value,
+                    )
+                    if customer_edges:
+                        await tx_store.batch_create_edges(
+                            customer_edges,
+                            collection=CollectionNames.SALES_CUSTOMER.value,
+                        )
+                    if dealof_edges:
+                        await tx_store.batch_create_edges(
+                            dealof_edges,
+                            collection=CollectionNames.DEAL_OF.value,
+                        )
+
                 self.logger.info(
-                    f"Synced {len(orgs_with_edges)} account orgs and salesProspect/salesCustomer edges"
+                    f"Synced {len(orgs_with_edges)} account orgs with salesProspect/salesCustomer/dealOf edges"
                 )
             else:
                 self.logger.info("No account orgs or edges to sync")
@@ -3137,6 +3220,7 @@ class SalesforceConnector(BaseConnector):
 
                     # salesContact edge: since = when contact was made (CreatedDate)
                     since_ms = _parse_salesforce_timestamp(contact.get("CreatedDate"))
+                    contact_updated_ms = _parse_salesforce_timestamp(contact.get("LastModifiedDate"))
 
                     sales_contact_edge = {
                         "to_id": person.id,
@@ -3144,6 +3228,8 @@ class SalesforceConnector(BaseConnector):
                         "leadSource": contact.get("LeadSource"),
                         "since": since_ms,
                         "externalId": contact_id,
+                        "createdAtTimestamp": since_ms,
+                        "updatedAtTimestamp": contact_updated_ms,
                     }
 
                     member_of_edge: Optional[Dict] = None
@@ -3155,7 +3241,9 @@ class SalesforceConnector(BaseConnector):
                             "from_id": person.id,
                             "accountName": account_name,
                             "title": contact.get("Title"),
-                            "department": contact.get("Department")
+                            "department": contact.get("Department"),
+                            "createdAtTimestamp": since_ms,
+                            "updatedAtTimestamp": contact_updated_ms,
                         }
                             
                     contact_with_edges.append((person, sales_contact_edge, member_of_edge))
@@ -3165,9 +3253,92 @@ class SalesforceConnector(BaseConnector):
                     continue
 
             if contact_with_edges:
-                await self.data_entities_processor.on_new_contacts(  # person/contact is made here in this function
-                    contact_with_edges
-                )
+                org_id = self.data_entities_processor.org_id
+                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                    all_emails = [p.email for p, _, _ in contact_with_edges]
+                    all_account_names = list({
+                        moe.get("accountName")
+                        for _, sce, moe in contact_with_edges
+                        if sce and moe and moe.get("accountName")
+                    })
+
+                    people_coro = tx_store.get_nodes_by_field_in(
+                        collection=CollectionNames.PEOPLE.value,
+                        field="email",
+                        values=all_emails,
+                    )
+                    orgs_coro = (
+                        tx_store.get_nodes_by_field_in(
+                            collection=CollectionNames.ORGS.value,
+                            field="name",
+                            values=all_account_names,
+                        )
+                        if all_account_names
+                        else asyncio.gather()  # resolves to () immediately
+                    )
+                    existing_people_result, existing_orgs_result = await asyncio.gather(
+                        people_coro, orgs_coro
+                    )
+                    existing_people = existing_people_result or []
+                    existing_orgs = existing_orgs_result or []
+                    email_map = {node.get("email"): node for node in existing_people}
+                    org_name_map = {node.get("name"): node for node in (existing_orgs or [])}
+
+                    delete_tasks = []
+                    for person, _, _ in contact_with_edges:
+                        node = email_map.get(person.email)
+                        if node:
+                            person.id = node.get("id") or node.get("_key")
+                            delete_tasks.append(tx_store.delete_edges_to(
+                                to_id=person.id,
+                                to_collection=CollectionNames.PEOPLE.value,
+                                collection=CollectionNames.SALES_CONTACT.value,
+                            ))
+                            delete_tasks.append(tx_store.delete_edges_from(
+                                from_id=person.id,
+                                from_collection=CollectionNames.PEOPLE.value,
+                                collection=CollectionNames.MEMBER_OF.value,
+                            ))
+                    if delete_tasks:
+                        await asyncio.gather(*delete_tasks)
+
+                    await tx_store.batch_upsert_people([p for p, _, _ in contact_with_edges])
+
+                    sales_contact_edges = []
+                    member_of_edges = []
+                    for person, sales_contact_edge, member_of_edge in contact_with_edges:
+                        if sales_contact_edge:
+                            sales_contact_edge["to_id"] = person.id
+                            sales_contact_edges.append({
+                                "from_id": org_id,
+                                "from_collection": CollectionNames.ORGS.value,
+                                "to_collection": CollectionNames.PEOPLE.value,
+                                **sales_contact_edge,
+                            })
+                        if member_of_edge and sales_contact_edge:
+                            account_name = member_of_edge.pop("accountName", None)
+                            if account_name:
+                                org_node = org_name_map.get(account_name)
+                                if org_node:
+                                    member_of_edges.append({
+                                        "from_id": person.id,
+                                        "from_collection": CollectionNames.PEOPLE.value,
+                                        "to_id": org_node.get("id") or org_node.get("_key"),
+                                        "to_collection": CollectionNames.ORGS.value,
+                                        **{k: v for k, v in member_of_edge.items()},
+                                    })
+
+                    if sales_contact_edges:
+                        await tx_store.batch_create_edges(
+                            sales_contact_edges,
+                            collection=CollectionNames.SALES_CONTACT.value,
+                        )
+                    if member_of_edges:
+                        await tx_store.batch_create_edges(
+                            member_of_edges,
+                            collection=CollectionNames.MEMBER_OF.value,
+                        )
+
                 self.logger.info(
                     f"Synced {len(contact_with_edges)} contact person nodes and salesContact edges"
                 )
@@ -3230,6 +3401,8 @@ class SalesforceConnector(BaseConnector):
                         "externalId": lead_id,
                         "startTime": start_time_ms,
                         "endTime": end_time_ms,
+                        "createdAtTimestamp": start_time_ms,
+                        "updatedAtTimestamp": _parse_salesforce_timestamp(lead.get("LastModifiedDate")),
                     }
 
                     lead_email = lead.get("Email")
@@ -3255,7 +3428,47 @@ class SalesforceConnector(BaseConnector):
                     continue
 
             if lead_with_edges:
-                await self.data_entities_processor.on_new_leads(lead_with_edges)
+                org_id = self.data_entities_processor.org_id
+                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                    all_emails = [p.email for p, _ in lead_with_edges]
+                    existing_people = await tx_store.get_nodes_by_field_in(
+                        collection=CollectionNames.PEOPLE.value,
+                        field="email",
+                        values=all_emails,
+                    )
+                    email_map = {node.get("email"): node for node in (existing_people or [])}
+
+                    ids_to_delete = []
+                    for person, _ in lead_with_edges:
+                        node = email_map.get(person.email)
+                        if node:
+                            person.id = node.get("id") or node.get("_key")
+                            ids_to_delete.append(person.id)
+
+                    if ids_to_delete:
+                        await asyncio.gather(*[
+                            tx_store.delete_edges_to(
+                                to_id=pid,
+                                to_collection=CollectionNames.PEOPLE.value,
+                                collection=CollectionNames.SALES_LEAD.value,
+                            )
+                            for pid in ids_to_delete
+                        ])
+
+                    await tx_store.batch_upsert_people([p for p, _ in lead_with_edges])
+
+                    edges = [
+                        {
+                            "from_id": org_id,
+                            "from_collection": CollectionNames.ORGS.value,
+                            "to_id": p.id,
+                            "to_collection": CollectionNames.PEOPLE.value,
+                            **e,
+                        }
+                        for p, e in lead_with_edges
+                    ]
+                    await tx_store.batch_create_edges(edges, collection=CollectionNames.SALES_LEAD.value)
+
                 self.logger.info(
                     f"Synced {len(lead_with_edges)} lead person nodes and salesLead edges"
                 )
@@ -3300,6 +3513,8 @@ class SalesforceConnector(BaseConnector):
                     if not product.get("Id"):
                         continue
                     record = self._build_product_record(product)
+                    if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
+                        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     records.append(record)
                 except Exception as e:
                     self.logger.warning(f"Failed to process product {product.get('Id')}: {e}")
@@ -3328,8 +3543,7 @@ class SalesforceConnector(BaseConnector):
     async def _sync_opportunities(self, opportunity_records: List[Dict[str, Any]]) -> None:
         """
         Fetch all Salesforce Opportunities, create deal records (skip if same external id exists),
-        create one record group per account named "{account name} deals" with external_group_id = Account Id,
-        create dealof edge (record group -> account org), salesdeal edge (internal org -> deal record, stage),
+        create salesdeal edge (internal org -> deal record, stage),
         and permission edge (internal org -> record group).
         """
         
@@ -3338,7 +3552,7 @@ class SalesforceConnector(BaseConnector):
                 self.logger.info("No opportunities found in Salesforce")
                 return
 
-            opportunity_with_edges: List[Tuple[Record, Dict , Dict]] = [] #[(record, dealof_edge, salesdeal_edge)]
+            opportunity_with_edges: List[Tuple[Record, Dict]] = [] #[(record, salesdeal_edge)]
             records: List[Record] = []
 
             org_permission = Permission(
@@ -3359,15 +3573,16 @@ class SalesforceConnector(BaseConnector):
                 if not opp.get("Id"):
                     continue
 
-                account_name = None
-                if opp.get("AccountId") and opp.get("Account", {}).get("Name"):
-                    account_name = opp["Account"]["Name"]
-
                 record = self._build_deal_record(opp)
+                if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
+                    record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 records.append(record)
-                dealof_edge = {"accountName": account_name} if account_name else None
-                salesdeal_edge = {"stage": opp.get("StageName") or ""}
-                opportunity_with_edges.append((record, dealof_edge, salesdeal_edge))
+                salesdeal_edge = {
+                    "stage": opp.get("StageName") or "",
+                    "createdAtTimestamp": _parse_salesforce_timestamp(opp.get("CreatedDate")),
+                    "updatedAtTimestamp": _parse_salesforce_timestamp(opp.get("LastModifiedDate")),
+                }
+                opportunity_with_edges.append((record, salesdeal_edge))
 
             for record in records:
                 existing_record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, record.external_record_id)
@@ -3377,7 +3592,56 @@ class SalesforceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records([(record, [])])
             self.logger.info(f"Synced {len(records)} deal records")
 
-            await self.data_entities_processor.handle_deals_edges(opportunity_with_edges)
+            if opportunity_with_edges:
+                org_id = self.data_entities_processor.org_id
+                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                    # Fetch all existing records concurrently
+                    existing_records_list = await asyncio.gather(*[
+                        tx_store.get_record_by_external_id(
+                            connector_id=record.connector_id,
+                            external_id=record.external_record_id,
+                        )
+                        for record, _ in opportunity_with_edges
+                    ])
+                    ext_id_to_existing = {
+                        existing.external_record_id: existing
+                        for existing in existing_records_list
+                        if existing is not None
+                    }
+
+                    # Update record IDs and delete stale SALES_DEAL edges concurrently
+                    delete_tasks = []
+                    for record, _ in opportunity_with_edges:
+                        existing = ext_id_to_existing.get(record.external_record_id)
+                        if existing is not None:
+                            record.id = existing.id
+                            delete_tasks.append(tx_store.delete_edges_to(
+                                to_id=record.id,
+                                to_collection=CollectionNames.RECORDS.value,
+                                collection=CollectionNames.SALES_DEAL.value,
+                            ))
+                    if delete_tasks:
+                        await asyncio.gather(*delete_tasks)
+
+                    salesdeal_edges = []
+                    for record, salesdeal_edge in opportunity_with_edges:
+                        existing = ext_id_to_existing.get(record.external_record_id)
+                        if existing is None:
+                            continue
+                        if salesdeal_edge:
+                            salesdeal_edges.append({
+                                "from_id": org_id,
+                                "from_collection": CollectionNames.ORGS.value,
+                                "to_id": record.id,
+                                "to_collection": CollectionNames.RECORDS.value,
+                                **salesdeal_edge,
+                            })
+
+                    if salesdeal_edges:
+                        await tx_store.batch_create_edges(
+                            salesdeal_edges,
+                            collection=CollectionNames.SALES_DEAL.value,
+                        )
 
         except Exception as e:
             self.logger.error(f"Error syncing opportunities: {e}", exc_info=True)
@@ -3413,7 +3677,7 @@ class SalesforceConnector(BaseConnector):
 
             for opp_id, product2_id in unique_pairs:
                 soql = (
-                    f"SELECT Id, Quantity, UnitPrice, TotalPrice, IsDeleted, LastModifiedDate "
+                    f"SELECT Id, Quantity, UnitPrice, TotalPrice, IsDeleted, CreatedDate, LastModifiedDate "
                     f"FROM OpportunityLineItem "
                     f"WHERE OpportunityId = '{opp_id}' AND Product2Id = '{product2_id}'"
                 )
@@ -3442,6 +3706,7 @@ class SalesforceConnector(BaseConnector):
                             "unitPrice": float(item["UnitPrice"]) if item.get("UnitPrice") is not None else None,
                             "totalPrice": float(item["TotalPrice"]) if item.get("TotalPrice") is not None else None,
                             "isDeleted": item.get("IsDeleted", False),
+                            "sourceCreatedAtTimestamp": _parse_salesforce_timestamp(item.get("CreatedDate")),
                             "sourceUpdatedAtTimestamp": _parse_salesforce_timestamp(item.get("LastModifiedDate")),
                         }
                     )
@@ -3452,35 +3717,62 @@ class SalesforceConnector(BaseConnector):
                     continue
                 edges_list: List[Dict[str, Any]] = []
                 for product_id, raw_lines in by_product.items():
-                    line_items = [
-                        {
-                            "quantity": row["quantity"],
-                            "unitPrice": row["unitPrice"],
-                            "totalPrice": row["totalPrice"],
-                            "isDeleted": row["isDeleted"],
-                        }
+                    created_timestamps = [
+                        row["sourceCreatedAtTimestamp"]
                         for row in raw_lines
+                        if row.get("sourceCreatedAtTimestamp") is not None
                     ]
-                    timestamps = [
+                    updated_timestamps = [
                         row["sourceUpdatedAtTimestamp"]
                         for row in raw_lines
                         if row.get("sourceUpdatedAtTimestamp") is not None
                     ]
-                    max_ts = max(timestamps) if timestamps else None
+                    min_created_ts = min(created_timestamps) if created_timestamps else None
+                    max_updated_ts = max(updated_timestamps) if updated_timestamps else None
                     edge_data: Dict[str, Any] = {
                         "from_id": product_id,
                         "from_collection": CollectionNames.RECORDS.value,
                         "to_id": deal_record.id,
                         "to_collection": CollectionNames.RECORDS.value,
-                        "lineItems": line_items,
+                        "quantities": [row["quantity"] for row in raw_lines],
+                        "unitPrices": [row["unitPrice"] for row in raw_lines],
+                        "totalPrices": [row["totalPrice"] for row in raw_lines],
+                        "isDeletedFlags": [bool(row["isDeleted"]) for row in raw_lines],
                     }
-                    if max_ts is not None:
-                        edge_data["sourceUpdatedAtTimestamp"] = max_ts
+                    if min_created_ts is not None:
+                        edge_data["createdAtTimestamp"] = min_created_ts
+                    if max_updated_ts is not None:
+                        edge_data["updatedAtTimestamp"] = max_updated_ts
+                        edge_data["sourceUpdatedAtTimestamp"] = max_updated_ts
                     edges_list.append(edge_data)
                 final_sold_in_items.append((deal_record, edges_list))
 
             if final_sold_in_items:
-                await self.data_entities_processor.handle_sold_in_edges(final_sold_in_items)
+                async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                    delete_tasks = [
+                        tx_store.delete_edge(
+                            from_id=edge.get("from_id"),
+                            from_collection=edge.get("from_collection"),
+                            to_id=deal_record.id,
+                            to_collection=CollectionNames.RECORDS.value,
+                            collection=CollectionNames.SOLD_IN.value,
+                        )
+                        for deal_record, edges_list in final_sold_in_items
+                        for edge in edges_list
+                    ]
+                    if delete_tasks:
+                        await asyncio.gather(*delete_tasks)
+
+                    all_sold_in_edges = [
+                        edge
+                        for _, edges_list in final_sold_in_items
+                        for edge in edges_list
+                    ]
+                    if all_sold_in_edges:
+                        await tx_store.batch_create_edges(
+                            all_sold_in_edges,
+                            collection=CollectionNames.SOLD_IN.value,
+                        )
 
             self.logger.info(
                 "Synced soldIn edges for %s unique deals (total %s edges)",
@@ -3526,6 +3818,8 @@ class SalesforceConnector(BaseConnector):
                     if not case_row.get("Id"):
                         continue
                     record = self._build_case_record(case_row)
+                    if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
+                        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     records.append(record)
                 except Exception as e:
                     self.logger.warning(f"Failed to process case {case_row.get('Id')}: {e}")
@@ -3585,6 +3879,8 @@ class SalesforceConnector(BaseConnector):
                         self.logger.debug("Skipping task row with missing Id")
                         continue
                     record = self._build_task_record(task_row)
+                    if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
+                        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     records.append(record)
                 except Exception as e:
                     self.logger.warning(f"Failed to process task {task_row.get('Id')}: {e}")
@@ -3718,6 +4014,8 @@ class SalesforceConnector(BaseConnector):
                     doc_id,
                     external_record_group_id=f"{self.data_entities_processor.org_id}-files",
                 )
+                if self.indexing_filters and self.indexing_filters.is_enabled(IndexingFilterKey.ENABLE_MANUAL_SYNC):
+                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 if rec:
                     all_records.append((rec, doc_id))
 

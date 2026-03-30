@@ -228,23 +228,28 @@ deal_of_schema = {
     "message": "Document does not match the dealOf schema.",
 }
 
-# Product -> Deal: product sold in deal (lineItems: quantity + unitPrice per OLI)
+# Product -> Deal: product sold in deal (parallel arrays of primitives per OLI)
 sold_in_schema = {
     "rule": {
         "type": "object",
         "properties": {
             "_from": {"type": "string", "minLength": 1},
             "_to": {"type": "string", "minLength": 1},
-            "lineItems": {
+            "quantities": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "quantity": {"type": ["number", "null"]},
-                        "unitPrice": {"type": ["number", "null"]},
-                    },
-                    "additionalProperties": True,
-                },
+                "items": {"type": ["number", "null"]},
+            },
+            "unitPrices": {
+                "type": "array",
+                "items": {"type": ["number", "null"]},
+            },
+            "totalPrices": {
+                "type": "array",
+                "items": {"type": ["number", "null"]},
+            },
+            "isDeletedFlags": {
+                "type": "array",
+                "items": {"type": "boolean"},
             },
             "sourceUpdatedAtTimestamp": {"type": ["number", "null"]},
             "createdAtTimestamp": {"type": "number"},

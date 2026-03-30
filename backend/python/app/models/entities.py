@@ -1243,7 +1243,7 @@ class DealRecord(Record):
                             document_key=from_key,
                             collection=CollectionNames.RECORDS.value,
                         )
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError):
                         product_doc = None
             relations.append({"edge": edge, "product": product_doc})
 
@@ -1298,21 +1298,23 @@ class DealRecord(Record):
                     from_ref = str(fid)
 
             product_name = product.get("recordName")
-            line_items = edge.get("lineItems") or []
+            quantities = edge.get("quantities") or []
+            unit_prices = edge.get("unitPrices") or []
+            total_prices = edge.get("totalPrices") or []
+            is_deleted_flags = edge.get("isDeletedFlags") or []
             cat, uat = edge.get("createdAtTimestamp"), edge.get("updatedAtTimestamp")
 
-            for li in line_items:
-                if not isinstance(li, dict):
-                    continue
+            count = max(len(quantities), len(unit_prices), len(total_prices), len(is_deleted_flags))
+            for i in range(count):
                 parts = []
                 if from_ref:
                     parts.append(f"from {from_ref}")
                 if product_name:
                     parts.append(f"product: {product_name}")
-                q = li.get("quantity")
-                up = li.get("unitPrice")
-                tp = li.get("totalPrice")
-                is_deleted = li.get("isDeleted")
+                q = quantities[i] if i < len(quantities) else None
+                up = unit_prices[i] if i < len(unit_prices) else None
+                tp = total_prices[i] if i < len(total_prices) else None
+                is_deleted = is_deleted_flags[i] if i < len(is_deleted_flags) else None
                 if q is not None:
                     parts.append(f"qty: {q}")
                 if up is not None:
@@ -1371,7 +1373,7 @@ class DealRecord(Record):
         if graph_provider:
             try:
                 sales_deal_edges = await self.fetch_sales_deal_edges_to_deal(graph_provider, self.id)
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 sales_deal_edges = None
 
         if sales_deal_edges is not None:
@@ -1381,7 +1383,7 @@ class DealRecord(Record):
         if graph_provider:
             try:
                 sold_in_relations = await self.fetch_sold_in_edges_with_products_to_deal(graph_provider, self.id)
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 sold_in_relations = None
 
         if sold_in_relations is not None:
