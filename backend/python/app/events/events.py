@@ -260,7 +260,6 @@ class EventProcessor:
 
         if in_progress:
             self.logger.info(f"🚀 Duplicate record {in_progress.get('_key')} is being processed, changing status to QUEUED.")
-
             doc.update({
                 "indexingStatus": ProgressStatus.QUEUED.value,
             })

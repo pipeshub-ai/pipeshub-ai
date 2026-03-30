@@ -403,59 +403,59 @@ def normalize_citations_and_chunks_for_agent(
                 unique_citations.append(citation_key)
                 seen.add(citation_key)
 
-    if not unique_citations:
-        # No citation markers found, but if final_results exist, create citations from all results
-        if final_results:
-            all_citations = []
-            for idx, doc in enumerate(final_results):
-                content = doc.get("content", "")
-                # Handle table blocks
-                if isinstance(content, tuple):
-                    content = content[0] if content else ""
+    # if not unique_citations:
+    #     # No citation markers found, but if final_results exist, create citations from all results
+    #     if final_results:
+    #         all_citations = []
+    #         for idx, doc in enumerate(final_results):
+    #             content = doc.get("content", "")
+    #             # Handle table blocks
+    #             if isinstance(content, tuple):
+    #                 content = content[0] if content else ""
 
-                # Get metadata and ensure all required fields are present
-                metadata = doc.get("metadata", {}) or {}
+    #             # Get metadata and ensure all required fields are present
+    #             metadata = doc.get("metadata", {}) or {}
 
-                # If metadata is missing required fields, try to get them from virtual_record_id_to_result
-                if virtual_record_id_to_result:
-                    virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
-                    if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
-                        record = virtual_record_id_to_result[virtual_record_id]
-                        # Fill in missing required fields from record
-                        if not metadata.get("origin"):
-                            metadata["origin"] = record.get("origin", "")
-                        if not metadata.get("recordName"):
-                            metadata["recordName"] = record.get("record_name", "")
-                        if not metadata.get("recordId"):
-                            metadata["recordId"] = record.get("id", "")
-                        if not metadata.get("mimeType"):
-                            metadata["mimeType"] = record.get("mime_type", "")
+    #             # If metadata is missing required fields, try to get them from virtual_record_id_to_result
+    #             if virtual_record_id_to_result:
+    #                 virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+    #                 if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+    #                     record = virtual_record_id_to_result[virtual_record_id]
+    #                     # Fill in missing required fields from record
+    #                     if not metadata.get("origin"):
+    #                         metadata["origin"] = record.get("origin", "")
+    #                     if not metadata.get("recordName"):
+    #                         metadata["recordName"] = record.get("record_name", "")
+    #                     if not metadata.get("recordId"):
+    #                         metadata["recordId"] = record.get("id", "")
+    #                     if not metadata.get("mimeType"):
+    #                         metadata["mimeType"] = record.get("mime_type", "")
 
-                # Ensure required fields have at least empty string defaults (validation requirement)
-                metadata["origin"] = metadata.get("origin") or ""
-                metadata["recordName"] = metadata.get("recordName") or ""
-                metadata["recordId"] = metadata.get("recordId") or ""
-                metadata["mimeType"] = metadata.get("mimeType") or ""
-                metadata["orgId"] = metadata.get("orgId") or ""  # Add orgId
+    #             # Ensure required fields have at least empty string defaults (validation requirement)
+    #             metadata["origin"] = metadata.get("origin") or ""
+    #             metadata["recordName"] = metadata.get("recordName") or ""
+    #             metadata["recordId"] = metadata.get("recordId") or ""
+    #             metadata["mimeType"] = metadata.get("mimeType") or ""
+    #             metadata["orgId"] = metadata.get("orgId") or ""  # Add orgId
 
-                # Ensure content is not None
-                citation_content = content or ""
-                if not isinstance(citation_content, str):
-                    logger.warning(
-                        "[citations startswith] location=citation_content (all_citations path) | "
-                        "idx=%s type=%s repr=%s", idx, type(citation_content).__name__, repr(citation_content)[:200],
-                    )
-                if isinstance(citation_content, str) and citation_content.startswith("data:image/"):
-                    citation_content = "Image"
+    #             # Ensure content is not None
+    #             citation_content = content or ""
+    #             if not isinstance(citation_content, str):
+    #                 logger.warning(
+    #                     "[citations startswith] location=citation_content (all_citations path) | "
+    #                     "idx=%s type=%s repr=%s", idx, type(citation_content).__name__, repr(citation_content)[:200],
+    #                 )
+    #             if isinstance(citation_content, str) and citation_content.startswith("data:image/"):
+    #                 citation_content = "Image"
 
-                all_citations.append({
-                    "content": citation_content,
-                    "chunkIndex": idx + 1,
-                    "metadata": metadata,
-                    "citationType": "vectordb|document",
-                })
-            return answer_text, all_citations
-        return answer_text, []
+    #             all_citations.append({
+    #                 "content": citation_content,
+    #                 "chunkIndex": idx + 1,
+    #                 "metadata": metadata,
+    #                 "citationType": "vectordb|document",
+    #             })
+    #         return answer_text, all_citations
+    #     return answer_text, []
 
     # Main citation processing logic (matches normalize_citations_and_chunks)
     citation_mapping = {}
