@@ -241,6 +241,11 @@ def _normalize_markdown_link_citations(
             idx = url_to_doc_index[url]
             doc = flattened_final_results[idx]
             content = doc.get("content", "")
+            if isinstance(content, tuple):
+                content = content[0]
+            elif not isinstance(content, str):
+                content = str(content)
+
             new_citations.append({
                 "content": "Image" if content.startswith("data:image/") else content,
                 "chunkIndex": new_citation_num,  # Use new sequential number
@@ -267,8 +272,9 @@ def _normalize_markdown_link_citations(
                                 data = data.get("row_natural_language_text", "")
                             elif block_type == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
+
                             new_citations.append({
-                                "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else data,
+                                "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
                                 "chunkIndex": new_citation_num,
                                 "metadata": enhanced_metadata,
                                 "citationType": "vectordb|document",
@@ -388,6 +394,11 @@ def _normalize_markdown_link_citations_for_agent(
             metadata["recordId"] = metadata.get("recordId") or ""
             metadata["mimeType"] = metadata.get("mimeType") or ""
             metadata["orgId"] = metadata.get("orgId") or ""
+            
+            if isinstance(content, tuple):
+                content = content[0]
+            elif not isinstance(content, str):
+                content = str(content)
 
             new_citations.append({
                 "content": "Image" if content.startswith("data:image/") else content,
@@ -421,7 +432,7 @@ def _normalize_markdown_link_citations_for_agent(
                             elif bt == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
                             new_citations.append({
-                                "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else data,
+                                "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
                                 "chunkIndex": new_citation_num,
                                 "metadata": enhanced_metadata,
                                 "citationType": "vectordb|document",
@@ -451,7 +462,7 @@ def _normalize_markdown_link_citations_for_agent(
                                 elif bt == BlockType.IMAGE.value:
                                     data = data.get("uri", "")
                                 new_citations.append({
-                                    "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else data,
+                                    "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
                                     "chunkIndex": new_citation_num,
                                     "metadata": enhanced_metadata,
                                     "citationType": "vectordb|document",

@@ -1033,7 +1033,7 @@ def extract_json_from_string(input_string: str) -> "dict[str, Any]":
 
 
 CONFIDENCE_DELIMITER_RE = re.compile(
-    r'\n---\s*\nConfidence:\s*(Very High|High|Medium|Low)\s*$',
+    r'\n---\s*\nConfidence:\s*(Very High|High|Medium|Low)\s*[.!]?\s*$',
     re.IGNORECASE
 )
 
