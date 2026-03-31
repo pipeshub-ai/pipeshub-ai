@@ -135,21 +135,3 @@ class TestMain:
             mock_parser_cls.assert_called_once()
             # parser.parse() was called
             mock_parser_instance.parse.assert_called_once()
-
-    def test_name_main_guard(self):
-        """Cover the if __name__ == '__main__' block (lines 32-33)."""
-        with patch("app.modules.parsers.docx.docx_parser.main") as mock_main:
-            # Read the source and exec it with __name__ set to "__main__"
-            import app.modules.parsers.docx.docx_parser as mod
-            import inspect
-            source = inspect.getsource(mod)
-            # Extract just the if __name__ guard block and exec it
-            exec(
-                compile(
-                    'if __name__ == "__main__":\n    main()\n',
-                    "<test>",
-                    "exec",
-                ),
-                {"__name__": "__main__", "main": mock_main},
-            )
-            mock_main.assert_called_once()
