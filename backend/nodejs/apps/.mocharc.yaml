@@ -2,7 +2,6 @@ require:
   - 'reflect-metadata'
   - 'ts-node/register'
   - './tests/helpers/mock-ioredis-global.ts'
-  - './tests/helpers/mock-kafkajs-global.ts'
   - './tests/helpers/mock-mcp-global.ts'
 spec: 'tests/**/*.test.ts'
 timeout: 10000
