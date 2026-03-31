@@ -71,7 +71,7 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80  # Scale when Memory > 80%
   # ⚠️  CRITICAL: Metrics Server is REQUIRED for autoscaling!
   #     Without it, HPA will NOT work. Install it first:
-  #     ./deployment/helm/install-metrics-server.sh
+  #     ./deployment/helm/local-install-metrics-server.sh
   #
   #     Verify: kubectl get deployment metrics-server -n kube-system
   #
@@ -101,7 +101,7 @@ persistence:
 
 config:
   nodeEnv: "production"
-  logLevel: "debug"
+  logLevel: "info"
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
   # Example: "https://app.example.com,https://admin.example.com"
   # For development: --set config.allowedOrigins="http://localhost:3001"
