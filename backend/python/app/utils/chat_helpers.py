@@ -43,11 +43,6 @@ def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> 
     return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
 
 
-def build_block_group_web_url(frontend_url: str, record_id: str, block_group_index: int) -> str:
-    """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
-    base = frontend_url.rstrip("/") if frontend_url else ""
-    return f"{base}/record/{record_id}/preview#blockGroupIndex={block_group_index}"
-
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
@@ -1036,7 +1031,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     return result_blocks
 
 
-def record_to_message_content(record: dict[str, Any], final_results: list[dict[str, Any]] = None) -> str|None:
+def record_to_message_content(record: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
@@ -1049,10 +1044,14 @@ def record_to_message_content(record: dict[str, Any], final_results: list[dict[s
     """
 
     try:
-        record_string = ""
+        
+        content = []
         context_metadata = record.get("context_metadata", "")
-        record_string += f"""<record>\n{context_metadata}
+        content.append({
+            "type": "text",
+            "text": f"""<record>\n{context_metadata}
 Record blocks (sorted):\n\n"""
+        })
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
@@ -1072,7 +1071,10 @@ Record blocks (sorted):\n\n"""
             if block_type == BlockType.IMAGE.value:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
-                record_string += f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -1117,17 +1119,17 @@ Record blocks (sorted):\n\n"""
                                 })
 
                         if child_results:
-                            block_group_web_url = build_block_group_web_url(rec_frontend_url, rec_record_id, block_group_index)
                             template = Template(table_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
-                                block_group_web_url=block_group_web_url,
+                                block_group_web_url="",
                                 table_summary=table_summary,
                                 table_rows=child_results,
                             )
-                            record_string += f"{rendered_form}\n\n"
-
-
+                            content.append({
+                                "type": "text",
+                                "text": f"{rendered_form}\n\n"
+                            })
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -1143,25 +1145,30 @@ Record blocks (sorted):\n\n"""
                 if not group_blocks:
                     continue
                 seen_block_groups.add(block_group_id)
-                block_group_web_url = build_block_group_web_url(rec_frontend_url, rec_record_id, parent_index)
                 for gb in group_blocks:
                     gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("index", 0))
                 rendered_form = template.render(
                     block_group_index=parent_index,
-                    block_group_web_url=block_group_web_url,
+                    block_group_web_url="",
                     label=block_group.get("type"),
                     blocks=group_blocks,
                 )
-                record_string += f"{rendered_form}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"{rendered_form}\n\n"
+                })
             else:
-                record_string += f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
 
-        return record_string
+        return content
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json") -> str:
     content = []
     if mode == "no_tools":
         chunks = []
@@ -1181,16 +1188,16 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
 
                 # Get content text
                 block_web_url = ""
+                record = virtual_record_id_to_result.get(virtual_record_id) or {}
+                frontend_url = record.get("frontend_url", "")
+                record_id = record.get("id", "")
+                block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
+
                 if block_type == GroupType.TABLE.value:
-                    table_summary, child_results = result.get("content")
+                    table_summary, _ = result.get("content")
                     content_text = f"Table: {table_summary}"
                 else:
                     content_text = result.get("content", "")
-
-                    record = virtual_record_id_to_result.get(virtual_record_id) or {}
-                    frontend_url = record.get("frontend_url", "")
-                    record_id = record.get("id", "")
-                    block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
 
                 chunks.append({
                     "metadata": {
@@ -1226,130 +1233,38 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     "type": "text",
                     "text": rendered_form
                 })
+        
+        message_content_array = build_message_content_array(flattened_results, virtual_record_id_to_result)
+        message_content_array = [item for sublist in message_content_array for item in sublist]
 
-        seen_virtual_record_ids = set()
-        seen_blocks = set()
-        current_frontend_url = ""
-        current_record_id = ""
-        for i,result in enumerate(flattened_results):
-            virtual_record_id = result.get("virtual_record_id")
-            if virtual_record_id not in seen_virtual_record_ids:
-                if i > 0:
-                    content.append({
-                        "type": "text",
-                        "text": "</record>"
-                    })
-                seen_virtual_record_ids.add(virtual_record_id)
-                record = virtual_record_id_to_result[virtual_record_id]
-                if record is None:
-                    continue
-
-                current_frontend_url = record.get("frontend_url", "")
-                current_record_id = record.get("id", "")
-
-                template = Template(qna_prompt_context)
-                rendered_form = template.render(
-                    context_metadata=record.get("context_metadata", ""),
-                )
-                content.append({
-                    "type": "text",
-                    "text": rendered_form
-                })
-
-            result_id = f"{virtual_record_id}_{result.get('block_index')}"
-            if result_id not in seen_blocks:
-                seen_blocks.add(result_id)
-                block_type = result.get("block_type")
-                block_index = result.get("block_index")
-                block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
-                result["block_web_url"] = block_web_url
-                if block_type == BlockType.IMAGE.value:
-                    if result.get("content").startswith("data:image/"):
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content:"
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": result.get("content")}
-                        })
-                    else:
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
-                        })
-                elif block_type == GroupType.TABLE.value:
-                    table_summary,child_results = result.get("content")
-                    block_group_index = result.get("block_group_index")
-                    block_group_web_url = build_block_web_url(current_frontend_url, current_record_id, block_group_index)
-                    if child_results:
-                        for child in child_results:
-                            child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
-                        template = Template(table_prompt)
-                        rendered_form = template.render(
-                            block_group_index=block_group_index,
-                            block_group_web_url=block_group_web_url,
-                            table_summary=table_summary,
-                            table_rows=child_results,
-                        )
-                        content.append({
-                            "type": "text",
-                            "text": f"{rendered_form}\n\n"
-                        })
-                    else:
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Group Index: {block_group_index}\n* Block Group Web URL: {block_group_web_url}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
-                        })
-                elif block_type == BlockType.TEXT.value:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                    })
-                elif block_type == BlockType.TABLE_ROW.value:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
-                    })
-                elif block_type in group_types:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                    })
-                else:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                    })
-            else:
-                continue
-
+        content.extend(message_content_array)
         # Render instructions_2 with mode parameter
         template_instructions_2 = Template(qna_prompt_instructions_2)
         rendered_instructions_2 = template_instructions_2.render(mode=mode)
 
         content.append({
             "type": "text",
-            "text": f"</record>\n</context>\n\n{rendered_instructions_2}"
+            "text": f"</context>\n\n{rendered_instructions_2}"
         })
         return content
 
-
-
-def get_message_content_for_tool(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any]) -> list[str]:
-    all_record_strings = []
-    seen_blocks = set()
+def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any]) -> list[str]:
+    all_contents = []
+    content = []
     seen_virtual_record_ids = set()
-    record_ids =[]
-    record_string = ""
+    seen_blocks = set()
     current_frontend_url = ""
     current_record_id = ""
     for i,result in enumerate(flattened_results):
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
             if i > 0:
-                all_record_strings.append(record_string)
-                record_string = ""
+                content.append({
+                    "type": "text",
+                    "text": "</record>"
+                })
+                all_contents.append(content)
+                content = []
             seen_virtual_record_ids.add(virtual_record_id)
             record = virtual_record_id_to_result[virtual_record_id]
             if record is None:
@@ -1358,9 +1273,14 @@ def get_message_content_for_tool(flattened_results: list[dict[str, Any]], virtua
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
 
-            record_string += f"""<record>\n{record.get("context_metadata", "")}
-Record blocks (sorted):\n\n"""
-            record_ids.append(current_record_id)
+            template = Template(qna_prompt_context)
+            rendered_form = template.render(
+                context_metadata=record.get("context_metadata", ""),
+            )
+            content.append({
+                "type": "text",
+                "text": rendered_form
+            })
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
@@ -1368,34 +1288,73 @@ Record blocks (sorted):\n\n"""
             block_type = result.get("block_type")
             block_index = result.get("block_index")
             block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
-            if block_type == GroupType.TABLE.value:
+            result["block_web_url"] = block_web_url
+            if block_type == BlockType.IMAGE.value:
+                if result.get("content").startswith("data:image/"):
+                    content.append({
+                        "type": "text",
+                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content:"
+                    })
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": result.get("content")}
+                    })
+                else:
+                    content.append({
+                        "type": "text",
+                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                    })
+            elif block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
                 block_group_index = result.get("block_group_index")
-                block_group_web_url = build_block_web_url(current_frontend_url, current_record_id, block_group_index)
+                first_child_block_index = result.get("block_index")
+                first_child_block_web_url = build_block_web_url(current_frontend_url, current_record_id, first_child_block_index)
                 if child_results:
                     for child in child_results:
                         child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
                     template = Template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=block_group_index,
-                        block_group_web_url=block_group_web_url,
+                        block_group_web_url="",
                         table_summary=table_summary,
                         table_rows=child_results,
                     )
-                    record_string += f"{rendered_form}\n\n"
+                    content.append({
+                        "type": "text",
+                        "text": f"{rendered_form}\n\n"
+                    })
                 else:
-                    record_string += f"* Block Group Index: {block_group_index}\n* Block Group Web URL: {block_group_web_url}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
+                    content.append({
+                        "type": "text",
+                        "text": f"* Block Group Index: {block_group_index}\n* Block Web URL: {first_child_block_web_url}\n* Block Group Type: table summary \n* Block Group Content: {table_summary}\n\n"
+                    })
             elif block_type == BlockType.TEXT.value:
-                record_string += f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-            elif block_type != BlockType.IMAGE.value:
-                record_string += f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                })
+            elif block_type in group_types:
+                block_group_index = result.get("block_group_index")
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Group Index: {block_group_index}\n* Block Web URL: {block_web_url}\n* Block Group Type: {block_type}\n* Block Group Content: {result.get('content')}\n\n"
+                })
+            else:
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                })
         else:
             continue
-
-    all_record_strings.append(record_string)
-
-    return all_record_strings
-
+        
+    if content:
+        content.append({
+            "type": "text",
+            "text": "</record>"
+        })
+        all_contents.append(content)
+   
+    return all_contents
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """
@@ -1472,7 +1431,7 @@ def count_tokens_text(text: str,enc) -> int:
 
     return max(1, len(text) // 4)
 
-def count_tokens(messages: list[Any], message_contents: list[str]) -> tuple[int, int]:
+def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]]]) -> tuple[int, int]:
     # Lazy import tiktoken; fall back to a rough heuristic if unavailable
     enc = None
     try:
@@ -1489,10 +1448,13 @@ def count_tokens(messages: list[Any], message_contents: list[str]) -> tuple[int,
 
     current_message_tokens = count_tokens_in_messages(messages,enc)
     new_tokens = 0
+    
+    flattened_message_contents = [item for sublist in message_contents for item in sublist]
 
-    for message_content in message_contents:
-        new_tokens += count_tokens_text(message_content,enc)
-
+    for message in flattened_message_contents:
+        text_content = message.get("text", "") if message.get("type") == "text" else ""
+        if text_content:
+            new_tokens += count_tokens_text(text_content,enc)
 
     return current_message_tokens, new_tokens
 

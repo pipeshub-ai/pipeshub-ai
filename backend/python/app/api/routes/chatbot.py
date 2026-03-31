@@ -159,7 +159,7 @@ def _build_chat_llm_messages(
             messages.append({"role": "assistant", "content": conversation.get("content")})
 
     content = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, logger, query_info.mode
+        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode
     )
     messages.append({"role": "user", "content": content})
     return messages
@@ -352,6 +352,7 @@ async def askAIStream(
                         yield create_sse_event("status", payload)
                     else:
                         all_queries = payload
+                        logger.debug(f"All queries: {all_queries}")
 
                 # Execute search
                 org_id = request.state.user.get('orgId')

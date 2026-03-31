@@ -6405,7 +6405,7 @@ async def respond_node(
                 )
 
         qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, log, "json"
+            final_results, virtual_record_map, user_data, query, "json"
         )
         state["qna_message_content"] = qna_content
         log.debug("✅ Built qna_message_content via get_message_content() (chatbot-identical format)")
@@ -6535,12 +6535,11 @@ async def respond_node(
         # formats them via record_to_message_content() — identical to chatbot).
         tools = []
         if virtual_record_map:
-            from app.utils.agent_fetch_full_record import (
-                create_agent_fetch_full_record_tool,
+            from app.utils.fetch_full_record import (
+                create_fetch_full_record_tool,
             )
-            fetch_tool = create_agent_fetch_full_record_tool(
+            fetch_tool = create_fetch_full_record_tool(
                 virtual_record_map,
-                label_to_virtual_record_id=record_label_map if record_label_map else None,
             )
             tools = [fetch_tool]
             log.debug(
@@ -6702,7 +6701,6 @@ async def _generate_direct_response(
     and stores the result in state. Fully self-contained — the caller just
     needs to ``return state`` after this returns.
     """
-    from app.utils.streaming import stream_llm_response
 
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])

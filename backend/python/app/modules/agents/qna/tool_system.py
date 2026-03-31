@@ -440,13 +440,11 @@ def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     virtual_record_map = state.get("virtual_record_id_to_result", {})
     if virtual_record_map:
         try:
-            from app.utils.agent_fetch_full_record import (
-                create_agent_fetch_full_record_tool,
+            from app.utils.fetch_full_record import (
+                create_fetch_full_record_tool,
             )
-            record_label_to_uuid_map = state.get("record_label_to_uuid_map", {})
-            fetch_tool = create_agent_fetch_full_record_tool(
+            fetch_tool = create_fetch_full_record_tool(
                 virtual_record_map,
-                label_to_virtual_record_id=record_label_to_uuid_map if record_label_to_uuid_map else None,
             )
             tools.append(fetch_tool)
 
@@ -630,13 +628,11 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
         virtual_record_map = state.get("virtual_record_id_to_result", {})
         if virtual_record_map:
             try:
-                from app.utils.agent_fetch_full_record import (
-                    create_agent_fetch_full_record_tool,
+                from app.utils.fetch_full_record import (
+                    create_fetch_full_record_tool,
                 )
-                record_label_to_uuid_map = state.get("record_label_to_uuid_map", {})
-                fetch_tool = create_agent_fetch_full_record_tool(
+                fetch_tool = create_fetch_full_record_tool(
                     virtual_record_map,
-                    label_to_virtual_record_id=record_label_to_uuid_map if record_label_to_uuid_map else None,
                 )
                 structured_tools.append(fetch_tool)
 

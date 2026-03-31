@@ -12,11 +12,11 @@ class FetchFullRecordArgs(BaseModel):
     """
     record_ids: List[str] = Field(
         ...,
-        description="List of IDs (or virtualRecordIds) of the records to fetch. Pass all record IDs that need to be fetched in a single call. Prefer the IDs found in chunk metadata."
+        description="List of recordIds of the records to fetch. Pass ALL record IDs in a single call — do NOT make multiple separate calls."
     )
     reason: str = Field(
         default="Fetching full record content for comprehensive answer",
-        description="Why the full records are needed (explain the gap in the provided blocks)."
+        description="Brief explanation of why the full records are needed (e.g., 'query asks for complete details')."
     )
 
 class FetchBlockGroupArgs(BaseModel):
@@ -78,17 +78,13 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
-        """
-        Retrieve the complete content of multiple records (all blocks/groups) for better answering.
-        Pass all record IDs at once instead of making multiple separate calls.
+        """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
 
         Args:
-            record_ids: List of virtual record IDs to fetch (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19"])
-            reason: Clear explanation of why the full records are needed
+            record_ids: List of recordIds to fetch (e.g., ["ba4cf9ed-d254-4989-a817-adf0475250cd"])
+            reason: Brief explanation of why the full records are needed
 
-        Returns:
-        {"ok": true, "records": [...], "record_count": N, "not_found": [...]}
-        or {"ok": false, "error": "..."}.
+        Returns: Complete content of the records or {"ok": false, "error": "..."}.
         """
         try:
             result = await _fetch_multiple_records_impl(record_ids, virtual_record_id_to_result)

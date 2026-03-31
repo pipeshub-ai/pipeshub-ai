@@ -96,6 +96,77 @@ def _extract_record_id_from_url(url: str) -> Optional[str]:
         return m.group(1)
     return None
 
+
+
+def _is_url_resolvable_via_records(
+    url: str,
+    records: list[dict[str, Any]],
+    flattened_final_results: list[dict[str, Any]],
+) -> bool:
+    """Check if a citation URL can be resolved via record_id+block_index lookup in records or virtual_record_id_to_result."""
+    record_id = _extract_record_id_from_url(url)
+    block_index = _extract_block_index_from_url(url)
+    if record_id is None or block_index is None:
+        return False
+ 
+    for doc in flattened_final_results:
+        metadata = doc.get("metadata", {})
+        doc_record_id = metadata.get("recordId")
+        doc_block_index = doc.get("block_index")
+        if doc_record_id == record_id and doc_block_index == block_index:
+            return True
+
+    for r in records:
+        if r.get("id") == record_id:
+            blocks = (r.get("block_containers", {}) or {}).get("blocks", []) or []
+            if 0 <= block_index < len(blocks):
+                return True
+    return False
+
+def detect_hallucinated_citation_urls(
+    answer_text: str,
+    records: list[dict[str, Any]]|None = None,
+    flattened_final_results: list[dict[str, Any]]|None = None,
+) -> list[str]:
+    """
+    Detect citation URLs in answer_text that don't match any known block_web_url.
+    Agent variant that also checks virtual_record_id_to_result.
+
+    Returns:
+            - hallucinated_urls: URLs found in answer that could not be resolved
+    """
+    if records is None:
+        records = []
+    if flattened_final_results is None:
+        flattened_final_results = []
+
+    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
+    md_matches = list(re.finditer(md_link_pattern, answer_text))
+    if not md_matches:
+        return []
+
+    # valid_url_set = _build_valid_url_set(final_results)
+    # valid_urls = sorted(valid_url_set)
+
+    unique_urls = []
+    seen = set()
+    for match in md_matches:
+        url = match.group(2).strip()
+        if url not in seen:
+            unique_urls.append(url)
+            seen.add(url)
+
+    hallucinated = []
+    for url in unique_urls:
+        # if url in valid_url_set:
+            # continue
+        if _is_url_resolvable_via_records(url, records, flattened_final_results):
+            continue
+        hallucinated.append(url)
+
+    return hallucinated
+
+
 def normalize_citations_and_chunks(answer_text: str, final_results: list[dict[str, Any]],records: list[dict[str, Any]]=None) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
@@ -131,7 +202,6 @@ def _normalize_markdown_link_citations(
     """
     url_to_doc_index = {}
     flattened_final_results = []
-    vrids = [record.get("virtual_record_id") for record in records]
 
     for doc in final_results:
         block_type = doc.get("block_type")

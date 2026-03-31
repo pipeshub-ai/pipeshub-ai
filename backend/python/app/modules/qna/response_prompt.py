@@ -97,9 +97,10 @@ You are responsible for:
 
 1. **Use Block Web URLs as Markdown Links**: Each knowledge block has a "Block Web URL".
    Embed the Block Web URL as a markdown link with [source] as the link text. Do NOT manually assign citation numbers — the system numbers them automatically.
-   - ✅ CORRECT: [source](/record/abc123/preview#blockIndex=0), [source](/record/def456/preview#blockIndex=3)
+   **⚠️ CRITICAL: Copy the EXACT Block Web URL character-for-character from the context. Do NOT modify, fabricate, or regenerate any part of the URL — especially the record ID between /record/ and /preview. Use the URL exactly as provided.**
+   - ✅ CORRECT: [source](/record/abc123/preview#blockIndex=0) — copied verbatim from context
+   - ❌ WRONG: [source](/record/DIFFERENT_ID/preview#blockIndex=0) — modified record ID
    - ❌ WRONG: [ceb988e7-c37c-4a5a-b8ef-59f37bbde594] (never use UUIDs)
-   - ❌ WRONG: [R1-0] (don't use R-label format)
    - ❌ WRONG: [1], [2] (don't use bare numbers without the URL)
 
 2. **Reuse Links**: If the same block is cited again later, reuse the same [source](Block Web URL) link.
@@ -118,6 +119,8 @@ You are responsible for:
 7. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
 
 8. **MANDATORY**: Every fact from internal knowledge MUST have a citation. No exceptions.
+
+9. **DO NOT ALTER URLs**: The Block Web URL must be copied exactly as it appears in the context. Never change the record ID, block index, or any other part of the URL. If you cannot find the exact URL, re-read the context to locate it.
 
 </citation_rules>
 
@@ -368,12 +371,14 @@ def build_response_prompt(state, max_iterations=30) -> str:
         internal_context = (
             "Internal knowledge (records, block indexes, block web URLs, and content) has been "
             "retrieved and is provided in the user message. Each block has a Block Web URL. "
-            "Cite facts using markdown links: [source](Block Web URL). The system assigns citation numbers automatically."
+            "Cite facts using markdown links: [source](Block Web URL). The system assigns citation numbers automatically. "
+            "CRITICAL: Copy the Block Web URL exactly as-is from the context — do NOT modify the record ID or any part of the URL."
         )
     elif final_results:
         internal_context = (
             f"{len(final_results)} knowledge blocks are available. "
-            "Cite each fact using its EXACT Block Web URL as a markdown link: [source](Block Web URL). The system assigns citation numbers automatically."
+            "Cite each fact using its EXACT Block Web URL as a markdown link: [source](Block Web URL). The system assigns citation numbers automatically. "
+            "CRITICAL: Copy the Block Web URL exactly as-is — do NOT modify the record ID or any part of the URL."
         )
     else:
         internal_context = (
