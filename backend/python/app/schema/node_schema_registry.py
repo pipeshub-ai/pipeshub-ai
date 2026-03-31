@@ -25,6 +25,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     link_record_schema,
     mail_record_schema,
+    meeting_record_schema,
     orgs_schema,
     people_schema,
     project_record_schema,
@@ -99,6 +100,7 @@ NODE_SCHEMA_REGISTRY: Dict[str, Optional[Dict]] = {
     CollectionNames.AGENT_INSTANCES.value: adapt_schema(agent_schema),
     CollectionNames.AGENT_TEMPLATES.value: adapt_schema(agent_template_schema),
     CollectionNames.TICKETS.value: adapt_schema(ticket_record_schema),
+    CollectionNames.MEETINGS.value: adapt_schema(meeting_record_schema),
     CollectionNames.PROJECTS.value: adapt_schema(project_record_schema),
     CollectionNames.SYNC_POINTS.value: None,  # No schema
     CollectionNames.TEAMS.value: adapt_schema(team_schema),

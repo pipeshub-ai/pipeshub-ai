@@ -40897,3 +40897,87 @@ class ZoomDataSource:
             )
         except Exception as e:
             return ZoomResponse(success=False, error=str(e), message="Failed to execute getdocsfileimportstatus")
+
+    # -------------------------------------------------------------------------
+    # Transcript helpers (connector-specific, not in the OpenAPI spec)
+    # -------------------------------------------------------------------------
+
+    async def meeting_transcript_metadata(self, meetingId: str) -> ZoomResponse:
+        """Fetch AI Companion transcript metadata for a past meeting.
+
+        HTTP GET /meetings/{meetingId}/transcript
+
+        On success the response body contains a ``download_url`` that holds the
+        actual transcript text.  On failure the body contains a Zoom error
+        ``code`` (e.g. 3322 = no AI transcript, 3001/3301 = meeting not found).
+
+        Args:
+            meetingId: URL-encoded meeting UUID.
+
+        Returns:
+            ZoomResponse with ``data`` set to the parsed JSON body (or ``None``).
+            ``success`` is False for any HTTP 4xx/5xx status.
+        """
+        url = self.base_url + "/meetings/{meetingId}/transcript".format(meetingId=meetingId)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ZoomResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message=(
+                    "Successfully fetched transcript metadata"
+                    if response.status < HTTP_ERROR_THRESHOLD
+                    else f"Failed with status {response.status}"
+                ),
+            )
+        except Exception as e:
+            return ZoomResponse(
+                success=False,
+                error=str(e),
+                message="Failed to execute meeting_transcript_metadata",
+            )
+
+    async def meeting_transcript_download(self, download_url: str) -> ZoomResponse:
+        """Download the transcript text from a pre-signed URL.
+
+        The ``download_url`` is obtained from ``meeting_transcript_metadata``.
+        The response body is plain text (VTT or similar format).
+
+        Args:
+            download_url: Fully-qualified URL returned by the transcript metadata call.
+
+        Returns:
+            ZoomResponse with ``data = {"transcript_text": "<content>"}`` on
+            success, or ``success=False`` on any error.
+        """
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=download_url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            if response.status >= HTTP_ERROR_THRESHOLD:
+                return ZoomResponse(
+                    success=False,
+                    message=f"Transcript download failed with status {response.status}",
+                )
+            text = response.text()
+            return ZoomResponse(
+                success=True,
+                data={"transcript_text": text or ""},
+                message="Successfully downloaded transcript",
+            )
+        except Exception as e:
+            return ZoomResponse(
+                success=False,
+                error=str(e),
+                message="Failed to execute meeting_transcript_download",
+            )
