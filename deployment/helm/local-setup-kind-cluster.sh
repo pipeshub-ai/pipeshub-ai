@@ -128,6 +128,7 @@ cd "$(dirname "$0")"
 
 echo "Running helm install..."
 helm install pipeshub-ai ./pipeshub-ai \
+  --set secretKey="local-dev-secret-key-change-in-prod" \
   --set replicaCount=1 \
   --set resources.requests.cpu=100m \
   --set resources.requests.memory=256Mi \
@@ -146,6 +147,8 @@ helm install pipeshub-ai ./pipeshub-ai \
   --set kafka.config.offsetsTopicReplicationFactor=1 \
   --set kafka.config.transactionStateLogMinIsr=1 \
   --set kafka.config.transactionStateLogReplicationFactor=1 \
+  --set kafka.config.defaultReplicationFactor=1 \
+  --set kafka.config.minInsyncReplicas=1 \
   --set qdrant.replicaCount=1 \
   --set neo4j.replicaCount=1
 

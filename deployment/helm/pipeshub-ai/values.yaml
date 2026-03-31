@@ -23,7 +23,7 @@ service:
 ingress:
   enabled: false
   className: "" # Fill
-  annotations: [] # Fill
+  annotations: {} # Fill
   hosts: [] # Fill
     # - host: pipeshub.example.com
     #   paths:
@@ -110,6 +110,10 @@ config:
   frontendPublicUrl: "" # Fill
   # frontendPublicUrl: "https://pipeshub.dyn.example.com"
 
+# IMPORTANT: Set a stable secret key for production deployments!
+# If not set, a random key is generated on each install. This causes issues
+# because encrypted data (OAuth tokens, etc.) cannot be decrypted after restart.
+# Example: --set secretKey="your-32-char-secret-key-here"
 secretKey: "" # Fill
 
 mongodb:
@@ -261,10 +265,11 @@ kafka:
     tag: 7.9.0
     pullPolicy: IfNotPresent
   config:
-    brokerId: "1"
     offsetsTopicReplicationFactor: "3"  # Replicate data across 3 brokers
     transactionStateLogMinIsr: "2"  # Minimum in-sync replicas: 2 out of 3
     transactionStateLogReplicationFactor: "3"  # Transaction log replicated to 3 brokers
+    defaultReplicationFactor: "3"  # Default replication factor for new topics
+    minInsyncReplicas: "2"  # Minimum in-sync replicas required for writes
     groupInitialRebalanceDelayMs: "0"
     logRetentionHours: "24"
     numNetworkThreads: "3"

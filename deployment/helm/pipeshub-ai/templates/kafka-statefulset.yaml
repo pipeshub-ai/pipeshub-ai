@@ -106,9 +106,9 @@ spec:
             - name: KAFKA_NUM_IO_THREADS
               value: {{ .Values.kafka.config.numIoThreads | quote }}
             - name: KAFKA_DEFAULT_REPLICATION_FACTOR
-              value: "3"
+              value: {{ .Values.kafka.config.defaultReplicationFactor | quote }}
             - name: KAFKA_MIN_INSYNC_REPLICAS
-              value: "2"
+              value: {{ .Values.kafka.config.minInsyncReplicas | quote }}
           command:
             - bash
             - -ec

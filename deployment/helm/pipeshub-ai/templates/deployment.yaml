@@ -61,6 +61,8 @@ spec:
             # Core environment settings
             - name: PORT
               value: "3001"
+            - name: NODEJS_PORT
+              value: "3001"
             - name: NODE_ENV
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
