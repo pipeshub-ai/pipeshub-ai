@@ -2,7 +2,7 @@ import {
   BackendClient,
   FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY,
   FOLDER_SYNC_SYNC_ROOT_KEY,
-} from "./backend_client";
+} from "../api/backend_client";
 
 /** Top-level and `sync.values` folder paths / options (etcd). */
 export function readSyncSettingsFromEtcd(
@@ -317,6 +317,24 @@ function parseFilterBooleanField(entry: unknown): boolean | undefined {
     }
   }
   return undefined;
+}
+
+/** Read allowed file extensions from sync filter `file_extensions` in etcd (same shape as web app). */
+export function readAllowedFileExtensionsFromEtcd(
+  etcd: Record<string, unknown>
+): string[] | undefined {
+  const values = syncFilterValuesFromEtcd(etcd);
+  if (!values) return undefined;
+  const entry = values["file_extensions"] as
+    | { value?: unknown }
+    | undefined;
+  if (!entry) return undefined;
+  const raw = entry.value;
+  if (!Array.isArray(raw)) return undefined;
+  const exts = (raw as unknown[])
+    .map((v) => String(v ?? "").trim().replace(/^\./, "").toLowerCase())
+    .filter(Boolean);
+  return exts.length > 0 ? exts : undefined;
 }
 
 /** Read indexing filter `enable_manual_sync` from connector etcd `config` blob (same shape as web app). */

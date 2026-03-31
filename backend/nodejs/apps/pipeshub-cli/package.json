@@ -24,6 +24,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "chokidar": "^4.0.3",
     "commander": "^13.1.0",
     "dotenv": "^16.4.7",
     "fernet": "^0.3.3",

@@ -1,4 +1,4 @@
-import { SocketIoRpcClient } from "./transport/socketio_rpc_client";
+import { SocketIoRpcClient } from "../transport/socketio_rpc_client";
 
 /** Web/registry name — Python `FOLDER_SYNC_CONNECTOR_NAME` in folder_sync/connector.py */
 const FOLDER_SYNC_CONNECTOR_TYPE = "Folder Sync";
@@ -999,6 +999,51 @@ export class BackendClient {
    * records without `connectorId` on the `Record` node — prefer
    * {@link queueKnowledgeBaseReindexForRecordIds} with ids from Knowledge Hub list.
    */
+  /**
+   * Submit a batch of file change events (CREATED, MODIFIED, DELETED, RENAMED, MOVED, etc.)
+   * to the backend for incremental sync processing.
+   */
+  async notifyFileChanges(
+    connectorInstanceId: string,
+    events: {
+      type: string;
+      path: string;
+      oldPath?: string;
+      timestamp: number;
+      size?: number;
+      isDirectory: boolean;
+    }[],
+    batchId?: string
+  ): Promise<void> {
+    if (events.length === 0) return;
+    const id =
+      batchId?.trim() ||
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const url = `${this.base}/api/v1/connectors/${encodeURIComponent(
+      connectorInstanceId
+    )}/file-events`;
+    const resp = await this.request(url, {
+      method: "POST",
+      body: JSON.stringify({
+        batchId: id,
+        events,
+        timestamp: Date.now(),
+      }),
+    });
+    let data: unknown;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
+    if (resp.status >= 400) {
+      throw new BackendClientError(
+        `File events submission failed (${resp.status}): ${JSON.stringify(data)}`,
+        resp.status
+      );
+    }
+  }
+
   async reindexConnectorRecordsByStatus(
     connectorInstanceId: string,
     statusFilters: string[]
