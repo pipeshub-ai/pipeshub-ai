@@ -36,7 +36,6 @@ import {
   useTheme,
 } from '@mui/material';
 
-import { CONFIG } from 'src/config-global';
 import {
   getWebUrlWithFragment,
 } from 'src/sections/knowledgebase/utils/utils';
@@ -904,24 +903,6 @@ const ChatMessage = React.memo(
       [onViewPdf]
     );
 
-    const handleDownloadTask = useCallback(async (task: any) => {
-      try {
-        const url = `${CONFIG.backendUrl}/api/v1/document/${task.documentId}/download`;
-        const response = await axios.get(url, { responseType: 'blob' });
-        const blob = response.data;
-        const objectUrl = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = objectUrl;
-        a.download = task.fileName || 'download';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(objectUrl);
-      } catch (e) {
-        console.error('Download failed:', e);
-      }
-    }, []);
-
     return (
       <Box sx={{ mb: 3, width: '100%', position: 'relative' }}>
         {!shouldHideMessage && (
@@ -997,41 +978,6 @@ const ChatMessage = React.memo(
                 </Box>
               )}
 
-              {message.conversationTasks?.length > 0 && (
-                <Stack spacing={1} sx={{ mt: 1.5 }}>
-                  <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.8rem' }}>
-                    You can download the complete query results:
-                  </Typography>
-                  <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
-                    {message.conversationTasks.map((task: any, idx: number) => (
-                      <Button
-                        key={idx}
-                        size="small"
-                        variant="outlined"
-                        startIcon={<Icon icon={downloadIcon} width={16} height={16} />}
-                        onClick={() => handleDownloadTask(task)}
-                        sx={{
-                          textTransform: 'none',
-                          fontSize: '0.8rem',
-                          borderRadius: 2,
-                          borderColor: (t) =>
-                            t.palette.mode === 'dark' ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)',
-                          color: 'text.secondary',
-                          '&:hover': {
-                            borderColor: 'primary.main',
-                            color: 'primary.main',
-                            backgroundColor: (t) =>
-                              alpha(t.palette.primary.main, 0.08),
-                          },
-                        }}
-                      >
-                        {task.fileName || 'Download'}
-                      </Button>
-                    ))}
-                  </Stack>
-                </Stack>
-              )}
-
               <SourcesAndCitations
                 citations={message.citations || []}
                 aggregatedCitations={aggregatedCitations}
@@ -1085,8 +1031,7 @@ const ChatMessage = React.memo(
     prevProps.message.content === nextProps.message.content &&
     prevProps.message.updatedAt?.getTime() === nextProps.message.updatedAt?.getTime() &&
     prevProps.showRegenerate === nextProps.showRegenerate &&
-    prevProps.conversationId === nextProps.conversationId &&
-    prevProps.message.conversationTasks === nextProps.message.conversationTasks
+    prevProps.conversationId === nextProps.conversationId
 );
 
 export default ChatMessage;

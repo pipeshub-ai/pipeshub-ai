@@ -1927,8 +1927,8 @@ class Processor:
         self.logger.info(f"🚀 Starting {record_type} processing for record: {recordName}")
         
         try:
-            # Signal parsing complete
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            
+            
             
             # Get the appropriate parser based on record type
             if record_type == "SQL_TABLE":
@@ -1938,12 +1938,14 @@ class Processor:
             else:
                 self.logger.error(f"❌ Unknown record type: {record_type}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
             
             if not parser:
                 self.logger.error(f"❌ No parser found for {record_type}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
+                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
             
@@ -1955,7 +1957,8 @@ class Processor:
             
             # Parse using the dedicated SQL parser (handles DDL, rows, etc.)
             block_containers = parser.parse_stream(file_stream)
-            
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
             if not block_containers.block_groups and not block_containers.blocks:
                 self.logger.info(f"No content to index for {record_type}: {recordName}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)

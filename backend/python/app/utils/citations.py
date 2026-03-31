@@ -144,7 +144,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 doc = flattened_final_results[chunk_index]
                 content = doc.get("content", "")
                 if not isinstance(content, str):
-                    logger.info(
+                    logger.debug(
                         "[citations startswith] location=flattened_final_results doc content | "
                         "old_citation_key=%s chunk_index=%s type=%s repr=%s",
                         old_citation_key, chunk_index, type(content).__name__, repr(content)[:200],

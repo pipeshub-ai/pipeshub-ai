@@ -127,12 +127,20 @@ class EventProcessor:
 
 
 
-    def _normalize_content_for_dedup(self, content: bytes, record_type: str) -> bytes:
-        if record_type not in {"SQL_TABLE", "SQL_VIEW", "WEBPAGE", "DATASOURCE", "TICKET", "PROJECT", "COMMENT", "INLINE_COMMENT", "CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST"}:
-            return content
+    def _normalize_content_for_dedup(
+        self,
+        content: bytes,
+        record_type: str | None = None,
+        mime_type: str | None = None,
+    ) -> bytes:
 
-        # html normalise
-        if record_type in {"CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST", "COMMENT", "INLINE_COMMENT"}:
+        normalized_mime_type = (mime_type or "").lower()
+        should_normalize_html = (
+            "html" in normalized_mime_type
+            or record_type in {"CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST", "COMMENT", "INLINE_COMMENT"}
+        )
+
+        if should_normalize_html:
             try: 
                 # self.logger.info(f"🔍 Normalizing HTML for dedup: {content}")
                 html_str = content.decode("utf-8") if isinstance(content, bytes) else content
@@ -143,8 +151,6 @@ class EventProcessor:
                 for tag in soup.find_all(True):
                     tag.attrs.pop("local-id", None)
                     tag.attrs.pop("id", None)
-                    tag.attrs.pop("src", None)
-                    tag.attrs.pop("href", None)
                     tag.attrs.pop("data-emoji-id", None)
                     tag.attrs.pop("data-emoji-fallback", None)
                 text = soup.get_text(separator="\n", strip=True)
@@ -195,12 +201,13 @@ class EventProcessor:
         existing_md5_checksum = doc.get("md5Checksum")
         size_in_bytes = doc.get("sizeInBytes")
         record_type = doc.get("recordType")
+        mime_type = doc.get("mimeType")
         md5_checksum = None
 
         if content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
-            content_for_hash = self._normalize_content_for_dedup(content, record_type)
+            content_for_hash = self._normalize_content_for_dedup(content=content, record_type=record_type, mime_type=mime_type)
             md5_checksum = hashlib.md5(content_for_hash).hexdigest()
             if existing_md5_checksum != md5_checksum:
                 doc.update({"md5Checksum": md5_checksum})
