@@ -242,6 +242,45 @@ class TestGetAllOperations:
         result = LinearGraphQLOperations.get_all_operations()
         assert result["fragments"] is LinearGraphQLOperations.FRAGMENTS
 
+
+class TestGetOperationWithFragmentsMissingFragment:
+    """Cover the branch where a fragment name is listed but not defined in FRAGMENTS."""
+
+    def test_operation_with_nonexistent_fragment_skipped(self):
+        """Cover branch 849->848: fragment_name NOT in cls.FRAGMENTS."""
+        # Temporarily inject an operation that references a non-existent fragment
+        original_queries = LinearGraphQLOperations.QUERIES.copy()
+        try:
+            LinearGraphQLOperations.QUERIES["_test_op"] = {
+                "query": "query testOp { field }",
+                "fragments": ["NonExistentFragment", "UserFields"],
+                "description": "Test operation with missing fragment",
+            }
+            result = LinearGraphQLOperations.get_operation_with_fragments("query", "_test_op")
+            # NonExistentFragment should be skipped; only UserFields included
+            assert "fragment UserFields" in result
+            assert "NonExistentFragment" not in result
+            assert "query testOp" in result
+        finally:
+            LinearGraphQLOperations.QUERIES = original_queries
+
+    def test_operation_with_all_nonexistent_fragments(self):
+        """Cover branch where ALL fragment names are missing from FRAGMENTS."""
+        original_queries = LinearGraphQLOperations.QUERIES.copy()
+        try:
+            LinearGraphQLOperations.QUERIES["_test_op2"] = {
+                "query": "query testOp2 { field }",
+                "fragments": ["DoesNotExist1", "DoesNotExist2"],
+                "description": "Test operation with all missing fragments",
+            }
+            result = LinearGraphQLOperations.get_operation_with_fragments("query", "_test_op2")
+            # No fragments found, so result is just the query
+            assert "fragment" not in result
+            assert "query testOp2" in result
+        finally:
+            LinearGraphQLOperations.QUERIES = original_queries
+
+
 # =============================================================================
 # Merged from test_linear_graphql_full_coverage.py
 # =============================================================================

@@ -1138,3 +1138,328 @@ class TestBuildKnowledgeContextExtra:
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
         assert "Knowledge Base Available" in result
+
+
+# ============================================================================
+# 15. orchestrator_node — additional branch coverage
+# ============================================================================
+
+class TestOrchestratorNodeAdditional:
+    """Additional tests covering uncovered branches in orchestrator_node."""
+
+    def _make_state(self, **overrides):
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "query": "search for bugs",
+            "deep_iteration_count": 0,
+            "previous_conversations": [],
+            "has_knowledge": False,
+            "tools": [],
+            "system_prompt": "",
+            "instructions": "",
+            "current_time": None,
+            "timezone": None,
+            "user_info": {},
+            "user_email": "",
+            "completed_tasks": [],
+            "evaluation": {},
+            "conversation_summary": None,
+        }
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_conv_messages_extended(self):
+        """When build_conversation_messages returns messages, they are extended into messages list (line 118)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Simple"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        conv_msgs = [MagicMock(), MagicMock()]  # Non-empty messages
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=conv_msgs), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        # Messages should include system + conv_msgs + user query
+        call_args = llm.ainvoke.call_args[0][0]
+        assert len(call_args) >= 4  # system + 2 conv + user
+
+    @pytest.mark.asyncio
+    async def test_user_context_appended(self):
+        """When user context is available, it's appended to query (line 133)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Simple"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(
+            llm=llm,
+            user_info={"fullName": "John Doe"},
+            user_email="john@example.com",
+        )
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        # The last message should contain user context
+        last_msg = llm.ainvoke.call_args[0][0][-1]
+        assert "John Doe" in last_msg.content
+        assert "john@example.com" in last_msg.content
+
+    @pytest.mark.asyncio
+    async def test_time_context_appended(self):
+        """When time context is available, it's appended to query (line 137)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Simple"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(
+            llm=llm,
+            current_time="2026-03-24T10:00:00Z",
+            timezone="US/Pacific",
+        )
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        last_msg = llm.ainvoke.call_args[0][0][-1]
+        assert "2026-03-24" in last_msg.content
+        assert "US/Pacific" in last_msg.content
+
+    @pytest.mark.asyncio
+    async def test_reasoning_streamed_when_present(self):
+        """When plan has reasoning, it's streamed to user (line 159)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Analyzing the request carefully"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write") as mock_write, \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        # safe_stream_write should be called with the reasoning message
+        calls = mock_write.call_args_list
+        reasoning_calls = [c for c in calls if "Analyzing" in str(c)]
+        assert len(reasoning_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_knowledge_base_with_existing_retrieval_no_injection(self):
+        """When has_knowledge=True and LLM plan already has retrieval, no extra injection (line 191->199)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        plan_json = json.dumps({
+            "can_answer_directly": False,
+            "reasoning": "Need to search",
+            "tasks": [
+                {"task_id": "t1", "description": "Search Jira", "domains": ["jira"], "depends_on": []},
+                {"task_id": "t2", "description": "Search KB", "domains": ["retrieval"], "depends_on": []},
+            ]
+        })
+        mock_response = MagicMock()
+        mock_response.content = plan_json
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm, has_knowledge=True)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        def mock_assign(tasks, groups, st):
+            for t in tasks:
+                t["tools"] = [MagicMock()]
+            return tasks
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.tool_router.assign_tools_to_tasks", side_effect=mock_assign):
+            result = await orchestrator_node(state, config, writer)
+
+        # Should NOT have extra retrieval_search injected — t2 already has retrieval
+        task_ids = [t["task_id"] for t in result["sub_agent_tasks"]]
+        assert task_ids.count("retrieval_search") == 0
+        assert "t2" in task_ids  # Original retrieval task preserved
+
+    @pytest.mark.asyncio
+    async def test_retrieval_domain_task_kept_without_tools(self):
+        """Retrieval domain tasks are kept even without tools assigned (line 226)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        plan_json = json.dumps({
+            "can_answer_directly": False,
+            "reasoning": "Need data",
+            "tasks": [
+                {"task_id": "t1", "description": "Search KB", "domains": ["retrieval"], "depends_on": []}
+            ]
+        })
+        mock_response = MagicMock()
+        mock_response.content = plan_json
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        def mock_assign(tasks, groups, st):
+            # Don't assign any tools — retrieval tasks should still be kept
+            return tasks
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.tool_router.assign_tools_to_tasks", side_effect=mock_assign):
+            result = await orchestrator_node(state, config, writer)
+
+        # Retrieval task should be kept despite no tools
+        assert len(result["sub_agent_tasks"]) == 1
+        assert result["sub_agent_tasks"][0]["task_id"] == "t1"
+
+
+# ============================================================================
+# 16. _build_tool_guidance — additional branch coverage
+# ============================================================================
+
+class TestBuildToolGuidanceAdditional:
+    """Extra tests for _build_tool_guidance branches."""
+
+    def test_all_non_string_tools_returns_empty(self):
+        """When all tools are non-string, domain_tools is empty -> returns '' (line 481-482)."""
+        state = {"tools": [123, None, True]}
+        result = _build_tool_guidance(state)
+        assert result == ""
+
+
+# ============================================================================
+# 17. _build_iteration_context — continue without description
+# ============================================================================
+
+class TestBuildIterationContextContinue:
+    """Extra tests for _build_iteration_context continue/retry."""
+
+    def test_continue_without_description(self):
+        """Continue evaluation without continue_description uses reasoning (line 615-616)."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "description": "Search", "result": {"response": "data"}},
+            ],
+            "evaluation": {
+                "decision": "continue",
+                "reasoning": "Need more data from different source",
+            },
+        }
+        result = _build_iteration_context(state, log)
+        assert "Next step needed" in result
+        assert "Need more data" in result
+
+    def test_retry_without_retry_fix_uses_reasoning(self):
+        """Retry evaluation without retry_fix uses reasoning."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "error", "domains": ["jira"],
+                 "description": "Search", "error": "Timeout"},
+            ],
+            "evaluation": {
+                "decision": "retry",
+                "reasoning": "Timeout occurred, try again",
+            },
+        }
+        result = _build_iteration_context(state, log)
+        assert "Retry needed" in result
+        assert "Timeout occurred" in result
+
+
+# ============================================================================
+# 18. _build_user_context — email fallback order
+# ============================================================================
+
+class TestBuildUserContextAdditional:
+    """Extra tests for _build_user_context email/name resolution."""
+
+    def test_email_from_user_info_user_email(self):
+        """user_email from user_info.userEmail."""
+        state = {"user_info": {"userEmail": "info@example.com"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "info@example.com" in result
+
+    def test_email_from_user_info_email(self):
+        """user_email from user_info.email."""
+        state = {"user_info": {"email": "alt@example.com"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "alt@example.com" in result
+
+    def test_name_from_name_field(self):
+        """Name from user_info.name field."""
+        state = {"user_info": {"name": "Named User"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "Named User" in result
+
+    def test_only_first_name(self):
+        """Name constructed from firstName only (no lastName)."""
+        state = {"user_info": {"firstName": "Solo"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "Solo" in result
+
+    def test_only_last_name(self):
+        """Name constructed from lastName only (no firstName)."""
+        state = {"user_info": {"lastName": "OnlyLast"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "OnlyLast" in result

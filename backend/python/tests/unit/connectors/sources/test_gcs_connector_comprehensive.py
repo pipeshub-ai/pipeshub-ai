@@ -380,7 +380,8 @@ class TestCreateRecordGroupsForBuckets:
 # Misc
 # ===========================================================================
 class TestMiscComprehensive:
-    def test_handle_webhook_notification(self, connector):
+    @pytest.mark.asyncio
+    async def test_handle_webhook_notification(self, connector):
         with pytest.raises(NotImplementedError):
             connector.handle_webhook_notification({})
 

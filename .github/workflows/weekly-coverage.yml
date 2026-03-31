@@ -111,7 +111,7 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=90
+          coverage report --fail-under=93
           coverage json -o coverage/coverage-summary.json
           coverage html -d coverage/htmlcov
 

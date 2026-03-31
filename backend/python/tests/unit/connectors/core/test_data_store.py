@@ -297,6 +297,28 @@ class TestTransactionStore:
         assert result == 0
 
 
+class TestDataStoreProviderTransaction:
+    """Tests for DataStoreProvider.transaction() method."""
+
+    @pytest.mark.asyncio
+    async def test_transaction_returns_context_manager(self):
+        logger = logging.getLogger("test")
+        provider = ConcreteDataStoreProvider(logger)
+        result = await provider.transaction()
+        assert result is provider._mock_tx
+
+    @pytest.mark.asyncio
+    async def test_execute_in_transaction_with_kwargs(self):
+        logger = logging.getLogger("test")
+        provider = ConcreteDataStoreProvider(logger)
+
+        async def my_func(x, y=10):
+            return x + y
+
+        result = await provider.execute_in_transaction(my_func, 5, y=20)
+        assert result == 25
+
+
 class TestBaseDataStoreCannotBeInstantiated:
     """Verify that BaseDataStore and DataStoreProvider cannot be instantiated directly."""
 
