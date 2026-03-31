@@ -1189,6 +1189,10 @@ def _wrap_tools_with_budget(
             )
             if hasattr(tool, "_original_name"):
                 new_tool._original_name = tool._original_name
+            # Preserve _tool_wrapper so re-binding code can update state refs
+            # on the wrapped tool after budget-wrapping.
+            if hasattr(tool, "_tool_wrapper"):
+                new_tool._tool_wrapper = tool._tool_wrapper
             wrapped.append(new_tool)
         except Exception as e:
             log.warning("Failed to wrap tool %s: %s, using original", tool_name, e)

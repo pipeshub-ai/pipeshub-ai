@@ -314,12 +314,15 @@ async def _deep_respond_impl(
             )
             if qna_has_retrieval:
                 analyses_text += (
-                    "Use these structured insights to provide a MORE DETAILED and DEEPER "
-                    "response than a simple retrieval answer. The context blocks above "
-                    "contain the raw source data with citation labels (R1, R2, etc.) — "
-                    "use those labels for citations. The analysis below provides "
-                    "structured findings, connections, and deeper insights that should "
-                    "enrich your response.\n\n"
+                    "Use these structured insights to build a COMPREHENSIVE, WELL-SYNTHESIZED "
+                    "response. Do NOT simply list findings — instead:\n"
+                    "  • Identify the key themes and cross-source connections the analyses reveal.\n"
+                    "  • For each topic in the user's query, draw from the relevant analyses AND "
+                    "the context blocks to construct a detailed, coherent explanation.\n"
+                    "  • Where multiple sub-agents investigated the same topic, merge their findings "
+                    "into a single, richer narrative rather than repeating similar content.\n"
+                    "  • Cover ALL distinct aspects of the user's query using the evidence available; "
+                    "if a topic is thoroughly documented, reflect that depth in your answer.\n\n"
                 )
             elif has_api_results:
                 analyses_text += (
@@ -570,7 +573,7 @@ def _build_simple_retrieval_messages(
     Mirrors the chatbot approach: short system prompt + conversation history +
     qna_message_content as the user message. The user message (built by
     get_message_content) already contains all citation rules, output format,
-    tool instructions, and R-labeled blocks — no need for the 248-line
+    tool instructions, and blocks — no need for the 248-line
     system prompt from build_response_prompt().
     """
     messages: list = []
@@ -595,13 +598,13 @@ def _build_simple_retrieval_messages(
         "studied the data in depth).\n\n"
         "Your response should be MORE COMPREHENSIVE and MORE DETAILED than a standard "
         "retrieval answer. Specifically:\n"
-        "- Use the sub-agent analysis to identify key themes, connections between sources, "
-        "and deeper insights that a surface-level read would miss.\n"
-        "- Use the context blocks (R-labeled) for citations and exact quotes.\n"
-        "- Provide detailed explanations, not brief summaries.\n"
+        "- Synthesize the sub-agent analyses to identify key themes, connections between "
+        "sources, and deeper insights that a surface-level read would miss.\n"
+        "- Use the context block web urls for citations and exact quotes.\n"
+        "- Provide detailed explanations with specifics, not brief summaries.\n"
         "- When multiple sources cover the same topic, synthesize them into a coherent "
         "narrative rather than listing them separately.\n"
-        "- Expand on each point with specific details found in the blocks and analysis."
+        "- Expand on each point with specific details found in the blocks and analysis.\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))

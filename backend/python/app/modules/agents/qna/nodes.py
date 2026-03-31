@@ -7137,7 +7137,7 @@ def _build_tool_results_context(
         parts.append(
             "Return ONLY JSON matching MODE 3:\n"
             "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
-            "\"confidence\": \"High\", "
+            "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
         )
@@ -7145,13 +7145,13 @@ def _build_tool_results_context(
         parts.append(
             "Return ONLY JSON:\n"
             "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
-            "\"confidence\": \"High\", "
+            "\"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
         )
     else:
         parts.append(
             "Return ONLY JSON:\n"
-            "{\"answer\": \"...\", \"confidence\": \"High\", "
+            "{\"answer\": \"...\", \"confidence\": \"<Very High | High | Medium | Low>\", "
             "\"answerMatchType\": \"Derived From Tool Execution\", "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
         )
