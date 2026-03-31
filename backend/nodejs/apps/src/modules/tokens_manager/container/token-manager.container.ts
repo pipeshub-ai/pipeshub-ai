@@ -11,7 +11,8 @@ import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  createMessageProducerFromConfig,
+  resolveMessageBrokerConfig,
+  createMessageProducer,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -75,7 +76,8 @@ export class TokenManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const messageProducer = createMessageProducerFromConfig(config, container.get('Logger'));
+      const brokerConfig = resolveMessageBrokerConfig(config);
+      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container

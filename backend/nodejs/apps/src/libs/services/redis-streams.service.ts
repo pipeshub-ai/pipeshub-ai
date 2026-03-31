@@ -12,10 +12,37 @@ import {
   TopicDefinition,
 } from '../types/messaging.types';
 import { REQUIRED_TOPICS } from './kafka-admin.service';
+import {
+  MESSAGING_HEALTH_MESSAGE_KEY,
+  MESSAGING_HEALTH_MESSAGE_TYPE,
+  MESSAGING_HEALTH_TOPIC,
+  REDIS_BUSYGROUP_SUBSTRING,
+  REDIS_STREAM_ADMIN_TEMP_GROUP,
+  REDIS_STREAM_FIELDS,
+  REDIS_STREAM_MAXLEN_STRATEGY,
+  REDIS_STREAMS_DEFAULTS,
+} from '../constants/messaging.constants';
 
-const DEFAULT_MAXLEN = 10000;
-const DEFAULT_BLOCK_MS = 2000;
-const DEFAULT_COUNT = 1;
+type RedisStreamEntry = [id: string, fields: string[]];
+type RedisXReadGroupResult = [stream: string, entries: RedisStreamEntry[]];
+
+function isRedisXReadGroupResult(
+  value: unknown,
+): value is RedisXReadGroupResult[] {
+  if (!Array.isArray(value)) return false;
+  return value.every((group) => {
+    if (!Array.isArray(group) || group.length !== 2) return false;
+    if (typeof group[0] !== 'string' || !Array.isArray(group[1])) return false;
+    return (group[1] as unknown[]).every((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2) return false;
+      return (
+        typeof entry[0] === 'string' &&
+        Array.isArray(entry[1]) &&
+        (entry[1] as unknown[]).every((f) => typeof f === 'string')
+      );
+    });
+  });
+}
 
 function buildRedisOptions(config: RedisBrokerConfig): RedisOptions {
   return {
@@ -24,7 +51,8 @@ function buildRedisOptions(config: RedisBrokerConfig): RedisOptions {
     password: config.password,
     db: config.db ?? 0,
     retryStrategy: (times: number) => {
-      const maxRetryTime = config.maxRetryTime ?? 30000;
+      const maxRetryTime =
+        config.maxRetryTime ?? REDIS_STREAMS_DEFAULTS.maxRetryTime;
       const delay = Math.min(times * 200, maxRetryTime);
       return delay;
     },
@@ -33,7 +61,9 @@ function buildRedisOptions(config: RedisBrokerConfig): RedisOptions {
 }
 
 @injectable()
-export abstract class BaseRedisStreamsProducerConnection implements IMessageProducer {
+export abstract class BaseRedisStreamsProducerConnection
+  implements IMessageProducer
+{
   protected redis: Redis;
   protected initialized = false;
   protected maxLen: number;
@@ -42,7 +72,7 @@ export abstract class BaseRedisStreamsProducerConnection implements IMessageProd
     @unmanaged() protected readonly config: RedisBrokerConfig,
     @unmanaged() protected readonly logger: Logger,
   ) {
-    this.maxLen = config.maxLen ?? DEFAULT_MAXLEN;
+    this.maxLen = config.maxLen ?? REDIS_STREAMS_DEFAULTS.maxLen;
     this.redis = new Redis(buildRedisOptions(config));
   }
 
@@ -89,17 +119,24 @@ export abstract class BaseRedisStreamsProducerConnection implements IMessageProd
     await this.ensureConnection();
     try {
       const fields: string[] = [
-        'key', message.key,
-        'value', JSON.stringify(message.value),
+        REDIS_STREAM_FIELDS.key,
+        message.key,
+        REDIS_STREAM_FIELDS.value,
+        JSON.stringify(message.value),
       ];
 
       if (message.headers) {
-        fields.push('headers', JSON.stringify(message.headers));
+        fields.push(
+          REDIS_STREAM_FIELDS.headers,
+          JSON.stringify(message.headers),
+        );
       }
 
       await this.redis.xadd(
         topic,
-        'MAXLEN', '~', String(this.maxLen),
+        'MAXLEN',
+        REDIS_STREAM_MAXLEN_STRATEGY,
+        String(this.maxLen),
         '*',
         ...fields,
       );
@@ -108,10 +145,13 @@ export abstract class BaseRedisStreamsProducerConnection implements IMessageProd
         topic,
       });
     } catch (error) {
-      throw new MessageBrokerError(`Error publishing to Redis stream ${topic}`, {
-        topic,
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new MessageBrokerError(
+        `Error publishing to Redis stream ${topic}`,
+        {
+          topic,
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -124,16 +164,23 @@ export abstract class BaseRedisStreamsProducerConnection implements IMessageProd
 
     for (const message of messages) {
       const fields: string[] = [
-        'key', message.key,
-        'value', JSON.stringify(message.value),
+        REDIS_STREAM_FIELDS.key,
+        message.key,
+        REDIS_STREAM_FIELDS.value,
+        JSON.stringify(message.value),
       ];
       if (message.headers) {
-        fields.push('headers', JSON.stringify(message.headers));
+        fields.push(
+          REDIS_STREAM_FIELDS.headers,
+          JSON.stringify(message.headers),
+        );
       }
 
       pipeline.xadd(
         topic,
-        'MAXLEN', '~', String(this.maxLen),
+        'MAXLEN',
+        REDIS_STREAM_MAXLEN_STRATEGY,
+        String(this.maxLen),
         '*',
         ...fields,
       );
@@ -146,21 +193,24 @@ export abstract class BaseRedisStreamsProducerConnection implements IMessageProd
         messageCount: messages.length,
       });
     } catch (error) {
-      throw new MessageBrokerError(`Error publishing batch to Redis stream ${topic}`, {
-        topic,
-        messageCount: messages.length,
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new MessageBrokerError(
+        `Error publishing batch to Redis stream ${topic}`,
+        {
+          topic,
+          messageCount: messages.length,
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
   async healthCheck(): Promise<boolean> {
     try {
       await this.ensureConnection();
-      await this.publish('health-check', {
-        key: 'health-check',
+      await this.publish(MESSAGING_HEALTH_TOPIC, {
+        key: MESSAGING_HEALTH_MESSAGE_KEY,
         value: {
-          type: 'HEALTH_CHECK',
+          type: MESSAGING_HEALTH_MESSAGE_TYPE,
           timestamp: Date.now(),
         },
       });
@@ -175,7 +225,9 @@ export abstract class BaseRedisStreamsProducerConnection implements IMessageProd
 }
 
 @injectable()
-export abstract class BaseRedisStreamsConsumerConnection implements IMessageConsumer {
+export abstract class BaseRedisStreamsConsumerConnection
+  implements IMessageConsumer
+{
   protected redis: Redis;
   protected initialized = false;
   protected running = false;
@@ -190,10 +242,11 @@ export abstract class BaseRedisStreamsConsumerConnection implements IMessageCons
     @unmanaged() protected readonly config: RedisBrokerConfig,
     @unmanaged() protected readonly logger: Logger,
   ) {
-    this.groupId = config.groupId ?? `${config.clientId}-group`;
-    this.consumerId = config.clientId ?? `consumer-${Date.now()}`;
-    this.blockMs = DEFAULT_BLOCK_MS;
-    this.count = DEFAULT_COUNT;
+    this.groupId =
+      config.groupId ?? `${config.clientId ?? 'redis-consumer'}-group`;
+    this.consumerId = config.clientId ?? `consumer-${String(Date.now())}`;
+    this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
+    this.count = REDIS_STREAMS_DEFAULTS.count;
     this.redis = new Redis(buildRedisOptions(config));
   }
 
@@ -245,21 +298,35 @@ export abstract class BaseRedisStreamsConsumerConnection implements IMessageCons
     await this.ensureConnection();
     for (const topic of topics) {
       try {
-        await this.redis.xgroup('CREATE', topic, this.groupId, _fromBeginning ? '0' : '$', 'MKSTREAM');
-        this.logger.info(`Created consumer group ${this.groupId} for stream ${topic}`);
-      } catch (error: any) {
-        if (error.message && error.message.includes('BUSYGROUP')) {
-          this.logger.debug(`Consumer group ${this.groupId} already exists for stream ${topic}`);
+        await this.redis.xgroup(
+          'CREATE',
+          topic,
+          this.groupId,
+          _fromBeginning ? '0' : '$',
+          'MKSTREAM',
+        );
+        this.logger.info(
+          `Created consumer group ${this.groupId} for stream ${topic}`,
+        );
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        if (errorMessage.includes(REDIS_BUSYGROUP_SUBSTRING)) {
+          this.logger.debug(
+            `Consumer group ${this.groupId} already exists for stream ${topic}`,
+          );
         } else {
           throw new MessageBrokerError('Failed to subscribe to Redis stream', {
             topic,
-            details: error instanceof Error ? error.message : 'Unknown error',
+            details: errorMessage,
           });
         }
       }
     }
     this.subscribedTopics = [...new Set([...this.subscribedTopics, ...topics])];
-    this.logger.info('Successfully subscribed to Redis streams', { topics: this.subscribedTopics });
+    this.logger.info('Successfully subscribed to Redis streams', {
+      topics: this.subscribedTopics,
+    });
   }
 
   async consume<T>(
@@ -277,23 +344,30 @@ export abstract class BaseRedisStreamsConsumerConnection implements IMessageCons
     while (this.running) {
       try {
         if (this.subscribedTopics.length === 0) {
-          await this.sleep(100);
+          await this.sleep(REDIS_STREAMS_DEFAULTS.idleSleepMs);
           continue;
         }
 
         const streams = this.subscribedTopics.flatMap((topic) => [topic, '>']);
 
-        const results: Array<[stream: string, entries: Array<[id: string, fields: string[]]>]> | null =
-          await this.redis.xreadgroup(
-            'GROUP', this.groupId, this.consumerId,
-            'COUNT', String(this.count),
-            'BLOCK', String(this.blockMs),
-            'STREAMS', ...streams,
-          ) as any;
+        const xreadResult = await this.redis.xreadgroup(
+          'GROUP',
+          this.groupId,
+          this.consumerId,
+          'COUNT',
+          String(this.count),
+          'BLOCK',
+          String(this.blockMs),
+          'STREAMS',
+          ...streams,
+        );
 
-        if (!results) continue;
+        if (!isRedisXReadGroupResult(xreadResult)) {
+          this.logger.warn('Unexpected Redis xreadgroup payload shape');
+          continue;
+        }
 
-        for (const result of results) {
+        for (const result of xreadResult) {
           const streamName = result[0];
           const entries = result[1];
           for (const entry of entries) {
@@ -302,24 +376,37 @@ export abstract class BaseRedisStreamsConsumerConnection implements IMessageCons
             try {
               const fieldMap: Record<string, string> = {};
               for (let i = 0; i < fields.length; i += 2) {
-                fieldMap[fields[i]!] = fields[i + 1]!;
+                const key = fields[i];
+                const value = fields[i + 1];
+                if (key !== undefined && value !== undefined) {
+                  fieldMap[key] = value;
+                }
               }
 
-              if (!fieldMap['value']) {
-                this.logger.debug('Skipping message without value field (likely init message)', {
-                  stream: streamName, id: entryId,
-                });
+              const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
+              if (rawValue === undefined) {
+                this.logger.debug(
+                  'Skipping message without value field (likely init message)',
+                  {
+                    stream: streamName,
+                    id: entryId,
+                  },
+                );
                 await this.redis.xack(streamName, this.groupId, entryId);
                 continue;
               }
 
               const parsedMessage: StreamMessage<T> = {
-                key: fieldMap['key'] || '',
-                value: JSON.parse(fieldMap['value']),
+                key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
+                value: JSON.parse(rawValue) as T,
               };
 
-              if (fieldMap['headers']) {
-                parsedMessage.headers = JSON.parse(fieldMap['headers']);
+              const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
+              if (rawHeaders !== undefined) {
+                parsedMessage.headers = JSON.parse(rawHeaders) as Record<
+                  string,
+                  string
+                >;
               }
 
               await handler(parsedMessage);
@@ -334,11 +421,10 @@ export abstract class BaseRedisStreamsConsumerConnection implements IMessageCons
           }
         }
       } catch (error) {
-        if (!this.running) break;
         this.logger.error('Error in Redis Streams consume loop', {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
-        await this.sleep(1000);
+        await this.sleep(REDIS_STREAMS_DEFAULTS.errorBackoffMs);
       }
     }
   }
@@ -394,24 +480,34 @@ export class RedisStreamsAdminService implements IMessageAdmin {
       for (const topicDef of topics) {
         try {
           const exists = await this.redis.exists(topicDef.topic);
-          if (!exists) {
-            await this.redis.xgroup('CREATE', topicDef.topic, 'admin_init', '$', 'MKSTREAM');
-            await this.redis.xgroup('DESTROY', topicDef.topic, 'admin_init');
+          if (exists === 0) {
+            await this.redis.xgroup(
+              'CREATE',
+              topicDef.topic,
+              REDIS_STREAM_ADMIN_TEMP_GROUP,
+              '$',
+              'MKSTREAM',
+            );
+            await this.redis.xgroup(
+              'DESTROY',
+              topicDef.topic,
+              REDIS_STREAM_ADMIN_TEMP_GROUP,
+            );
             this.logger.info(`Created Redis stream: ${topicDef.topic}`);
           } else {
             this.logger.debug(`Redis stream already exists: ${topicDef.topic}`);
           }
-        } catch (error: any) {
+        } catch (error: unknown) {
           this.logger.warn(`Error ensuring Redis stream ${topicDef.topic}`, {
-            error: error.message,
+            error: error instanceof Error ? error.message : 'Unknown error',
           });
         }
       }
 
       this.logger.info('All required Redis streams verified');
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Failed to ensure Redis streams exist', {
-        error: error.message || error,
+        error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
     } finally {

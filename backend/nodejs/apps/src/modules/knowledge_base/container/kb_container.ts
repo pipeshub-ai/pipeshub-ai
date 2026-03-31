@@ -9,7 +9,8 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  createMessageProducerFromConfig,
+  resolveMessageBrokerConfig,
+  createMessageProducer,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -57,7 +58,8 @@ export class KnowledgeBaseContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const messageProducer = createMessageProducerFromConfig(appConfig, this.logger);
+      const brokerConfig = resolveMessageBrokerConfig(appConfig);
+      const messageProducer = createMessageProducer(brokerConfig, this.logger);
       await messageProducer.connect();
 
       container

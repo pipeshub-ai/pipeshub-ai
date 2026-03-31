@@ -11,7 +11,8 @@ import { SyncEventProducer } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  createMessageProducerFromConfig,
+  resolveMessageBrokerConfig,
+  createMessageProducer,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -60,7 +61,8 @@ export class ConfigurationManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const messageProducer = createMessageProducerFromConfig(appConfig, container.get('Logger'));
+      const brokerConfig = resolveMessageBrokerConfig(appConfig);
+      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container

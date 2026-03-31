@@ -1,5 +1,31 @@
 export type MessageBrokerType = 'kafka' | 'redis';
 
+/**
+ * Canonical broker topics used across Kafka and Redis Streams in this codebase.
+ */
+export type BrokerTopic =
+  | 'record-events'
+  | 'entity-events'
+  | 'sync-events'
+  | 'health-check'
+  | 'token-events'
+  | 'notification';
+
+/**
+ * Topic -> payload mapping.
+ * Notes:
+ * - `record-events` / `entity-events` / `sync-events` are currently published as JSON strings.
+ * - Token/notification payloads remain broad until all producers/consumers are migrated to shared event contracts.
+ */
+export interface BrokerTopicPayloadMap {
+  'record-events': string;
+  'entity-events': string;
+  'sync-events': string;
+  'health-check': { type: string; timestamp: number };
+  'token-events': Record<string, unknown>;
+  notification: Record<string, unknown>;
+}
+
 export interface MessageBrokerConfig {
   type: MessageBrokerType;
   clientId?: string;
@@ -39,11 +65,15 @@ export interface RedisBrokerConfig extends MessageBrokerConfig {
   keyPrefix?: string;
 }
 
-export interface StreamMessage<T = any> {
+export interface StreamMessage<T> {
   key: string;
   value: T;
   headers?: Record<string, string>;
 }
+
+export type StreamMessageForTopic<TTopic extends BrokerTopic> = StreamMessage<
+  BrokerTopicPayloadMap[TTopic]
+>;
 
 export interface TopicDefinition {
   topic: string;
@@ -51,21 +81,23 @@ export interface TopicDefinition {
   replicationFactor?: number;
 }
 
-export interface IMessageProducer<T = any> {
+export interface IMessageProducer {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
-  publish(topic: string, message: StreamMessage<T>): Promise<void>;
-  publishBatch(topic: string, messages: StreamMessage<T>[]): Promise<void>;
+  publish<T>(topic: string, message: StreamMessage<T>): Promise<void>;
+  publishBatch<T>(topic: string, messages: StreamMessage<T>[]): Promise<void>;
   healthCheck(): Promise<boolean>;
 }
 
-export interface IMessageConsumer<T = any> {
+export interface IMessageConsumer {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
   subscribe(topics: string[], fromBeginning?: boolean): Promise<void>;
-  consume(handler: (message: StreamMessage<T>) => Promise<void>): Promise<void>;
+  consume<T>(
+    handler: (message: StreamMessage<T>) => Promise<void>,
+  ): Promise<void>;
   pause(topics: string[]): void;
   resume(topics: string[]): void;
   healthCheck(): Promise<boolean>;

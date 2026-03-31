@@ -8,13 +8,23 @@ import { EntitiesEventProducer } from '../../tokens_manager/services/entity_even
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  createMessageProducerFromConfig,
+  resolveMessageBrokerConfig,
+  createMessageProducer,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Toolsets',
 };
 
+/**
+ * Toolsets Container
+ *
+ * Dependency injection container for the toolsets module.
+ * Manages all dependencies required for toolsets functionality including
+ * configuration, authentication, logging, and event services.
+ *
+ * @module toolsets/container
+ */
 export class ToolsetsContainer {
   private static instance: Container;
   private static logger: Logger = Logger.getInstance(loggerConfig);
@@ -57,7 +67,8 @@ export class ToolsetsContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const messageProducer = createMessageProducerFromConfig(config, container.get('Logger'));
+      const brokerConfig = resolveMessageBrokerConfig(config);
+      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container
