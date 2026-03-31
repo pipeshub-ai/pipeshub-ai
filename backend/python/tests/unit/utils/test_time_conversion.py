@@ -2,7 +2,7 @@
 
 import time
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -79,6 +79,25 @@ class TestParseTimestamp:
         expected_dt = datetime(2024, 7, 4, 18, 30, 0, tzinfo=timezone.utc)
         expected_ms = int(expected_dt.timestamp()) * 1000
         assert result == expected_ms
+
+    def test_timestamp_already_in_milliseconds_not_doubled(self):
+        """When parsed timestamp is already 13+ digits, it should be returned as-is."""
+        huge_ts = 10000000000000  # 13-digit number (already in millisecond range)
+        mock_dt = MagicMock()
+        mock_dt.timestamp.return_value = float(huge_ts)
+
+        with patch("app.utils.time_conversion.datetime") as mock_datetime:
+            mock_datetime.fromisoformat.return_value = mock_dt
+            # We still need the real endswith check to work on the string
+            result = parse_timestamp("2024-01-01T00:00:00+00:00")
+        # Should return the timestamp as-is since len(str(10000000000000)) == 13
+        assert result == huge_ts
+
+    def test_no_z_suffix_passes_through(self):
+        """Timestamp string without Z suffix should parse directly."""
+        result = parse_timestamp("2024-06-15T12:30:00+05:30")
+        assert isinstance(result, int)
+        assert result > 0
 
 
 class TestPrepareIsoTimestamps:

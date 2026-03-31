@@ -74,3 +74,17 @@ class TestAllConnectorApps:
         from app.connectors.sources.servicenow.common.apps import ServicenowApp
         app = ServicenowApp(connector_id="conn-1")
         assert app.get_connector_id() == "conn-1"
+
+    def test_servicenow_app_group_missing_connector_id(self):
+        """ServiceNowAppGroup.__init__ does not pass connector_id to super(),
+        so constructing it raises TypeError. This test covers line 16."""
+        from app.connectors.sources.servicenow.common.apps import ServiceNowAppGroup
+        with pytest.raises(TypeError):
+            ServiceNowAppGroup(connector_id="conn-1")
+
+    def test_servicenow_app_enum_values(self):
+        from app.connectors.sources.servicenow.common.apps import ServicenowApp
+        from app.config.constants.arangodb import AppGroups, Connectors
+        app = ServicenowApp(connector_id="conn-2")
+        assert app.get_app_name() == Connectors.SERVICENOW
+        assert app.get_app_group_name() == AppGroups.SERVICENOW

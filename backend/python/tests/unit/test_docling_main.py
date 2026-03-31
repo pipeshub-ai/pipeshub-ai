@@ -160,6 +160,44 @@ class TestGetInitializedContainer:
         # Cleanup
         del get_initialized_container.initialized
 
+    async def test_inner_check_skips_when_initialized_between_checks(self):
+        """When 'initialized' is set between the outer check and acquiring the lock,
+        the inner check (line 42) evaluates False and skips initialization."""
+        from app.docling_main import get_initialized_container
+
+        if hasattr(get_initialized_container, "initialized"):
+            del get_initialized_container.initialized
+
+        mock_container = _make_container()
+
+        real_lock = asyncio.Lock()
+
+        # We simulate the race by setting 'initialized' inside the lock acquire
+        original_acquire = real_lock.acquire
+
+        async def sneaky_acquire(*args, **kwargs):
+            result = await original_acquire(*args, **kwargs)
+            # Simulate another coroutine having set 'initialized' while we waited
+            setattr(get_initialized_container, "initialized", True)
+            return result
+
+        real_lock.acquire = sneaky_acquire
+
+        with (
+            patch("app.docling_main.container", mock_container),
+            patch("app.docling_main.initialize_container", new_callable=AsyncMock) as mock_init,
+            patch("app.docling_main.container_lock", real_lock),
+        ):
+            result = await get_initialized_container()
+
+        # Should return container without calling initialize
+        assert result is mock_container
+        mock_init.assert_not_awaited()
+        mock_container.wire.assert_not_called()
+
+        # Cleanup
+        del get_initialized_container.initialized
+
 
 # ===========================================================================
 # lifespan
@@ -220,6 +258,26 @@ class TestLifespan:
             patch("app.docling_main.set_docling_service"),
         ):
             with pytest.raises(Exception, match="docling init failed"):
+                async with lifespan(mock_app):
+                    pass
+
+    async def test_startup_failure_before_logger_initialized(self):
+        """If initialization fails before logger is set (logger is None), error re-raises without logging."""
+        from app.docling_main import lifespan
+
+        mock_container = _make_container()
+        # Make config_service() raise before logger() is ever called
+        mock_container.config_service.side_effect = Exception("config service exploded")
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        with (
+            patch("app.docling_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.docling_main.DoclingService") as MockDoclingService,
+            patch("app.docling_main.set_docling_service"),
+        ):
+            with pytest.raises(Exception, match="config service exploded"):
                 async with lifespan(mock_app):
                     pass
 
@@ -391,6 +449,44 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+        )
+
+    def test_run_reload_with_multiple_workers_forces_single_worker(self):
+        """When reload=True and DOCLING_UVICORN_WORKERS > 1, workers is clamped to 1."""
+        from app.docling_main import run
+
+        with (
+            patch("app.docling_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"DOCLING_UVICORN_WORKERS": "4"}),
+        ):
+            run(reload=True)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.docling_main:app",
+            host="0.0.0.0",
+            port=8081,
+            log_level="info",
+            reload=True,
+            workers=1,
+        )
+
+    def test_run_no_reload_with_multiple_workers_keeps_workers(self):
+        """When reload=False and DOCLING_UVICORN_WORKERS > 1, workers is preserved."""
+        from app.docling_main import run
+
+        with (
+            patch("app.docling_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"DOCLING_UVICORN_WORKERS": "4"}),
+        ):
+            run(reload=False)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.docling_main:app",
+            host="0.0.0.0",
+            port=8081,
+            log_level="info",
+            reload=False,
+            workers=4,
         )
 
 

@@ -316,3 +316,215 @@ class TestDatasourceRefresh:
 
         # credentials object should remain the same
         assert mock_client._http.credentials == mock_old_creds
+
+    async def test_no_update_when_client_has_no_http_attribute(self):
+        """When the client has no _http attribute, skip credential update entirely."""
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config = AsyncMock(return_value={
+            "credentials": {
+                "access_token": "some-token",
+                "refresh_token": "some-refresh",
+            }
+        })
+
+        # Client without _http attribute
+        mock_client = MagicMock(spec=[])  # empty spec = no attributes
+        mock_google_client = MagicMock()
+        mock_google_client.get_client.return_value = mock_client
+        mock_data_source = MagicMock()
+        mock_logger = MagicMock()
+
+        # Should not raise
+        await refresh_google_datasource_credentials(
+            google_client=mock_google_client,
+            data_source=mock_data_source,
+            config_service=mock_config_service,
+            connector_id="test-connector",
+            logger=mock_logger,
+        )
+
+    async def test_no_update_when_http_has_no_credentials(self):
+        """When _http has no credentials attribute, skip credential update entirely."""
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config = AsyncMock(return_value={
+            "credentials": {
+                "access_token": "some-token",
+                "refresh_token": "some-refresh",
+            }
+        })
+
+        # Client with _http but _http has no credentials attribute
+        mock_http = MagicMock(spec=[])  # no credentials
+        mock_client = MagicMock()
+        mock_client._http = mock_http
+        mock_google_client = MagicMock()
+        mock_google_client.get_client.return_value = mock_client
+        mock_data_source = MagicMock()
+        mock_logger = MagicMock()
+
+        # Should not raise
+        await refresh_google_datasource_credentials(
+            google_client=mock_google_client,
+            data_source=mock_data_source,
+            config_service=mock_config_service,
+            connector_id="test-connector",
+            logger=mock_logger,
+        )
+
+    async def test_updates_credentials_when_access_token_changed(self):
+        """When refresh token matches but access token changed, credentials are updated."""
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config = AsyncMock(return_value={
+            "credentials": {
+                "access_token": "new-access-token",
+                "refresh_token": "same-refresh-token",
+            }
+        })
+
+        mock_old_creds = MagicMock()
+        mock_old_creds.token = "old-access-token"
+        mock_old_creds.refresh_token = "same-refresh-token"
+        mock_old_creds.scopes = ["scope1"]
+        mock_old_creds.client_id = "client-id"
+        mock_old_creds.client_secret = "client-secret"
+
+        mock_http = MagicMock()
+        mock_http.credentials = mock_old_creds
+
+        mock_client = MagicMock()
+        mock_client._http = mock_http
+
+        mock_google_client = MagicMock()
+        mock_google_client.get_client.return_value = mock_client
+        mock_data_source = MagicMock()
+        mock_logger = MagicMock()
+
+        with patch("app.connectors.sources.google.common.datasource_refresh.Credentials") as MockCreds:
+            mock_new_creds = MagicMock()
+            MockCreds.return_value = mock_new_creds
+
+            await refresh_google_datasource_credentials(
+                google_client=mock_google_client,
+                data_source=mock_data_source,
+                config_service=mock_config_service,
+                connector_id="test-connector",
+                logger=mock_logger,
+            )
+
+            # Verify new credentials were created with access token change
+            MockCreds.assert_called_once()
+            call_kwargs = MockCreds.call_args[1]
+            assert call_kwargs["token"] == "new-access-token"
+            assert call_kwargs["refresh_token"] == "same-refresh-token"
+
+            # Verify credentials were replaced on the client
+            assert mock_client._http.credentials == mock_new_creds
+
+            # Verify debug log for access token change (not info for refresh token)
+            mock_logger.debug.assert_any_call("🔄 Access token changed, updating credentials")
+
+    async def test_updates_credentials_with_token_expiry(self):
+        """When credentials change and token_expiry_ms is present, expiry is set."""
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config = AsyncMock(return_value={
+            "credentials": {
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "access_token_expiry_time": 1700000000000,  # ms timestamp
+            }
+        })
+
+        mock_old_creds = MagicMock()
+        mock_old_creds.token = "old-access-token"
+        mock_old_creds.refresh_token = "old-refresh-token"
+        mock_old_creds.scopes = ["scope1"]
+        mock_old_creds.client_id = "client-id"
+        mock_old_creds.client_secret = "client-secret"
+
+        mock_http = MagicMock()
+        mock_http.credentials = mock_old_creds
+
+        mock_client = MagicMock()
+        mock_client._http = mock_http
+
+        mock_google_client = MagicMock()
+        mock_google_client.get_client.return_value = mock_client
+        mock_data_source = MagicMock()
+        mock_logger = MagicMock()
+
+        with patch("app.connectors.sources.google.common.datasource_refresh.Credentials") as MockCreds:
+            mock_new_creds = MagicMock()
+            MockCreds.return_value = mock_new_creds
+
+            await refresh_google_datasource_credentials(
+                google_client=mock_google_client,
+                data_source=mock_data_source,
+                config_service=mock_config_service,
+                connector_id="test-connector",
+                logger=mock_logger,
+            )
+
+            # Verify expiry was set on the new credentials
+            assert mock_new_creds.expiry is not None
+
+    async def test_credentials_config_is_none(self):
+        """When credentials key returns None, it is treated as empty dict."""
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config = AsyncMock(return_value={
+            "credentials": None
+        })
+
+        mock_google_client = MagicMock()
+        mock_data_source = MagicMock()
+        mock_logger = MagicMock()
+
+        with pytest.raises(GoogleAuthError, match="No OAuth credentials available"):
+            await refresh_google_datasource_credentials(
+                google_client=mock_google_client,
+                data_source=mock_data_source,
+                config_service=mock_config_service,
+                connector_id="test-connector",
+                logger=mock_logger,
+            )
+
+    async def test_default_service_name(self):
+        """When service_name is not provided, default 'Google' is used in error message."""
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config = AsyncMock(return_value=None)
+        mock_google_client = MagicMock()
+        mock_data_source = MagicMock()
+        mock_logger = MagicMock()
+
+        with pytest.raises(GoogleAuthError, match="Google Google configuration not found"):
+            await refresh_google_datasource_credentials(
+                google_client=mock_google_client,
+                data_source=mock_data_source,
+                config_service=mock_config_service,
+                connector_id="test-connector",
+                logger=mock_logger,
+                # service_name defaults to "Google"
+            )
