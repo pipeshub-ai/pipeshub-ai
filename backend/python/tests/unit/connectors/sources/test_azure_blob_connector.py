@@ -339,6 +339,15 @@ def mock_data_entities_processor_cov():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-az-cov",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -1284,6 +1293,7 @@ def _make_tx(existing_record=None, revision_record=None, user=None):
     tx.get_user_by_user_id = AsyncMock(
         return_value=user or {"email": "creator@test.com"}
     )
+    tx.ensure_team_app_edge = AsyncMock()
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -1327,6 +1337,15 @@ def mock_dep():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-fc",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 

@@ -16,6 +16,7 @@ from app.connectors.sources.azure_blob.connector import (
     get_mimetype_for_azure_blob,
     get_parent_path_from_blob_name,
 )
+from app.models.entities import User
 from app.models.permission import EntityType, PermissionType
 
 
@@ -37,6 +38,15 @@ def mock_dep():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-az-deep",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -47,6 +57,7 @@ def mock_ds_provider():
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
     mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.ensure_team_app_edge = AsyncMock()
     mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)

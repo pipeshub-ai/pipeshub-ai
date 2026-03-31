@@ -9,6 +9,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -33,6 +34,8 @@ def _make_mock_tx_store(existing_record=None):
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    tx.ensure_team_app_edge = AsyncMock()
     tx.remove_record_from_parent = AsyncMock()
     return tx
 
@@ -64,6 +67,15 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-azf-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -408,7 +420,7 @@ class TestRunSyncComprehensive:
             connector._create_record_groups_for_shares = AsyncMock()
             connector._sync_share = AsyncMock()
             connector.account_name = "testaccount"
-            connector.scope = "TEAM"
+            connector.scope = ConnectorScope.TEAM.value
 
             await connector.run_sync()
 

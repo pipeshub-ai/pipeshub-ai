@@ -36,6 +36,7 @@ def _make_tx(existing_record=None, revision_record=None, user=None):
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_record_by_external_revision_id = AsyncMock(return_value=revision_record)
     tx.get_user_by_id = AsyncMock(return_value=user or {"email": "creator@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value=user or {"email": "creator@test.com"})
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -331,6 +332,7 @@ class TestInit:
         mock_client = MagicMock()
         mock_client.get_account_name.return_value = "acc"
         mock_client_cls.build_from_services = AsyncMock(return_value=mock_client)
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=acc;AccountKey=k;EndpointSuffix=core.windows.net"},
             "scope": "PERSONAL",

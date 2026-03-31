@@ -69,6 +69,15 @@ def mock_data_entities_processor():
         created_at_timestamp=1234567890,
         updated_at_timestamp=1234567890,
     ))
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-azf-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -363,6 +372,15 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-azf-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -372,6 +390,7 @@ def mock_data_store_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
@@ -883,6 +902,7 @@ def _make_tx(existing_record=None, revision_record=None, user=None):
     tx.get_user_by_user_id = AsyncMock(
         return_value=user or {"email": "creator@test.com"}
     )
+    tx.ensure_team_app_edge = AsyncMock()
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -916,6 +936,15 @@ def proc():
     p.get_all_active_users = AsyncMock(return_value=[])
     p.reindex_existing_records = AsyncMock()
     p.account_name = "teststorage"
+    p.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return p
 
 

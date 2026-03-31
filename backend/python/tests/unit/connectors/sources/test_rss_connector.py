@@ -1106,7 +1106,9 @@ class TestRunSync:
     async def test_sync_raises_on_general_error(self):
         conn = _make_connector_cov()
         conn.feed_urls = ["https://feed.com/rss"]
-        conn.data_entities_processor.get_all_active_users = AsyncMock(side_effect=Exception("db error"))
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("db error")
+        )
         with pytest.raises(Exception, match="db error"):
             await conn.run_sync()
 

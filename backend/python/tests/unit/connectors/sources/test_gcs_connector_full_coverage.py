@@ -41,6 +41,7 @@ def _make_mock_tx_store(existing_record=None, existing_revision_record=None, use
     tx.get_record_by_external_revision_id = AsyncMock(return_value=existing_revision_record)
     tx.get_user_by_id = AsyncMock(return_value=user or {"email": "user@test.com"})
     tx.get_user_by_user_id = AsyncMock(return_value=user or {"email": "user@test.com"})
+    tx.ensure_team_app_edge = AsyncMock()
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -73,9 +74,15 @@ def mock_data_entities_processor():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
-    u = MagicMock()
-    u.email = "user@test.com"
-    proc.get_user_by_user_id = AsyncMock(return_value=u)
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-gcs-95",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -123,7 +130,11 @@ class TestHelpers95:
     def test_get_folder_segments_leading_trailing(self):
         assert get_folder_path_segments_from_key("/a/b/") == ["a"]
 
-    def test_get_mimetype_known_and_in_enum(self):
+    @patch(
+        "app.connectors.sources.google_cloud_storage.connector.mimetypes.guess_type",
+        return_value=("application/zip", None),
+    )
+    def test_get_mimetype_known_and_in_enum(self, _mock_guess):
         result = get_mimetype_for_gcs("test.zip")
         assert result == "application/zip"
 

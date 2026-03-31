@@ -59,6 +59,15 @@ def mock_data_entities_processor():
         created_at_timestamp=1234567890,
         updated_at_timestamp=1234567890,
     ))
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-gcs-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -69,6 +78,7 @@ def mock_data_store_provider():
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
     mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.ensure_team_app_edge = AsyncMock()
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
@@ -462,9 +472,15 @@ def mock_data_entities_processor_fullcov():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
-    u = MagicMock()
-    u.email = "user@test.com"
-    proc.get_user_by_user_id = AsyncMock(return_value=u)
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-gcs-95",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -512,7 +528,11 @@ class TestHelpers95:
     def test_get_folder_segments_leading_trailing(self):
         assert get_folder_path_segments_from_key("/a/b/") == ["a"]
 
-    def test_get_mimetype_known_and_in_enum(self):
+    @patch(
+        "app.connectors.sources.google_cloud_storage.connector.mimetypes.guess_type",
+        return_value=("application/zip", None),
+    )
+    def test_get_mimetype_known_and_in_enum(self, _mock_guess):
         result = get_mimetype_for_gcs("test.zip")
         assert result == "application/zip"
 
