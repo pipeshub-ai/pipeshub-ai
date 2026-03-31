@@ -1,12 +1,10 @@
-import json
 from collections.abc import AsyncGenerator
-from typing import Any, Optional
+from typing import Any
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.api.middlewares.auth import require_scopes
@@ -21,10 +19,8 @@ from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import get_flattened_results, get_message_content
 from app.utils.fetch_full_record import create_fetch_full_record_tool
-from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import (
-    bind_tools_for_llm,
     create_sse_event,
     stream_llm_response_with_tools,
 )
@@ -36,16 +32,16 @@ router = APIRouter()
 # Pydantic models
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 50
+    limit: int | None = 50
     previousConversations: list[dict] = []
-    filters: Optional[dict[str, Any]] = None
-    retrievalMode: Optional[str] = "HYBRID"
-    quickMode: Optional[bool] = False
+    filters: dict[str, Any] | None = None
+    retrievalMode: str | None = "HYBRID"
+    quickMode: bool | None = False
     # New fields for multi-model support
-    modelKey: Optional[str] = None  # e.g., "uuid-of-the-model"
-    modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
-    chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
-    mode: Optional[str] = "json"  # "json" for full metadata, "simple" for answer only
+    modelKey: str | None = None  # e.g., "uuid-of-the-model"
+    modelName: str | None = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
+    chatMode: str | None = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
+    mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
 
 
 # Dependency injection functions
@@ -165,7 +161,7 @@ def _build_chat_llm_messages(
     return messages
 
 
-async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> tuple[dict[str, Any], dict[str, Any]]:
+async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Get model configuration based on user selection or fallback to default
 
     Returns:
@@ -338,7 +334,7 @@ async def askAIStream(
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
-                
+
                 if config.get("provider").lower() == "ollama":
                     query_info.mode = "no_tools"
                 else:

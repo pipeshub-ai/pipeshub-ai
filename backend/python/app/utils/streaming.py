@@ -3,16 +3,10 @@ import json
 import logging
 import os
 import re
+from collections.abc import AsyncGenerator
 from typing import (
     Any,
-    AsyncGenerator,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Type,
     TypeVar,
-    Union,
 )
 
 import aiohttp
@@ -41,9 +35,9 @@ from app.modules.qna.prompt_templates import (
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
+    build_message_content_array,
     count_tokens,
     get_flattened_results,
-    build_message_content_array,
     record_to_message_content,
 )
 from app.utils.citations import (
@@ -119,27 +113,27 @@ def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
     return True
 
 
-def _get_schema_for_structured_output(is_agent: bool = False) -> Union[Type[AgentAnswerWithMetadataDict], Type[AnswerWithMetadataDict]]:
+def _get_schema_for_structured_output(is_agent: bool = False) -> type[AgentAnswerWithMetadataDict] | type[AnswerWithMetadataDict]:
     """Get the appropriate TypedDict schema for structured output."""
     if is_agent:
         return AgentAnswerWithMetadataDict
     return AnswerWithMetadataDict
 
 
-def _get_schema_for_parsing(is_agent: bool = False) -> Union[Type[AgentAnswerWithMetadataJSON], Type[AnswerWithMetadataJSON]]:
+def _get_schema_for_parsing(is_agent: bool = False) -> type[AgentAnswerWithMetadataJSON] | type[AnswerWithMetadataJSON]:
     """Get the appropriate Pydantic BaseModel schema for parsing."""
     if is_agent:
         return AgentAnswerWithMetadataJSON
     return AnswerWithMetadataJSON
 
 
-def get_parser(schema: Type[BaseModel] = AnswerWithMetadataJSON) -> Tuple[PydanticOutputParser, str]:
+def get_parser(schema: type[BaseModel] = AnswerWithMetadataJSON) -> tuple[PydanticOutputParser, str]:
     parser = PydanticOutputParser(pydantic_object=schema)
     format_instructions = parser.get_format_instructions()
     return parser, format_instructions
 
 
-async def stream_content(signed_url: str, record_id: Optional[str] = None, file_name: Optional[str] = None) -> AsyncGenerator[bytes, None]:
+async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
     if not isinstance(signed_url, str):
         error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
@@ -232,10 +226,10 @@ async def stream_content(signed_url: str, record_id: Optional[str] = None, file_
 
 def create_stream_record_response(
     content_stream: AsyncGenerator[bytes, None],
-    filename: Optional[str],
-    mime_type: Optional[str] = None,
-    fallback_filename: Optional[str] = None,
-    additional_headers: Optional[Dict[str, str]] = None
+    filename: str | None,
+    mime_type: str | None = None,
+    fallback_filename: str | None = None,
+    additional_headers: dict[str, str] | None = None
 ) -> StreamingResponse:
     """
     Create a StreamingResponse for file downloads with proper headers.
@@ -301,13 +295,13 @@ def escape_ctl(raw: str) -> str:
         )
     return string_re.sub(fix, raw)
 
-def _stringify_content(content: Union[str, list, dict, None]) -> str:
+def _stringify_content(content: str | list | dict | None) -> str:
         if content is None:
             return ""
         if isinstance(content, str):
             return content
         if isinstance(content, list):
-            parts: List[str] = []
+            parts: list[str] = []
             for item in content:
                 if isinstance(item, dict):
                     # Prefer explicit text field
@@ -337,10 +331,7 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
     """
     if parts is None:
         parts = []
-    if opik_tracer is not None:
-        config = {"callbacks": [opik_tracer]}
-    else:
-        config = {}
+    config = {"callbacks": [opik_tracer]} if opik_tracer is not None else {}
     try:
         if hasattr(llm, "astream"):
             async for part in llm.astream(messages, config=config):
@@ -391,23 +382,23 @@ def get_vectorDb_limit(context_length: int) -> int:
 
 async def execute_tool_calls(
     llm,
-    messages: List[Dict],
-    tools: List,
-    tool_runtime_kwargs: Dict[str, Any],
-    final_results: List[Dict[str, Any]],
-    virtual_record_id_to_result: Dict[str, Dict[str, Any]],
+    messages: list[dict],
+    tools: list,
+    tool_runtime_kwargs: dict[str, Any],
+    final_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
     blob_store: BlobStorage,
-    all_queries: List[str],
+    all_queries: list[str],
     retrieval_service: RetrievalService,
     user_id: str,
     org_id: str,
     context_length:int|None,
     target_words_per_chunk: int = 1,
-    is_multimodal_llm: Optional[bool] = False,
+    is_multimodal_llm: bool | None = False,
     max_hops: int = 1,
     is_agent: bool = False,  # Use is_agent flag instead of schema
     mode: str = "json",  # "json" for structured output, "simple" for raw text
-) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
+) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
     Yields tool events and returns updated messages and whether tools were executed.
@@ -440,7 +431,7 @@ async def execute_tool_calls(
         try:
             # Measure LLM invocation latency
             ai = None
-            
+
             if mode == "simple":
                 call_aiter_function = call_aiter_llm_stream_simple
             else:
@@ -512,7 +503,7 @@ async def execute_tool_calls(
         tool_results_inner = []
         valid_tool_names = [t.name for t in tools]
         # Execute all tools in parallel using asyncio.gather
-        async def execute_single_tool(args, tool, tool_name, call_id) -> Dict[str, Any]:
+        async def execute_single_tool(args, tool, tool_name, call_id) -> dict[str, Any]:
             """Execute a single tool and return result with metadata"""
             if tool is None:
                 logger.warning("execute_tool_calls: unknown tool requested name=%s", tool_name)
@@ -725,11 +716,11 @@ async def stream_llm_response(
     final_results,
     logger,
     target_words_per_chunk: int = 1,
-    mode: Optional[str] = "json",
-    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
-    records: Optional[List[Dict[str, Any]]] = None,
+    mode: str | None = "json",
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    records: list[dict[str, Any]] | None = None,
     citation_reflection_retry_count: int = 0,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """
     Incrementally stream the answer portion of an LLM response.
     For each chunk we also emit the citations visible so far.
@@ -998,7 +989,7 @@ async def stream_llm_response(
 
 
 
-def extract_json_from_string(input_string: str) -> "Dict[str, Any]":
+def extract_json_from_string(input_string: str) -> "dict[str, Any]":
     """
     Extracts a JSON object from a string that may contain markdown code blocks
     or other formatting, and returns it as a Python dictionary.
@@ -1039,7 +1030,7 @@ CONFIDENCE_DELIMITER_RE = re.compile(
 )
 
 
-def parse_confidence_from_answer(answer: str) -> tuple[str, Optional[str]]:
+def parse_confidence_from_answer(answer: str) -> tuple[str, str | None]:
     """Strip trailing ---/Confidence block from answer, return (clean_answer, confidence)."""
     match = CONFIDENCE_DELIMITER_RE.search(answer)
     if match:
@@ -1050,13 +1041,13 @@ def parse_confidence_from_answer(answer: str) -> tuple[str, Optional[str]]:
 
 async def handle_json_mode(
     llm: BaseChatModel,
-    messages: List[BaseMessage],
-    final_results: List[Dict[str, Any]],
-    records: List[Dict[str, Any]],
+    messages: list[BaseMessage],
+    final_results: list[dict[str, Any]],
+    records: list[dict[str, Any]],
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
     is_agent: bool = False,  # Use is_agent flag instead of schema
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """
     Handle JSON mode streaming.
 
@@ -1064,7 +1055,7 @@ async def handle_json_mode(
         is_agent: If True, use agent schemas (with referenceData support) and structured output.
                   If False, use chatbot mode (natural markdown + confidence delimiter, no structured output).
     """
-   
+
 
     # Agent path: use structured output (unchanged)
     schema_for_structured = _get_schema_for_structured_output(is_agent)
@@ -1072,7 +1063,7 @@ async def handle_json_mode(
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
     try:
         last_msg = messages[-1] if messages else None
-        existing_ai_content: Optional[str] = None
+        existing_ai_content: str | None = None
         if isinstance(last_msg, AIMessage):
             existing_ai_content = getattr(last_msg, "content", None)
         elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
@@ -1150,19 +1141,19 @@ async def handle_json_mode(
 
 async def handle_simple_mode(
     llm: BaseChatModel,
-    messages: List[BaseMessage],
-    final_results: List[Dict[str, Any]],
-    records: List[Dict[str, Any]],
+    messages: list[BaseMessage],
+    final_results: list[dict[str, Any]],
+    records: list[dict[str, Any]],
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
 
         # Fast-path: if the last message is already an AI answer
         try:
             last_msg = messages[-1] if messages else None
-            existing_ai_content: Optional[str] = None
+            existing_ai_content: str | None = None
             if isinstance(last_msg, AIMessage):
                 existing_ai_content = getattr(last_msg, "content", None)
             elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
@@ -1206,7 +1197,7 @@ async def handle_simple_mode(
         async for event in call_aiter_llm_stream_simple(llm, messages, final_results, records, target_words_per_chunk):
             yield event
 
-        
+
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
     if not conversation_tasks:
@@ -1232,13 +1223,13 @@ async def stream_llm_response_with_tools(
     blob_store,
     is_multimodal_llm,
     context_length:int|None,
-    tools: Optional[List] = None,
-    tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
+    tools: list | None = None,
+    tool_runtime_kwargs: dict[str, Any] | None = None,
     target_words_per_chunk: int = 1,
-    mode: Optional[str] = "simple",
+    mode: str | None = "simple",
     is_agent: bool = False,  # Use is_agent flag instead of schema
-    conversation_id: Optional[str] = None,
-) -> AsyncGenerator[Dict[str, Any], None]:
+    conversation_id: str | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
     Incrementally stream the answer portion of an LLM JSON response.
@@ -1321,7 +1312,9 @@ async def stream_llm_response_with_tools(
                     # Collect background conversation tasks and append markers to answer
                     # so they are saved with the message (no separate SSE events).
                     if conversation_id:
-                        from app.utils.conversation_tasks import await_and_collect_results
+                        from app.utils.conversation_tasks import (
+                            await_and_collect_results,
+                        )
 
                         logger.info(
                             "stream_llm_response_with_tools: early-return path — awaiting conversation tasks for %s",
@@ -1354,7 +1347,7 @@ async def stream_llm_response_with_tools(
 
     # Collect background conversation tasks BEFORE generating final answer so we can
     # append ::download markers to the complete event answer (saved with message).
-    task_results: List[Dict[str, Any]] = []
+    task_results: list[dict[str, Any]] = []
     if conversation_id:
         from app.utils.conversation_tasks import await_and_collect_results
 
@@ -1401,7 +1394,7 @@ async def stream_llm_response_with_tools(
             "data": {"error": f"Error generating final answer: {str(e)}"}
         }
 
-def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
+def create_sse_event(event_type: str, data: str | dict | list) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
@@ -1417,7 +1410,7 @@ class AnswerParserState:
         self.words_in_chunk: int = 0
 
 
-def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Pattern, Any]:
+def _initialize_answer_parser_regex() -> tuple[re.Pattern, re.Pattern, re.Pattern, Any]:
     """Initialize regex patterns for answer parsing."""
     answer_key_re = re.compile(r'"answer"\s*:\s*"')
     # cite_block_re = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
@@ -1434,7 +1427,7 @@ async def call_aiter_llm_stream_simple(
     records=None,
     target_words_per_chunk: int = 1,
     citation_reflection_retry_count: int = 0,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response in simple (non-JSON) mode.
 
     Streams raw text content directly without JSON parsing or reflection.
@@ -1488,7 +1481,7 @@ async def call_aiter_llm_stream_simple(
                             "confidence": confidence,
                         },
                     }
-    
+
 
         # Tool call detection
         ai = None
@@ -1558,7 +1551,7 @@ async def call_aiter_llm_stream(
     original_llm=None,
     is_agent: bool = False,  # Use is_agent flag instead of schema
     citation_reflection_retry_count: int = 0,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
 
     Args:
@@ -1872,7 +1865,7 @@ async def call_aiter_llm_stream(
         yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
         return
 
-def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
+def bind_tools_for_llm(llm, tools: list[object]) -> BaseChatModel|bool:
     """
     Bind tools to the LLM.
     """
@@ -1924,16 +1917,15 @@ def cleanup_content(response_text: str) -> str:
         response_text = response_text.replace("```json", "", 1)
     if response_text.endswith("```"):
         response_text = response_text.rsplit("```", 1)[0]
-    response_text = response_text.strip()
-    return response_text
+    return response_text.strip()
 
 
 async def invoke_with_structured_output_and_reflection(
     llm: BaseChatModel,
-    messages: List,
-    schema: Type[SchemaT],
+    messages: list,
+    schema: type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> Optional[SchemaT]:
+) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
 
@@ -2050,10 +2042,10 @@ Respond only with valid JSON that matches the schema."""
 
 async def invoke_with_row_descriptions_and_reflection(
     llm: BaseChatModel,
-    messages: List,
+    messages: list,
     expected_count: int,
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> Optional[RowDescriptions]:
+) -> RowDescriptions | None:
     """
     Invoke LLM with row description output and validate count matches expected.
 

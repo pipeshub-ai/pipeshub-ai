@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -54,7 +54,7 @@ collection_map = {
                     RecordType.LINK.value: "links",
                 }
 
-def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: Optional[dict[str, Any]] = None) -> Optional[Record]:
+def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
     """
     Creates a Record subclass instance from a dictionary.
 
@@ -165,7 +165,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: Opt
         logger.error(f"Error creating record instance: {str(e)}")
         return None
 
-async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> list[dict[str, Any]]:
+async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> list[dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -617,7 +617,7 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: Optional[IGraphDBProvider] = None,frontend_url: Optional[str] = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
@@ -1044,7 +1044,7 @@ def record_to_message_content(record: dict[str, Any]) -> list[dict[str, Any]]:
     """
 
     try:
-        
+
         content = []
         context_metadata = record.get("context_metadata", "")
         content.append({
@@ -1168,7 +1168,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json") -> str:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json") -> list[dict[str, Any]]:
     content = []
     if mode == "no_tools":
         chunks = []
@@ -1233,7 +1233,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     "type": "text",
                     "text": rendered_form
                 })
-        
+
         message_content_array = build_message_content_array(flattened_results, virtual_record_id_to_result)
         message_content_array = [item for sublist in message_content_array for item in sublist]
 
@@ -1248,7 +1248,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         })
         return content
 
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any]) -> list[str]:
+def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any]) -> list[list[dict[str, Any]]]:
     all_contents = []
     content = []
     seen_virtual_record_ids = set()
@@ -1346,14 +1346,14 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 })
         else:
             continue
-        
+
     if content:
         content.append({
             "type": "text",
             "text": "</record>"
         })
         all_contents.append(content)
-   
+
     return all_contents
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
@@ -1448,7 +1448,7 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
 
     current_message_tokens = count_tokens_in_messages(messages,enc)
     new_tokens = 0
-    
+
     flattened_message_contents = [item for sublist in message_contents for item in sublist]
 
     for message in flattened_message_contents:

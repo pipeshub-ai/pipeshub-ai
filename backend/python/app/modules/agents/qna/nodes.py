@@ -19,7 +19,7 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Union
 from uuid import UUID
 
 import pytz

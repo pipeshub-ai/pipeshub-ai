@@ -2,7 +2,7 @@
 Agent-specific response schemas with referenceData support.
 Separate from chatbot schemas to avoid any impact on chatbot performance.
 """
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -19,16 +19,10 @@ class ReferenceDataItem(TypedDict, total=False):
 
 class AgentAnswerWithMetadataJSON(BaseModel):
     answer: str
-    reason: Optional[str] = None
+    reason: str | None = None
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Optional[Literal[
-        "Exact Match",
-        "Derived From Blocks",
-        "Derived From User Info",
-        "Enhanced With Full Record",
-        "Derived From Tool Execution"
-    ]] = None
-    referenceData: Optional[List[dict]] = None
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Derived From Tool Execution"] | None = None
+    referenceData: list[dict] | None = None
 
 
 class AgentAnswerWithMetadataDict(TypedDict, total=False):
@@ -42,4 +36,4 @@ class AgentAnswerWithMetadataDict(TypedDict, total=False):
         "Enhanced With Full Record",
         "Derived From Tool Execution"
     ]
-    referenceData: Optional[List[ReferenceDataItem]]
+    referenceData: list[ReferenceDataItem] | None

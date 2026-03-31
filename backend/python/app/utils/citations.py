@@ -1,7 +1,7 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import get_enhanced_metadata
@@ -82,14 +82,14 @@ def _renumber_citation_links(
     return text
 
 
-def _extract_block_index_from_url(url: str) -> Optional[int]:
+def _extract_block_index_from_url(url: str) -> int | None:
     """Extract blockIndex value from a block web URL like /record/abc/preview#blockIndex=5"""
     m = re.search(r'blockIndex=(\d+)', url)
     if m:
         return int(m.group(1))
     return None
 
-def _extract_record_id_from_url(url: str) -> Optional[str]:
+def _extract_record_id_from_url(url: str) -> str | None:
     """Extract recordId from a block web URL like /record/abc123/preview#blockIndex=5"""
     m = re.search(r'/record/([^/]+)/preview', url)
     if m:
@@ -108,7 +108,7 @@ def _is_url_resolvable_via_records(
     block_index = _extract_block_index_from_url(url)
     if record_id is None or block_index is None:
         return False
- 
+
     for doc in flattened_final_results:
         metadata = doc.get("metadata", {})
         doc_record_id = metadata.get("recordId")
@@ -286,8 +286,8 @@ def _normalize_markdown_link_citations(
 def normalize_citations_and_chunks_for_agent(
     answer_text: str,
     final_results: list[dict[str, Any]],
-    virtual_record_id_to_result: Optional[dict[str, dict[str, Any]]] = None,
-    records: Optional[list[dict[str, Any]]] = None
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    records: list[dict[str, Any]] | None = None
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
@@ -461,7 +461,7 @@ def _normalize_markdown_link_citations_for_agent(
                             break
                 continue
 
-        
+
 
     if not new_citations and unique_urls:
         logger.error(f"FAILED to create citations for URLs: {unique_urls}")
