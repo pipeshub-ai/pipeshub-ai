@@ -18,11 +18,11 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from typing import Any, Literal, Union
 from uuid import UUID
-import pytz
-from datetime import datetime, timezone
 
+import pytz
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -535,7 +535,7 @@ def _underscore_to_dotted(name: str) -> str:
 
     Tool names follow 'app.tool_name' format.  The first underscore
     that corresponds to the app/tool separator is replaced with a dot.
-    
+
     If the name already contains a dot, return it as-is (don't create invalid names).
     """
     # If name already has a dot, don't convert (avoid creating invalid names like calculator.calculate.single_operand)
@@ -1401,9 +1401,14 @@ class ToolExecutor:
     def _process_retrieval_output(result: dict[str, Any] | str | tuple[bool, str] | list[Any] | None, state: ChatState, log: logging.Logger) -> str:
         """Process retrieval tool output and update state (accumulates results from multiple retrieval calls)"""
         try:
+            # Fast path: tool already wrote to state and returned pre-formatted content
+            if isinstance(result, str) and "<record>" in result:
+                log.info("📚 Retrieval returned pre-formatted content (state already updated by tool)")
+                return result
+
             from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
-            # Try to parse as RetrievalToolOutput
+            # Legacy/fallback path: parse JSON and extract data
             retrieval_output = None
 
             if isinstance(result, dict) and "content" in result and "final_results" in result:
@@ -2475,7 +2480,7 @@ Example 2: "What columns are in invoice?"
 2. Optional follow-up: `mariadb.execute_query` only if user asks for row data
 
 Example 3: "Give me the DDL for invoice"
-1. `mariadb.get_table_ddl(table="invoice")`    
+1. `mariadb.get_table_ddl(table="invoice")`
 """
 
 
@@ -3657,7 +3662,7 @@ ZOOM_GUIDANCE = r"""
 - **Never set both.** If neither is given, ask the user which they prefer.
 
 ### Timezone Inference
-BEFORE checking if timezone is missing, always read the Temporal Context 
+BEFORE checking if timezone is missing, always read the Temporal Context
    section. If User timezone is present there, use it directly. Never ask user for timezone.
 
 ---
@@ -6347,7 +6352,7 @@ async def respond_node(
     # Merge and deduplicate retrieval results from parallel calls.
     # Then sort by (virtual_record_id, block_index) — the SAME ordering
     # the chatbot uses so that get_message_content() assigns consistent
-    # R-labels (R1 = first record's blocks, R2 = second record, etc.)
+    # block web URLs and block indices.
     # ================================================================
     if final_results:
         final_results = merge_and_number_retrieval_results(final_results, log)
@@ -6367,9 +6372,9 @@ async def respond_node(
     # Use get_message_content() — the EXACT same function the chatbot
     # uses — to build the user message with knowledge context.
     # This ensures:
-    #   • Consistent R{record_number}-{block_index} block labels
+    #   • Consistent block indices and block web URLs
     #   • The same rich context_metadata per record
-    #   • The same tool instructions (fetch_full_record with R-labels)
+    #   • The same tool instructions (fetch_full_record with record IDs)
     #   • The same output-format instructions
     # The formatted content is stored in state["qna_message_content"]
     # and consumed by create_response_messages() below.
@@ -6400,19 +6405,19 @@ async def respond_node(
                 )
 
         qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, log, "json"
+            final_results, virtual_record_map, user_data, query, "json"
         )
         state["qna_message_content"] = qna_content
         log.debug("✅ Built qna_message_content via get_message_content() (chatbot-identical format)")
     else:
         state["qna_message_content"] = None
 
-    # Build R-label → virtual_record_id mapping AFTER sorting so the numbering
-    # matches what get_message_content() assigned above.
+    # Build R-label → virtual_record_id mapping for legacy fallback in
+    # fetch_full_record tool (Strategy 4 in _resolve_record_ids).
     from app.modules.qna.response_prompt import build_record_label_mapping
     record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
     if record_label_map:
-        log.debug(f"📌 Record label mapping: {record_label_map}")
+        log.debug(f"📌 Record label mapping (legacy fallback): {record_label_map}")
     state["record_label_to_uuid_map"] = record_label_map
 
     # Build messages (create_response_messages uses qna_message_content as user msg)
@@ -6538,12 +6543,11 @@ async def respond_node(
         # formats them via record_to_message_content() — identical to chatbot).
         tools = []
         if virtual_record_map:
-            from app.utils.agent_fetch_full_record import (
-                create_agent_fetch_full_record_tool,
+            from app.utils.fetch_full_record import (
+                create_fetch_full_record_tool,
             )
-            fetch_tool = create_agent_fetch_full_record_tool(
+            fetch_tool = create_fetch_full_record_tool(
                 virtual_record_map,
-                label_to_virtual_record_id=record_label_map if record_label_map else None,
             )
             tools = [fetch_tool]
             log.debug(
@@ -6592,10 +6596,10 @@ async def respond_node(
 
             # ── Agent-side citation enrichment (no streaming.py changes) ────────
             # streaming.py's normalize_citations_and_chunks extracts citations from
-            # inline [R#-#] markers in the LLM answer text.  In combined (MODE 3)
-            # responses the LLM may skip inline markers and rely only on blockNumbers.
-            # streaming.py does not forward blockNumbers in the complete event, so we
-            # apply a second-pass extraction here — before the event reaches the client.
+            # inline citation markers (markdown links or legacy R-labels) in the LLM
+            # answer text.  In combined (MODE 3) responses the LLM may skip inline
+            # markers. streaming.py does not forward
+            # here — before the event reaches the client.
             #
             # Pass 1: re-run inline marker extraction in case streaming.py received
             #         stale/empty final_results (safety net for edge cases).
@@ -6707,7 +6711,6 @@ async def _generate_direct_response(
     and stores the result in state. Fully self-contained — the caller just
     needs to ``return state`` after this returns.
     """
-    from app.utils.streaming import stream_llm_response
 
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
@@ -7047,12 +7050,12 @@ def _build_tool_results_context(
         else:
             parts.append("\n## 📚 Internal Knowledge in Context\n\n")
             parts.append(
-                "Internal knowledge blocks (with R-labels like R1-0, R2-3) are present "
+                "Internal knowledge blocks (with Block Web URLs) are present "
                 "in the conversation above.\n"
             )
         parts.append(
-            "**MANDATORY**: Cite IMMEDIATELY after each fact from internal knowledge: [R1-0], [R2-3]\n"
-            "Include ALL cited block labels in `blockNumbers`.\n\n"
+            "**MANDATORY**: Cite IMMEDIATELY after each fact from internal knowledge using markdown links: [source](Block Web URL). Use the EXACT Block Web URL from the context.\n"
+            "Do NOT manually number citations — the system assigns numbers automatically.\n"
         )
 
     if non_retrieval:
@@ -7089,22 +7092,20 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "**⚠️ MODE 3 — COMBINED RESPONSE (MANDATORY)**\n"
-            "You have BOTH internal knowledge blocks (R-labels in context) AND API tool results.\n"
+            "You have BOTH internal knowledge blocks (with Block Web URLs) AND API tool results.\n"
             "This is the MOST ACCURATE mode — you have both indexed historical content AND live current data.\n"
             "You MUST:\n"
             "  1. Synthesize BOTH sources into ONE coherent, comprehensive answer\n"
             "  2. Use retrieval results for historical context, background, and comprehensive coverage\n"
             "  3. Use API results for current state, real-time data, and exact IDs/keys\n"
             "  4. When sources conflict, prioritize API results for current state, but mention historical context from retrieval\n"
-            "  5. Cite every fact from internal knowledge inline: [R1-0], [R2-3]\n"
-            "  6. Include all cited labels in `blockNumbers`\n"
-            "  7. Format all API items as clickable links and include them in `referenceData`\n"
-            "  8. Combine insights: \"Based on our indexed knowledge [R1-0], and current live data, here's the complete picture...\"\n\n"
+            "  5. Cite every fact from internal knowledge using markdown links: [source](Block Web URL). The system assigns citation numbers automatically.\n"
+            "  6. Format all API items as clickable links and include them in `referenceData`\n"
+            "  7. Combine insights: \"Based on our indexed knowledge [source](/record/abc/preview#blockIndex=0), and current live data, here's the complete picture...\"\n\n"
         )
     elif has_retrieval:
         parts.append(
-            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [R1-0].\n"
-            "Include all cited labels in `blockNumbers`.\n"
+            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](Block Web URL). The system assigns citation numbers automatically.\n"
         )
     else:
         parts.append(
@@ -7135,19 +7136,17 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "Return ONLY JSON matching MODE 3:\n"
-            "{\"answer\": \"...with inline [R1-0] citations...\", "
+            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"High\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"R1-0\", \"R2-3\"], "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
         )
     elif has_retrieval:
         parts.append(
             "Return ONLY JSON:\n"
-            "{\"answer\": \"...with inline [R1-0] citations...\", "
+            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"High\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"R1-0\", \"R2-3\"]}\n"
         )
     else:
         parts.append(
@@ -7206,8 +7205,14 @@ def check_for_error(state: ChatState) -> Literal["error", "continue"]:
 def _process_retrieval_output(result: object, state: ChatState, log: logging.Logger) -> str:
     """Process retrieval tool output (accumulates results from multiple retrieval calls)"""
     try:
+        # Fast path: tool already wrote to state and returned pre-formatted content
+        if isinstance(result, str) and "<record>" in result:
+            log.info("Retrieval returned pre-formatted content (state already updated by tool)")
+            return result
+
         from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
+        # Legacy/fallback path: parse JSON and extract data
         retrieval_output = None
 
         if isinstance(result, dict) and "content" in result and "final_results" in result:
@@ -7504,15 +7509,7 @@ async def react_agent_node(
 
                 # Process retrieval tool results to extract final_results
                 if "retrieval" in tool_name.lower():
-                    try:
-                        if isinstance(result_content, str):
-                            parsed = json.loads(result_content)
-                            _process_retrieval_output(parsed, state, log)
-                        elif isinstance(result_content, dict):
-                            _process_retrieval_output(result_content, state, log)
-                    except Exception as e:
-                        log.warning(f"Failed to process retrieval output: {e}")
-                        _process_retrieval_output(result_content, state, log)
+                    _process_retrieval_output(result_content, state, log)
 
                 # Detect actual tool success/failure from result content
                 tool_status = _detect_tool_result_status(result_content)
@@ -7947,7 +7944,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 7. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
-   - For retrieval/internal knowledge: Include inline citations like [R1-1] after each fact.
+   - For retrieval/internal knowledge: Include inline citations as markdown links [source](Block Web URL) after each fact. The system assigns citation numbers automatically.
    - Store technical IDs in referenceData for follow-up queries.
 
 ## Execution Policy (MANDATORY)
@@ -8030,10 +8027,11 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 ## Citation Rules (CRITICAL)
 
 When you have internal knowledge from retrieval tools:
-1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [R1-1]."
-2. One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]
-3. Include ALL cited blocks in your response
-4. Do NOT put citations at end of paragraph — inline after each fact
+1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [source](/record/abc/preview#blockIndex=5)."
+2. Use the EXACT Block Web URL from the context as a markdown link: [source](Block Web URL). Do NOT manually number citations — the system assigns numbers automatically.
+3. One citation per markdown link. Do NOT club multiple URLs in one link.
+4. Include ALL cited blocks in your response
+5. Do NOT put citations at end of paragraph — inline after each fact
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
@@ -8080,7 +8078,7 @@ Use this decision tree to choose the right approach:
 1. Call both tools (retrieval + service API).
 2. Analyze both results for overlapping and unique information.
 3. Present a unified answer that combines insights from both sources.
-4. Use citations [R1-1] for retrieval-sourced facts.
+4. Use citations as markdown links [source](Block Web URL) for retrieval-sourced facts. The system assigns citation numbers automatically.
 5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
 

@@ -274,7 +274,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-exclude = ["modules"]
+exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

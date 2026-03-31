@@ -237,14 +237,14 @@ async def _deep_respond_impl(
                 )
 
         qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, log, "json"
+            final_results, virtual_record_map, user_data, query, "json"
         )
         state["qna_message_content"] = qna_content
         log.debug("Built qna_message_content via get_message_content()")
     else:
         state["qna_message_content"] = None
 
-    # Build R-label → virtual_record_id mapping
+    # Build R-label → virtual_record_id mapping (legacy fallback for fetch_full_record)
     from app.modules.qna.response_prompt import build_record_label_mapping
     record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
     if record_label_map:
@@ -360,12 +360,11 @@ async def _deep_respond_impl(
     # ================================================================
     tools: list = []
     if virtual_record_map:
-        from app.utils.agent_fetch_full_record import (
-            create_agent_fetch_full_record_tool,
+        from app.utils.fetch_full_record import (
+            create_fetch_full_record_tool,
         )
-        fetch_tool = create_agent_fetch_full_record_tool(
+        fetch_tool = create_fetch_full_record_tool(
             virtual_record_map,
-            label_to_virtual_record_id=record_label_map if record_label_map else None,
         )
         tools = [fetch_tool]
         log.debug(

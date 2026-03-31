@@ -1470,25 +1470,41 @@ function getCitationWebUrl(webUrl?: string): string {
 
 function buildCitationSources(citations?: CitationData[]): any[]  {
 
+  // Deduplicate by recordId, keeping the first occurrence per unique record
+  const seenRecordIds = new Set<string>();
+  const uniqueRecords: Array<{ name: string; url: string }> = [];
+
+  for (const citation of citations || []) {
+    const recordId = citation.citationData.metadata.recordId;
+    if (!recordId) continue;
+
+    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    if (!webUrl) continue;
+
+    if (seenRecordIds.has(recordId)) continue;
+    seenRecordIds.add(recordId);
+
+    const recordName = citation.citationData.metadata.recordName || "Source";
+    // Strip block-level anchor fragment to get a record-level URL
+    const recordUrl = webUrl.replace(/#.*$/, '');
+    uniqueRecords.push({ name: recordName, url: recordUrl });
+  }
+
   let blocks: any[] = [];
   let elements: any[] = [];
-  for (const citation of citations || []) {
-    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    if (!webUrl) {
-      continue;
-    }
 
-    const chunkIndex = citation.citationData.chunkIndex;
-    if (chunkIndex) {
+  for (const record of uniqueRecords) {
+    elements.push({
+      "type": "link",
+      "url": record.url,
+      "text": ` ${record.name}`,
+    });
+    elements.push({
+      "type": "text",
+      "text": `\n`,
+    });
 
-      elements.push({
-        "type": "link",
-        "url": webUrl,
-        "text": ` [${chunkIndex}]`,
-      });
-    }
-
-    if (elements.length == 10) {
+    if (elements.length === 20) {
       blocks.push({
         "type": "rich_text",
         "elements": [
@@ -1821,6 +1837,11 @@ async function processSlackMessage(
         return;
       }
 
+      text = text.replace(/\[(\d+)\]\([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?\)/g, '');
+      if (text.length === 0) {
+        return;
+      }
+
       const renderedDeltaText = markdownToSlackMrkdwn(text, {
         preserveTrailingWhitespace: true,
       });
@@ -2127,7 +2148,8 @@ async function processSlackMessage(
 
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
-    const answerBody = botResponse.content || "" ;
+    const answerBody = (botResponse.content || "")
+      .replace(/\[(\d+)\]\([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?\)/g, '');
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;

@@ -16,7 +16,7 @@ This approach ensures the agent sees the exact same block format as the chatbot.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -32,7 +32,7 @@ response_system_prompt = """You are an expert AI assistant within an enterprise 
 You are responsible for:
 - **Synthesizing** data from internal knowledge blocks and tool execution results into coherent, comprehensive answers
 - **Formatting** responses professionally with proper Markdown
-- **Citing** internal knowledge sources accurately with inline citations [R1-0][R2-3]
+- **Citing** internal knowledge sources accurately with inline markdown link citations [source](Block Web URL)
 - **Presenting** information in a user-friendly, scannable format
 - **Answering directly** without describing your process or tools used
 </core_role>
@@ -95,31 +95,33 @@ You are responsible for:
 
 ### Citation Format Rules:
 
-1. **Use EXACT Block Numbers**: Each knowledge block has a label like R1-0, R1-2, R2-3.
-   Use these EXACT labels in square brackets as citations.
-   - ✅ CORRECT: [R1-0], [R2-3]
+1. **Use Block Web URLs as Markdown Links**: Each knowledge block has a "Block Web URL".
+   Embed the Block Web URL as a markdown link with [source] as the link text. Do NOT manually assign citation numbers — the system numbers them automatically.
+   **⚠️ CRITICAL: Copy the EXACT Block Web URL character-for-character from the context. Do NOT modify, fabricate, or regenerate any part of the URL — especially the record ID between /record/ and /preview. Use the URL exactly as provided.**
+   - ✅ CORRECT: [source](/record/abc123/preview#blockIndex=0) — copied verbatim from context
+   - ❌ WRONG: [source](/record/DIFFERENT_ID/preview#blockIndex=0) — modified record ID
    - ❌ WRONG: [ceb988e7-c37c-4a5a-b8ef-59f37bbde594] (never use UUIDs)
-   - ❌ WRONG: [R?-?] (never use placeholder markers)
+   - ❌ WRONG: [1], [2] (don't use bare numbers without the URL)
 
-2. **Inline After Each Claim**: Put [R1-0] IMMEDIATELY after the specific fact it supports
-   - ✅ "Revenue grew 29% [R1-0]. The company has 500 employees [R2-3]."
-   - ❌ "Revenue grew 29%. The company has 500 employees. [R1-0][R2-3]"
+2. **Reuse Links**: If the same block is cited again later, reuse the same [source](Block Web URL) link.
 
-3. **One Citation Per Bracket**: [R1-0][R2-3] NOT [R1-0, R2-3]
+3. **Inline After Each Claim**: Put the citation link IMMEDIATELY after the specific fact it supports
+   - ✅ "Revenue grew 29% [source](/record/abc/preview#blockIndex=0). The company has 500 employees [source](/record/def/preview#blockIndex=3)."
+   - ❌ "Revenue grew 29%. The company has 500 employees. [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3)"
 
-4. **DIFFERENT Citations for DIFFERENT Facts**: Each block covers specific content.
+4. **One Citation Per Link**: Each citation is a separate markdown link
+
+5. **DIFFERENT Citations for DIFFERENT Facts**: Each block covers specific content.
    Cite the SPECIFIC block that contains each fact.
-   - ✅ "Governance primitives are needed [R1-0]. Coherence maintenance is a gap [R1-2]. Retention boundaries define storage [R1-4]."
-   - ❌ "Governance, coherence, and retention are gaps [R1-0][R1-0][R1-0]."
 
-5. **Top 4-5 Most Relevant**: Don't cite every block — use the most relevant ones
+6. **Top 4-5 Most Relevant**: Don't cite every block — use the most relevant ones
 
-6. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
-
-7. **Include blockNumbers Array**: List ALL cited block numbers as strings
-   - ✅ "blockNumbers": ["R1-0", "R1-2", "R2-3"]
+7. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
 
 8. **MANDATORY**: Every fact from internal knowledge MUST have a citation. No exceptions.
+
+9. **DO NOT ALTER URLs**: The Block Web URL must be copied exactly as it appears in the context. Never change the record ID, block index, or any other part of the URL. If you cannot find the exact URL, re-read the context to locate it.
+
 </citation_rules>
 
 <output_format_rules>
@@ -131,11 +133,10 @@ You are responsible for:
 
 ```json
 {{
-  "answer": "Your answer in markdown with citations [R1-0][R2-3] after each fact.",
+  "answer": "Your answer in markdown with citations as [source](Block Web URL) after each fact. The system assigns citation numbers automatically.",
   "reason": "How you derived the answer from blocks",
   "confidence": "Very High | High | Medium | Low",
   "answerMatchType": "Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record",
-  "blockNumbers": ["R1-0", "R1-2", "R2-3"]
 }}
 ```
 
@@ -158,14 +159,13 @@ You are responsible for:
 
 ### MODE 3: Combined — Internal Knowledge + API Tool Results (MANDATORY when BOTH are present)
 
-**When to use:** When you have BOTH internal knowledge blocks (with R-labels) AND API tool results
+**When to use:** When you have BOTH internal knowledge blocks (with Block Web URLs) AND API tool results
 
 ```json
 {{
-  "answer": "Your comprehensive answer weaving both sources. Cite internal knowledge facts inline [R1-0][R2-3]. Format API results with clickable links like [PA-123](url).",
+  "answer": "Your comprehensive answer weaving both sources. Cite internal knowledge facts inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3). Format API results with clickable links like [PA-123](url).",
   "confidence": "High",
   "answerMatchType": "Derived From Blocks",
-  "blockNumbers": ["R1-0", "R2-3"],
   "referenceData": [
     {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}}
   ]
@@ -173,7 +173,6 @@ You are responsible for:
 ```
 
 **⚠️ CRITICAL — MODE 3 Rules:**
-- `blockNumbers` MUST contain every R-label you cited in the answer
 - `referenceData` MUST contain every external-service item (Jira, Confluence, Drive, Gmail, Slack)
 - Do NOT omit knowledge citations just because API results are also present — cite BOTH
 - Synthesise both sources into ONE coherent answer; do not produce two separate sections
@@ -253,10 +252,10 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 <source_prioritization>
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
-2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [R1-0] inline
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [source](Block Web URL) inline
 3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
 4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
-   - Cite ALL relevant internal knowledge facts with inline [R1-0] citations AND include `blockNumbers`
+   - Cite ALL relevant internal knowledge facts with inline [source](Block Web URL) citations
    - Format ALL API results with links AND include them in `referenceData`
    - Weave both into one unified, coherent answer — do NOT skip citations just because API results exist
 </source_prioritization>
@@ -265,7 +264,7 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 **MOST CRITICAL RULES:**
 
 1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
-2. **CITE AFTER EACH CLAIM** — [R1-0] right after the fact it supports
+2. **CITE AFTER EACH CLAIM** — [source](Block Web URL) right after the fact it supports
 3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
 4. **BE COMPREHENSIVE** — thorough, complete answers
 5. **Format Professionally** — clean markdown hierarchy
@@ -279,209 +278,6 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 # ============================================================================
 # CONTEXT BUILDERS
 # ============================================================================
-
-def build_internal_context_for_response(
-    final_results,
-    virtual_record_id_to_result=None,
-    include_full_content=True,
-) -> str:
-    """
-    Build internal knowledge context formatted for response synthesis.
-
-    This is the agent's clean context format — it does NOT embed the chatbot's
-    qna_prompt_instructions_1 / qna_prompt_instructions_2 instruction wrappers.
-    Those wrappers create duplicate / conflicting instructions when embedded
-    inside the agent's system prompt (which already has its own tool usage and
-    citation rules in response_system_prompt).
-
-    What this function provides:
-    - context_metadata per record (same rich format as get_message_content):
-        File: X | Type: Y | URL: Z  — lets the LLM distinguish documents
-    - Block numbers (R1-0, R2-3 …) consistent with build_record_label_mapping
-      and _sync_block_numbers_from_get_message_content
-    - Block content
-
-    Block numbers must be pre-assigned on each result dict via
-    _sync_block_numbers_from_get_message_content() before this function is
-    called.  That is done by build_response_prompt() below.
-    """
-    if not final_results:
-        return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
-
-    from app.models.blocks import BlockType, GroupType
-
-    # ── Pre-scan: identify records that have ONLY image blocks ──────────────────
-    # For such records (e.g. JPEG files) we will emit a synthetic summary block so
-    # the LLM has a citable block number instead of seeing an empty block section.
-    _vid_non_image_count: dict = {}  # virtual_record_id -> count of non-image blocks
-    _vid_first_block: dict = {}       # virtual_record_id -> first result dict (for block_number)
-    _vid_summary: dict = {}           # virtual_record_id -> summary text to use as fallback
-
-    for _r in final_results:
-        _vid = _r.get("virtual_record_id") or _r.get("metadata", {}).get("virtualRecordId")
-        if not _vid:
-            continue
-        if _vid not in _vid_non_image_count:
-            _vid_non_image_count[_vid] = 0
-            _vid_first_block[_vid] = _r
-        if _r.get("block_type") != BlockType.IMAGE.value:
-            _vid_non_image_count[_vid] += 1
-
-    # For image-only records, extract summary text from semantic_metadata
-    if virtual_record_id_to_result:
-        for _vid, _count in _vid_non_image_count.items():
-            if _count == 0:
-                _rec = virtual_record_id_to_result.get(_vid)
-                if _rec:
-                    _sm = _rec.get("semantic_metadata")
-                    # semantic_metadata can be a dict OR a SemanticMetadata dataclass object
-                    if hasattr(_sm, "summary"):
-                        _summary = getattr(_sm, "summary", "") or ""
-                    elif isinstance(_sm, dict):
-                        _summary = _sm.get("summary", "") or ""
-                    else:
-                        _summary = ""
-                    _vid_summary[_vid] = _summary or _rec.get("record_name", "")
-
-    # ────────────────────────────────────────────────────────────────────────────
-
-    context_parts = [
-        "<context>",
-        "## Internal Knowledge Sources Available",
-        "",
-        "⚠️ **CRITICAL**: You MUST respond in Structured JSON with citations.",
-        "Use the EXACT Block Numbers shown below (e.g., [R1-0], [R2-3]) as citations.",
-        "",
-    ]
-
-    seen_virtual_record_ids: set = set()
-    seen_blocks: set = set()
-    # fallback_record_number is ONLY used when block_number is NOT pre-assigned
-    fallback_record_number = 0
-    # Track whether we have emitted at least one visible block for the current record
-    current_record_had_visible_block = False
-    current_record_virtual_id = None
-
-    for result in final_results:
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            metadata = result.get("metadata", {})
-            virtual_record_id = metadata.get("virtualRecordId")
-
-        if not virtual_record_id:
-            continue
-
-        if virtual_record_id not in seen_virtual_record_ids:
-            # ── Close previous record ────────────────────────────────────────
-            if seen_virtual_record_ids:
-                # If the previous record had no visible blocks (image-only),
-                # emit a synthetic summary block so the LLM has something to cite.
-                if not current_record_had_visible_block and current_record_virtual_id:
-                    _syn_num = _vid_first_block.get(current_record_virtual_id, {}).get("block_number")
-                    if not _syn_num:
-                        _syn_num = f"R{fallback_record_number}-0"
-                    _syn_summary = _vid_summary.get(current_record_virtual_id, "")
-                    if _syn_summary:
-                        context_parts.append(f"* Block Number: {_syn_num}")
-                        context_parts.append("* Block Type: summary")
-                        context_parts.append(f"* Block Content: {_syn_summary}")
-                        context_parts.append("")
-                context_parts.append("</record>")
-
-            seen_virtual_record_ids.add(virtual_record_id)
-            fallback_record_number += 1
-            current_record_virtual_id = virtual_record_id
-            current_record_had_visible_block = False
-
-            record = None
-            if virtual_record_id_to_result and virtual_record_id in virtual_record_id_to_result:
-                record = virtual_record_id_to_result[virtual_record_id]
-
-            metadata = result.get("metadata", {})
-
-            context_parts.append("<record>")
-
-            # ── context_metadata (rich format: "File: X | Type: Y | URL: Z") ──
-            # This is the SAME metadata the chatbot shows via qna_prompt_context.
-            # It tells the LLM exactly what document the blocks come from so it
-            # can correctly decide which record to cite or fetch_full_record.
-            context_metadata = ""
-            if record:
-                context_metadata = record.get("context_metadata", "")
-            if context_metadata:
-                context_parts.append(context_metadata)
-            else:
-                # Fallback: at least show record name so the LLM isn't blind
-                record_name = (
-                    (record.get("record_name") if record else None)
-                    or metadata.get("recordName")
-                    or metadata.get("origin")
-                    or "Unknown"
-                )
-                context_parts.append(f"File: {record_name}")
-
-            context_parts.append("Record blocks (sorted):")
-
-        result_id = f"{virtual_record_id}_{result.get('block_index', 0)}"
-        if result_id in seen_blocks:
-            continue
-        seen_blocks.add(result_id)
-
-        block_type = result.get("block_type")
-        block_index = result.get("block_index", 0)
-
-        # Use pre-assigned block_number (set by _sync_block_numbers_from_get_message_content).
-        # Fall back to a computed value only when not present.
-        block_number = result.get("block_number")
-        if not block_number:
-            block_number = f"R{fallback_record_number}-{block_index}"
-            result["block_number"] = block_number
-
-        content = result.get("content", "")
-
-        if block_type == BlockType.IMAGE.value:
-            continue
-
-        current_record_had_visible_block = True
-
-        if block_type == GroupType.TABLE.value:
-            table_summary, child_results = result.get("content", ("", []))
-            context_parts.append(f"* Block Group Number: {block_number}")
-            context_parts.append("* Block Group Type: table")
-            context_parts.append(f"* Table Summary: {table_summary}")
-            context_parts.append("* Table Rows/Blocks:")
-            if isinstance(child_results, list):
-                for child in child_results[:5]:
-                    child_block_number = child.get("block_number")
-                    if not child_block_number:
-                        child_block_number = f"R{fallback_record_number}-{child.get('block_index', 0)}"
-                        child["block_number"] = child_block_number
-                    context_parts.append(f"  - Block Number: {child_block_number}")
-                    context_parts.append(f"  - Block Content: {child.get('content', '')}")
-        else:
-            context_parts.append(f"* Block Number: {block_number}")
-            context_parts.append(f"* Block Type: {block_type}")
-            context_parts.append(f"* Block Content: {content}")
-
-        context_parts.append("")
-
-    # ── Close the last record ────────────────────────────────────────────────
-    if seen_virtual_record_ids:
-        if not current_record_had_visible_block and current_record_virtual_id:
-            _syn_num = _vid_first_block.get(current_record_virtual_id, {}).get("block_number")
-            if not _syn_num:
-                _syn_num = f"R{fallback_record_number}-0"
-            _syn_summary = _vid_summary.get(current_record_virtual_id, "")
-            if _syn_summary:
-                context_parts.append(f"* Block Number: {_syn_num}")
-                context_parts.append("* Block Type: summary")
-                context_parts.append(f"* Block Content: {_syn_summary}")
-                context_parts.append("")
-        context_parts.append("</record>")
-
-    context_parts.append("</context>")
-
-    return "\n".join(context_parts)
 
 
 def build_conversation_history_context(previous_conversations, max_history=5) -> str:
@@ -503,55 +299,8 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
     return "\n".join(history_parts)
 
 
-def _sync_block_numbers_from_get_message_content(final_results: List[Dict[str, Any]]) -> None:
-    """
-    Sync block_number on each result to match what get_message_content() assigned.
 
-    get_message_content() assigns block numbers internally as it formats blocks.
-    This function replicates that numbering logic to ensure result["block_number"]
-    matches the R-markers in the formatted text.
-
-    Logic (from chat_helpers.py get_message_content()):
-        seen_virtual_record_ids = set()
-        record_number = 1
-        for i, result in enumerate(flattened_results):
-            virtual_record_id = result.get("virtual_record_id")
-            if virtual_record_id not in seen_virtual_record_ids:
-                if i > 0:
-                    record_number += 1
-                seen_virtual_record_ids.add(virtual_record_id)
-            block_number = f"R{record_number}-{block_index}"
-    """
-    seen_virtual_record_ids = set()
-    record_number = 1
-
-    for i, result in enumerate(final_results):
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
-
-        if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
-            if i > 0:
-                record_number += 1
-            seen_virtual_record_ids.add(virtual_record_id)
-
-        block_index = result.get("block_index", 0)
-        result["block_number"] = f"R{record_number}-{block_index}"
-        BLOCK_GROUP_CONTENT_LENGTH = 2
-        # Also sync child results in table blocks
-        from app.models.blocks import GroupType
-        block_type = result.get("block_type", "")
-        if block_type == GroupType.TABLE.value:
-            content = result.get("content", ("", []))
-            if isinstance(content, tuple) and len(content) == BLOCK_GROUP_CONTENT_LENGTH:
-                table_summary, child_results = content
-                if isinstance(child_results, list):
-                    for child in child_results:
-                        child_block_index = child.get("block_index", 0)
-                        child["block_number"] = f"R{record_number}-{child_block_index}"
-
-
-def build_record_label_mapping(final_results: List[Dict[str, Any]]) -> Dict[str, str]:
+def build_record_label_mapping(final_results: list[dict[str, Any]]) -> dict[str, str]:
     """
     Build a mapping from R-labels (e.g. "R1", "R2") to actual virtual_record_ids.
 
@@ -561,7 +310,7 @@ def build_record_label_mapping(final_results: List[Dict[str, Any]]) -> Dict[str,
     Returns:
         {"R1": "uuid-for-first-record", "R2": "uuid-for-second-record", ...}
     """
-    label_to_vid: Dict[str, str] = {}
+    label_to_vid: dict[str, str] = {}
     seen: set = set()
     record_number = 1
 
@@ -620,15 +369,16 @@ def build_response_prompt(state, max_iterations=30) -> str:
     # is available without duplicating the full context.
     if state.get("qna_message_content"):
         internal_context = (
-            "Internal knowledge (records, block numbers, and content) has been "
-            "retrieved and is provided in the user message using the standard "
-            "R-label format (e.g. R1-0, R2-3). "
-            "Cite facts using these EXACT block numbers immediately after each claim."
+            "Internal knowledge (records, block indexes, block web URLs, and content) has been "
+            "retrieved and is provided in the user message. Each block has a Block Web URL. "
+            "Cite facts using markdown links: [source](Block Web URL). The system assigns citation numbers automatically. "
+            "CRITICAL: Copy the Block Web URL exactly as-is from the context — do NOT modify the record ID or any part of the URL."
         )
     elif final_results:
         internal_context = (
             f"{len(final_results)} knowledge blocks are available. "
-            "Cite each fact with its EXACT block number [R1-0][R2-3] immediately after the claim."
+            "Cite each fact using its EXACT Block Web URL as a markdown link: [source](Block Web URL). The system assigns citation numbers automatically. "
+            "CRITICAL: Copy the Block Web URL exactly as-is — do NOT modify the record ID or any part of the URL."
         )
     else:
         internal_context = (
@@ -675,7 +425,7 @@ def build_response_prompt(state, max_iterations=30) -> str:
     return complete_prompt
 
 
-def create_response_messages(state) -> List[Any]:
+def create_response_messages(state) -> list[Any]:
     """
     Create messages for response synthesis.
 
@@ -721,9 +471,9 @@ def create_response_messages(state) -> List[Any]:
     # 3. Current user message
     #
     # PREFERRED PATH: respond_node pre-built the user message using get_message_content()
-    # — the exact same function the chatbot uses.  This produces consistent R-label block
-    # numbers, rich context_metadata per record, the standard tool instructions, and the
-    # correct JSON output-format instructions.  Use it directly as the HumanMessage.
+    # — the exact same function the chatbot uses.  This produces consistent block web URLs,
+    # rich context_metadata per record, the standard tool instructions, and the correct
+    # JSON output-format instructions.  Use it directly as the HumanMessage.
     #
     # FALLBACK PATH: no retrieval results (pure API-tool query or direct answer) — use
     # the bare query with a short JSON reminder appended.
@@ -757,9 +507,9 @@ def create_response_messages(state) -> List[Any]:
 
         if has_knowledge or has_knowledge_tool:
             query_with_context += (
-                "\n\n**⚠️ Respond in JSON format. Cite each fact with its EXACT block number "
-                "[R1-0][R2-3] immediately after the claim. Use DIFFERENT block numbers for "
-                "DIFFERENT facts. Include blockNumbers array.**"
+                "\n\n**⚠️ Respond in JSON format. Cite each fact using its Block Web URL as a markdown link: "
+                "[source](Block Web URL). The system assigns citation numbers automatically. Use DIFFERENT block URLs for "
+                "DIFFERENT facts.**"
             )
 
         messages.append(HumanMessage(content=query_with_context))
@@ -767,7 +517,7 @@ def create_response_messages(state) -> List[Any]:
     return messages
 
 
-def _format_reference_data_for_response(all_reference_data: List[Dict]) -> str:
+def _format_reference_data_for_response(all_reference_data: list[dict]) -> str:
     """Format reference data for inclusion in response messages"""
     if not all_reference_data:
         return ""
@@ -794,10 +544,10 @@ def _format_reference_data_for_response(all_reference_data: List[Dict]) -> str:
 # RESPONSE MODE DETECTION
 # ============================================================================
 
-def detect_response_mode(response_content) -> Tuple[str, Any]:
+def detect_response_mode(response_content) -> tuple[str, Any]:
     """Detect if response is structured JSON or conversational"""
     if isinstance(response_content, dict):
-        if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content or "blockNumbers" in response_content):
+        if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content):
             return "structured", response_content
         return "conversational", response_content
 

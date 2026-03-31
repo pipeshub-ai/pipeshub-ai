@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -10,13 +11,13 @@ class FetchFullRecordArgs(BaseModel):
     """
     Required tool args for fetching full records.
     """
-    record_ids: List[str] = Field(
+    record_ids: list[str] = Field(
         ...,
-        description="List of IDs (or virtualRecordIds) of the records to fetch. Pass all record IDs that need to be fetched in a single call. Prefer the IDs found in chunk metadata."
+        description="List of recordIds of the records to fetch. Pass ALL record IDs in a single call — do NOT make multiple separate calls."
     )
     reason: str = Field(
         default="Fetching full record content for comprehensive answer",
-        description="Why the full records are needed (explain the gap in the provided blocks)."
+        description="Brief explanation of why the full records are needed (e.g., 'query asks for complete details')."
     )
 
 class FetchBlockGroupArgs(BaseModel):
@@ -33,9 +34,9 @@ class FetchBlockGroupArgs(BaseModel):
     )
 
 async def _fetch_multiple_records_impl(
-    record_ids: List[str],
-    virtual_record_id_to_result: Dict[str, Any]
-) -> Dict[str, Any]:
+    record_ids: list[str],
+    virtual_record_id_to_result: dict[str, Any]
+) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
     Returns:
@@ -72,27 +73,22 @@ async def _fetch_multiple_records_impl(
 
 
 # Option 1: Create the tool without the decorator and handle runtime kwargs manually
-def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -> Callable:
+def create_fetch_full_record_tool(virtual_record_id_to_result: dict[str, Any]) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
-    async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
-        """
-        Retrieve the complete content of multiple records (all blocks/groups) for better answering.
-        Pass all record IDs at once instead of making multiple separate calls.
+    async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
+        """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
 
         Args:
-            record_ids: List of virtual record IDs to fetch (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19"])
-            reason: Clear explanation of why the full records are needed
+            record_ids: List of recordIds to fetch (e.g., ["ba4cf9ed-d254-4989-a817-adf0475250cd"])
+            reason: Brief explanation of why the full records are needed
 
-        Returns:
-        {"ok": true, "records": [...], "record_count": N, "not_found": [...]}
-        or {"ok": false, "error": "..."}.
+        Returns: Complete content of the records or {"ok": false, "error": "..."}.
         """
         try:
-            result = await _fetch_multiple_records_impl(record_ids, virtual_record_id_to_result)
-            return result
+            return await _fetch_multiple_records_impl(record_ids, virtual_record_id_to_result)
         except Exception as e:
             # Return error as dict
             return {"ok": False, "error": f"Failed to fetch records: {str(e)}"}
@@ -100,7 +96,7 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     return fetch_full_record_tool
 
 
-def create_record_for_fetch_block_group(record: Dict[str, Any],block_group: Dict[str, Any],blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def create_record_for_fetch_block_group(record: dict[str, Any],block_group: dict[str, Any],blocks: list[dict[str, Any]]) -> dict[str, Any]:
     block_container = {
         "blocks": blocks,
         "block_groups": [block_group]
