@@ -192,7 +192,7 @@ dependencies = [
     "etcd3==0.12.0",
     "evernote3>=1.25.14",
     "fastapi==0.115.6",
-    "fastmcp==3.0.2",
+    "fastmcp==3.2.0",
     "fastembed==0.5.1",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
