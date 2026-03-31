@@ -51,7 +51,7 @@ export class MailController {
     templateData: Record<string, any>,
   ) {
     let emailContent;
-    this.logger.info('emailTemplateType', emailTemplateType);
+    this.logger.debug('emailTemplateType', emailTemplateType);
     switch (emailTemplateType) {
       case EmailTemplateType.LoginWithOtp:
         emailContent = loginWithOTPRequest(templateData);
