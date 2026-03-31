@@ -21,7 +21,7 @@ from app.connectors.sources.s3.base_connector import (
     parse_parent_external_id,
 )
 from app.connectors.sources.s3.connector import S3Connector
-from app.models.entities import RecordType
+from app.models.entities import RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,13 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
+    u = User(
+        email="user@test.com",
+        org_id="org-s3-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
+    proc.get_user_by_user_id = AsyncMock(return_value=u)
     proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
         connector_id="s3-conn-1",
         name="S3 Connector",

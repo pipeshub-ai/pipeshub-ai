@@ -337,7 +337,6 @@ class GCSConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.bucket_name: str | None = None
-        self.created_by: str | None = None
         self.project_id: str | None = None
 
         # Initialize filter collections

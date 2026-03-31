@@ -76,8 +76,12 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
-    u = MagicMock()
-    u.email = "user@test.com"
+    u = User(
+        email="user@test.com",
+        org_id="org-s3-cov",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
     proc.get_user_by_user_id = AsyncMock(return_value=u)
     return proc
 

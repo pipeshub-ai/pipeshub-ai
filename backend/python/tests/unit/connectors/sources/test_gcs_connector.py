@@ -738,7 +738,7 @@ class TestCreateRecordGroupsForBuckets95:
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         tx = AsyncMock()
-        tx.get_user_by_id = AsyncMock(side_effect=Exception("db error"))
+        tx.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
         provider = MagicMock()
 
         @asynccontextmanager
@@ -1291,7 +1291,7 @@ class TestCreateGcsPermissions95:
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         tx = AsyncMock()
-        tx.get_user_by_id = AsyncMock(side_effect=Exception("db error"))
+        tx.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
         provider = MagicMock()
 
         @asynccontextmanager

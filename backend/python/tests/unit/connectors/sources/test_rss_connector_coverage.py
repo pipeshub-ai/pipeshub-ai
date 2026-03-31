@@ -17,7 +17,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.rss.connector import RSSConnector
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -30,8 +30,12 @@ def _make_connector():
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.get_all_active_users = AsyncMock(return_value=[])
-    _creator = MagicMock()
-    _creator.email = "user@test.com"
+    _creator = User(
+        email="user@test.com",
+        org_id="org-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
     dep.get_user_by_user_id = AsyncMock(return_value=_creator)
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()

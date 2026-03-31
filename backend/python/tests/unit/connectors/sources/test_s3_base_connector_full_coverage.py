@@ -28,7 +28,7 @@ from app.connectors.sources.s3.base_connector import (
     parse_parent_external_id,
 )
 from app.connectors.sources.s3.connector import S3Connector
-from app.models.entities import FileRecord, Record, RecordType
+from app.models.entities import FileRecord, Record, RecordType, User
 
 
 @pytest.fixture()
@@ -45,8 +45,12 @@ def mock_dep():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
-    u = MagicMock()
-    u.email = "user@test.com"
+    u = User(
+        email="user@test.com",
+        org_id="org-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
     proc.get_user_by_user_id = AsyncMock(return_value=u)
     return proc
 
@@ -235,7 +239,7 @@ class TestCreateS3Permissions:
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
-        mock_tx.get_user_by_id = AsyncMock(side_effect=Exception("DB error"))
+        mock_tx.get_user_by_user_id = AsyncMock(side_effect=Exception("DB error"))
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
@@ -245,7 +249,7 @@ class TestCreateS3Permissions:
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
-        mock_tx.get_user_by_id = AsyncMock(return_value={"email": ""})
+        mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": ""})
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"

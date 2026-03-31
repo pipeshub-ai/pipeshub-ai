@@ -298,7 +298,6 @@ class AzureFilesConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.share_name: str | None = None
-        self.created_by: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
 
