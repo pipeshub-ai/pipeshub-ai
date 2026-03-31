@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { FernetFileTokenStore } from "./token_store";
+import { FernetFileTokenStore } from "../auth/token_store";
 
 export const DAEMON_CONFIG_FILENAME = "daemon.json";
 
