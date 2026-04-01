@@ -8,7 +8,10 @@ import {
   BackendClientError,
   knowledgeBaseRecordDocumentKey,
 } from "./api/backend_client";
-import { daemonConfigComplete, loadDaemonConfig } from "./config/daemon_config";
+import {
+  daemonConfigComplete,
+  loadDaemonConfig,
+} from "./config/daemon_config";
 import { CredentialStore } from "./auth/credential_store";
 import { loadEnvFiles } from "./cli/env";
 import {
@@ -297,23 +300,29 @@ program
     const foreground = Boolean(opts.foreground);
     const store = new CredentialStore();
     const manager = new AuthManager(store);
-    if (!withBackend) {
-      if (!daemonConfigComplete(loadDaemonConfig())) {
-        console.error(
-          "No sync root or connector in config. Run: pipeshub setup (login not required for local watch)."
-        );
-        process.exit(1);
-      }
-    } else if (!(await manager.isLoggedIn())) {
+    const loggedIn = await manager.isLoggedIn();
+    if (withBackend && !loggedIn) {
       console.error("Not logged in. Run: pipeshub login");
       process.exit(1);
     }
+    if (!withBackend && !loggedIn) {
+      if (!daemonConfigComplete(loadDaemonConfig())) {
+        console.error(
+          "No sync root or connector in config. Run: pipeshub login (to pick a connector) or pipeshub setup."
+        );
+        process.exit(1);
+      }
+    }
     try {
-      await runSyncAsync(withBackend ? manager : undefined, {
+      await runSyncAsync(loggedIn ? manager : undefined, {
         rootOverride: rootArg?.trim() || undefined,
         withBackend,
         foreground,
       });
+      // Logged-in flows keep a Socket.IO RPC connection open; exit explicitly so the CLI returns to the shell.
+      if (!foreground) {
+        process.exit(0);
+      }
     } catch (e) {
       if (e instanceof BackendClientError) {
         let hint = "";

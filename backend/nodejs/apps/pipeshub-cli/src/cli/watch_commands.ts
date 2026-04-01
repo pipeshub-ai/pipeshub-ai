@@ -11,16 +11,158 @@ import {
   FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY,
   FOLDER_SYNC_SYNC_ROOT_KEY,
 } from "../api/backend_client";
-import { loadDaemonConfig } from "../config/daemon_config";
+import {
+  daemonConfigComplete,
+  loadDaemonConfig,
+  saveDaemonConfig,
+} from "../config/daemon_config";
 import {
   readAllowedFileExtensionsFromEtcd,
+  readEnableManualSyncFromEtcd,
   readIncludeSubfoldersFromEtcd,
 } from "../sync/folder_sync_filters";
 import { FileWatcher } from "../sync/file_watcher";
 import type { FileEvent } from "../sync/watcher_state";
 import { watcherEventsJournalPath } from "../sync/watcher_sync_journal";
 import { createBackendClient } from "./context";
+import { pickFolderSyncConnectorForRun } from "./folder_sync_connector_picker";
 import { validateSyncRoot } from "./setup_commands";
+
+const MIN_SCHEDULE_INTERVAL_MINUTES = 5;
+
+type SyncStrategyChoice = "MANUAL" | "SCHEDULED";
+
+function buildSyncPayloadForRun(args: {
+  rootPath: string;
+  includeSubfolders: boolean;
+  strategy: SyncStrategyChoice;
+  intervalMinutes?: number;
+  etcd: Record<string, unknown>;
+}): Record<string, unknown> {
+  const top = args.etcd["sync"];
+  const existingSync =
+    top && typeof top === "object" && top !== null
+      ? { ...(top as Record<string, unknown>) }
+      : {};
+  const existingScheduled = existingSync["scheduledConfig"];
+  const scheduledBase =
+    existingScheduled &&
+    typeof existingScheduled === "object" &&
+    existingScheduled !== null
+      ? { ...(existingScheduled as Record<string, unknown>) }
+      : {};
+  const out: Record<string, unknown> = {
+    [FOLDER_SYNC_SYNC_ROOT_KEY]: args.rootPath,
+    [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: args.includeSubfolders,
+    selectedStrategy: args.strategy,
+  };
+  if (args.strategy === "SCHEDULED") {
+    out.scheduledConfig = {
+      ...scheduledBase,
+      intervalMinutes: args.intervalMinutes ?? 60,
+    };
+  }
+  return out;
+}
+
+function normalizedStrategyFromEtcd(etcd: Record<string, unknown>): SyncStrategyChoice {
+  const sync = etcd["sync"] as Record<string, unknown> | undefined;
+  const raw = String(sync?.selectedStrategy ?? "").toUpperCase();
+  if (raw === "SCHEDULED") {
+    return "SCHEDULED";
+  }
+  return "MANUAL";
+}
+
+function readIntervalMinutesFromEtcd(etcd: Record<string, unknown>): number | undefined {
+  const sync = etcd["sync"] as Record<string, unknown> | undefined;
+  const sc = sync?.scheduledConfig as Record<string, unknown> | undefined;
+  const m = sc?.intervalMinutes;
+  if (typeof m === "number" && Number.isFinite(m)) {
+    return m;
+  }
+  return undefined;
+}
+
+/** Interactive MANUAL/SCHEDULED + interval; `null` if user cancelled. */
+async function promptInteractiveSyncStrategy(): Promise<{
+  strategy: SyncStrategyChoice;
+  intervalMinutes: number;
+} | null> {
+  let strategy: SyncStrategyChoice = "MANUAL";
+  let intervalMinutes = 60;
+  const { syncMode } = await prompts({
+    type: "select",
+    name: "syncMode",
+    message: "Server sync type",
+    choices: [
+      { title: "Manual (trigger sync from CLI/app)", value: "MANUAL" },
+      { title: "Scheduled (repeat full sync on an interval)", value: "SCHEDULED" },
+    ],
+    initial: 0,
+  });
+  if (syncMode === undefined) {
+    return null;
+  }
+  if (syncMode === "SCHEDULED") {
+    strategy = "SCHEDULED";
+    for (;;) {
+      const { minutes } = await prompts({
+        type: "number",
+        name: "minutes",
+        message: `Sync interval (minutes, minimum ${MIN_SCHEDULE_INTERVAL_MINUTES})`,
+        initial: 60,
+        min: MIN_SCHEDULE_INTERVAL_MINUTES,
+      });
+      if (minutes === undefined) {
+        return null;
+      }
+      const m = Number(minutes);
+      if (
+        Number.isFinite(m) &&
+        m >= MIN_SCHEDULE_INTERVAL_MINUTES &&
+        Number.isInteger(m)
+      ) {
+        intervalMinutes = m;
+        break;
+      }
+      console.log(
+        `Enter a whole number ≥ ${MIN_SCHEDULE_INTERVAL_MINUTES}.`
+      );
+    }
+  } else if (syncMode !== "MANUAL") {
+    return null;
+  }
+  return { strategy, intervalMinutes };
+}
+
+/**
+ * When manual-only indexing is enabled on the connector, keep server sync mode from config (no prompts).
+ * Otherwise ask MANUAL vs SCHEDULED (and interval for scheduled).
+ */
+async function resolveSyncStrategyForRun(
+  etcd: Record<string, unknown>
+): Promise<{
+  strategy: SyncStrategyChoice;
+  intervalMinutes: number;
+} | null> {
+  if (readEnableManualSyncFromEtcd(etcd) === true) {
+    const strategy = normalizedStrategyFromEtcd(etcd);
+    const rawInterval = readIntervalMinutesFromEtcd(etcd);
+    const intervalMinutes =
+      strategy === "SCHEDULED"
+        ? Math.max(
+            MIN_SCHEDULE_INTERVAL_MINUTES,
+            Math.floor(rawInterval ?? 60)
+          )
+        : 60;
+    console.log(
+      "Manual indexing only is on for this connector — using existing server sync mode from config (no prompt)."
+    );
+    return { strategy, intervalMinutes };
+  }
+  return promptInteractiveSyncStrategy();
+}
 
 export type WatchSpawnConfig = {
   connectorInstanceId: string;
@@ -129,23 +271,81 @@ export async function runSyncAsync(
   const foreground = opts.foreground === true;
   const dc = loadDaemonConfig();
 
+  const loggedIn = Boolean(manager && (await manager.isLoggedIn()));
+
+  let cid: string;
   let rootPath: string;
-  if (opts.rootOverride) {
-    rootPath = validateSyncRoot(opts.rootOverride);
-  } else if (dc.sync_root) {
-    rootPath = validateSyncRoot(dc.sync_root);
+  let includeSubfolders: boolean;
+  let allowedExtensions: string[] | undefined;
+  let isActive = false;
+  /** Connector etcd blob (for merging sync strategy on PUT). */
+  let etcdForSync: Record<string, unknown> = {};
+  let api: BackendClient | undefined;
+  let base: string | undefined;
+
+  if (loggedIn && manager) {
+    const client = await createBackendClient(manager);
+    api = client.api;
+    base = client.base;
+    const picked = await pickFolderSyncConnectorForRun(api);
+    cid = picked.id.trim();
+    if (opts.rootOverride?.trim()) {
+      rootPath = validateSyncRoot(opts.rootOverride);
+    } else {
+      rootPath = validateSyncRoot(picked.syncRoot);
+    }
+    try {
+      const cfg = await api.getConnectorConfig(cid);
+      isActive = cfg.isActive;
+      etcdForSync = cfg.etcd;
+      const fromEtcd = readIncludeSubfoldersFromEtcd(cfg.etcd);
+      includeSubfolders = fromEtcd !== undefined ? fromEtcd : true;
+      allowedExtensions = readAllowedFileExtensionsFromEtcd(cfg.etcd);
+    } catch (e) {
+      if (e instanceof BackendClientError) {
+        console.warn(
+          `Could not read connector config (HTTP ${e.status ?? "?"}). ` +
+            `Using include_subfolders default true.`
+        );
+        try {
+          const inst = await api.getConnectorInstance(cid);
+          isActive = inst.isActive;
+        } catch (e2) {
+          throw e2;
+        }
+        includeSubfolders = true;
+        allowedExtensions = undefined;
+        etcdForSync = {};
+      } else {
+        throw e;
+      }
+    }
+    saveDaemonConfig({
+      sync_root: rootPath,
+      connector_instance_id: cid,
+      include_subfolders: includeSubfolders,
+    });
   } else {
-    throw new Error(
-      "No sync root. Run: pipeshub setup  (or pass a path argument)."
-    );
+    if (!daemonConfigComplete(dc)) {
+      throw new Error(
+        "No sync root or connector in config. Run: pipeshub login (to pick a connector) or pipeshub setup."
+      );
+    }
+    cid = dc.connector_instance_id.trim();
+    if (opts.rootOverride?.trim()) {
+      rootPath = validateSyncRoot(opts.rootOverride);
+    } else if (dc.sync_root?.trim()) {
+      rootPath = validateSyncRoot(dc.sync_root);
+    } else {
+      throw new Error(
+        "No sync root. Run: pipeshub setup  (or pass a path argument)."
+      );
+    }
+    includeSubfolders = dc.include_subfolders ?? true;
+    allowedExtensions = undefined;
   }
-  if (!dc.connector_instance_id?.trim()) {
-    throw new Error("No connector linked. Run: pipeshub setup");
-  }
-  const cid = dc.connector_instance_id.trim();
 
   if (!withBackend) {
-    const includeSubfolders = dc.include_subfolders ?? true;
     const { ok } = await prompts({
       type: "confirm",
       name: "ok",
@@ -156,6 +356,64 @@ export async function runSyncAsync(
       console.log("Cancelled.");
       return;
     }
+
+    /** Logged-in run: server sync mode + path, enable/resync, then local watch (no file-event POST). */
+    if (loggedIn && api) {
+      const resolved = await resolveSyncStrategyForRun(etcdForSync);
+      if (!resolved) {
+        console.log("Cancelled.");
+        return;
+      }
+      const { strategy, intervalMinutes } = resolved;
+      const fullSync = true;
+      const syncPayload = buildSyncPayloadForRun({
+        rootPath,
+        includeSubfolders,
+        strategy,
+        intervalMinutes:
+          strategy === "SCHEDULED" ? intervalMinutes : undefined,
+        etcd: etcdForSync,
+      });
+      try {
+        await api.updateConnectorFiltersSync(cid, {
+          sync: syncPayload,
+        });
+      } catch (e) {
+        if (e instanceof BackendClientError) {
+          const detail = `${e.message}`.toLowerCase();
+          const activeHint =
+            e.status === 400 && detail.includes("active")
+              ? " Disable the connector in the app to update path or sync mode on the server, or continue if settings already match."
+              : "";
+          console.warn(
+            `Could not update sync settings on the server (HTTP ${e.status ?? "?"}).${activeHint} ` +
+              `Continuing — ensure Local folder path and sync mode match the app if sync fails.`
+          );
+        } else {
+          throw e;
+        }
+      }
+      try {
+        if (!isActive) {
+          await api.toggleConnectorSync(cid, { fullSync });
+          console.log("Sync enabled on the server; a full sync has been queued.");
+        } else {
+          await api.resyncConnectorRecords(cid, { fullSync });
+          console.log("Full sync has been queued on the server.");
+        }
+      } catch (e) {
+        if (e instanceof BackendClientError) {
+          let hint = "";
+          if (e.status === 401 || e.status === 403) {
+            hint =
+              " Your OAuth client may need CONNECTOR_SYNC and KB_WRITE (same as pipeshub run --with-backend).";
+          }
+          throw new Error(`${e.message}${hint}`);
+        }
+        throw e;
+      }
+    }
+
     if (!foreground) {
       throwIfWatcherAlreadyRunning(cid);
       const pid = spawnWatchWorker({
@@ -176,45 +434,25 @@ export async function runSyncAsync(
     return;
   }
 
-  if (!manager) {
-    throw new Error("Auth manager required");
+  if (!manager || !api || !base) {
+    throw new Error("Auth manager required for --with-backend");
   }
 
-  const { api, base } = await createBackendClient(manager);
   const fullSync = true;
 
-  let includeSubfolders = dc.include_subfolders ?? true;
-  let allowedExtensions: string[] | undefined;
-  let isActive = false;
-  try {
-    const cfg = await api.getConnectorConfig(cid);
-    isActive = cfg.isActive;
-    const fromEtcd = readIncludeSubfoldersFromEtcd(cfg.etcd);
-    if (fromEtcd !== undefined) {
-      includeSubfolders = fromEtcd;
-    }
-    allowedExtensions = readAllowedFileExtensionsFromEtcd(cfg.etcd);
-  } catch (e) {
-    if (e instanceof BackendClientError) {
-      console.warn(
-        `Could not read connector config (HTTP ${e.status ?? "?"}). ` +
-          `Using include_subfolders from daemon.json (if set) or default true.`
-      );
-      try {
-        const inst = await api.getConnectorInstance(cid);
-        isActive = inst.isActive;
-      } catch (e2) {
-        throw e2;
-      }
-    } else {
-      throw e;
-    }
+  const resolved = await resolveSyncStrategyForRun(etcdForSync);
+  if (!resolved) {
+    console.log("Cancelled.");
+    return;
   }
+  const { strategy, intervalMinutes } = resolved;
 
   const { ok } = await prompts({
     type: "confirm",
     name: "ok",
-    message: `Sync and watch this folder?\n  ${rootPath}\n  Include subfolders: ${includeSubfolders ? "yes" : "no"}`,
+    message:
+      `Sync and watch this folder?\n  ${rootPath}\n  Include subfolders: ${includeSubfolders ? "yes" : "no"}\n` +
+      `  Server sync: ${strategy === "SCHEDULED" ? `scheduled every ${intervalMinutes} min` : "manual"}`,
     initial: true,
   });
   if (ok !== true) {
@@ -222,18 +460,28 @@ export async function runSyncAsync(
     return;
   }
 
+  const syncPayload = buildSyncPayloadForRun({
+    rootPath,
+    includeSubfolders,
+    strategy,
+    intervalMinutes: strategy === "SCHEDULED" ? intervalMinutes : undefined,
+    etcd: etcdForSync,
+  });
+
   try {
     await api.updateConnectorFiltersSync(cid, {
-      sync: {
-        [FOLDER_SYNC_SYNC_ROOT_KEY]: rootPath,
-        [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: includeSubfolders,
-      },
+      sync: syncPayload,
     });
   } catch (e) {
     if (e instanceof BackendClientError) {
+      const detail = `${e.message}`.toLowerCase();
+      const activeHint =
+        e.status === 400 && detail.includes("active")
+          ? " Disable the connector in the app to change sync settings, then try again."
+          : "";
       console.warn(
-        `Could not update folder path on the server (HTTP ${e.status ?? "?"}). ` +
-          `Continuing with sync — ensure Local folder path matches in the app if sync fails.`
+        `Could not update sync settings on the server (HTTP ${e.status ?? "?"}).${activeHint} ` +
+          `Continuing with sync — ensure Local folder path and sync mode match the app if needed.`
       );
     } else {
       throw e;
