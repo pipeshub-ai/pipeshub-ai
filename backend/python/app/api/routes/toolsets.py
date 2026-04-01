@@ -2020,6 +2020,89 @@ async def get_my_toolsets(
     }
 
 
+async def get_authenticated_toolsets(
+    user_id: str,
+    org_id: str,
+    config_service: ConfigurationService,
+    registry: ToolsetRegistry,
+) -> list[dict[str, Any]]:
+    """
+    Helper method to get all authenticated toolsets for a user.
+    Returns only toolsets where the user has completed authentication.
+
+    Args:
+        user_id: User ID
+        org_id: Organization ID
+        config_service: Configuration service for etcd access
+        registry: Toolset registry instance
+
+    Returns:
+        List of authenticated toolsets with full tool metadata
+    """
+
+    # Load admin-created instances
+    try:
+        instances = await _load_toolset_instances(org_id, config_service)
+    except Exception as e:
+        logger.error(f"Failed to load toolset instances from etcd: {e}")
+        return []
+
+    # Filter by org (safety check)
+    instances = [i for i in instances if i.get("orgId") == org_id]
+
+    if not instances:
+        return []
+
+    # Fetch user auth for all instances in parallel
+    async def _fetch_user_auth(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        iid = inst.get("_id", "")
+        try:
+            path = _get_user_auth_path(iid, user_id)
+            auth = await config_service.get_config(path, default=None)
+            return inst, auth
+        except Exception:
+            return inst, None
+
+    results = await asyncio.gather(*[_fetch_user_auth(i) for i in instances])
+
+    authenticated_toolsets = []
+    for inst, user_auth in results:
+        # Only include authenticated toolsets
+        if not user_auth or not user_auth.get("isAuthenticated", False):
+            continue
+
+        toolset_type = inst.get("toolsetType", "")
+        meta = registry.get_toolset_metadata(toolset_type)
+
+        # Build tools list with full metadata
+        tools = []
+        if meta:
+            for t in meta.get("tools", []):
+                tools.append({
+                    "name": t.get("name", ""),
+                    "fullName": f"{toolset_type}.{t.get('name', '')}",
+                    "description": t.get("description", ""),
+                    "toolsetName": toolset_type,
+                })
+
+        authenticated_toolsets.append({
+            "instanceId": inst.get("_id"),
+            "name": inst.get("instanceName"),
+            "toolsetType": toolset_type,
+            "authType": inst.get("authType", "NONE"),
+            "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
+            "description": meta.get("description", "") if meta else "",
+            "iconPath": meta.get("icon_path", "") if meta else "",
+            "category": meta.get("category", "app") if meta else "app",
+            "toolCount": len(tools),
+            "tools": tools,
+            "isAuthenticated": True,
+            "createdAtTimestamp": inst.get("createdAtTimestamp"),
+            "updatedAtTimestamp": inst.get("updatedAtTimestamp"),
+        })
+
+    return authenticated_toolsets
+
 # ============================================================================
 # User Authentication Against Instances
 # ============================================================================

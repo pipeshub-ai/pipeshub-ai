@@ -12,6 +12,11 @@ export const CHAT_MODES: ChatMode[] = [
     name: 'Standard',
     description: 'Balanced responses with moderate creativity',
   },
+  {
+    id: 'agent',
+    name: 'Agent',
+    description: 'Tool-using agent with planning and multi-step reasoning',
+  },
 ];
 
 export const normalizeDisplayName = (name: string): string =>
