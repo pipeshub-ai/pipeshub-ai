@@ -383,6 +383,23 @@ class FolderSyncConnector(BaseConnector):
     def _record_group_external_id(self) -> str:
         return f"folder_sync:{self.connector_id}"
 
+    def _external_record_id_for_rel_path(self, rel_path: str) -> str:
+        normalized = rel_path.strip().replace("\\", "/")
+        return hashlib.sha256(
+            f"{self.connector_id}:{normalized}".encode("utf-8")
+        ).hexdigest()
+
+    def _resolve_event_file_path(self, root: Path, rel_path: str) -> Path:
+        candidate = (root / rel_path).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Path escapes sync root: {rel_path}",
+            ) from exc
+        return candidate
+
     async def _reload_sync_settings(self) -> None:
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
@@ -479,8 +496,9 @@ class FolderSyncConnector(BaseConnector):
         mime = guessed or MimeTypes.UNKNOWN.value
         ext = abs_path.suffix.lower().lstrip(".") or None
 
+        record_id = str(uuid.uuid4())
         file_record = FileRecord(
-            id=str(uuid.uuid4()),
+            id=record_id,
             record_name=abs_path.name,
             record_type=RecordType.FILE,
             record_group_type=RecordGroupType.DRIVE,
@@ -495,7 +513,9 @@ class FolderSyncConnector(BaseConnector):
             updated_at=mtime_ms,
             source_created_at=mtime_ms,
             source_updated_at=mtime_ms,
-            weburl=str(abs_path.resolve()),
+            # Same-origin app route (see UPLOAD webUrl in kb_controllers); a bare filesystem path is
+            # interpreted by the browser as a path on the web host and returns 404.
+            weburl=f"/record/{record_id}",
             size_in_bytes=st.st_size,
             is_file=True,
             extension=ext,
@@ -519,6 +539,168 @@ class FolderSyncConnector(BaseConnector):
                 )
             )
         return file_record, perms
+
+    async def _ensure_owner_and_record_group(
+        self,
+        root: Path,
+    ) -> tuple[User, FilterCollection, FilterCollection, str]:
+        owner = await self._resolve_owner_user()
+        if not owner:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Folder Sync owner could not be resolved",
+            )
+        self._owner_user_for_permissions = owner
+
+        sync_filters, indexing_filters = await load_connector_filters(
+            self.config_service, "foldersync", self.connector_id, self.logger
+        )
+
+        await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
+
+        rg_external = self._record_group_external_id()
+        record_group = RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name=f"Folder sync — {root.name}",
+            external_group_id=rg_external,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            group_type=RecordGroupType.DRIVE,
+            web_url=f"file://{root}",
+        )
+        await self.data_entities_processor.on_new_record_groups(
+            [
+                (
+                    record_group,
+                    [
+                        Permission(
+                            external_id=owner.id,
+                            email=owner.email,
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                        )
+                    ],
+                )
+            ]
+        )
+
+        return owner, sync_filters, indexing_filters, rg_external
+
+    async def _delete_rel_path(self, rel_path: str, user_id: str) -> None:
+        external_id = self._external_record_id_for_rel_path(rel_path)
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_record_by_external_id(
+                self.connector_id, external_id, user_id
+            )
+
+    async def _upsert_rel_path(
+        self,
+        root: Path,
+        rel_path: str,
+        rg_external: str,
+        sync_filters: FilterCollection,
+        indexing_filters: FilterCollection,
+    ) -> bool:
+        abs_path = self._resolve_event_file_path(root, rel_path)
+        if abs_path.is_symlink() or not abs_path.is_file():
+            return False
+        if not self._extension_allowed(abs_path, sync_filters):
+            return False
+        st = abs_path.stat()
+        if not _folder_sync_passes_date_filters(st, sync_filters):
+            return False
+        await self.data_entities_processor.on_new_records(
+            [self._build_file_record(abs_path, root, rg_external, indexing_filters, st=st)]
+        )
+        return True
+
+    async def apply_file_event_batch(
+        self,
+        events: List[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        await self._reload_sync_settings()
+        root_raw = self.sync_root_path.strip()
+        if not root_raw:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Folder Sync sync_root_path is not configured",
+            )
+
+        ok_path, detail = _validate_host_path(root_raw)
+        if not ok_path:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Folder Sync cannot use sync_root_path: {detail}",
+            )
+
+        root = Path(detail)
+        processed = 0
+        deleted = 0
+
+        try:
+            owner, sync_filters, indexing_filters, rg_external = (
+                await self._ensure_owner_and_record_group(root)
+            )
+
+            for event in events:
+                event_type = str(event.get("type", "")).upper()
+                rel_path = str(event.get("path", "")).strip().replace("\\", "/")
+                old_rel_path = (
+                    str(event.get("oldPath", "")).strip().replace("\\", "/")
+                )
+
+                if not rel_path:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail="File event path is required",
+                    )
+                if event.get("isDirectory"):
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail="Directory events must be expanded client-side before replay",
+                    )
+
+                if event_type in {"CREATED", "MODIFIED"}:
+                    if await self._upsert_rel_path(
+                        root,
+                        rel_path,
+                        rg_external,
+                        sync_filters,
+                        indexing_filters,
+                    ):
+                        processed += 1
+                    continue
+
+                if event_type == "DELETED":
+                    await self._delete_rel_path(rel_path, owner.id)
+                    deleted += 1
+                    continue
+
+                if event_type in {"RENAMED", "MOVED"}:
+                    if old_rel_path:
+                        await self._delete_rel_path(old_rel_path, owner.id)
+                        deleted += 1
+                    if await self._upsert_rel_path(
+                        root,
+                        rel_path,
+                        rg_external,
+                        sync_filters,
+                        indexing_filters,
+                    ):
+                        processed += 1
+                    continue
+
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported Folder Sync file event type: {event_type}",
+                )
+
+            return {
+                "processed": processed,
+                "deleted": deleted,
+            }
+        finally:
+            self._owner_user_for_permissions = None
 
     async def stream_record(
         self,

@@ -1,7 +1,9 @@
 import { SocketIoRpcClient } from "../transport/socketio_rpc_client";
+import type { FolderSyncResyncRequest } from "../transport/socketio_rpc_client";
+import { buildCronFromSchedule } from "../sync/cron_from_schedule";
 
 /** Web/registry name — Python `FOLDER_SYNC_CONNECTOR_NAME` in folder_sync/connector.py */
-const FOLDER_SYNC_CONNECTOR_TYPE = "Folder Sync";
+export const FOLDER_SYNC_CONNECTOR_TYPE = "Folder Sync";
 /** Stored on graph records (`connectorName`) — Python `Connectors.FOLDER_SYNC` value */
 const FOLDER_SYNC_RECORD_CONNECTOR_NAME = "FOLDER_SYNC";
 
@@ -158,6 +160,99 @@ export class BackendClient {
 
   get apiBase(): string {
     return this.base;
+  }
+
+  async registerFolderSyncWatcherControl(connectorInstanceId: string): Promise<void> {
+    await this.rpc.registerFolderSyncWatcher(connectorInstanceId);
+  }
+
+  async onFolderSyncResync(
+    handler: (request: FolderSyncResyncRequest) => Promise<{
+      replayedBatches?: number;
+      replayedEvents?: number;
+      skippedBatches?: number;
+    }>
+  ): Promise<void> {
+    await this.rpc.onFolderSyncResync(handler);
+  }
+
+  disconnectControlSocket(): void {
+    this.rpc.disconnect();
+  }
+
+  /**
+   * Creates the BullMQ repeat job so `GET .../crawlingManager/schedule/all` lists this connector
+   * (same as web `CrawlingManagerApi.schedule`). Etcd `SCHEDULED` alone does not register a job.
+   */
+  async scheduleCrawlingManagerJob(
+    connectorDisplayType: string,
+    connectorInstanceId: string,
+    schedule: { intervalMinutes: number; startTime?: number; timezone?: string }
+  ): Promise<void> {
+    const connSeg = encodeURIComponent(connectorDisplayType.trim().toLowerCase());
+    const idSeg = encodeURIComponent(connectorInstanceId);
+    const url = `${this.base}/api/v1/crawlingManager/${connSeg}/${idSeg}/schedule`;
+    const tz = (schedule.timezone ?? "UTC").trim().toUpperCase();
+    const cron = buildCronFromSchedule({
+      startTime: schedule.startTime,
+      intervalMinutes: schedule.intervalMinutes,
+      timezone: tz,
+    });
+    const body = {
+      scheduleConfig: {
+        scheduleType: "custom",
+        isEnabled: true,
+        timezone: tz,
+        cronExpression: cron,
+      },
+      priority: 5,
+      maxRetries: 3,
+      timeout: 300_000,
+    };
+    const resp = await this.request(url, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    let data: unknown;
+    try {
+      data = await resp.json();
+    } catch (e) {
+      throw new BackendClientError(
+        `Invalid JSON from crawling manager schedule: ${e}`,
+        resp.status
+      );
+    }
+    if (resp.status >= 400) {
+      throw new BackendClientError(
+        `Crawling manager schedule failed (${resp.status}): ${JSON.stringify(data)}`,
+        resp.status
+      );
+    }
+  }
+
+  async removeCrawlingManagerJob(
+    connectorDisplayType: string,
+    connectorInstanceId: string
+  ): Promise<void> {
+    const connSeg = encodeURIComponent(connectorDisplayType.trim().toLowerCase());
+    const idSeg = encodeURIComponent(connectorInstanceId);
+    const url = `${this.base}/api/v1/crawlingManager/${connSeg}/${idSeg}/remove`;
+    const resp = await this.request(url, { method: "DELETE" });
+    if (resp.status === 404) {
+      return;
+    }
+    let data: unknown;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
+    if (resp.status >= 400) {
+      throw new BackendClientError(
+        `Crawling manager remove failed (${resp.status}): ${data != null ? JSON.stringify(data) : ""}`,
+        resp.status
+      );
+    }
   }
 
   private headers(): Record<string, string> {
