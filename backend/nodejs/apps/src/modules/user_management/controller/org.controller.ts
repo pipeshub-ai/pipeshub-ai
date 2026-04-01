@@ -38,6 +38,17 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { PrometheusService } from '../../../libs/services/prometheus/prometheus.service';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ORG_CREATED_ACTIVITY } from '../constants/constants';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import {
+  CheckOrgExistenceResponseSchema,
+  DeleteOrganizationResponseSchema,
+  GetOnboardingStatusResponseSchema,
+  OrgDocumentResponseSchema,
+  RemoveOrgLogoResponseSchema,
+  UpdateOnboardingStatusResponseSchema,
+  UpdateOrgLogoResponseSchema,
+  UpdateOrganizationDetailsResponseSchema,
+} from '../validation/org-validators';
 
 @injectable()
 export class OrgController {
@@ -148,7 +159,12 @@ export class OrgController {
   async checkOrgExistence(res: Response): Promise<void> {
     const count = await Org.countDocuments();
 
-    res.status(200).json({ exists: count != 0 });
+    sendValidatedJson(
+      res,
+      CheckOrgExistenceResponseSchema,
+      { exists: count !== 0 },
+      HTTP_STATUS.OK,
+    );
   }
 
   async createOrg(req: ContainerRequest, res: Response): Promise<void> {
@@ -322,7 +338,12 @@ export class OrgController {
       await this.eventService.publishEvent(event);
 
       await this.eventService.stop();
-      res.status(200).json(org);
+      sendValidatedJson(
+        res,
+        OrgDocumentResponseSchema,
+        org.toJSON(),
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       throw new InternalServerError(
         error instanceof Error ? error.message : 'Error retrieving users',
@@ -347,7 +368,12 @@ export class OrgController {
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
-      res.status(200).json(org);
+      sendValidatedJson(
+        res,
+        OrgDocumentResponseSchema,
+        org.toJSON(),
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -364,7 +390,13 @@ export class OrgController {
         contactEmail?: string;
         registeredName?: string;
         shortName?: string;
-        permanentAddress?: string;
+        permanentAddress?: {
+          addressLine1?: string;
+          city?: string;
+          state?: string;
+          postCode?: string;
+          country?: string;
+        };
       };
 
     try {
@@ -381,7 +413,13 @@ export class OrgController {
         contactEmail: string;
         registeredName: string;
         shortName: string;
-        permanentAddress: string;
+        permanentAddress: {
+          addressLine1?: string;
+          city?: string;
+          state?: string;
+          postCode?: string;
+          country?: string;
+        };
       }> = {};
 
       if (contactEmail) updateData.contactEmail = contactEmail;
@@ -393,6 +431,10 @@ export class OrgController {
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
         new: true,
       });
+
+      if (!updatedOrg) {
+        throw new NotFoundError('Organisation not found');
+      }
 
       await this.eventService.start();
       let event: Event = {
@@ -407,10 +449,15 @@ export class OrgController {
 
       await this.eventService.stop();
 
-      res.status(200).json({
-        message: 'Organization updated successfully',
-        data: updatedOrg,
-      });
+      sendValidatedJson(
+        res,
+        UpdateOrganizationDetailsResponseSchema,
+        {
+          message: 'Organization updated successfully',
+          data: updatedOrg.toJSON(),
+        },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -446,10 +493,15 @@ export class OrgController {
 
       await this.eventService.stop();
 
-      res.status(200).json({
-        message: 'Organization marked as deleted successfully',
-        data: org,
-      });
+      sendValidatedJson(
+        res,
+        DeleteOrganizationResponseSchema,
+        {
+          message: 'Organization marked as deleted successfully',
+          data: org.toJSON(),
+        },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -510,10 +562,15 @@ export class OrgController {
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
-      res.status(201).json({
-        message: 'Logo updated successfully',
-        mimeType: mimeType,
-      });
+      sendValidatedJson(
+        res,
+        UpdateOrgLogoResponseSchema,
+        {
+          message: 'Logo updated successfully',
+          mimeType,
+        },
+        HTTP_STATUS.CREATED,
+      );
       return;
     } catch (error) {
       next(error);
@@ -526,6 +583,7 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     try {
+      // Success: 200 with raw image bytes or 204 with no body — not JSON; no sendValidatedJson.
       const orgId = req.user?.orgId;
 
       const orgLogo = await OrgLogos.findOne({ orgId }).lean().exec();
@@ -564,7 +622,17 @@ export class OrgController {
 
       await orgLogo.save();
 
-      res.status(200).send(orgLogo);
+      const payload =
+        typeof orgLogo.toJSON === 'function'
+          ? orgLogo.toJSON()
+          : JSON.parse(JSON.stringify(orgLogo));
+
+      sendValidatedJson(
+        res,
+        RemoveOrgLogoResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -587,9 +655,14 @@ export class OrgController {
         throw new NotFoundError('Organisation not found');
       }
 
-      res.status(200).json({
-        status: org.onBoardingStatus || 'notConfigured',
-      });
+      sendValidatedJson(
+        res,
+        GetOnboardingStatusResponseSchema,
+        {
+          status: org.onBoardingStatus || 'notConfigured',
+        },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -622,10 +695,15 @@ export class OrgController {
       org.onBoardingStatus = status;
       await org.save();
 
-      res.status(200).json({
-        message: 'Onboarding status updated successfully',
-        status: org.onBoardingStatus,
-      });
+      sendValidatedJson(
+        res,
+        UpdateOnboardingStatusResponseSchema,
+        {
+          message: 'Onboarding status updated successfully',
+          status: org.onBoardingStatus,
+        },
+        HTTP_STATUS.OK,
+      );
 
       return;
     } catch (error) {

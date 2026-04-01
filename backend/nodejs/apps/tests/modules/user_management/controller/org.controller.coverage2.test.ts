@@ -8,6 +8,10 @@ import {
   BadRequestError,
   NotFoundError,
 } from '../../../../src/libs/errors/http.errors'
+import {
+  createMockOrgDocumentForSoftDelete,
+  createMockOrgUpdatedDocument,
+} from '../../../helpers/mock-org-updated-document'
 
 describe('OrgController - additional coverage 2', () => {
   let controller: OrgController
@@ -372,8 +376,7 @@ describe('OrgController - additional coverage 2', () => {
   describe('deleteOrganization', () => {
     it('should soft delete organization', async () => {
       const mockOrg = {
-        _id: 'org1',
-        isDeleted: false,
+        ...createMockOrgDocumentForSoftDelete({ _id: 'org1' }),
         save: sinon.stub().resolves(),
       }
       sinon.stub(Org, 'findOne').resolves(mockOrg as any)
@@ -422,7 +425,10 @@ describe('OrgController - additional coverage 2', () => {
     })
 
     it('should return org when found', async () => {
-      const mockOrg = { _id: 'org1', registeredName: 'Test Org' }
+      const mockOrg = createMockOrgUpdatedDocument({
+        _id: 'org1',
+        registeredName: 'Test Org',
+      })
       sinon.stub(Org, 'findOne').resolves(mockOrg as any)
 
       await controller.getOrganizationById(req, res, next)
@@ -438,7 +444,12 @@ describe('OrgController - additional coverage 2', () => {
       req.body = { contactEmail: 'new@test.com', registeredName: 'New Name' }
       const mockOrg = { _id: 'org1', registeredName: 'Old Name' }
       sinon.stub(Org, 'findOne').resolves(mockOrg as any)
-      sinon.stub(Org, 'findByIdAndUpdate').resolves(mockOrg as any)
+      sinon.stub(Org, 'findByIdAndUpdate').resolves(
+        createMockOrgUpdatedDocument({
+          contactEmail: 'new@test.com',
+          registeredName: 'New Name',
+        }) as any,
+      )
 
       await controller.updateOrganizationDetails(req, res, next)
       expect(res.status.calledWith(200)).to.be.true
