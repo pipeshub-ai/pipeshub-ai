@@ -37,6 +37,7 @@ class IndexingEvent(str, Enum):
 
     PARSING_COMPLETE = "parsing_complete"
     INDEXING_COMPLETE = "indexing_complete"
+    DOCLING_FAILED = "docling_failed"
 
 
 # ---------------------------------------------------------------------------

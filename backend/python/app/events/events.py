@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -290,8 +291,8 @@ class EventProcessor:
             try:
                 if await self._check_duplicate_by_md5(file_content, doc):
                     self.logger.info("Duplicate record detected, skipping processing")
-                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
             except Exception as e:
                 self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
@@ -460,7 +461,7 @@ class EventProcessor:
                             pdf_binary=file_content,
                             virtual_record_id=virtual_record_id
                         ):
-                            if event.get("event") == "docling_failed":
+                            if event.event == IndexingEvent.DOCLING_FAILED:
                                 docling_failed = True
                             else:
                                 yield event

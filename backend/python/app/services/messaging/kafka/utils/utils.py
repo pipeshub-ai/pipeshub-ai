@@ -11,6 +11,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingMessageHandler,
     MessageHandler,
+    PipelineEvent,
     StreamMessage,
     Topic,
 )
