@@ -173,8 +173,9 @@ class FolderSyncApp(App):
     .with_supported_auth_types("NONE")
     .with_description(
         "Index a folder on the machine that runs the connector service. "
-        "Set the path below; if your app requires it, turn the connector off to save sync settings, "
-        "then activate and run a manual sync (Folder Sync does not crawl on “Active” alone). "
+        "Set the path below; if your app requires it, turn the connector off to save sync settings. "
+        "Use manual sync (CLI or app) or scheduled sync at an interval. "
+        "Folder Sync does not crawl on “Active” alone without a sync run or schedule. "
         "CLI is optional."
     )
     .with_categories(["Storage", "Local"])
@@ -196,8 +197,8 @@ class FolderSyncApp(App):
                 "pipeshub",
             )
         )
-        .with_sync_strategies([SyncStrategy.MANUAL])
-        .with_scheduled_config(False, 0)
+        .with_sync_strategies([SyncStrategy.MANUAL, SyncStrategy.SCHEDULED])
+        .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
         .with_hide_connector(False)

@@ -4,14 +4,12 @@ import { CredentialStore } from "../auth/credential_store";
 import {
   BackendClient,
   BackendClientError,
-  FOLDER_SYNC_SYNC_ROOT_KEY,
   knowledgeBaseRecordDocumentKey,
 } from "../api/backend_client";
-import {
-  readIncludeSubfoldersFromEtcd,
-  readSyncSettingsFromEtcd,
-} from "../sync/folder_sync_filters";
 import { createBackendClient } from "./context";
+import { pickFolderSyncConnectorForIndexing } from "./folder_sync_connector_picker";
+
+export { pickFolderSyncConnectorForIndexing };
 
 export function kbCommandErrorHint(e: BackendClientError): string {
   if (e.status === 401 || e.status === 403) {
@@ -42,103 +40,6 @@ export async function runIndexingAuthenticated(
     console.error(String(e));
     process.exit(1);
   }
-}
-
-/**
- * List all personal Folder Sync connectors with registry + sync config details,
- * then prompt which one to use for indexing.
- */
-export async function pickFolderSyncConnectorForIndexing(
-  api: BackendClient
-): Promise<string> {
-  let instances: Record<string, unknown>[];
-  try {
-    instances = await api.listFolderSyncInstances();
-  } catch (e) {
-    if (e instanceof BackendClientError) {
-      throw new Error(
-        `${e.message} (need CONNECTOR_READ to list connectors.)`
-      );
-    }
-    throw e;
-  }
-  if (instances.length === 0) {
-    throw new Error(
-      "No personal Folder Sync connectors found. Add one in the app or run: pipeshub setup"
-    );
-  }
-
-  type Row = {
-    id: string;
-    name: string;
-    active: string;
-    syncRoot: string;
-    subfolders: string;
-  };
-
-  const rows: Row[] = await Promise.all(
-    instances.map(async (inst) => {
-      const id = String(inst._key || "").trim();
-      const name = String(inst.name || id).trim() || id;
-      let active = "unknown";
-      let syncRoot = "—";
-      let subfolders = "—";
-      if (id) {
-        try {
-          const rec = await api.getConnectorInstanceRecord(id);
-          active = Boolean(rec.isActive) ? "yes" : "no";
-        } catch {
-          /* keep unknown */
-        }
-        try {
-          const { etcd } = await api.getConnectorConfig(id);
-          const sync = readSyncSettingsFromEtcd(etcd);
-          const rawRoot = sync[FOLDER_SYNC_SYNC_ROOT_KEY];
-          syncRoot =
-            rawRoot !== undefined && String(rawRoot).trim()
-              ? String(rawRoot).trim()
-              : "(not set)";
-          const sub = readIncludeSubfoldersFromEtcd(etcd);
-          subfolders =
-            sub === undefined ? "(default)" : sub ? "yes" : "no";
-        } catch {
-          syncRoot = "(config unavailable)";
-        }
-      }
-      return {
-        id,
-        name,
-        active,
-        syncRoot,
-        subfolders,
-      };
-    })
-  );
-
-  console.log(
-    "\nPersonal Folder Sync connectors (pick one for this command; manage instances in the web app):\n"
-  );
-  rows.forEach((r, i) => {
-    console.log(`${i + 1}. ${r.name}`);
-    console.log(`   Id:            ${r.id}`);
-    console.log(`   Active:        ${r.active}`);
-    console.log(`   Sync root:     ${r.syncRoot}`);
-    console.log(`   Subfolders:    ${r.subfolders}`);
-    console.log("");
-  });
-
-  const { choice } = await prompts({
-    type: "number",
-    name: "choice",
-    message: `Which connector (1–${rows.length})?`,
-    min: 1,
-    max: rows.length,
-  });
-  const n = Number(choice);
-  if (!Number.isFinite(n) || n < 1 || n > rows.length) {
-    throw new Error("Invalid choice");
-  }
-  return rows[n - 1]!.id;
 }
 
 /** One-line summary: total records + non-zero statuses only (default `pipeshub indexing`). */
