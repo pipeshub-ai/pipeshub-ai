@@ -1,19 +1,20 @@
 """
 Tests for messaging config:
   - get_message_broker_type (env var, defaults, validation)
-  - RedisStreamsConfig (dataclass defaults)
+  - RedisStreamsConfig (Pydantic model defaults)
   - REQUIRED_TOPICS constant
 """
 
 import os
-import logging
 from unittest.mock import patch
 
 import pytest
 
 from app.services.messaging.config import (
     REQUIRED_TOPICS,
+    MessageBrokerType,
     RedisStreamsConfig,
+    Topic,
     get_message_broker_type,
 )
 
@@ -22,22 +23,22 @@ class TestGetMessageBrokerType:
     def test_defaults_to_kafka(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("MESSAGE_BROKER", None)
-            assert get_message_broker_type() == "kafka"
+            assert get_message_broker_type() == MessageBrokerType.KAFKA
 
     def test_returns_kafka(self):
         with patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}):
-            assert get_message_broker_type() == "kafka"
+            assert get_message_broker_type() == MessageBrokerType.KAFKA
 
     def test_returns_redis(self):
         with patch.dict(os.environ, {"MESSAGE_BROKER": "redis"}):
-            assert get_message_broker_type() == "redis"
+            assert get_message_broker_type() == MessageBrokerType.REDIS
 
     def test_case_insensitive(self):
         with patch.dict(os.environ, {"MESSAGE_BROKER": "KAFKA"}):
-            assert get_message_broker_type() == "kafka"
+            assert get_message_broker_type() == MessageBrokerType.KAFKA
 
         with patch.dict(os.environ, {"MESSAGE_BROKER": "Redis"}):
-            assert get_message_broker_type() == "redis"
+            assert get_message_broker_type() == MessageBrokerType.REDIS
 
     def test_raises_for_unsupported(self):
         with patch.dict(os.environ, {"MESSAGE_BROKER": "rabbitmq"}):
@@ -84,10 +85,10 @@ class TestRedisStreamsConfig:
 class TestRequiredTopics:
     def test_has_expected_topics(self):
         assert isinstance(REQUIRED_TOPICS, list)
-        assert "record-events" in REQUIRED_TOPICS
-        assert "entity-events" in REQUIRED_TOPICS
-        assert "sync-events" in REQUIRED_TOPICS
-        assert "health-check" in REQUIRED_TOPICS
+        assert Topic.RECORD_EVENTS.value in REQUIRED_TOPICS
+        assert Topic.ENTITY_EVENTS.value in REQUIRED_TOPICS
+        assert Topic.SYNC_EVENTS.value in REQUIRED_TOPICS
+        assert Topic.HEALTH_CHECK.value in REQUIRED_TOPICS
 
     def test_has_at_least_four_topics(self):
         assert len(REQUIRED_TOPICS) >= 4

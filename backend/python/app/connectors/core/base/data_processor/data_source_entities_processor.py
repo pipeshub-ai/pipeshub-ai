@@ -11,7 +11,6 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -28,6 +27,7 @@ from app.models.entities import (
     MailRecord,
     Person,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -35,7 +35,6 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
-    PullRequestRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -849,7 +848,7 @@ class DataSourceEntitiesProcessor:
                             f"with AUTO_INDEX_OFF status"
                         )
                         continue
-                        
+
                     if record.is_internal:
                         self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
                         continue
@@ -911,7 +910,7 @@ class DataSourceEntitiesProcessor:
             if not records:
                 self.logger.info("No records to reindex")
                 return
-            
+
             skipped_records = 0
 
             # Reset status to QUEUED for all records before reindexing

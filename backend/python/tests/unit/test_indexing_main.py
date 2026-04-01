@@ -7,6 +7,8 @@ import httpx
 import pytest
 from fastapi.responses import JSONResponse
 
+from app.services.messaging.config import MessageBrokerType
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -447,7 +449,7 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -487,7 +489,7 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -510,7 +512,7 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -529,7 +531,7 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -552,7 +554,7 @@ class TestStartKafkaConsumers:
         mock_consumer.worker_loop.is_running.return_value = False
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -574,7 +576,7 @@ class TestStartKafkaConsumers:
         mock_consumer.worker_loop = None  # no worker loop
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -592,7 +594,7 @@ class TestStartKafkaConsumers:
         mock_consumer.stop = AsyncMock()
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, side_effect=RuntimeError("handler fail")),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -620,7 +622,7 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock(side_effect=start_side_effect)
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -700,7 +702,7 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -749,7 +751,7 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -794,7 +796,7 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.get_message_broker_type", return_value="kafka"),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),

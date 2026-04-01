@@ -270,12 +270,15 @@ class Health:
     @staticmethod
     async def health_check_kafka(container) -> None:
         """Health check method that verifies message broker health (Kafka or Redis Streams)"""
-        from app.services.messaging.config import get_message_broker_type
+        from app.services.messaging.config import (
+            MessageBrokerType,
+            get_message_broker_type,
+        )
         logger = container.logger()
         broker_type = get_message_broker_type()
-        logger.info(f"🔍 Starting message broker health check (type: {broker_type})...")
+        logger.info(f"🔍 Starting message broker health check (type: {broker_type.value})...")
 
-        if broker_type == "redis":
+        if broker_type == MessageBrokerType.REDIS:
             await Health._health_check_redis_streams(container)
         else:
             await Health._health_check_kafka(container)

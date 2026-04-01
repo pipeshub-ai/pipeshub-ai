@@ -9,6 +9,8 @@ from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.services.messaging.config import MessageBrokerType
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -164,7 +166,7 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
 
         with (
-            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
@@ -188,7 +190,7 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock(side_effect=Exception("kafka error"))
 
         with (
-            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
@@ -222,7 +224,7 @@ class TestStartKafkaConsumers:
         logger.info = MagicMock(side_effect=info_side_effect)
 
         with (
-            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,
@@ -258,7 +260,7 @@ class TestStartKafkaConsumers:
         logger.info = MagicMock(side_effect=info_side_effect)
 
         with (
-            patch("app.query_main.get_message_broker_type", return_value="kafka"),
+            patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.query_main.KafkaUtils") as MockKU,
             patch("app.query_main.MessagingFactory") as MockMF,

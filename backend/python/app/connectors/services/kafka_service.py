@@ -1,8 +1,8 @@
-import json
-from typing import Dict, Optional
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import EventTypes
+from app.services.messaging.config import Topic
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -37,7 +37,7 @@ class KafkaService:
         """Set the messaging producer (for deferred initialization)"""
         self._producer = producer
 
-    async def publish_event(self, topic: str, event: Dict) -> bool:
+    async def publish_event(self, topic: str, event: dict) -> bool:
         """
         Publish an event to a specified topic.
         :param topic: The topic/stream to publish to
@@ -93,7 +93,7 @@ class KafkaService:
             key = str(formatted_event["payload"]["recordId"])
 
             result = await self._producer.send_message(  # type: ignore
-                topic="record-events",
+                topic=Topic.RECORD_EVENTS.value,
                 message=formatted_event,
                 key=key,
             )

@@ -1,10 +1,13 @@
 from logging import Logger
-from typing import List, Optional
+from typing import Optional, override
 
 from redis.asyncio import Redis
 
 from app.services.messaging.config import REQUIRED_TOPICS, RedisStreamsConfig
 from app.services.messaging.interface.admin import IMessageAdmin
+
+_ADMIN_INIT_GROUP = "admin_init"
+_STREAM_TYPE = "stream"
 
 
 class RedisStreamsAdmin(IMessageAdmin):
@@ -14,8 +17,9 @@ class RedisStreamsAdmin(IMessageAdmin):
         self.logger = logger
         self.config = config
 
+    @override
     async def ensure_topics_exist(
-        self, topics: Optional[List[str]] = None
+        self, topics: Optional[list[str]] = None
     ) -> None:
         topic_list = topics or REQUIRED_TOPICS
         redis: Optional[Redis] = None
@@ -34,28 +38,29 @@ class RedisStreamsAdmin(IMessageAdmin):
                     if not exists:
                         await redis.xgroup_create(  # type: ignore
                             topic,
-                            "admin_init",
+                            _ADMIN_INIT_GROUP,
                             id="$",
                             mkstream=True,
                         )
-                        await redis.xgroup_destroy(topic, "admin_init")  # type: ignore
-                        self.logger.info(f"Created Redis stream: {topic}")
+                        await redis.xgroup_destroy(topic, _ADMIN_INIT_GROUP)  # type: ignore
+                        self.logger.info("Created Redis stream: %s", topic)
                     else:
-                        self.logger.debug(f"Redis stream already exists: {topic}")
+                        self.logger.debug("Redis stream already exists: %s", topic)
                 except Exception as e:
                     self.logger.warning(
-                        f"Error ensuring Redis stream {topic}: {str(e)}"
+                        "Error ensuring Redis stream %s: %s", topic, e
                     )
 
             self.logger.info("All required Redis streams verified")
         except Exception as e:
-            self.logger.error(f"Failed to ensure Redis streams exist: {str(e)}")
+            self.logger.error("Failed to ensure Redis streams exist: %s", e)
             raise
         finally:
             if redis:
                 await redis.close()
 
-    async def list_topics(self) -> List[str]:
+    @override
+    async def list_topics(self) -> list[str]:
         redis: Optional[Redis] = None
         try:
             redis = Redis(
@@ -68,7 +73,7 @@ class RedisStreamsAdmin(IMessageAdmin):
             streams = []
             async for key in redis.scan_iter():
                 key_type = await redis.type(key)  # type: ignore
-                if key_type == "stream":
+                if key_type == _STREAM_TYPE:
                     streams.append(key)
             return streams
         finally:

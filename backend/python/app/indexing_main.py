@@ -20,7 +20,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import get_message_broker_type
+from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMessage, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -180,16 +180,16 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                     parsing_complete = False
                     indexing_complete = False
 
-                    async for event in record_message_handler({
-                        "eventType": event_type,
-                        "payload": payload
-                    }):
-                        event_name = event.get("event", "unknown")
-                        logger.debug(f"   Recovery event: {event_name}")
+                    recovery_message = StreamMessage(
+                        eventType=event_type,
+                        payload=payload,
+                    )
+                    async for event in record_message_handler(recovery_message):
+                        logger.debug(f"   Recovery event: {event.event}")
 
-                        if event_name == "parsing_complete":
+                        if event.event == IndexingEvent.PARSING_COMPLETE:
                             parsing_complete = True
-                        elif event_name == "indexing_complete":
+                        elif event.event == IndexingEvent.INDEXING_COMPLETE:
                             indexing_complete = True
 
                     # Only report success if indexing actually completed
@@ -250,7 +250,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,
-            consumer_type="indexing"
+            consumer_type=ConsumerType.INDEXING
         )
 
         # TODO: Remove this once the graph provider is fixed

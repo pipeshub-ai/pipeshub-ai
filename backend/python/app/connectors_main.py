@@ -25,7 +25,7 @@ from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
 )
-from app.services.messaging.config import get_message_broker_type
+from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils

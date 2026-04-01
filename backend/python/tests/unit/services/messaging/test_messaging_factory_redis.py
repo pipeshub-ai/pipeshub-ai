@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.messaging.config import RedisStreamsConfig
+from app.services.messaging.config import ConsumerType, MessageBrokerType, RedisStreamsConfig
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -59,26 +59,20 @@ class TestCreateProducerRedis:
         from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 
         producer = MessagingFactory.create_producer(
-            logger, config=redis_config, broker_type="redis"
-        )
-        assert isinstance(producer, RedisStreamsProducer)
-
-    def test_redis_broker_case_insensitive(self, logger, redis_config):
-        from app.services.messaging.redis_streams.producer import RedisStreamsProducer
-
-        producer = MessagingFactory.create_producer(
-            logger, config=redis_config, broker_type="Redis"
+            logger, config=redis_config, broker_type=MessageBrokerType.REDIS
         )
         assert isinstance(producer, RedisStreamsProducer)
 
     def test_none_config_raises_value_error(self, logger):
         with pytest.raises(ValueError, match="Redis Streams config is required"):
-            MessagingFactory.create_producer(logger, config=None, broker_type="redis")
+            MessagingFactory.create_producer(
+                logger, config=None, broker_type=MessageBrokerType.REDIS
+            )
 
     def test_wrong_config_type_raises_type_error(self, logger, kafka_producer_config):
         with pytest.raises(TypeError, match="Expected RedisStreamsConfig"):
             MessagingFactory.create_producer(
-                logger, config=kafka_producer_config, broker_type="redis"
+                logger, config=kafka_producer_config, broker_type=MessageBrokerType.REDIS
             )
 
     def test_auto_detect_broker_type_redis(self, logger, redis_config):
@@ -94,7 +88,10 @@ class TestCreateConsumerRedis:
         from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 
         consumer = MessagingFactory.create_consumer(
-            logger, config=redis_config, broker_type="redis", consumer_type="simple"
+            logger,
+            config=redis_config,
+            broker_type=MessageBrokerType.REDIS,
+            consumer_type=ConsumerType.SIMPLE,
         )
         assert isinstance(consumer, RedisStreamsConsumer)
 
@@ -104,7 +101,10 @@ class TestCreateConsumerRedis:
         )
 
         consumer = MessagingFactory.create_consumer(
-            logger, config=redis_config, broker_type="redis", consumer_type="indexing"
+            logger,
+            config=redis_config,
+            broker_type=MessageBrokerType.REDIS,
+            consumer_type=ConsumerType.INDEXING,
         )
         assert isinstance(consumer, IndexingRedisStreamsConsumer)
 
@@ -112,35 +112,18 @@ class TestCreateConsumerRedis:
         from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 
         consumer = MessagingFactory.create_consumer(
-            logger, config=redis_config, broker_type="redis"
+            logger, config=redis_config, broker_type=MessageBrokerType.REDIS
         )
         assert isinstance(consumer, RedisStreamsConsumer)
 
     def test_none_config_raises_value_error(self, logger):
         with pytest.raises(ValueError, match="Redis Streams config is required"):
-            MessagingFactory.create_consumer(logger, config=None, broker_type="redis")
+            MessagingFactory.create_consumer(
+                logger, config=None, broker_type=MessageBrokerType.REDIS
+            )
 
     def test_wrong_config_type_raises_type_error(self, logger, kafka_consumer_config):
         with pytest.raises(TypeError, match="Expected RedisStreamsConfig"):
             MessagingFactory.create_consumer(
-                logger, config=kafka_consumer_config, broker_type="redis"
+                logger, config=kafka_consumer_config, broker_type=MessageBrokerType.REDIS
             )
-
-    def test_redis_broker_case_insensitive(self, logger, redis_config):
-        from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
-
-        consumer = MessagingFactory.create_consumer(
-            logger, config=redis_config, broker_type="REDIS"
-        )
-        assert isinstance(consumer, RedisStreamsConsumer)
-
-    def test_unknown_consumer_type_defaults_to_simple(self, logger, redis_config):
-        from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
-
-        consumer = MessagingFactory.create_consumer(
-            logger,
-            config=redis_config,
-            broker_type="redis",
-            consumer_type="unknown",
-        )
-        assert isinstance(consumer, RedisStreamsConsumer)

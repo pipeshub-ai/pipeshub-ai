@@ -3,10 +3,11 @@ Tests for MessagingFactory: create_producer and create_consumer.
 """
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from app.services.messaging.config import ConsumerType, MessageBrokerType
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -48,18 +49,17 @@ class TestCreateProducer:
     """MessagingFactory.create_producer()"""
 
     def test_kafka_broker_returns_kafka_producer(self, logger, producer_config):
-        producer = MessagingFactory.create_producer(logger, config=producer_config, broker_type="kafka")
+        producer = MessagingFactory.create_producer(
+            logger, config=producer_config, broker_type=MessageBrokerType.KAFKA
+        )
         from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
-        assert isinstance(producer, KafkaMessagingProducer)
-
-    def test_kafka_broker_case_insensitive(self, logger, producer_config):
-        from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
-        producer = MessagingFactory.create_producer(logger, config=producer_config, broker_type="Kafka")
         assert isinstance(producer, KafkaMessagingProducer)
 
     def test_none_config_raises_value_error(self, logger):
         with pytest.raises(ValueError, match="Kafka producer config is required"):
-            MessagingFactory.create_producer(logger, config=None, broker_type="kafka")
+            MessagingFactory.create_producer(
+                logger, config=None, broker_type=MessageBrokerType.KAFKA
+            )
 
     def test_unsupported_broker_raises_value_error(self, logger, producer_config):
         with pytest.raises(ValueError, match="Unsupported broker type"):
@@ -83,45 +83,38 @@ class TestCreateConsumer:
     def test_kafka_simple_consumer(self, logger, consumer_config):
         from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
         consumer = MessagingFactory.create_consumer(
-            logger, config=consumer_config, broker_type="kafka", consumer_type="simple"
+            logger,
+            config=consumer_config,
+            broker_type=MessageBrokerType.KAFKA,
+            consumer_type=ConsumerType.SIMPLE,
         )
         assert isinstance(consumer, KafkaMessagingConsumer)
 
     def test_kafka_indexing_consumer(self, logger, consumer_config):
         from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
         consumer = MessagingFactory.create_consumer(
-            logger, config=consumer_config, broker_type="kafka", consumer_type="indexing"
+            logger,
+            config=consumer_config,
+            broker_type=MessageBrokerType.KAFKA,
+            consumer_type=ConsumerType.INDEXING,
         )
         assert isinstance(consumer, IndexingKafkaConsumer)
 
     def test_default_consumer_type_is_simple(self, logger, consumer_config):
         from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
         consumer = MessagingFactory.create_consumer(
-            logger, config=consumer_config, broker_type="kafka"
+            logger, config=consumer_config, broker_type=MessageBrokerType.KAFKA
         )
         assert isinstance(consumer, KafkaMessagingConsumer)
 
     def test_none_config_raises_value_error(self, logger):
         with pytest.raises(ValueError, match="Kafka consumer config is required"):
-            MessagingFactory.create_consumer(logger, config=None, broker_type="kafka")
+            MessagingFactory.create_consumer(
+                logger, config=None, broker_type=MessageBrokerType.KAFKA
+            )
 
     def test_unsupported_broker_raises_value_error(self, logger, consumer_config):
         with pytest.raises(ValueError, match="Unsupported broker type"):
             MessagingFactory.create_consumer(
                 logger, config=consumer_config, broker_type="rabbitmq"
             )
-
-    def test_kafka_broker_case_insensitive(self, logger, consumer_config):
-        from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
-        consumer = MessagingFactory.create_consumer(
-            logger, config=consumer_config, broker_type="KAFKA"
-        )
-        assert isinstance(consumer, KafkaMessagingConsumer)
-
-    def test_unknown_consumer_type_defaults_to_simple(self, logger, consumer_config):
-        """Any consumer_type other than 'indexing' falls through to the simple consumer."""
-        from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
-        consumer = MessagingFactory.create_consumer(
-            logger, config=consumer_config, broker_type="kafka", consumer_type="unknown"
-        )
-        assert isinstance(consumer, KafkaMessagingConsumer)
