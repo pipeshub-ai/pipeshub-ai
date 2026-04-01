@@ -272,7 +272,7 @@ class TestPreValidateOAuthConfig:
 
     @pytest.mark.asyncio
     async def test_update_existing_oauth_config_found(self):
-        """Admin + OAUTH + credentials + provided_oauth_config_id that matches -> update with exclude_index."""
+        """Admin + OAUTH + matching oauthConfigId with no name change -> no conflict check needed."""
         body = _base_body(
             authType="OAUTH",
             config={
@@ -319,8 +319,7 @@ class TestPreValidateOAuthConfig:
             result = await create_connector_instance(req, gp)
 
         assert result["success"] is True
-        mock_conflict.assert_called_once()
-        assert mock_conflict.call_args.kwargs["exclude_index"] == 0
+        mock_conflict.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_oauth_config_not_found_falls_to_new(self):
@@ -810,7 +809,7 @@ class TestOAuthBodyLevelConfigId:
 
     @pytest.mark.asyncio
     async def test_body_level_oauth_config_id_used_for_update(self):
-        """oauthConfigId at body level is used as provided_oauth_config_id."""
+        """Body-level oauthConfigId is used; without name override conflict check is skipped."""
         body = _base_body(
             authType="OAUTH",
             oauthConfigId="body-level-id",
@@ -851,8 +850,7 @@ class TestOAuthBodyLevelConfigId:
             result = await create_connector_instance(req, gp)
 
         assert result["success"] is True
-        mock_conflict.assert_called_once()
-        assert mock_conflict.call_args.kwargs["exclude_index"] == 0
+        mock_conflict.assert_not_called()
 
 
 class TestGenericExceptionHandling:

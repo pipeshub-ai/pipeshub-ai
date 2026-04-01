@@ -300,7 +300,8 @@ class TestZoomConnectorSyncFlow:
         today = date(2026, 3, 31)
         zoom_user = {"id": "u1", "email": "host@example.com"}
 
-        connector._get_user_meeting_sync_point = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # Use incremental mode to produce a single chunk and keep flush count deterministic.
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=today)  # type: ignore[method-assign]
         connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
         connector._build_record_group = MagicMock(  # type: ignore[method-assign]
             return_value=(MagicMock(id="rg-1"), [])
