@@ -524,14 +524,18 @@ export class RedisStreamsAdminService implements IMessageAdmin {
   async listTopics(): Promise<string[]> {
     try {
       await this.redis.connect();
-      const keys = await this.redis.keys('*');
       const streams: string[] = [];
-      for (const key of keys) {
-        const type = await this.redis.type(key);
-        if (type === 'stream') {
-          streams.push(key);
+      let cursor = '0';
+      do {
+        const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', '*', 'COUNT', '100');
+        cursor = nextCursor;
+        for (const key of keys) {
+          const type = await this.redis.type(key);
+          if (type === 'stream') {
+            streams.push(key);
+          }
         }
-      }
+      } while (cursor !== '0');
       return streams;
     } finally {
       await this.redis.quit();
