@@ -79,11 +79,23 @@ def _build_citation_reflection_message(
     bad_urls_str = "\n".join(f"  - {url}" for url in hallucinated_urls)
 
     return (
-        "Your previous response contained incorrect citation URLs that do not match any record in the provided context. "
-        "The following citation URLs are WRONG:\n"
+        "⚠️ CITATION ERROR — Your previous response contained fabricated or modified citation URLs "
+        "that do not correspond to any source block in the provided context.\n\n"
+        "The following citation URLs are INVALID and must NOT appear in your answer:\n"
         f"{bad_urls_str}\n\n"
-        "Please regenerate your complete answer using ONLY the valid URLs above. "
-        "Do NOT modify any part of the URLs. Copy them exactly as listed."
+        "Common mistakes that produce invalid URLs:\n"
+        "  • Inventing a record ID instead of copying it verbatim from the context\n"
+        "  • Using a blockIndex or blockGroupIndex value that does not exist in that record\n\n"
+        "HOW TO FIX:\n"
+        "  1. Look back at the source blocks in this conversation "
+        "Each block contains a 'Block Web URL:' field — "
+        "those are the ONLY valid citation URLs.\n"
+        "  2. Copy each URL character-by-character exactly as it appears — "
+        "do NOT alter the record ID, block index, or any other part of the path.\n"
+        "  3. If a fact cannot be matched to a block with a valid 'Block Web URL:', "
+        "omit the inline citation for that fact rather than inventing a URL.\n\n"
+        "Please regenerate your complete answer now with all citation links corrected. "
+        "Every [source](URL) link must use an exact 'Block Web URL:' value from the context."
     )
 
 # TypeVar for generic schema types in structured output functions

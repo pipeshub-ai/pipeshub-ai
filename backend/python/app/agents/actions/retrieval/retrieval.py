@@ -51,10 +51,8 @@ class RetrievalToolOutput(BaseModel):
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
     query: str = Field(description="The search query to find relevant information")
-    limit: int | None = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
     connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
     collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
-    top_k: int | None = Field(default=None, description="Alias for limit")
 
 
 @ToolsetBuilder("Retrieval")\
@@ -113,11 +111,8 @@ class Retrieval:
     async def search_internal_knowledge(
         self,
         query: str | None = None,
-        limit: int | None = None,
-        top_k: int | None = None,
         connector_ids: list[str] | None = None,
         collection_ids: list[str] | None = None,
-        **kwargs
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
         search_query = query
@@ -150,7 +145,7 @@ class Retrieval:
 
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
-            base_limit = limit or top_k or self.state.get("limit", 50)
+            base_limit = 50
             adjusted_limit = min(base_limit, 100)
 
             # Normalize list inputs
@@ -187,6 +182,11 @@ class Retrieval:
             else:
                 # No LLM input — use full agent scope
                 filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
+            
+            agent_apps_len = len(agent_apps)
+            agent_kbs_len = len(agent_kbs)
+            if agent_apps_len > 0 and agent_kbs_len > 0:
+                adjusted_limit = 50//(agent_apps_len + agent_kbs_len)
 
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))
