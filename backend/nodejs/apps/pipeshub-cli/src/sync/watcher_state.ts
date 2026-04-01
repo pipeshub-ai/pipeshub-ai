@@ -88,10 +88,13 @@ function isValidInode(ino: number | bigint | undefined): boolean {
   return Number.isFinite(n) && n > 0;
 }
 
+/**
+ * Sampled content fingerprint (first bytes + size). Excludes mtime so editor
+ * "save without changes" does not appear as a modification.
+ */
 async function computeQuickHash(
   absFilePath: string,
-  size: number,
-  mtimeMs: number
+  size: number
 ): Promise<string | undefined> {
   try {
     const fh = await fsp.open(absFilePath, "r");
@@ -106,11 +109,24 @@ async function computeQuickHash(
       }
       const h = crypto.createHash("sha256");
       h.update(buf.subarray(0, read));
-      h.update(`|${size}|${mtimeMs}`);
+      h.update(`|${size}|`);
       return h.digest("hex");
     } finally {
       await fh.close();
     }
+  } catch {
+    return undefined;
+  }
+}
+
+/** Re-read a file and compute the same fingerprint stored in {@link FileEntry.quickHash}. */
+export async function contentQuickHash(
+  absPath: string
+): Promise<string | undefined> {
+  try {
+    const st = await fsp.lstat(absPath);
+    if (!st.isFile()) return undefined;
+    return computeQuickHash(absPath, st.size);
   } catch {
     return undefined;
   }
@@ -187,7 +203,7 @@ export async function scanSyncRoot(
       const mtimeMs = st.mtimeMs;
       let quickHash: string | undefined;
       if (st.isFile()) {
-        quickHash = await computeQuickHash(abs, size, mtimeMs);
+        quickHash = await computeQuickHash(abs, size);
       }
 
       out.set(relKey, {
@@ -324,7 +340,8 @@ export class WatcherStateStore {
     }
     const o = parsed as Record<string, unknown>;
     const version = Number(o.version);
-    if (version !== WATCHER_STATE_VERSION) {
+    // Accept 2 for older builds that bumped the on-disk version; we always persist as 1.
+    if (version !== 1 && version !== 2) {
       this.state = emptyState(this.syncRoot, this.connectorInstanceId);
       return;
     }
@@ -353,6 +370,14 @@ export class WatcherStateStore {
         }
       }
     }
+    // Drop persisted fingerprints on load: algorithm/content-only semantics may differ
+    // from what is on disk without bumping the file format version.
+    for (const e of Object.values(files)) {
+      if (!e.isDirectory) {
+        e.quickHash = undefined;
+      }
+    }
+
     this.state = {
       version: WATCHER_STATE_VERSION,
       syncRoot: this.syncRoot,
@@ -486,10 +511,23 @@ export class WatcherStateStore {
       const inodeSame =
         oldEnt.inode === newEnt.inode ||
         (!isValidInode(oldEnt.inode) && !isValidInode(newEnt.inode));
-      const metaSame =
-        oldEnt.size === newEnt.size &&
-        oldEnt.mtimeMs === newEnt.mtimeMs &&
-        oldEnt.quickHash === newEnt.quickHash;
+
+      let metaSame: boolean;
+      if (newEnt.isDirectory) {
+        metaSame = oldEnt.mtimeMs === newEnt.mtimeMs;
+      } else if (oldEnt.quickHash && newEnt.quickHash) {
+        metaSame =
+          oldEnt.size === newEnt.size &&
+          oldEnt.quickHash === newEnt.quickHash;
+      } else if (!oldEnt.quickHash && newEnt.quickHash) {
+        metaSame =
+          oldEnt.size === newEnt.size && oldEnt.mtimeMs === newEnt.mtimeMs;
+      } else {
+        metaSame =
+          oldEnt.size === newEnt.size &&
+          oldEnt.mtimeMs === newEnt.mtimeMs &&
+          oldEnt.quickHash === newEnt.quickHash;
+      }
 
       if (!inodeSame || !metaSame) {
         events.push({

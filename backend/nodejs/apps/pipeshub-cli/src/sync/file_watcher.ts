@@ -11,9 +11,12 @@ import { recordWatchBatch } from "./watcher_sync_journal";
 import {
   WatcherStateStore,
   scanSyncRoot,
+  contentQuickHash,
+  type FileEntry,
   type FileEvent,
   type WatcherStateStoreOptions,
 } from "./watcher_state";
+import { expandWatchEventsForReplay } from "./watcher_resync_replayer";
 
 /** Temp/editor files that should always be ignored. */
 const IGNORED_PATTERNS: (string | RegExp)[] = [
@@ -123,6 +126,8 @@ export class FileWatcher {
     const userDispatch = opts.dispatchFn;
     const wrappedDispatch: DispatchFn = async (batch, meta) => {
       const auth = this.stateStore.authDirPath();
+      const replayStateFiles = this.cloneStateFiles(this.stateStore.getSnapshot().files);
+      const replayEvents = expandWatchEventsForReplay(batch, replayStateFiles);
       try {
         await userDispatch(batch, meta);
       } catch (err) {
@@ -134,6 +139,7 @@ export class FileWatcher {
             source: meta.source,
             events: batch,
             backendStatus: "failed",
+            replayEvents,
           });
         } catch {
           /* journal */
@@ -146,7 +152,8 @@ export class FileWatcher {
         batchId: meta.batchId,
         source: meta.source,
         events: batch,
-        backendStatus: this.journalLocalOnly ? "local_only" : "acked",
+        backendStatus: this.journalLocalOnly ? "pending" : "synced",
+        replayEvents,
       });
     };
 
@@ -156,6 +163,13 @@ export class FileWatcher {
       syncRoot: this.syncRoot,
       correlationWindowMs: opts.correlationWindowMs,
       changeDebounceMs: opts.changeDebounceMs,
+      shouldSuppressModifiedChange: async (ev) => {
+        if (ev.isDirectory) return false;
+        const prev = this.stateStore.getSnapshot().files[ev.relKey];
+        if (!prev || prev.isDirectory || !prev.quickHash) return false;
+        const cur = await contentQuickHash(ev.absPath);
+        return cur !== undefined && cur === prev.quickHash;
+      },
     });
 
     // Correlator → filter → dispatcher (backend). State file is refreshed from disk on raw
@@ -168,6 +182,14 @@ export class FileWatcher {
         this.dispatcher.push(filtered);
       }
     });
+  }
+
+  private cloneStateFiles(
+    files: Record<string, FileEntry>
+  ): Record<string, FileEntry> {
+    return Object.fromEntries(
+      Object.entries(files).map(([relPath, entry]) => [relPath, { ...entry }])
+    );
   }
 
   /** Refresh persisted snapshot from a full tree scan (matches disk after correlated events). */
@@ -302,8 +324,7 @@ export class FileWatcher {
       this.periodicRescanTimer = null;
     }
 
-    // Drain correlator (emit any buffered events)
-    this.correlator.drain();
+    await this.correlator.drain();
 
     // Flush dispatcher
     await this.dispatcher.flush();

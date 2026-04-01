@@ -50,6 +50,7 @@ import {
   getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
+  submitConnectorFileEvents,
   getConnectorSchema,
   getActiveAgentInstances,
 } from '../controllers/connector.controllers';
@@ -591,6 +592,14 @@ export function createConnectorRouter(
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config, scheduler)
+  );
+
+  router.post(
+    '/:connectorId/file-events',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    metricsMiddleware(container),
+    submitConnectorFileEvents(config),
   );
 
   // ============================================================================

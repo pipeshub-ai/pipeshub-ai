@@ -36,12 +36,16 @@ export const handleBackendError = (error: any, operation: string): Error => {
     }
 
     const { statusCode, data, message } = error;
-    const errorDetail =
+    const rawErrorDetail =
       data?.detail ||
       data?.reason ||
       data?.message ||
       message ||
       'Unknown error';
+    const errorDetail =
+      typeof rawErrorDetail === 'string'
+        ? rawErrorDetail
+        : JSON.stringify(rawErrorDetail);
 
     logger.error(`Backend error during ${operation}`, {
       statusCode,
@@ -58,6 +62,7 @@ export const handleBackendError = (error: any, operation: string): Error => {
 
     switch (statusCode) {
       case 400:
+      case 422:
         return new BadRequestError(errorDetail);
       case 401:
         return new UnauthorizedError(errorDetail);

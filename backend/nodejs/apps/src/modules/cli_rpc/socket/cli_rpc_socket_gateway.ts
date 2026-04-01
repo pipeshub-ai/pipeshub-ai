@@ -3,10 +3,12 @@ import { DefaultEventsMap, Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
+import { folderSyncWatcherRegistry } from './folder_sync_watcher_registry';
 
 type CliRpcSocketData = {
   userId: string;
   orgId: string;
+  watcherConnectorId?: string;
 };
 
 type CliRpcSocket = Socket<
@@ -42,7 +44,11 @@ type RpcResponse =
       error: { code: string; message: string; status?: number };
     };
 
-const ALLOWED_PREFIXES = ['/api/v1/connectors', '/api/v1/knowledgeBase'];
+const ALLOWED_PREFIXES = [
+  '/api/v1/connectors',
+  '/api/v1/knowledgeBase',
+  '/api/v1/crawlingManager',
+];
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const NAMESPACE = '/cli-rpc';
 const SOCKET_PATH = '/socket.io-cli-rpc';
@@ -91,6 +97,36 @@ export class CliRpcSocketGateway {
 
     this.namespace.on('connection', (socket: CliRpcSocket) => {
       socket.on(
+        'foldersync:registerWatcher',
+        (
+          payload: { connectorId?: string } | undefined,
+          ack?: (res: RpcResponse | {
+            ok: true;
+          }) => void,
+        ) => {
+          try {
+            const connectorId = String(payload?.connectorId ?? '').trim();
+            if (!connectorId) {
+              throw new BadRequestError('connectorId is required');
+            }
+            folderSyncWatcherRegistry.register(socket, connectorId);
+            ack?.({ ok: true });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            ack?.({
+              type: 'response',
+              id: 'foldersync:registerWatcher',
+              ok: false,
+              error: {
+                code: 'WATCHER_REGISTRATION_FAILED',
+                message,
+                status: (error as { statusCode?: number })?.statusCode,
+              },
+            });
+          }
+        },
+      );
+      socket.on(
         'rpc:request',
         async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
           const response = await this.handleRequest(req, socket);
@@ -101,6 +137,9 @@ export class CliRpcSocketGateway {
           }
         },
       );
+      socket.on('disconnect', () => {
+        folderSyncWatcherRegistry.unregister(socket);
+      });
     });
 
     this.logger.info('CLI RPC Socket.IO namespace initialized');

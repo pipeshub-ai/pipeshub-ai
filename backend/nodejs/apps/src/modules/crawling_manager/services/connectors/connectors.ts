@@ -9,6 +9,10 @@ import {
 } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
+import {
+  folderSyncResyncDispatcher,
+  isFolderSyncConnector,
+} from '../../../knowledge_base/services/folder_sync_resync_dispatcher';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -46,6 +50,24 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
         connector,
         connectorId,
       });
+
+      if (isFolderSyncConnector(connector)) {
+        await folderSyncResyncDispatcher.dispatch({
+          orgId,
+          connectorId,
+          connectorName: connector,
+          origin: 'CONNECTOR',
+          fullSync: false,
+        });
+        this.logger.info('Folder Sync scheduled resync dispatched to watcher', {
+          orgId,
+          connector,
+          connectorId,
+        });
+        return {
+          success: true,
+        };
+      }
 
       // Construct the payload for the sync event using the connector information
       const event = constructSyncConnectorEvent(
