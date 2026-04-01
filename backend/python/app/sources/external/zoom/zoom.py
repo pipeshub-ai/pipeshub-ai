@@ -40961,7 +40961,7 @@ class ZoomDataSource:
             request = HTTPRequest(
                 method="GET",
                 url=download_url,
-                headers={"Content-Type": "application/json"},
+                headers={"Accept": "text/plain"},
             )
             response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             if response.status >= HTTP_ERROR_THRESHOLD:

@@ -1,5 +1,6 @@
 """Zoom connector — all past user meetings with incremental sync via report APIs."""
 
+import asyncio
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from logging import Logger
@@ -7,6 +8,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
+from pydantic import BaseModel, Field  # pyright: ignore[reportMissingImports]
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -65,7 +67,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.zoom.zoom import ZoomClient
 from app.sources.external.zoom.zoom import ZoomDataSource
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -78,6 +80,85 @@ ZOOM_REPORT_MAX_HISTORY_DAYS = 180
 
 _ZOOM_CODE_NO_AI_TRANSCRIPT = 3322
 _ZOOM_CODES_MEETING_NOT_FOUND = {3001, 3301}
+
+# Maximum number of meetings processed concurrently within a single chunk.
+# Kept conservative to stay under Zoom's Heavy-rate endpoint limits
+# (GET /v2/report/meetings/{id}/participants is the bottleneck at ~10-20 req/s).
+_MEETING_CONCURRENCY = 8
+
+# ---------------------------------------------------------------------------
+# Zoom API response models
+# ---------------------------------------------------------------------------
+
+
+class ZoomUser(BaseModel):
+    """User object returned by GET /v2/users."""
+
+    id: str = ""
+    email: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    display_name: str = ""
+    created_at: Optional[str] = None
+    user_created_at: Optional[str] = None
+    last_login_time: Optional[str] = None
+
+    model_config = {"extra": "ignore"}
+
+
+class ZoomMeetingReport(BaseModel):
+    """Meeting object returned by GET /v2/report/users/{userId}/meetings."""
+
+    uuid: str = ""
+    id: Optional[int] = None
+    topic: str = "Zoom Meeting"
+    host_id: str = ""
+    start_time: str = ""
+    end_time: str = ""
+    duration: Optional[int] = None
+    type: Optional[int] = None
+
+    model_config = {"extra": "ignore"}
+
+
+class ZoomMeetingInvitee(BaseModel):
+    """Invitee entry inside meeting settings."""
+
+    email: str = ""
+
+    model_config = {"extra": "ignore"}
+
+
+class ZoomMeetingSettings(BaseModel):
+    """Subset of meeting settings used by this connector."""
+
+    alternative_hosts: str = ""
+    meeting_invitees: list[ZoomMeetingInvitee] = Field(default_factory=list)
+
+    model_config = {"extra": "ignore"}
+
+
+class ZoomMeetingDetail(BaseModel):
+    """Full meeting object returned by GET /v2/meetings/{meetingId}."""
+
+    id: Optional[int] = None
+    join_url: str = ""
+    settings: ZoomMeetingSettings = Field(default_factory=ZoomMeetingSettings)
+
+    model_config = {"extra": "ignore"}
+
+
+class ZoomParticipant(BaseModel):
+    """Participant entry returned by GET /v2/report/meetings/{meetingId}/participants."""
+
+    name: str = ""
+    user_email: str = ""
+    duration: int = 0
+    join_time: str = ""
+    leave_time: str = ""
+
+    model_config = {"extra": "ignore"}
+
 
 # ---------------------------------------------------------------------------
 # ConnectorBuilder
@@ -138,11 +219,6 @@ _ZOOM_CODES_MEETING_NOT_FOUND = {3001, 3301}
             "Zoom OAuth App",
             "https://developers.zoom.us/docs/integrations/oauth/",
             "setup",
-        ))
-        .add_documentation_link(DocumentationLink(
-            "Pipeshub Documentation",
-            "https://docs.pipeshub.com/connectors/zoom",
-            "pipeshub",
         ))
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
@@ -242,9 +318,8 @@ class ZoomConnector(BaseConnector):
                 try:
                     await self._sync_meetings_for_user(zoom_user, today)
                 except Exception as exc:
-                    user_id = zoom_user.get("id", "unknown")
                     self.logger.error(
-                        "❌ Zoom: error syncing user %s: %s", user_id, exc, exc_info=True
+                        "❌ Zoom: error syncing user %s: %s", zoom_user.id or "unknown", exc, exc_info=True
                     )
                     continue
 
@@ -262,12 +337,12 @@ class ZoomConnector(BaseConnector):
 
     async def _sync_meetings_for_user(
         self,
-        zoom_user: dict[str, Any],
+        zoom_user: ZoomUser,
         today: date,
     ) -> None:
         """Fetch meetings in 30-day chunks, build permissions, persist records."""
-        user_id = zoom_user.get("id", "")
-        host_email = (zoom_user.get("email") or "").strip().lower()
+        user_id = zoom_user.id
+        host_email = zoom_user.email.strip().lower()
 
         group, group_perms = self._build_record_group(zoom_user)
         await self.data_entities_processor.on_new_record_groups([(group, group_perms)])
@@ -275,7 +350,7 @@ class ZoomConnector(BaseConnector):
 
         last_sync = await self._get_user_meeting_sync_point(user_id)
         chunks = self._calculate_sync_chunks(
-            user_created_at=zoom_user.get("created_at"),
+            user_created_at=zoom_user.created_at,
             last_sync_date=last_sync,
             today=today,
         )
@@ -290,40 +365,23 @@ class ZoomConnector(BaseConnector):
             await self._update_user_meeting_sync_point(user_id, today - timedelta(days=1))
             return
 
+        sem = asyncio.Semaphore(_MEETING_CONCURRENCY)
+
         for from_str, to_str in chunks:
             raw_meetings = await self._list_report_meetings(user_id, from_str, to_str)
-            chunk_records: list[tuple[Record, list[Permission]]] = []
 
-            for meeting_obj in raw_meetings:
-                meeting_uuid = str(meeting_obj.get("uuid", "")).strip()
-                if not meeting_uuid:
-                    continue
+            results = await asyncio.gather(
+                *[
+                    self._process_one_meeting(sem, m, host_email, record_group_id)
+                    for m in raw_meetings
+                ],
+                return_exceptions=True,
+            )
 
-                try:
-                    meeting_id = str(meeting_obj.get("id", ""))
-                    meeting_detail = await self._get_meeting_detail(meeting_id) if meeting_id else None
-
-                    rec = self._build_meeting_record(
-                        meeting_obj=meeting_obj,
-                        meeting_uuid=meeting_uuid,
-                        meeting_detail=meeting_detail,
-                        host_email=host_email,
-                        record_group_id=record_group_id,
-                    )
-                    encoded_uuid = self._encode_uuid(meeting_uuid)
-                    perms = await self._build_meeting_permissions(
-                        meeting_detail=meeting_detail,
-                        encoded_uuid=encoded_uuid,
-                        host_email=host_email,
-                    )
-                    chunk_records.append((rec, perms))
-
-                except Exception as exc:
-                    self.logger.error(
-                        "❌ Zoom: failed to process meeting %s: %s", meeting_uuid, exc,
-                        exc_info=True,
-                    )
-                    continue
+            chunk_records: list[tuple[Record, list[Permission]]] = [
+                r for r in results  # type: ignore[misc]
+                if r is not None and not isinstance(r, Exception)
+            ]
 
             # Flush each chunk immediately — bounds memory and ensures partial
             # progress is persisted even if a later chunk fails.
@@ -465,10 +523,10 @@ class ZoomConnector(BaseConnector):
     # API wrappers
     # ============================================================================
 
-    async def _list_users(self) -> list[dict[str, Any]]:
+    async def _list_users(self) -> list[ZoomUser]:
         """GET /v2/users?status=active — paginated."""
         datasource = await self._get_fresh_datasource()
-        all_users: list[dict[str, Any]] = []
+        all_users: list[ZoomUser] = []
         next_page_token: Optional[str] = None
         while True:
             resp = await datasource.users(
@@ -479,7 +537,10 @@ class ZoomConnector(BaseConnector):
             if not resp.success or not resp.data:
                 self.logger.warning("Zoom: users() failed — %s", resp.message)
                 break
-            all_users.extend(resp.data.get("users", []))  # type: ignore[union-attr]
+            all_users.extend(
+                ZoomUser.model_validate(u)
+                for u in (resp.data.get("users") or [])  # type: ignore[union-attr]
+            )
             next_page_token = resp.data.get("next_page_token")  # type: ignore[union-attr]
             if not next_page_token:
                 break
@@ -487,10 +548,10 @@ class ZoomConnector(BaseConnector):
 
     async def _list_report_meetings(
         self, user_id: str, from_str: Optional[str], to_str: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[ZoomMeetingReport]:
         """GET /v2/report/users/{userId}/meetings — paginated."""
         datasource = await self._get_fresh_datasource()
-        meetings: list[dict[str, Any]] = []
+        meetings: list[ZoomMeetingReport] = []
         next_page_token: Optional[str] = None
         while True:
             res = await datasource.report_meetings(
@@ -509,7 +570,10 @@ class ZoomConnector(BaseConnector):
                     user_id, from_str, to_str, res.message, zoom_code, zoom_message,
                 )
                 break
-            meetings.extend(res.data.get("meetings", []))  # type: ignore[union-attr]
+            meetings.extend(
+                ZoomMeetingReport.model_validate(m)
+                for m in (res.data.get("meetings") or [])  # type: ignore[union-attr]
+            )
             next_page_token = res.data.get("next_page_token")  # type: ignore[union-attr]
             if not next_page_token:
                 break
@@ -517,10 +581,10 @@ class ZoomConnector(BaseConnector):
 
     async def _list_meeting_participants(
         self, encoded_uuid: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[ZoomParticipant]:
         """GET /v2/report/meetings/{uuid}/participants — paginated."""
         datasource = await self._get_fresh_datasource()
-        participants: list[dict[str, Any]] = []
+        participants: list[ZoomParticipant] = []
         next_page_token: Optional[str] = None
         while True:
             res = await datasource.report_meeting_participants(
@@ -530,19 +594,22 @@ class ZoomConnector(BaseConnector):
             )
             if not res.success or not res.data:
                 break
-            participants.extend(res.data.get("participants", []))  # type: ignore[union-attr]
+            participants.extend(
+                ZoomParticipant.model_validate(p)
+                for p in (res.data.get("participants") or [])  # type: ignore[union-attr]
+            )
             next_page_token = res.data.get("next_page_token")  # type: ignore[union-attr]
             if not next_page_token:
                 break
         return participants
 
-    async def _get_meeting_detail(self, meeting_id: str) -> Optional[dict[str, Any]]:
+    async def _get_meeting_detail(self, meeting_id: str) -> Optional[ZoomMeetingDetail]:
         """GET /v2/meetings/{meetingId} — returns full meeting object or None."""
         try:
             datasource = await self._get_fresh_datasource()
             resp = await datasource.meeting(meeting_id)
             if resp.success and isinstance(resp.data, dict):
-                return resp.data
+                return ZoomMeetingDetail.model_validate(resp.data)
             self.logger.debug(
                 "Zoom: meeting detail for %s unavailable — %s", meeting_id, resp.message
             )
@@ -619,49 +686,90 @@ class ZoomConnector(BaseConnector):
             return None
 
     # ============================================================================
+    # Meeting concurrency helper
+    # ============================================================================
+
+    async def _process_one_meeting(
+        self,
+        sem: asyncio.Semaphore,
+        meeting_obj: ZoomMeetingReport,
+        host_email: str,
+        record_group_id: Optional[str],
+    ) -> Optional[tuple[Record, list[Permission]]]:
+        """Fetch detail + permissions for a single meeting under the shared semaphore.
+
+        Returns (Record, permissions) on success, or None if the meeting should be
+        skipped (missing UUID) or if an error occurs (already logged).
+        """
+        meeting_uuid = meeting_obj.uuid.strip()
+        if not meeting_uuid:
+            return None
+
+        async with sem:
+            try:
+                meeting_id = str(meeting_obj.id) if meeting_obj.id is not None else ""
+                meeting_detail = (
+                    await self._get_meeting_detail(meeting_id) if meeting_id else None
+                )
+                rec = self._build_meeting_record(
+                    meeting_obj=meeting_obj,
+                    meeting_uuid=meeting_uuid,
+                    meeting_detail=meeting_detail,
+                    host_email=host_email,
+                    record_group_id=record_group_id,
+                )
+                encoded_uuid = self._encode_uuid(meeting_uuid)
+                perms = await self._build_meeting_permissions(
+                    meeting_detail=meeting_detail,
+                    encoded_uuid=encoded_uuid,
+                    host_email=host_email,
+                )
+                return (rec, perms)
+            except Exception as exc:
+                self.logger.error(
+                    "❌ Zoom: failed to process meeting %s: %s", meeting_uuid, exc,
+                    exc_info=True,
+                )
+                return None
+
+    # ============================================================================
     # Record / permission builders
     # ============================================================================
 
     @staticmethod
     def _zoom_iso_to_ms(raw: Optional[str]) -> Optional[int]:
         """Parse Zoom datetime fields (e.g. ``2026-03-26T09:53:35Z``) to epoch ms."""
-        if not raw or not isinstance(raw, str):
-            return None
-        s = raw.strip()
-        if not s:
+        if not raw or not isinstance(raw, str) or not raw.strip():
             return None
         try:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return int(dt.timestamp() * 1000)
-        except ValueError:
+            return parse_timestamp(raw.strip())
+        except Exception:
             return None
 
-    def _build_app_users(self, zoom_users: list[dict[str, Any]]) -> list[AppUser]:
+    def _build_app_users(self, zoom_users: list[ZoomUser]) -> list[AppUser]:
         """Map Zoom directory users to AppUser."""
         org_id = self.data_entities_processor.org_id
         now_ms = get_epoch_timestamp_in_ms()
         out: list[AppUser] = []
         for u in zoom_users:
-            user_id = str(u.get("id") or "").strip()
+            user_id = u.id.strip()
             if not user_id:
                 continue
-            email = (u.get("email") or "").strip().lower()
+            email = u.email.strip().lower()
             if not email:
                 self.logger.debug(
                     "Zoom: skipping app user without email (user id=%s)", user_id
                 )
                 continue
-            first = (u.get("first_name") or "") or ""
-            last = (u.get("last_name") or "") or ""
-            display = (u.get("display_name") or "").strip()
-            full_name = display or f"{first} {last}".strip() or email
+            display = u.display_name.strip()
+            full_name = display or f"{u.first_name} {u.last_name}".strip() or email
 
             created_ms = (
-                self._zoom_iso_to_ms(u.get("created_at"))
-                or self._zoom_iso_to_ms(u.get("user_created_at"))
+                self._zoom_iso_to_ms(u.created_at)
+                or self._zoom_iso_to_ms(u.user_created_at)
                 or now_ms
             )
-            updated_ms = self._zoom_iso_to_ms(u.get("last_login_time")) or created_ms
+            updated_ms = self._zoom_iso_to_ms(u.last_login_time) or created_ms
 
             out.append(
                 AppUser(
@@ -681,13 +789,11 @@ class ZoomConnector(BaseConnector):
         return out
 
     def _build_record_group(
-        self, zoom_user: dict[str, Any]
+        self, zoom_user: ZoomUser
     ) -> tuple[RecordGroup, list[Permission]]:
-        user_id = zoom_user.get("id", "")
-        email = (zoom_user.get("email") or "").strip().lower()
-        first = zoom_user.get("first_name", "")
-        last = zoom_user.get("last_name", "")
-        display_name = f"{first} {last}".strip() or email
+        user_id = zoom_user.id
+        email = zoom_user.email.strip().lower()
+        display_name = f"{zoom_user.first_name} {zoom_user.last_name}".strip() or email
 
         now_ms = get_epoch_timestamp_in_ms()
         group = RecordGroup(
@@ -713,19 +819,19 @@ class ZoomConnector(BaseConnector):
 
     def _build_meeting_record(
         self,
-        meeting_obj: dict[str, Any],
+        meeting_obj: ZoomMeetingReport,
         meeting_uuid: str,
-        meeting_detail: Optional[dict[str, Any]],
+        meeting_detail: Optional[ZoomMeetingDetail],
         host_email: str,
         record_group_id: Optional[str],
     ) -> MeetingRecord:
-        meeting_id = str(meeting_obj.get("id", ""))
-        topic = meeting_obj.get("topic") or "Zoom Meeting"
-        host_id = meeting_obj.get("host_id", "")
-        start_time = meeting_obj.get("start_time", "")
-        end_time = meeting_obj.get("end_time", "")
-        duration_minutes = meeting_obj.get("duration")
-        meeting_type = meeting_obj.get("type")
+        meeting_id = str(meeting_obj.id) if meeting_obj.id is not None else ""
+        topic = meeting_obj.topic
+        host_id = meeting_obj.host_id
+        start_time = meeting_obj.start_time
+        end_time = meeting_obj.end_time
+        duration_minutes = meeting_obj.duration
+        meeting_type = meeting_obj.type
 
         source_ts: Optional[int] = None
         if start_time:
@@ -739,11 +845,11 @@ class ZoomConnector(BaseConnector):
 
         display_name = f"{topic} ({start_time})" if start_time else topic
 
-        weburl = ""
-        if meeting_detail and isinstance(meeting_detail, dict):
-            weburl = meeting_detail.get("join_url") or ""
-        if not weburl and meeting_id:
-            weburl = f"https://zoom.us/j/{meeting_id}"
+        # Primary: join_url from Zoom API — the pre-signed join link, may include a passcode.
+        # Fallback: synthesised from the numeric meeting ID when detail fetch failed or had no URL.
+        weburl = (meeting_detail.join_url if meeting_detail else "") or (
+            f"https://zoom.us/j/{meeting_id}" if meeting_id else ""
+        )
 
         now_ms = get_epoch_timestamp_in_ms()
         record = MeetingRecord(
@@ -788,7 +894,7 @@ class ZoomConnector(BaseConnector):
 
     async def _build_meeting_permissions(
         self,
-        meeting_detail: Optional[dict[str, Any]],
+        meeting_detail: Optional[ZoomMeetingDetail],
         encoded_uuid: str,
         host_email: str,
     ) -> list[Permission]:
@@ -813,13 +919,10 @@ class ZoomConnector(BaseConnector):
             ))
             seen_emails.add(host_email)
 
-        settings: dict[str, Any] = {}
-        if meeting_detail and isinstance(meeting_detail, dict):
-            settings = meeting_detail.get("settings") or {}
+        settings = meeting_detail.settings if meeting_detail else ZoomMeetingSettings()
 
         # 2 — alt-hosts → READ
-        alt_hosts_raw: str = settings.get("alternative_hosts") or ""
-        for raw_alt in alt_hosts_raw.split(";"):
+        for raw_alt in settings.alternative_hosts.split(";"):
             alt_email = raw_alt.strip().lower()
             if alt_email and alt_email not in seen_emails:
                 perms.append(Permission(
@@ -837,9 +940,8 @@ class ZoomConnector(BaseConnector):
             self.logger.warning("Zoom: failed to fetch participants: %s", exc)
 
         # 4 — invitees → READ
-        invitees: list[dict[str, Any]] = settings.get("meeting_invitees") or []
-        for inv in invitees:
-            inv_email = (inv.get("email") or "").strip().lower()
+        for inv in settings.meeting_invitees:
+            inv_email = inv.email.strip().lower()
             if inv_email and inv_email not in seen_emails:
                 perms.append(Permission(
                     email=inv_email,
@@ -853,12 +955,12 @@ class ZoomConnector(BaseConnector):
     @staticmethod
     def _add_participant_permissions(
         perms: list[Permission],
-        participants: list[dict[str, Any]],
+        participants: list[ZoomParticipant],
         seen_emails: set[str],
     ) -> None:
         """Append READ permission per participant email."""
         for p in participants:
-            p_email = (p.get("user_email") or "").strip().lower()
+            p_email = p.user_email.strip().lower()
             if p_email and p_email not in seen_emails:
                 perms.append(Permission(
                     email=p_email,
@@ -891,7 +993,7 @@ class ZoomConnector(BaseConnector):
                 participants_md = self._build_participants_markdown(participants)
             except Exception as exc:
                 self.logger.warning(
-                    f"Zoom: could not fetch participants for {meeting_uuid}: {exc}"
+                    "Zoom: could not fetch participants for %s: %s", meeting_uuid, exc
                 )
 
         block_groups = [
@@ -928,7 +1030,7 @@ class ZoomConnector(BaseConnector):
         return StreamingResponse(iter([payload]), media_type=MimeTypes.BLOCKS.value)
 
     @staticmethod
-    def _build_participants_markdown(participants: list[dict[str, Any]]) -> str:
+    def _build_participants_markdown(participants: list[ZoomParticipant]) -> str:
         """Render a participant list as a markdown table.
 
         Columns: Name | Email | Duration (min) | Joined | Left
@@ -941,12 +1043,11 @@ class ZoomConnector(BaseConnector):
             "| --- | --- | --- | --- | --- |",
         ]
         for p in participants:
-            name = (p.get("name") or "").strip() or "—"
-            email = (p.get("user_email") or "").strip() or "—"
-            duration_sec = p.get("duration") or 0
-            duration_min = round(int(duration_sec) / 60, 1)
-            join_time = (p.get("join_time") or "—").replace("T", " ").replace("Z", " UTC")
-            leave_time = (p.get("leave_time") or "—").replace("T", " ").replace("Z", " UTC")
+            name = p.name.strip() or "—"
+            email = p.user_email.strip() or "—"
+            duration_min = round(p.duration / 60, 1)
+            join_time = (p.join_time or "—").replace("T", " ").replace("Z", " UTC")
+            leave_time = (p.leave_time or "—").replace("T", " ").replace("Z", " UTC")
             rows.append(
                 f"| {name} | {email} | {duration_min} | {join_time} | {leave_time} |"
             )

@@ -1689,6 +1689,8 @@ class MeetingRecord(Record):
             "externalRecordId": self.external_record_id,
             "externalRevisionId": self.external_revision_id,
             "externalGroupId": self.external_record_group_id,
+            "recordGroupId": self.record_group_id,
+            "virtualRecordId": self.virtual_record_id,
             "version": self.version,
             "origin": self.origin.value,
             "connectorName": self.connector_name.value,
@@ -1700,9 +1702,12 @@ class MeetingRecord(Record):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "hostEmail": self.host_email,
+            "hostId": self.host_id,
+            "meetingType": self.meeting_type,
             "durationMinutes": self.duration_minutes,
             "startTime": self.start_time,
             "endTime": self.end_time,
+            "timezone": self.timezone,
         }
 
 

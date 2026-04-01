@@ -145,7 +145,7 @@ class TestAuthTypeAutoSelection:
     """Lines 2329-2334: auto-select auth type when not provided."""
 
     @pytest.mark.asyncio
-    async def test_auto_selects_first_supported_auth_type(self):
+    async def test_auto_selects_first_supported_auth_type(self) -> None:
         """When authType is not in body, use supportedAuthTypes[0]."""
         body = _base_body()  # no authType key
         registry = _default_registry()
@@ -164,7 +164,7 @@ class TestAuthTypeAutoSelection:
         assert call_kwargs["selected_auth_type"] == "OAUTH"
 
     @pytest.mark.asyncio
-    async def test_auto_selects_none_when_no_supported_types(self):
+    async def test_auto_selects_none_when_no_supported_types(self) -> None:
         """When supportedAuthTypes is empty, default to 'NONE'."""
         body = _base_body()
         metadata = _default_metadata(supportedAuthTypes=[])
@@ -188,7 +188,7 @@ class TestAuthTypeValidation:
     """Lines 2336-2344: validate auth type compatibility."""
 
     @pytest.mark.asyncio
-    async def test_incompatible_auth_type_raises_400(self):
+    async def test_incompatible_auth_type_raises_400(self) -> None:
         """When selected auth type is not in supportedAuthTypes, raise 400."""
         body = _base_body(authType="API_KEY")
         metadata = _default_metadata(supportedAuthTypes=["OAUTH", "NONE"])
@@ -207,7 +207,7 @@ class TestAuthTypeValidation:
             assert "not supported" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_compatible_auth_type_passes(self):
+    async def test_compatible_auth_type_passes(self) -> None:
         """When selected auth type IS in supportedAuthTypes, no error."""
         body = _base_body(authType="NONE")
         registry = _default_registry()
@@ -228,7 +228,7 @@ class TestPreValidateOAuthConfig:
     """Lines 2349-2394: pre-validate OAuth config for name conflicts."""
 
     @pytest.mark.asyncio
-    async def test_new_oauth_config_no_conflict(self):
+    async def test_new_oauth_config_no_conflict(self) -> None:
         """Admin + OAUTH + credentials + no oauthConfigId -> create new, check conflict."""
         body = _base_body(
             authType="OAUTH",
@@ -271,7 +271,7 @@ class TestPreValidateOAuthConfig:
         assert "exclude_index" not in call_args.kwargs
 
     @pytest.mark.asyncio
-    async def test_update_existing_oauth_config_found(self):
+    async def test_update_existing_oauth_config_found(self) -> None:
         """Admin + OAUTH + matching oauthConfigId with no name change -> no conflict check needed."""
         body = _base_body(
             authType="OAUTH",
@@ -322,7 +322,7 @@ class TestPreValidateOAuthConfig:
         mock_conflict.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_update_oauth_config_not_found_falls_to_new(self):
+    async def test_update_oauth_config_not_found_falls_to_new(self) -> None:
         """Admin + OAUTH + credentials + provided_oauth_config_id that doesn't match -> treat as new."""
         body = _base_body(
             authType="OAUTH",
@@ -373,7 +373,7 @@ class TestPreValidateOAuthConfig:
         assert "exclude_index" not in mock_conflict.call_args.kwargs
 
     @pytest.mark.asyncio
-    async def test_non_list_existing_configs_coerced_to_empty_list(self):
+    async def test_non_list_existing_configs_coerced_to_empty_list(self) -> None:
         """When get_config returns non-list, it should be treated as empty list."""
         body = _base_body(
             authType="OAUTH",
@@ -415,7 +415,7 @@ class TestPreValidateOAuthConfig:
         assert mock_conflict.call_args.args[0] == []
 
     @pytest.mark.asyncio
-    async def test_no_oauth_credentials_skips_pre_validation(self):
+    async def test_no_oauth_credentials_skips_pre_validation(self) -> None:
         """Admin + OAUTH + auth config but no actual credential values -> skip pre-validation."""
         body = _base_body(
             authType="OAUTH",
@@ -452,7 +452,7 @@ class TestPreValidateOAuthConfig:
         mock_conflict.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_oauth_instance_name_from_config(self):
+    async def test_oauth_instance_name_from_config(self) -> None:
         """oauthInstanceName in auth config should be used over instance_name."""
         body = _base_body(
             authType="OAUTH",
@@ -503,7 +503,7 @@ class TestCreateInstanceInDB:
     """Lines 2399-2421: create instance in database."""
 
     @pytest.mark.asyncio
-    async def test_value_error_from_registry_raises_400(self):
+    async def test_value_error_from_registry_raises_400(self) -> None:
         """When create_connector_instance_on_configuration raises ValueError -> 400."""
         body = _base_body(authType="NONE")
         registry = _default_registry()
@@ -524,7 +524,7 @@ class TestCreateInstanceInDB:
             assert "Duplicate instance name" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_none_instance_from_registry_raises_500(self):
+    async def test_none_instance_from_registry_raises_500(self) -> None:
         """When create_connector_instance_on_configuration returns None -> 500."""
         body = _base_body(authType="NONE")
         registry = _default_registry()
@@ -549,7 +549,7 @@ class TestStoreInitialConfig:
     """Lines 2426-2480: store initial config after instance creation."""
 
     @pytest.mark.asyncio
-    async def test_admin_with_auth_creates_oauth_and_stores_config(self):
+    async def test_admin_with_auth_creates_oauth_and_stores_config(self) -> None:
         """Admin with auth config -> _handle_oauth_config_creation called, ID set in config."""
         body = _base_body(
             authType="OAUTH",
@@ -592,7 +592,7 @@ class TestStoreInitialConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_admin_with_auth_but_oauth_returns_none(self):
+    async def test_admin_with_auth_but_oauth_returns_none(self) -> None:
         """Admin with auth config but _handle_oauth_config_creation returns None."""
         body = _base_body(
             authType="OAUTH",
@@ -633,7 +633,7 @@ class TestStoreInitialConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_non_admin_with_auth_skips_oauth_creation(self):
+    async def test_non_admin_with_auth_skips_oauth_creation(self) -> None:
         """Non-admin with auth config -> skip OAuth creation, still store config."""
         body = _base_body(
             authType="OAUTH",
@@ -665,7 +665,7 @@ class TestStoreInitialConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_config_without_auth_skips_oauth(self):
+    async def test_config_without_auth_skips_oauth(self) -> None:
         """Config provided but no auth section -> skip OAuth, still store config."""
         body = _base_body(
             authType="NONE",
@@ -697,7 +697,7 @@ class TestStoreInitialConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_no_config_and_no_oauth_id_skips_storage(self):
+    async def test_no_config_and_no_oauth_id_skips_storage(self) -> None:
         """No config and no oauthConfigId -> skip entire config storage block."""
         body = _base_body(authType="NONE")
         registry = _default_registry()
@@ -721,7 +721,7 @@ class TestStoreInitialConfig:
         config_service.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_oauth_config_id_only_triggers_storage(self):
+    async def test_oauth_config_id_only_triggers_storage(self) -> None:
         """oauthConfigId provided without config -> still enter storage block."""
         body = _base_body(authType="OAUTH", oauthConfigId="pre-existing-oauth")
         registry = _default_registry()
@@ -750,7 +750,7 @@ class TestSuccessResponse:
     """Lines 2490-2503: verify the shape of the success response."""
 
     @pytest.mark.asyncio
-    async def test_response_shape_with_config(self):
+    async def test_response_shape_with_config(self) -> None:
         """Response includes correct connector details when config is provided."""
         body = _base_body(
             authType="NONE",
@@ -787,7 +787,7 @@ class TestSuccessResponse:
         assert connector["isConfigured"] is True
 
     @pytest.mark.asyncio
-    async def test_response_is_configured_false_when_no_config(self):
+    async def test_response_is_configured_false_when_no_config(self) -> None:
         """isConfigured is False when no config is provided."""
         body = _base_body(authType="NONE")
         registry = _default_registry()
@@ -808,7 +808,7 @@ class TestOAuthBodyLevelConfigId:
     """Test the oauthConfigId from top-level body vs nested in auth config."""
 
     @pytest.mark.asyncio
-    async def test_body_level_oauth_config_id_used_for_update(self):
+    async def test_body_level_oauth_config_id_used_for_update(self) -> None:
         """Body-level oauthConfigId is used; without name override conflict check is skipped."""
         body = _base_body(
             authType="OAUTH",
@@ -857,7 +857,7 @@ class TestGenericExceptionHandling:
     """Lines 2505-2512: generic exception -> 500."""
 
     @pytest.mark.asyncio
-    async def test_unexpected_exception_raises_500(self):
+    async def test_unexpected_exception_raises_500(self) -> None:
         """An unexpected error during processing becomes a 500 response."""
         body = _base_body(authType="NONE")
         registry = _default_registry()
