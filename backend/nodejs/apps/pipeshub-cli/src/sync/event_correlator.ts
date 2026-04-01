@@ -34,6 +34,10 @@ export interface EventCorrelatorOptions {
   correlationWindowMs?: number;
   /** Debounce interval for rapid change events on the same path. Default 300. */
   changeDebounceMs?: number;
+  /**
+   * After a debounced `change`, return true to skip emitting MODIFIED (no real content change).
+   */
+  shouldSuppressModifiedChange?: (ev: RawEvent) => Promise<boolean>;
 }
 
 type PendingUnlink = RawEvent & { quickHash?: string };
@@ -52,7 +56,7 @@ async function quickHash(absPath: string): Promise<string | undefined> {
       }
       const h = crypto.createHash("sha256");
       h.update(buf.subarray(0, read));
-      h.update(`|${stat.size}|${stat.mtimeMs}`);
+      h.update(`|${stat.size}|`);
       return h.digest("hex");
     } finally {
       await fh.close();
@@ -75,6 +79,9 @@ export class EventCorrelator {
   private readonly syncRoot: string;
   private readonly correlationWindowMs: number;
   private readonly changeDebounceMs: number;
+  private readonly shouldSuppressModifiedChange?:
+    | ((ev: RawEvent) => Promise<boolean>)
+    | undefined;
 
   /** Pending unlinks waiting for a matching add. */
   private pendingUnlinks = new Map<string, PendingUnlink>();
@@ -95,6 +102,7 @@ export class EventCorrelator {
     this.syncRoot = path.resolve(opts.syncRoot);
     this.correlationWindowMs = opts.correlationWindowMs ?? 250;
     this.changeDebounceMs = opts.changeDebounceMs ?? 300;
+    this.shouldSuppressModifiedChange = opts.shouldSuppressModifiedChange;
   }
 
   setListener(fn: (events: FileEvent[]) => void): void {
@@ -218,27 +226,43 @@ export class EventCorrelator {
   }
 
   private handleChange(raw: RawEvent): void {
-    // Debounce rapid changes on the same path
     const existing = this.changeTimers.get(raw.relKey);
     if (existing) {
       clearTimeout(existing);
     }
     this.pendingChanges.set(raw.relKey, raw);
+    const relKey = raw.relKey;
     const timer = setTimeout(() => {
-      this.changeTimers.delete(raw.relKey);
-      const ev = this.pendingChanges.get(raw.relKey);
-      if (ev) {
-        this.pendingChanges.delete(raw.relKey);
-        this.emitImmediate([{
-          type: "MODIFIED",
-          path: ev.relKey,
-          timestamp: ev.timestamp,
-          size: ev.size,
-          isDirectory: ev.isDirectory,
-        }]);
-      }
+      this.changeTimers.delete(relKey);
+      void this.flushDebouncedChange(relKey);
     }, this.changeDebounceMs);
     this.changeTimers.set(raw.relKey, timer);
+  }
+
+  private async flushDebouncedChange(relKey: string): Promise<void> {
+    const ev = this.pendingChanges.get(relKey);
+    if (!ev) return;
+    this.pendingChanges.delete(relKey);
+    await this.emitModifiedForChangeIfNeeded(ev);
+  }
+
+  private async emitModifiedForChangeIfNeeded(ev: RawEvent): Promise<void> {
+    if (!ev.isDirectory && this.shouldSuppressModifiedChange) {
+      try {
+        if (await this.shouldSuppressModifiedChange(ev)) {
+          return;
+        }
+      } catch {
+        /* emit below */
+      }
+    }
+    this.emitImmediate([{
+      type: "MODIFIED",
+      path: ev.relKey,
+      timestamp: ev.timestamp,
+      size: ev.size,
+      isDirectory: ev.isDirectory,
+    }]);
   }
 
   private scheduleFlush(): void {
@@ -337,27 +361,20 @@ export class EventCorrelator {
   }
 
   /** Force-flush all pending state (call on shutdown). */
-  drain(): void {
+  async drain(): Promise<void> {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
-    // Flush pending change debounces
-    for (const [relKey, timer] of this.changeTimers) {
+    for (const timer of this.changeTimers.values()) {
       clearTimeout(timer);
-      const ev = this.pendingChanges.get(relKey);
-      if (ev) {
-        this.emitImmediate([{
-          type: "MODIFIED",
-          path: ev.relKey,
-          timestamp: ev.timestamp,
-          size: ev.size,
-          isDirectory: ev.isDirectory,
-        }]);
-      }
     }
     this.changeTimers.clear();
+    const pendingList = [...this.pendingChanges.values()];
     this.pendingChanges.clear();
+    for (const ev of pendingList) {
+      await this.emitModifiedForChangeIfNeeded(ev);
+    }
     this.flush();
   }
 }

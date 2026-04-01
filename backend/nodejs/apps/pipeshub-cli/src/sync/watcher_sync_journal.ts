@@ -6,8 +6,13 @@ import { connectorFileSegment } from "./watcher_state";
 export type WatchJournalSource = "live" | "reconcile";
 
 export type WatchJournalBackendStatus =
+  | "pending"
+  | "synced"
+  | "failed";
+
+type LegacyWatchJournalBackendStatus =
+  | WatchJournalBackendStatus
   | "acked"
-  | "failed"
   | "local_only";
 
 export type WatchJournalLineV1 = {
@@ -18,7 +23,8 @@ export type WatchJournalLineV1 = {
   connectorInstanceId: string;
   syncRoot: string;
   events: FileEvent[];
-  backendStatus: WatchJournalBackendStatus;
+  backendStatus: LegacyWatchJournalBackendStatus;
+  replayEvents?: FileEvent[];
 };
 
 export type ConnectorWatchCursorV1 = {
@@ -117,6 +123,25 @@ function atomicWriteJson(filePath: string, data: unknown): void {
   }
 }
 
+function normalizeBackendStatus(
+  status: LegacyWatchJournalBackendStatus
+): WatchJournalBackendStatus {
+  if (status === "acked") {
+    return "synced";
+  }
+  if (status === "local_only") {
+    return "pending";
+  }
+  return status;
+}
+
+function normalizeJournalLine(raw: WatchJournalLineV1): WatchJournalLineV1 {
+  return {
+    ...raw,
+    backendStatus: normalizeBackendStatus(raw.backendStatus),
+  };
+}
+
 /** Stable fingerprint for deduplicating duplicate batches in the journal. */
 function eventsFingerprint(events: FileEvent[]): string {
   const sorted = [...events].sort((a, b) => {
@@ -155,9 +180,110 @@ function readLastJournalLine(jpath: string): WatchJournalLineV1 | null {
     if (!last) return null;
     const o = JSON.parse(last) as WatchJournalLineV1;
     if (o.v !== 1 || !Array.isArray(o.events)) return null;
-    return o;
+    return normalizeJournalLine(o);
   } catch {
     return null;
+  }
+}
+
+export function readWatchJournal(
+  authDir: string,
+  connectorInstanceId: string
+): WatchJournalLineV1[] {
+  const jpath = watcherEventsJournalPath(authDir, connectorInstanceId);
+  if (!fs.existsSync(jpath)) {
+    return [];
+  }
+  try {
+    return fs
+      .readFileSync(jpath, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as WatchJournalLineV1)
+      .filter((line) => line.v === 1 && Array.isArray(line.events))
+      .map((line) => normalizeJournalLine(line));
+  } catch {
+    return [];
+  }
+}
+
+export function readReplayableWatchBatches(
+  authDir: string,
+  connectorInstanceId: string,
+  opts?: {
+    includeSynced?: boolean;
+  }
+): WatchJournalLineV1[] {
+  const lines = readWatchJournal(authDir, connectorInstanceId);
+  if (opts?.includeSynced === true) {
+    return lines;
+  }
+  return lines.filter(
+    (line) =>
+      line.backendStatus === "pending" || line.backendStatus === "failed"
+  );
+}
+
+export function updateWatchBatchStatus(
+  authDir: string,
+  connectorInstanceId: string,
+  batchId: string,
+  backendStatus: WatchJournalBackendStatus
+): void {
+  const lines = readWatchJournal(authDir, connectorInstanceId);
+  if (lines.length === 0) {
+    return;
+  }
+  let updated = false;
+  const nextLines = lines.map((line) => {
+    if (line.batchId !== batchId) {
+      return line;
+    }
+    updated = true;
+    return {
+      ...line,
+      backendStatus,
+    };
+  });
+  if (!updated) {
+    return;
+  }
+  const jpath = watcherEventsJournalPath(authDir, connectorInstanceId);
+  const tmp = `${jpath}.tmp`;
+  fs.writeFileSync(
+    tmp,
+    `${nextLines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+    "utf8"
+  );
+  fs.renameSync(tmp, jpath);
+  try {
+    fs.chmodSync(jpath, 0o600);
+  } catch {
+    /* ignore */
+  }
+
+  if (backendStatus !== "synced") {
+    return;
+  }
+
+  const syncedLine = nextLines.find((line) => line.batchId === batchId);
+  if (!syncedLine) {
+    return;
+  }
+
+  const cur = readCursor(authDir, connectorInstanceId, syncedLine.syncRoot);
+  cur.syncRoot = syncedLine.syncRoot;
+  cur.lastAckBatchId = batchId;
+  cur.lastAckAt = Date.now();
+  if (!cur.lastRecordedBatchId) {
+    cur.lastRecordedBatchId = batchId;
+    cur.lastRecordedAt = syncedLine.recordedAt;
+  }
+  try {
+    atomicWriteJson(watcherCursorPath(authDir, connectorInstanceId), cur);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -176,9 +302,13 @@ export function recordWatchBatch(
     source: WatchJournalSource;
     events: FileEvent[];
     backendStatus: WatchJournalBackendStatus;
+    replayEvents?: FileEvent[];
   }
 ): void {
-  if (args.events.length === 0) {
+  if (
+    args.events.length === 0 &&
+    (!Array.isArray(args.replayEvents) || args.replayEvents.length === 0)
+  ) {
     return;
   }
   fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
@@ -216,6 +346,7 @@ export function recordWatchBatch(
     syncRoot: args.syncRoot,
     events: args.events,
     backendStatus: args.backendStatus,
+    replayEvents: args.replayEvents,
   };
   try {
     fs.appendFileSync(jpath, `${JSON.stringify(line)}\n`, "utf8");
@@ -234,10 +365,7 @@ export function recordWatchBatch(
   cur.syncRoot = args.syncRoot;
   cur.lastRecordedBatchId = args.batchId;
   cur.lastRecordedAt = line.recordedAt;
-  if (
-    args.backendStatus === "acked" ||
-    args.backendStatus === "local_only"
-  ) {
+  if (args.backendStatus === "synced") {
     cur.lastAckBatchId = args.batchId;
     cur.lastAckAt = line.recordedAt;
   }
