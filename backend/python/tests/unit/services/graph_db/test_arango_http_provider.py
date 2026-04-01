@@ -15063,14 +15063,13 @@ class TestGetKnowledgeHubContextPermissions:
 
     @pytest.mark.asyncio
     async def test_untyped_parent_id_returns_reader_default_without_aql(self, connected_provider):
-        """Non-root requires parent_type (matches API); missing it raises and returns READER default — no AQL."""
+        """Non-root requires parent_type (matches API); missing it raises ValueError."""
         mock_aql = AsyncMock()
         connected_provider.http_client.execute_aql = mock_aql
-        result = await connected_provider.get_knowledge_hub_context_permissions(
-            "uk1", "org1", "some_kb_id", parent_type=None
-        )
-        assert result["role"] == "READER"
-        assert result["canUpload"] is False
+        with pytest.raises(ValueError, match="Invalid or unsupported parent_type"):
+            await connected_provider.get_knowledge_hub_context_permissions(
+                "uk1", "org1", "some_kb_id", parent_type=None
+            )
         assert mock_aql.await_count == 0
 
     @pytest.mark.asyncio
@@ -15098,11 +15097,11 @@ class TestGetKnowledgeHubContextPermissions:
 
     @pytest.mark.asyncio
     async def test_whitespace_only_parent_id_treated_as_non_root(self, connected_provider):
-        """Non-empty whitespace is truthy: no parent_type → READER default, no AQL."""
+        """Non-empty whitespace is truthy: no parent_type → raises ValueError."""
         mock_aql = AsyncMock()
         connected_provider.http_client.execute_aql = mock_aql
-        result = await connected_provider.get_knowledge_hub_context_permissions("uk1", "org1", "  ")
-        assert result["role"] == "READER"
+        with pytest.raises(ValueError, match="Invalid or unsupported parent_type"):
+            await connected_provider.get_knowledge_hub_context_permissions("uk1", "org1", "  ")
         assert mock_aql.await_count == 0
 
     @pytest.mark.asyncio
