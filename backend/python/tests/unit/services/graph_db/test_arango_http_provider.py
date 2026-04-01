@@ -15045,31 +15045,98 @@ class TestGetKnowledgeHubFilterOptions:
 
 class TestGetKnowledgeHubContextPermissions:
     @pytest.mark.asyncio
-    async def test_no_parent(self, connected_provider):
+    async def test_no_parent_root_query(self, connected_provider):
+        """parent_id None uses root user admin check; single AQL, same shape as implementation."""
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"role": None, "canUpload": False, "canCreateFolders": False,
-                          "canEdit": False, "canDelete": False, "canManagePermissions": False}]
+            return_value=[{
+                "role": "MEMBER",
+                "canUpload": False,
+                "canCreateFolders": False,
+                "canEdit": False,
+                "canDelete": False,
+                "canManagePermissions": False,
+            }]
         )
         result = await connected_provider.get_knowledge_hub_context_permissions("uk1", "org1", None)
-        assert result is not None
+        assert result["role"] == "MEMBER"
+        assert connected_provider.http_client.execute_aql.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_with_valid_parent_id(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"role": "OWNER", "canUpload": True, "canCreateFolders": True,
-                          "canEdit": True, "canDelete": True, "canManagePermissions": True}]
+    async def test_untyped_parent_id_returns_reader_default_without_aql(self, connected_provider):
+        """Non-root requires parent_type (matches API); missing it raises and returns READER default — no AQL."""
+        mock_aql = AsyncMock()
+        connected_provider.http_client.execute_aql = mock_aql
+        result = await connected_provider.get_knowledge_hub_context_permissions(
+            "uk1", "org1", "some_kb_id", parent_type=None
         )
-        result = await connected_provider.get_knowledge_hub_context_permissions("uk1", "org1", "some_kb_id")
-        assert result is not None
+        assert result["role"] == "READER"
+        assert result["canUpload"] is False
+        assert mock_aql.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_empty_parent_id(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"role": None, "canUpload": False, "canCreateFolders": False,
-                          "canEdit": False, "canDelete": False, "canManagePermissions": False}]
+    async def test_typed_record_group_single_query_returns_permissions(self, connected_provider):
+        """With parent_type, one DOCUMENT + _get_permission_role_aql query; returns driver row."""
+        mock_aql = AsyncMock(
+            return_value=[{
+                "role": "OWNER",
+                "canUpload": True,
+                "canCreateFolders": True,
+                "canEdit": True,
+                "canDelete": True,
+                "canManagePermissions": True,
+            }]
         )
+        connected_provider.http_client.execute_aql = mock_aql
+        result = await connected_provider.get_knowledge_hub_context_permissions(
+            "uk1", "org1", "some_kb_id", parent_type="recordGroup"
+        )
+        assert result["role"] == "OWNER"
+        assert mock_aql.await_count == 1
+        q = mock_aql.await_args[0][0]
+        assert "LET rg = DOCUMENT" in q
+        assert "permission_role" in q
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_parent_id_treated_as_non_root(self, connected_provider):
+        """Non-empty whitespace is truthy: no parent_type → READER default, no AQL."""
+        mock_aql = AsyncMock()
+        connected_provider.http_client.execute_aql = mock_aql
         result = await connected_provider.get_knowledge_hub_context_permissions("uk1", "org1", "  ")
-        assert result is not None
+        assert result["role"] == "READER"
+        assert mock_aql.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_typed_parent_type_single_aql_uses_permission_helper(self, connected_provider):
+        mock_aql = AsyncMock(
+            return_value=[{
+                "role": "READER",
+                "canUpload": False,
+                "canCreateFolders": False,
+                "canEdit": False,
+                "canDelete": False,
+                "canManagePermissions": False,
+            }]
+        )
+        connected_provider.http_client.execute_aql = mock_aql
+        await connected_provider.get_knowledge_hub_context_permissions(
+            "uk1", "org1", "records/r1", parent_type="record"
+        )
+        assert mock_aql.await_count == 1
+        q = mock_aql.await_args[0][0]
+        assert "LET record = DOCUMENT" in q
+        assert "permission_role" in q
+
+    @pytest.mark.asyncio
+    async def test_empty_rows_returns_reader_default(self, connected_provider):
+        """Typed query runs; no RETURN row (e.g. missing doc) → default READER with false flags."""
+        mock_aql = AsyncMock(return_value=[])
+        connected_provider.http_client.execute_aql = mock_aql
+        result = await connected_provider.get_knowledge_hub_context_permissions(
+            "uk1", "org1", "rk", parent_type="record"
+        )
+        assert result["role"] == "READER"
+        assert result["canUpload"] is False
+        assert mock_aql.await_count == 1
 
 
 # ---------------------------------------------------------------------------

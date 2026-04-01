@@ -13183,7 +13183,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str,
         org_id: str,
         parent_id: str | None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        parent_type: str | None = None,
     ) -> dict[str, Any]:
         """
         Get user's context-level permissions.
@@ -13217,7 +13218,6 @@ class Neo4jProvider(IGraphDBProvider):
                 )
             else:
                 # Node level - use generic permission checker
-                # Generate permission calls for all node types
                 record_permission_call = self._get_permission_role_cypher(
                     node_type="record",
                     node_var="record",
@@ -13234,60 +13234,48 @@ class Neo4jProvider(IGraphDBProvider):
                     user_var="u"
                 )
 
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
+                context_perm_return = """
+                WITH coalesce(permission_role, 'READER') AS final_role
 
-                // Find the node (could be Record, App, or RecordGroup)
-                OPTIONAL MATCH (record:Record {{id: $parent_id}})
-                OPTIONAL MATCH (app:App {{id: $parent_id}})
-                OPTIONAL MATCH (rg:RecordGroup {{id: $parent_id}})
-
-                WITH u, record, app, rg,
-                     coalesce(record, app, rg) AS node,
-                     record IS NOT NULL AS is_record,
-                     app IS NOT NULL AS is_app,
-                     rg IS NOT NULL AS is_rg
-
-                WHERE node IS NOT NULL
-
-                // Get permission for Records
-                CALL {{
-                    WITH u, record, is_record
-                    WITH u, record
-                    WHERE is_record
-                    {record_permission_call}
-                    RETURN permission_role AS record_perm
-                }}
-
-                // Get permission for RecordGroups
-                CALL {{
-                    WITH u, rg, is_rg
-                    WITH u, rg
-                    WHERE is_rg
-                    {rg_permission_call}
-                    RETURN permission_role AS rg_perm
-                }}
-
-                // Get permission for Apps
-                CALL {{
-                    WITH u, app, is_app
-                    WITH u, app
-                    WHERE is_app
-                    {app_permission_call}
-                    RETURN permission_role AS app_perm
-                }}
-
-                WITH coalesce(record_perm, rg_perm, app_perm, 'READER') AS final_role
-
-                RETURN {{
+                RETURN {
                     role: final_role,
                     canUpload: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canCreateFolders: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canDelete: final_role IN ['OWNER', 'ADMIN'],
                     canManagePermissions: final_role IN ['OWNER', 'ADMIN']
-                }} AS result
+                } AS result
                 """
+
+                graph_type: str | None = None
+                if parent_type:
+                    graph_type = (
+                        "record" if parent_type in ("folder", "record") else parent_type
+                    )
+
+                if graph_type == "record":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (record:Record {{id: $parent_id}})
+                {record_permission_call}
+                {context_perm_return}
+                """
+                elif graph_type == "recordGroup":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (rg:RecordGroup {{id: $parent_id}})
+                {rg_permission_call}
+                {context_perm_return}
+                """
+                elif graph_type == "app":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (app:App {{id: $parent_id}})
+                {app_permission_call}
+                {context_perm_return}
+                """
+                else:
+                    raise ValueError(f"Invalid or unsupported parent_type: {parent_type}")
 
                 results = await self.client.execute_query(
                     query,

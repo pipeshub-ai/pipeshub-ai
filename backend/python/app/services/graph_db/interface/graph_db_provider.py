@@ -3192,7 +3192,8 @@ class IGraphDBProvider(ABC):
         user_key: str,
         org_id: str,
         parent_id: str | None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        parent_type: str | None = None,
     ) -> dict[str, Any]:
         """
         Get user's context-level permissions (for upload, create folder, etc.).
