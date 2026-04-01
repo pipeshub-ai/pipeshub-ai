@@ -9,7 +9,7 @@ export const OrgCreationBody = z
     registeredName: z.string().optional(), // Will be enforced conditionally
     adminFullName: z.string().min(1, 'Admin full name required'),
     password: z.string().min(8, 'Minimum 8 characters password required'),
-    sendEmail: z.boolean().optional(), //TODO:Check if this is needed
+    sendEmail: z.boolean().optional(),
     permanentAddress: z
       .object({
         addressLine1: z.string().optional(),

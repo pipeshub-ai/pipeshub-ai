@@ -8,6 +8,7 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { ValidationError } from '../../../../src/libs/errors/validation.error';
 
 describe('UserController', () => {
   let controller: UserController;
@@ -91,8 +92,28 @@ describe('UserController', () => {
   describe('getAllUsers', () => {
     it('should return all non-deleted users', async () => {
       const mockUsers = [
-        { _id: 'u1', fullName: 'User One', orgId: '507f1f77bcf86cd799439012' },
-        { _id: 'u2', fullName: 'User Two', orgId: '507f1f77bcf86cd799439012' },
+        {
+          _id: '507f1f77bcf86cd799439011',
+          fullName: 'User One',
+          orgId: '507f1f77bcf86cd799439012',
+          hasLoggedIn: true,
+          isDeleted: false,
+          createdAt: '2026-04-01T12:00:00.000Z',
+          updatedAt: '2026-04-01T12:00:00.000Z',
+          slug: 'user-1',
+          __v: 0,
+        },
+        {
+          _id: '507f1f77bcf86cd799439013',
+          fullName: 'User Two',
+          orgId: '507f1f77bcf86cd799439012',
+          hasLoggedIn: false,
+          isDeleted: false,
+          createdAt: '2026-04-01T12:00:00.000Z',
+          updatedAt: '2026-04-01T12:00:00.000Z',
+          slug: 'user-2',
+          __v: 0,
+        },
       ];
 
       sinon.stub(Users, 'find').returns({
@@ -105,6 +126,7 @@ describe('UserController', () => {
 
       await controller.getAllUsers(req, res);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0]).to.deep.equal(mockUsers);
     });
@@ -112,7 +134,16 @@ describe('UserController', () => {
     it('should return blocked users when blocked=true query param', async () => {
       req.query = { blocked: 'true' };
       const blockedUsers = [
-        { _id: 'u1', email: 'blocked@test.com', fullName: 'Blocked User' },
+        {
+          _id: '507f1f77bcf86cd799439014',
+          email: 'blocked@test.com',
+          orgId: '507f1f77bcf86cd799439012',
+          fullName: 'Blocked User',
+          hasLoggedIn: false,
+          slug: 'user-blocked',
+          createdAt: '2026-04-01T12:00:00.000Z',
+          updatedAt: '2026-04-01T12:00:00.000Z',
+        },
       ];
 
       sinon.stub(UserCredentials, 'aggregate').resolves(blockedUsers);
@@ -121,6 +152,52 @@ describe('UserController', () => {
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(blockedUsers)).to.be.true;
+    });
+
+    it('should throw ValidationError when default list fails response schema', async () => {
+      const badUsers = [
+        {
+          _id: '507f1f77bcf86cd799439011',
+          orgId: '507f1f77bcf86cd799439012',
+        },
+      ];
+
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves(badUsers),
+          }),
+        }),
+      } as any);
+
+      try {
+        await controller.getAllUsers(req, res);
+        expect.fail('expected ValidationError');
+      } catch (err) {
+        expect(err).to.be.instanceOf(ValidationError);
+      }
+      expect(res.json.called).to.be.false;
+    });
+
+    it('should throw ValidationError when blocked list fails response schema', async () => {
+      req.query = { blocked: 'true' };
+      const badBlocked = [
+        {
+          _id: '507f1f77bcf86cd799439014',
+          email: 'not-valid-email',
+          orgId: '507f1f77bcf86cd799439012',
+        },
+      ];
+
+      sinon.stub(UserCredentials, 'aggregate').resolves(badBlocked);
+
+      try {
+        await controller.getAllUsers(req, res);
+        expect.fail('expected ValidationError');
+      } catch (err) {
+        expect(err).to.be.instanceOf(ValidationError);
+      }
+      expect(res.json.called).to.be.false;
     });
   });
 

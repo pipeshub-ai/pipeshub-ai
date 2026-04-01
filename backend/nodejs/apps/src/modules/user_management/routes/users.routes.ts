@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -29,139 +28,18 @@ import { EntitiesEventProducer } from '../services/entity_events.service';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-
-const UserIdUrlParams = z.object({
-  id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
-});
-
-const UserIdValidationSchema = z.object({
-  body: z.object({}),
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const MultipleUserBody = z.object({
-  userIds: z
-    .array(z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId'))
-    .min(1, 'At least one userId is required'),
-});
-const MultipleUserValidationSchema = z.object({
-  body: MultipleUserBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
-
-const createUserBody = z.object({
-  fullName: z.string().min(1, 'Full name is required'),
-  email: z.string().email('Invalid email'),
-  mobile: z
-    .string()
-    .optional()
-    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
-      message: 'Invalid mobile number',
-    }),
-  designation: z.string().optional(),
-});
-
-const updateUserBody = z.object({
-  fullName: z.string().optional(),
-  email: z.string().email('Invalid email').optional(),
-  mobile: z
-    .string()
-    .optional()
-    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
-      message: 'Invalid mobile number',
-    }),
-  designation: z.string().optional(),
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
-  middleName: z.string().optional(),
-  address: z
-    .object({
-      addressLine1: z.string().optional(),
-      city: z.string().optional(),
-      state: z.string().optional(),
-      postCode: z.string().optional(),
-      country: z.string().optional(),
-    })
-    .optional(),
-  dataCollectionConsent: z.boolean().optional(),
-  hasLoggedIn: z.boolean().optional(),
-}).strict(); // Use strict mode to reject unknown fields
-
-const createUserValidationSchema = z.object({
-  body: createUserBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
-
-const updateFullNameBody = z.object({
-  fullName: z.string().min(1, 'fullName must have at least one character'),
-});
-
-const updateFirstNameBody = z.object({
-  firstName: z.string().min(1, 'firstName is required'),
-});
-
-const updateLastNameBody = z.object({
-  lastName: z.string().min(1, 'lastName is required'),
-});
-
-const updateEmailBody = z.object({
-  email: z.string().email('Valid email is required'),
-});
-
-const updateUserFullNameValidationSchema = z.object({
-  body: updateFullNameBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const updateUserFirstNameValidationSchema = z.object({
-  body: updateFirstNameBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const updateUserLastNameValidationSchema = z.object({
-  body: updateLastNameBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-
-const updateDesignationBody = z.object({
-  designation: z.string().min(1, 'designation is required'),
-});
-
-const updateUserDesignationValidationSchema = z.object({
-  body: updateDesignationBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-
-const updateUserEmailValidationSchema = z.object({
-  body: updateEmailBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-
-const updateUserValidationSchema = z.object({
-  body: updateUserBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const emailIdValidationSchema = z.object({
-  body: updateEmailBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
+import { UserIdValidationSchema,
+  MultipleUserValidationSchema, 
+  createUserValidationSchema, 
+  updateUserFullNameValidationSchema, 
+  updateUserFirstNameValidationSchema, 
+  updateUserLastNameValidationSchema, 
+  updateUserDesignationValidationSchema, 
+  updateUserEmailValidationSchema, 
+  updateUserValidationSchema, 
+  emailIdValidationSchema,
+  UpdateUserDisplayPictureValidationSchema,
+} from '../validation/user-validators';
 
 export function createUserRouter(container: Container) {
   const router = Router();
@@ -227,6 +105,7 @@ export function createUserRouter(container: Container) {
     '/:id/unblock',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
+    ValidationMiddleware.validate(UserIdValidationSchema),
     userAdminCheck,
 
     async (req: Request, res: Response, next: NextFunction) => {
@@ -490,6 +369,7 @@ export function createUserRouter(container: Container) {
       strictFileUpload: true,
     }).getMiddleware,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(UpdateUserDisplayPictureValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

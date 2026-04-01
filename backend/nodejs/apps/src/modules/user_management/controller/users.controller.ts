@@ -39,6 +39,11 @@ import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.c
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import {
+  GetAllUsersBlockedResponseSchema,
+  GetAllUsersResponseSchema,
+} from '../validation/user-validators';
 
 @injectable()
 export class UserController {
@@ -97,7 +102,12 @@ export class UserController {
         },
       ]);
 
-      res.status(200).json(blockedUsers);
+      sendValidatedJson(
+        res,
+        GetAllUsersBlockedResponseSchema,
+        blockedUsers,
+        HTTP_STATUS.OK,
+      );
       return;
     }
 
@@ -108,7 +118,12 @@ export class UserController {
       .select('-email')
       .lean()
       .exec();
-    res.json(users);
+    sendValidatedJson(
+      res,
+      GetAllUsersResponseSchema,
+      users,
+      HTTP_STATUS.OK,
+    );
   }
 
   async getAllUsersWithGroups(
