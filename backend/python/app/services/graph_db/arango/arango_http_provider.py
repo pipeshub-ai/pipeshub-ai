@@ -13517,6 +13517,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "canDelete": False,
                 "canManagePermissions": False,
             }
+        except ValueError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub context permissions failed: {str(e)}")
             return {
