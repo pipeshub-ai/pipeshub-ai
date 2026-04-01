@@ -1,6 +1,8 @@
+import types
 from typing import Optional
 
-import httpx  # type: ignore
+import httpx
+from typing_extensions import override
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -22,6 +24,7 @@ class HTTPClient(IClient):
         self.follow_redirects = follow_redirects
         self.client: Optional[httpx.AsyncClient] = None
 
+    @override
     def get_client(self) -> "HTTPClient":
         """Get the client"""
         return self
@@ -35,7 +38,7 @@ class HTTPClient(IClient):
             )
         return self.client
 
-    async def execute(self, request: HTTPRequest, **kwargs) -> HTTPResponse:
+    async def execute(self, request: HTTPRequest, **kwargs: object) -> HTTPResponse:
         """Execute an HTTP request
         Args:
             request: The HTTP request to execute
@@ -80,6 +83,6 @@ class HTTPClient(IClient):
         await self._ensure_client()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(self, exc_type: Optional[type[BaseException]], exc_val: Optional[BaseException], exc_tb: Optional[types.TracebackType]) -> None:
         """Async context manager exit"""
         await self.close()

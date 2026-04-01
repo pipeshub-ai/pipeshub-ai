@@ -1,6 +1,8 @@
 .PHONY: help install-deps-linux install-deps-mac install-deps-windows \
 	docker-redis docker-qdrant docker-etcd docker-arango docker-mongo \
-	docker-zookeeper docker-kafka docker-all docker-all-no-etcd \
+	docker-neo4j docker-zookeeper docker-kafka docker-all docker-all-no-etcd \
+	docker-all-neo4j docker-neo4j-stack start-containers-neo4j \
+	stop-containers-neo4j stop-and-clean-volumes-neo4j clean-docker-neo4j \
 	docker-no-etcd start-containers start-containers-no-etcd \
 	stop-containers stop-containers-no-etcd clean-docker clean-docker-no-etcd \
 	stop-and-clean-volumes stop-and-clean-volumes-no-etcd \
@@ -59,10 +61,18 @@ help: ## Show this help message
 	@echo "  make docker-etcd          - Start etcd container"
 	@echo "  make docker-arango        - Start ArangoDB container"
 	@echo "  make docker-mongo         - Start MongoDB container"
+	@echo "  make docker-neo4j         - Start Neo4j container"
 	@echo "  make docker-zookeeper     - Start Zookeeper container"
 	@echo "  make docker-kafka         - Start Kafka container"
 	@echo "  make stop-containers      - Stop all containers (includes etcd)"
 	@echo "  make stop-and-clean-volumes - Stop containers and clean volumes"
+	@echo ""
+	@echo "$(GREEN)Docker Containers (Neo4j stack - Neo4j instead of ArangoDB/etcd):$(NC)"
+	@echo "  make docker-all-neo4j     - Start Neo4j stack (Redis, Qdrant, Neo4j, Mongo, Kafka)"
+	@echo "  make docker-neo4j-stack   - Alias for docker-all-neo4j"
+	@echo "  make stop-containers-neo4j - Stop Neo4j stack containers"
+	@echo "  make stop-and-clean-volumes-neo4j - Stop and clean Neo4j stack"
+	@echo "  make clean-docker-neo4j   - Clean Neo4j stack docker"
 	@echo ""
 	@echo "$(GREEN)Docker Containers (without etcd - for Redis config store):$(NC)"
 	@echo "  make docker-all-no-etcd   - Start all containers except etcd"
@@ -124,7 +134,7 @@ help: ## Show this help message
 	@echo "$(YELLOW)Configuration:$(NC)"
 	@echo "  All docker-* commands read configuration from: $(PYTHON_ENV_FILE)"
 	@echo "  Supported variables: REDIS_PASSWORD, QDRANT_API_KEY, ARANGO_PASSWORD,"
-	@echo "  MONGO_URI, ETCD_USERNAME, ETCD_PASSWORD, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD"
+	@echo "  MONGO_URI, NEO4J_PASSWORD, ETCD_USERNAME, ETCD_PASSWORD, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD"
 
 # ==============================================================================
 # System Dependencies Installation
@@ -248,6 +258,17 @@ docker-mongo: ## Start MongoDB container (reads MONGO_URI from .env to extract c
 		mongo:8.0.6 2>/dev/null || echo "$(YELLOW)MongoDB container already exists or running$(NC)"
 	@echo "$(GREEN)MongoDB container started on port 27017$(NC)"
 
+docker-neo4j: ## Start Neo4j container (reads NEO4J_* from .env)
+	@echo "$(BLUE)Starting Neo4j container...$(NC)"
+	@$(LOAD_ENV); \
+	NEO4J_PASSWORD=$${NEO4J_PASSWORD:-Test@123!}; \
+	echo "$(YELLOW)Using NEO4J_PASSWORD from .env (or default)$(NC)"; \
+	docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+		-e NEO4J_AUTH=neo4j/$$NEO4J_PASSWORD \
+		neo4j:5.26.0 2>/dev/null || echo "$(YELLOW)Neo4j container already exists or running$(NC)"
+	@echo "$(GREEN)Neo4j container started on ports 7474 (HTTP) and 7687 (Bolt)$(NC)"
+	@echo "$(YELLOW)NOTE: Make sure NEO4J_PASSWORD in .env matches the container$(NC)"
+
 docker-zookeeper: ## Start Zookeeper container
 	@echo "$(BLUE)Starting Zookeeper container...$(NC)"
 	@docker run -d --name zookeeper --restart always -p 2181:2181 \
@@ -294,7 +315,7 @@ docker-kafka: docker-zookeeper ## Start Kafka container (reads KAFKA_SASL_* from
 # Docker All Commands (with etcd)
 # ==============================================================================
 
-docker-all: docker-redis docker-qdrant docker-etcd docker-arango docker-mongo docker-zookeeper docker-kafka ## Start all Docker containers (includes etcd)
+docker-all: docker-redis docker-qdrant docker-etcd docker-arango docker-mongo docker-neo4j docker-zookeeper docker-kafka ## Start all Docker containers (includes etcd)
 	@echo "$(GREEN)All Docker containers started successfully!$(NC)"
 	@echo "$(YELLOW)Check running containers with: docker ps$(NC)"
 
@@ -302,14 +323,14 @@ start-containers: docker-all ## Alias for docker-all
 
 stop-containers: ## Stop all containers (includes etcd)
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(GREEN)All containers stopped!$(NC)"
 
 stop-and-clean-volumes: ## Stop containers and clean volumes (includes etcd)
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker rm redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
 	@docker volume prune -f
 	@echo "$(GREEN)Containers stopped and volumes cleaned!$(NC)"
@@ -317,9 +338,9 @@ stop-and-clean-volumes: ## Stop containers and clean volumes (includes etcd)
 clean-docker: ## Remove containers, prune volumes and images (includes etcd)
 	@echo "$(RED)Cleaning Docker...$(NC)"
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker rm redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
 	@docker volume prune -f
 	@echo "$(YELLOW)Pruning unused images...$(NC)"
@@ -330,7 +351,7 @@ clean-docker: ## Remove containers, prune volumes and images (includes etcd)
 # Docker All Commands (without etcd - for Redis config store)
 # ==============================================================================
 
-docker-all-no-etcd: docker-redis docker-qdrant docker-arango docker-mongo docker-zookeeper docker-kafka ## Start all Docker containers except etcd
+docker-all-no-etcd: docker-redis docker-qdrant docker-arango docker-mongo docker-neo4j docker-zookeeper docker-kafka ## Start all Docker containers except etcd
 	@echo "$(GREEN)All Docker containers (without etcd) started successfully!$(NC)"
 	@echo "$(YELLOW)Check running containers with: docker ps$(NC)"
 	@echo "$(YELLOW)NOTE: Using Redis as config store instead of etcd$(NC)"
@@ -341,14 +362,14 @@ start-containers-no-etcd: docker-all-no-etcd ## Alias for docker-all-no-etcd
 
 stop-containers-no-etcd: ## Stop all containers except etcd
 	@echo "$(YELLOW)Stopping containers (no etcd)...$(NC)"
-	@docker stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(GREEN)Containers stopped!$(NC)"
 
 stop-and-clean-volumes-no-etcd: ## Stop containers and clean volumes (no etcd)
 	@echo "$(YELLOW)Stopping containers (no etcd)...$(NC)"
-	@docker stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker rm redis qdrant arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
 	@docker volume prune -f
 	@echo "$(GREEN)Containers stopped and volumes cleaned!$(NC)"
@@ -356,14 +377,53 @@ stop-and-clean-volumes-no-etcd: ## Stop containers and clean volumes (no etcd)
 clean-docker-no-etcd: ## Remove containers, prune volumes and images (no etcd)
 	@echo "$(RED)Cleaning Docker (no etcd)...$(NC)"
 	@echo "$(YELLOW)Stopping containers...$(NC)"
-	@docker stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker rm redis qdrant arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
 	@docker volume prune -f
 	@echo "$(YELLOW)Pruning unused images...$(NC)"
 	@docker image prune -f
 	@echo "$(GREEN)Docker cleanup complete!$(NC)"
+
+# ==============================================================================
+# Docker All Commands (Neo4j stack - Neo4j instead of ArangoDB/etcd)
+# ==============================================================================
+
+docker-all-neo4j: docker-redis docker-qdrant docker-neo4j docker-mongo docker-zookeeper docker-kafka ## Start Neo4j stack (Redis, Qdrant, Neo4j, Mongo, Kafka)
+	@echo "$(GREEN)All Neo4j stack Docker containers started successfully!$(NC)"
+	@echo "$(YELLOW)Check running containers with: docker ps$(NC)"
+	@echo "$(YELLOW)NOTE: Using Neo4j as graph data store (no ArangoDB/etcd)$(NC)"
+
+docker-neo4j-stack: docker-all-neo4j ## Alias for docker-all-neo4j
+
+start-containers-neo4j: docker-all-neo4j ## Alias for docker-all-neo4j
+
+stop-containers-neo4j: ## Stop Neo4j stack containers
+	@echo "$(YELLOW)Stopping Neo4j stack containers...$(NC)"
+	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(GREEN)Neo4j stack containers stopped!$(NC)"
+
+stop-and-clean-volumes-neo4j: ## Stop Neo4j stack containers and clean volumes
+	@echo "$(YELLOW)Stopping Neo4j stack containers...$(NC)"
+	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Removing containers...$(NC)"
+	@docker rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
+	@docker volume prune -f
+	@echo "$(GREEN)Neo4j stack containers stopped and volumes cleaned!$(NC)"
+
+clean-docker-neo4j: ## Remove Neo4j stack containers, prune volumes and images
+	@echo "$(RED)Cleaning Neo4j stack Docker...$(NC)"
+	@echo "$(YELLOW)Stopping containers...$(NC)"
+	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Removing containers...$(NC)"
+	@docker rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
+	@docker volume prune -f
+	@echo "$(YELLOW)Pruning unused images...$(NC)"
+	@docker image prune -f
+	@echo "$(GREEN)Neo4j stack Docker cleanup complete!$(NC)"
 
 # ==============================================================================
 # Node.js Backend Setup
@@ -548,12 +608,12 @@ clean-all: ## Clean all setups with hard Docker cleanup
 	@echo "$(YELLOW)Removing frontend setup...$(NC)"
 	rm -rf $(ROOT_DIR)/frontend/node_modules
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker stop redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Stopping docker-compose containers...$(NC)"
 	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai down -v 2>/dev/null || true
 	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down -v 2>/dev/null || true
 	@echo "$(YELLOW)Removing all containers...$(NC)"
-	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@docker rm redis qdrant etcd-server arango mongodb neo4j zookeeper kafka 2>/dev/null || true
 	@docker container prune -f
 	@echo "$(YELLOW)Removing all volumes...$(NC)"
 	@VOLUMES=$$(docker volume ls -q 2>/dev/null); \
