@@ -119,7 +119,7 @@ class SyncStats:
     .in_group("MariaDB")\
     .with_description("Sync databases and tables from MariaDB")\
     .with_categories(["Database"])\
-    .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([
             AuthField(
@@ -188,7 +188,6 @@ class SyncStats:
             category=FilterCategory.SYNC,
             description="Select specific tables to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
@@ -297,7 +296,7 @@ class MariaDBConnector(BaseConnector):
                 return False
 
             self.database_name = database
-            self.connector_scope = config.get("scope", ConnectorScope.PERSONAL.value)
+            self.connector_scope = config.get("scope", ConnectorScope.TEAM.value)
             self.created_by = config.get("created_by")
 
             mariadb_config = MariaDBConfig(
@@ -309,12 +308,8 @@ class MariaDBConnector(BaseConnector):
             )
             client = mariadb_config.create_client()
             client.connect()
-            
-            self.data_source = MariaDBDataSource(client)
 
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "mariadb", self.connector_id, self.logger
-            )
+            self.data_source = MariaDBDataSource(client)
 
             self.logger.info("MariaDB connector initialized successfully")
             return True
@@ -355,7 +350,6 @@ class MariaDBConnector(BaseConnector):
     def _get_filter_values(self) -> Optional[List[str]]:
         table_filter = self.sync_filters.get("tables")
         selected_tables = table_filter.value if table_filter and table_filter.value else None
-
         return selected_tables
 
     async def _run_full_sync_internal(self) -> None:

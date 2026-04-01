@@ -344,28 +344,8 @@ class Record(BaseModel):
             reason=arango_base_record.get("reason"),
         )
 
-    def to_kafka_record(self) -> Dict:
-        """Default implementation for records. Subclasses can override to add type-specific fields."""
-        return {
-            "recordId": self.id,
-            "orgId": self.org_id,
-            "recordName": self.record_name,
-            "recordType": self.record_type.value,
-            "externalRecordId": self.external_record_id,
-            "version": self.version,
-            "origin": self.origin.value,
-            "connectorName": self.connector_name.value,
-            "connectorId": self.connector_id,
-            "mimeType": self.mime_type,
-            "webUrl": self.weburl,
-            "createdAtTimestamp": self.created_at,
-            "updatedAtTimestamp": self.updated_at,
-            "sourceCreatedAtTimestamp": self.source_created_at,
-            "sourceLastModifiedTimestamp": self.source_updated_at,
-            "externalRevisionId": self.external_revision_id,
-            "externalGroupId": self.external_record_group_id,
-            "parentExternalRecordId": self.parent_external_record_id,
-        }
+    def to_kafka_record(self) -> dict:
+        raise NotImplementedError("Implement this method in the subclass")
 
 class FileRecord(Record):
     is_file: bool

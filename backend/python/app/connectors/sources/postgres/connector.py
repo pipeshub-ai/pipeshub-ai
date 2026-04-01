@@ -126,7 +126,7 @@ class SyncStats:
     .in_group("PostgreSQL")\
     .with_description("Sync schemas and tables from PostgreSQL")\
     .with_categories(["Database"])\
-    .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         # Option 1: Individual connection fields
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([
@@ -209,7 +209,6 @@ class SyncStats:
             category=FilterCategory.SYNC,
             description="Select specific schemas to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
@@ -219,7 +218,6 @@ class SyncStats:
             category=FilterCategory.SYNC,
             description="Select specific tables to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
@@ -360,7 +358,7 @@ class PostgreSQLConnector(BaseConnector):
                     return False
 
             self.database_name = database
-            self.connector_scope = config.get("scope", ConnectorScope.PERSONAL.value)
+            self.connector_scope = config.get("scope", ConnectorScope.TEAM.value)
             self.created_by = config.get("created_by")
 
             pg_config = PostgreSQLConfig(
@@ -375,9 +373,6 @@ class PostgreSQLConnector(BaseConnector):
             
             self.data_source = PostgreSQLDataSource(client)
 
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "postgresql", self.connector_id, self.logger
-            )
 
             self.logger.info("PostgreSQL connector initialized successfully")
             return True
