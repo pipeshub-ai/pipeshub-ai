@@ -8,14 +8,11 @@ from typing import Optional, override
 from redis.asyncio import Redis
 
 from app.services.messaging.config import (
-    MAX_CONCURRENT_INDEXING,
-    MAX_CONCURRENT_PARSING,
-    MAX_PENDING_INDEXING_TASKS,
-    SHUTDOWN_TASK_TIMEOUT,
     IndexingEvent,
     IndexingMessageHandler,
     RedisStreamsConfig,
     StreamMessage,
+    messaging_env,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 
@@ -90,6 +87,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     else:
                         raise
 
+            for topic in self.config.topics:
+                try:
+                    await self.redis.xgroup_delconsumer(  # type: ignore
+                        topic, self.config.group_id, self.config.client_id
+                    )
+                except Exception:
+                    pass
+
             self.logger.info(
                 "Successfully initialized Redis Streams consumer for indexing"
             )
@@ -102,8 +107,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         def run_worker_loop() -> None:
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
-            self.parsing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSING)
-            self.indexing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INDEXING)
+            self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
+            self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
             self.logger.info(
                 "Worker thread event loop started with semaphores initialized"
             )
@@ -152,8 +157,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.consume_task = asyncio.create_task(self._consume_loop())
             self.logger.info(
                 "Started Redis Streams consumer task with parsing_slots=%d, indexing_slots=%d",
-                MAX_CONCURRENT_PARSING,
-                MAX_CONCURRENT_INDEXING,
+                messaging_env.max_concurrent_parsing,
+                messaging_env.max_concurrent_indexing,
             )
         except Exception as e:
             self.logger.error("Failed to start Redis Streams consumer: %s", e)
@@ -208,7 +213,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         )
         for future in futures_to_wait:
             try:
-                future.result(timeout=SHUTDOWN_TASK_TIMEOUT)
+                future.result(timeout=messaging_env.shutdown_task_timeout)
             except TimeoutError:
                 future.cancel()
             except Exception as e:
@@ -218,13 +223,48 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    async def _drain_pending(self) -> None:
+        """Re-process messages left in the Pending Entries List (PEL) from a previous crash."""
+        self.logger.info("Draining pending messages from PEL")
+        while self.running:
+            streams = dict.fromkeys(self.config.topics, "0")
+            results = await self.redis.xreadgroup(  # type: ignore
+                groupname=self.config.group_id,
+                consumername=self.config.client_id,
+                streams=streams,
+                count=10,
+            )
+            if not results or all(len(msgs) == 0 for _, msgs in results):
+                self.logger.info("PEL drained, switching to new messages")
+                break
+            for stream_name, messages in results:
+                for message_id, fields in messages:
+                    if not self.running:
+                        return
+                    try:
+                        self.logger.info(
+                            "Recovering pending message: stream=%s, id=%s",
+                            stream_name,
+                            message_id,
+                        )
+                        await self._start_processing_task(
+                            stream_name, message_id, fields
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "Error recovering pending message %s: %s",
+                            message_id,
+                            e,
+                        )
+
     async def _consume_loop(self) -> None:
         try:
             self.logger.info("Starting Redis Streams consumer loop")
+            await self._drain_pending()
             while self.running:
                 try:
                     active_count = self._get_active_task_count()
-                    if active_count >= MAX_PENDING_INDEXING_TASKS:
+                    if active_count >= messaging_env.max_pending_indexing_tasks:
                         if not self._backpressure_active:
                             self.logger.warning(
                                 "Backpressure engaged: %d active tasks",
@@ -237,7 +277,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.logger.info(
                             "Backpressure cleared: %d/%d",
                             active_count,
-                            MAX_PENDING_INDEXING_TASKS,
+                            messaging_env.max_pending_indexing_tasks,
                         )
                         self._backpressure_active = False
 
@@ -246,7 +286,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
                         streams=streams,
-                        count=1,
+                        count=self.config.batch_size,
                         block=self.config.block_ms,
                     )
 
@@ -378,12 +418,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         indexing_held = False
 
                 # Acknowledge on the main loop where self.redis was created
-                if self.redis and self.main_loop:
-                    future = asyncio.run_coroutine_threadsafe(
+                if self.redis and self.main_loop and self.main_loop.is_running():
+                    ack_future = asyncio.run_coroutine_threadsafe(
                         self.redis.xack(stream_name, self.config.group_id, message_id),  # type: ignore
                         self.main_loop,
                     )
-                    future.result(timeout=10)
+                    try:
+                        ack_future.result(timeout=5)
+                    except TimeoutError:
+                        self.logger.warning(
+                            "Timed out waiting for xack on %s, will be re-delivered",
+                            message_id,
+                        )
+                elif not self.running:
+                    self.logger.debug(
+                        "Skipping xack for %s during shutdown", message_id
+                    )
             else:
                 self.logger.error("No message handler available for %s", message_id)
                 return False

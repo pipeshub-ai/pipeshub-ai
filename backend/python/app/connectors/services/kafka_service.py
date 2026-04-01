@@ -23,6 +23,7 @@ class KafkaService:
         self.config_service = config_service
         self.logger = logger
         self._producer = producer
+        self._producer_started = False
 
     async def _ensure_producer(self) -> None:
         """Ensure the producer is initialized and started"""
@@ -31,11 +32,14 @@ class KafkaService:
                 "No messaging producer configured. "
                 "Set producer via constructor or set_producer()."
             )
-        await self._producer.start()
+        if not self._producer_started:
+            await self._producer.start()
+            self._producer_started = True
 
     def set_producer(self, producer: IMessagingProducer) -> None:
         """Set the messaging producer (for deferred initialization)"""
         self._producer = producer
+        self._producer_started = False
 
     async def publish_event(self, topic: str, event: dict) -> bool:
         """
@@ -108,7 +112,7 @@ class KafkaService:
 
         except Exception as e:
             self.logger.error("Failed to send event: %s", str(e))
-            return False
+            raise
 
     async def stop_producer(self) -> None:
         """Stop the producer and clean up resources"""

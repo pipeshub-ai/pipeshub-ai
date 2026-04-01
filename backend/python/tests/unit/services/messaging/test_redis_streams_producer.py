@@ -188,13 +188,13 @@ class TestSendMessage:
         mock_redis.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_exception(self, producer):
+    async def test_raises_on_exception(self, producer):
         mock_redis = AsyncMock()
         mock_redis.xadd = AsyncMock(side_effect=Exception("xadd failed"))
         producer.redis = mock_redis
 
-        result = await producer.send_message("t", {"d": 1})
-        assert result is False
+        with pytest.raises(Exception, match="xadd failed"):
+            await producer.send_message("t", {"d": 1})
 
 
 class TestSendEvent:
@@ -218,13 +218,13 @@ class TestSendEvent:
         assert "timestamp" in sent_msg
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_exception(self, producer):
+    async def test_raises_on_exception(self, producer):
         producer.send_message = AsyncMock(side_effect=Exception("boom"))
 
-        result = await producer.send_event(
-            topic="t", event_type="EVT", payload={}
-        )
-        assert result is False
+        with pytest.raises(Exception, match="boom"):
+            await producer.send_event(
+                topic="t", event_type="EVT", payload={}
+            )
 
 
 class TestStartStop:

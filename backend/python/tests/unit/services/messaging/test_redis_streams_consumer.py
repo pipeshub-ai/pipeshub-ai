@@ -1,9 +1,11 @@
 """
 Tests for RedisStreamsConsumer:
-  - initialize (connects, creates groups, handles BUSYGROUP)
+  - initialize (connects, creates groups, handles BUSYGROUP, stale consumer cleanup)
   - cleanup (closes redis)
-  - start / stop lifecycle
-  - _process_message (JSON parsing, handler invocation)
+  - start / stop lifecycle (including error paths)
+  - _process_message (JSON parsing, handler invocation, null payload)
+  - _drain_pending (PEL recovery: ack, nack, exceptions, batching)
+  - _consume_loop (message processing, ack/nack, cancellation, error handling)
   - is_running
 """
 
@@ -14,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import RedisStreamsConfig
+from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 
 
@@ -206,21 +208,23 @@ class TestProcessMessage:
         assert result is True
         handler.assert_awaited_once()
         called_msg = handler.call_args[0][0]
-        assert called_msg["eventType"] == "TEST"
+        assert isinstance(called_msg, StreamMessage)
+        assert called_msg.eventType == "TEST"
 
     @pytest.mark.asyncio
     async def test_handles_double_encoded_json(self, consumer):
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        inner = json.dumps({"key": "val"})
+        inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
         result = await consumer._process_message(
             "s", "1-0", {"value": json.dumps(inner)}
         )
 
         assert result is True
         called_msg = handler.call_args[0][0]
-        assert called_msg["key"] == "val"
+        assert isinstance(called_msg, StreamMessage)
+        assert called_msg.payload == {"key": "val"}
 
     @pytest.mark.asyncio
     async def test_returns_false_for_invalid_json(self, consumer):
@@ -234,26 +238,27 @@ class TestProcessMessage:
     async def test_returns_false_when_no_handler(self, consumer):
         consumer.message_handler = None
         result = await consumer._process_message(
-            "s", "1-0", {"value": json.dumps({"k": "v"})}
+            "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
         )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_processes_empty_dict_message(self, consumer):
-        """An empty dict {} is a valid parsed message and should be passed to the handler."""
+    async def test_processes_empty_dict_message_fails(self, consumer):
+        """An empty dict {} is no longer valid for StreamMessage (missing required fields)."""
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
         result = await consumer._process_message("s", "1-0", {"value": "{}"})
 
-        assert result is True
-        handler.assert_awaited_once_with({})
+        # StreamMessage(**{}) will fail validation (missing eventType, payload)
+        assert result is False
+        handler.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_false_on_handler_exception(self, consumer):
         consumer.message_handler = AsyncMock(side_effect=Exception("handler error"))
         result = await consumer._process_message(
-            "s", "1-0", {"value": json.dumps({"k": "v"})}
+            "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
         )
         assert result is False
 
@@ -278,3 +283,615 @@ class TestProcessMessage:
 
         assert result is True
         handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_parsed_value_is_null(self, consumer):
+        """When JSON parses to None (literal null), message should be skipped."""
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        result = await consumer._process_message("s", "1-0", {"value": "null"})
+
+        assert result is False
+        consumer.message_handler.assert_not_awaited()
+
+
+class TestInitializeStaleConsumerCleanup:
+    """Tests for stale consumer cleanup in initialize() -- lines 70-76."""
+
+    @pytest.mark.asyncio
+    async def test_delconsumer_called_for_each_topic(self, logger):
+        """xgroup_delconsumer is called for every topic during initialize."""
+        cfg = RedisStreamsConfig(
+            host="localhost",
+            port=6379,
+            client_id="c1",
+            group_id="g1",
+            topics=["topic-a", "topic-b"],
+        )
+        c = RedisStreamsConsumer(logger, cfg)
+        mock_redis = AsyncMock()
+        mock_redis.ping = AsyncMock()
+        mock_redis.xgroup_create = AsyncMock()
+        mock_redis.xgroup_delconsumer = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+            return_value=mock_redis,
+        ):
+            await c.initialize()
+
+        assert mock_redis.xgroup_delconsumer.call_count == 2
+        mock_redis.xgroup_delconsumer.assert_any_call("topic-a", "g1", "c1")
+        mock_redis.xgroup_delconsumer.assert_any_call("topic-b", "g1", "c1")
+
+    @pytest.mark.asyncio
+    async def test_delconsumer_exception_is_suppressed(self, logger, config):
+        """If xgroup_delconsumer raises, the error is silently ignored (line 75)."""
+        c = RedisStreamsConsumer(logger, config)
+        mock_redis = AsyncMock()
+        mock_redis.ping = AsyncMock()
+        mock_redis.xgroup_create = AsyncMock()
+        mock_redis.xgroup_delconsumer = AsyncMock(
+            side_effect=Exception("NOGROUP No such consumer group")
+        )
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+            return_value=mock_redis,
+        ):
+            # Should not raise
+            await c.initialize()
+
+        assert c.redis is mock_redis
+
+
+class TestStartErrorPath:
+    """Tests for start() error handling -- lines 99-106."""
+
+    @pytest.mark.asyncio
+    async def test_start_calls_initialize_when_redis_is_none(self, logger, config):
+        """When self.redis is None, start() calls initialize() (line 99-100)."""
+        c = RedisStreamsConsumer(logger, config)
+        handler = AsyncMock(return_value=True)
+
+        mock_redis = AsyncMock()
+        mock_redis.ping = AsyncMock()
+        mock_redis.xgroup_create = AsyncMock()
+        mock_redis.xgroup_delconsumer = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
+        mock_redis.close = AsyncMock()
+
+        assert c.redis is None
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+            return_value=mock_redis,
+        ):
+            await c.start(handler)
+
+        assert c.redis is mock_redis
+        assert c.running is True
+        assert c.consume_task is not None
+
+        # cleanup
+        c.running = False
+        c.consume_task.cancel()
+        try:
+            await c.consume_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_start_does_not_initialize_when_redis_already_set(
+        self, logger, config
+    ):
+        """When self.redis is already set, start() skips initialize()."""
+        c = RedisStreamsConsumer(logger, config)
+        handler = AsyncMock(return_value=True)
+
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
+        mock_redis.close = AsyncMock()
+        c.redis = mock_redis
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+        ) as mock_cls:
+            await c.start(handler)
+            mock_cls.assert_not_called()
+
+        assert c.running is True
+        assert c.consume_task is not None
+
+        # cleanup
+        c.running = False
+        c.consume_task.cancel()
+        try:
+            await c.consume_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_start_raises_on_initialize_failure(self, logger, config):
+        """If initialize() fails during start(), the error propagates (lines 104-106)."""
+        c = RedisStreamsConsumer(logger, config)
+        handler = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.Redis",
+            side_effect=Exception("Connection refused"),
+        ):
+            with pytest.raises(Exception, match="Connection refused"):
+                await c.start(handler)
+
+        assert c.running is True  # set before initialize
+        assert c.consume_task is None  # never reached
+
+
+class TestStop:
+    """Tests for stop() -- lines 108-123."""
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_task_and_closes_redis(self, consumer):
+        """stop() cancels the consume_task and closes Redis."""
+        mock_redis = AsyncMock()
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.consume_task = asyncio.create_task(asyncio.sleep(100))
+
+        await consumer.stop()
+
+        assert consumer.running is False
+        assert consumer.consume_task.cancelled() or consumer.consume_task.done()
+        mock_redis.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_without_consume_task(self, consumer):
+        """stop() works when no consume_task was created."""
+        mock_redis = AsyncMock()
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.consume_task = None
+
+        await consumer.stop()
+
+        assert consumer.running is False
+        mock_redis.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_without_redis(self, consumer):
+        """stop() works when redis is None (line 121->exit path)."""
+        consumer.running = True
+        consumer.redis = None
+        consumer.consume_task = None
+
+        await consumer.stop()
+
+        assert consumer.running is False
+
+
+class TestDrainPending:
+    """Tests for _drain_pending() -- lines 128-164."""
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_no_pending_messages(self, consumer):
+        """When PEL is empty, _drain_pending returns immediately."""
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(return_value=[])
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        mock_redis.xreadgroup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_none_result(self, consumer):
+        """When xreadgroup returns None, _drain_pending stops."""
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        mock_redis.xreadgroup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_processes_and_acks_messages(self, consumer):
+        """Pending messages are processed and acknowledged."""
+        mock_redis = AsyncMock()
+        pending_msg = {
+            "value": json.dumps({"eventType": "RECOVER", "payload": {"id": 42}})
+        }
+        # First call returns pending messages, second call returns empty
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [("1-0", pending_msg)])],
+                [],
+            ]
+        )
+        mock_redis.xack = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_awaited_once_with(
+            "test-topic", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_does_not_ack_failed_messages(self, consumer):
+        """If handler returns False, message is NOT acknowledged."""
+        mock_redis = AsyncMock()
+        pending_msg = {
+            "value": json.dumps({"eventType": "FAIL", "payload": {"id": 1}})
+        }
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [("2-0", pending_msg)])],
+                [],
+            ]
+        )
+        mock_redis.xack = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=False)
+
+        await consumer._drain_pending()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_handles_xack_exception(self, consumer):
+        """If xack raises during pending recovery, the error is logged but loop continues."""
+        mock_redis = AsyncMock()
+        msg1 = {
+            "value": json.dumps({"eventType": "OK1", "payload": {"id": 1}})
+        }
+        msg2 = {
+            "value": json.dumps({"eventType": "OK2", "payload": {"id": 2}})
+        }
+        # Both messages in one batch
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [("1-0", msg1), ("2-0", msg2)])],
+                [],
+            ]
+        )
+        # xack raises on first call, succeeds on second
+        mock_redis.xack = AsyncMock(
+            side_effect=[Exception("xack failed"), None]
+        )
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        assert consumer.message_handler.call_count == 2
+        # Both messages were processed, xack called for both (first raised, second ok)
+        assert mock_redis.xack.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_multiple_batches(self, consumer):
+        """_drain_pending loops until PEL is fully drained."""
+        mock_redis = AsyncMock()
+        msg1 = {"value": json.dumps({"eventType": "E1", "payload": {"a": 1}})}
+        msg2 = {"value": json.dumps({"eventType": "E2", "payload": {"b": 2}})}
+
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [("1-0", msg1)])],
+                [("test-topic", [("2-0", msg2)])],
+                [],
+            ]
+        )
+        mock_redis.xack = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        assert consumer.message_handler.call_count == 2
+        assert mock_redis.xreadgroup.call_count == 3
+        assert mock_redis.xack.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_stops_when_not_running(self, consumer):
+        """If self.running becomes False, _drain_pending exits early."""
+        mock_redis = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = False
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        mock_redis.xreadgroup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_streams_with_empty_messages(self, consumer):
+        """When all streams return empty message lists, drain stops."""
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(
+            return_value=[("test-topic", [])]
+        )
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        mock_redis.xreadgroup.assert_awaited_once()
+        consumer.message_handler.assert_not_awaited()
+
+
+class TestConsumeLoop:
+    """Tests for _consume_loop() -- lines 166-229."""
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_processes_new_messages(self, consumer):
+        """_consume_loop processes messages and acks successful ones."""
+        mock_redis = AsyncMock()
+        msg = {"value": json.dumps({"eventType": "NEW", "payload": {"x": 1}})}
+        call_count = 0
+
+        async def xreadgroup_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            streams = kwargs.get("streams", {})
+            # Check if this is a drain call (id="0") or a new-message call (id=">")
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []  # No pending messages
+            if call_count == 2:
+                return [("test-topic", [("10-0", msg)])]
+            # Stop the loop after processing
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.xack = AsyncMock()
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._consume_loop()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_awaited_once_with(
+            "test-topic", consumer.config.group_id, "10-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_nack_path(self, consumer):
+        """When handler returns False, message is not acked (nack path)."""
+        mock_redis = AsyncMock()
+        msg = {"value": json.dumps({"eventType": "FAIL", "payload": {"x": 1}})}
+        call_count = 0
+
+        async def xreadgroup_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []
+            if call_count == 2:
+                return [("test-topic", [("11-0", msg)])]
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.xack = AsyncMock()
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=False)
+
+        await consumer._consume_loop()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_handles_xack_exception(self, consumer):
+        """Exception during xack is caught per-message, loop continues."""
+        mock_redis = AsyncMock()
+        msg = {"value": json.dumps({"eventType": "OK", "payload": {"x": 1}})}
+        call_count = 0
+
+        async def xreadgroup_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []
+            if call_count == 2:
+                return [("test-topic", [("12-0", msg)])]
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.xack = AsyncMock(side_effect=Exception("xack exploded"))
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        # Should not raise -- the per-message except catches the xack error
+        await consumer._consume_loop()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_awaited_once()
+        mock_redis.close.assert_awaited()  # cleanup called in finally
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_nack_path_logs_warning(self, consumer):
+        """When handler returns False, the nack/warning path is taken."""
+        mock_redis = AsyncMock()
+        msg = {"value": json.dumps({"eventType": "NACK", "payload": {"x": 1}})}
+        call_count = 0
+
+        async def xreadgroup_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []
+            if call_count == 2:
+                return [("test-topic", [("13-0", msg)])]
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.xack = AsyncMock()
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        # Handler returns False (processing failed)
+        consumer.message_handler = AsyncMock(return_value=False)
+
+        await consumer._consume_loop()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_not_awaited()  # no ack on failure
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_handles_xreadgroup_exception(self, consumer):
+        """If xreadgroup raises in the inner loop, error is logged and loop retries."""
+        mock_redis = AsyncMock()
+        call_count = 0
+
+        async def xreadgroup_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []
+            if call_count == 2:
+                raise Exception("Redis connection lost")
+            # Stop loop on next iteration
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await consumer._consume_loop()
+            mock_sleep.assert_awaited_with(1)
+
+        mock_redis.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_cancellation(self, consumer):
+        """CancelledError in the inner loop breaks cleanly."""
+        mock_redis = AsyncMock()
+
+        async def xreadgroup_side_effect(**kwargs):
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []
+            raise asyncio.CancelledError()
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._consume_loop()
+
+        mock_redis.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_skips_when_no_results(self, consumer):
+        """When xreadgroup returns None, loop continues without processing."""
+        mock_redis = AsyncMock()
+        call_count = 0
+
+        async def xreadgroup_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []
+            if call_count <= 3:
+                return None
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._consume_loop()
+
+        consumer.message_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_fatal_error_in_drain_pending(self, consumer):
+        """Fatal error in _drain_pending is caught by outer try/except (line 226-227)."""
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=Exception("Fatal redis error")
+        )
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        # Should not raise; the outer except catches it
+        await consumer._consume_loop()
+
+        mock_redis.close.assert_awaited()  # cleanup still runs in finally
+
+    @pytest.mark.asyncio
+    async def test_consume_loop_calls_cleanup_in_finally(self, consumer):
+        """The finally block always invokes cleanup()."""
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
+        mock_redis.close = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = False  # Loop will not enter while
+        consumer.message_handler = AsyncMock()
+
+        # _drain_pending will exit immediately because running=False
+        # But we need it to get past the drain. Let's set running=True
+        # and have it stop after drain.
+        consumer.running = True
+
+        async def xreadgroup_side_effect(**kwargs):
+            streams = kwargs.get("streams", {})
+            stream_id = list(streams.values())[0] if streams else None
+            if stream_id == "0":
+                return []  # drain pending done
+            consumer.running = False
+            return None
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
+
+        await consumer._consume_loop()
+
+        mock_redis.close.assert_awaited_once()

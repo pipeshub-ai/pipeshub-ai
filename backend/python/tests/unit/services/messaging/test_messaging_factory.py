@@ -61,10 +61,6 @@ class TestCreateProducer:
                 logger, config=None, broker_type=MessageBrokerType.KAFKA
             )
 
-    def test_unsupported_broker_raises_value_error(self, logger, producer_config):
-        with pytest.raises(ValueError, match="Unsupported broker type"):
-            MessagingFactory.create_producer(logger, config=producer_config, broker_type="rabbitmq")
-
     def test_default_broker_is_kafka(self, logger, producer_config):
         """When broker_type is omitted, it defaults to 'kafka'."""
         from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
@@ -107,14 +103,3 @@ class TestCreateConsumer:
         )
         assert isinstance(consumer, KafkaMessagingConsumer)
 
-    def test_none_config_raises_value_error(self, logger):
-        with pytest.raises(ValueError, match="Kafka consumer config is required"):
-            MessagingFactory.create_consumer(
-                logger, config=None, broker_type=MessageBrokerType.KAFKA
-            )
-
-    def test_unsupported_broker_raises_value_error(self, logger, consumer_config):
-        with pytest.raises(ValueError, match="Unsupported broker type"):
-            MessagingFactory.create_consumer(
-                logger, config=consumer_config, broker_type="rabbitmq"
-            )

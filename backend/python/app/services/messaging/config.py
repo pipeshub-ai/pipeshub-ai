@@ -76,34 +76,65 @@ IndexingMessageHandler = Callable[[StreamMessage], AsyncGenerator[PipelineEvent,
 
 
 # ---------------------------------------------------------------------------
-# Environment-driven settings
+# Environment-driven configuration
 # ---------------------------------------------------------------------------
 
-MESSAGE_BROKER_ENV = os.getenv("MESSAGE_BROKER", MessageBrokerType.KAFKA.value)
-REDIS_STREAMS_MAXLEN = int(os.getenv("REDIS_STREAMS_MAXLEN", "10000"))
 
-# Indexing concurrency controls (shared by Kafka & Redis indexing consumers)
-MAX_CONCURRENT_PARSING = int(os.getenv("MAX_CONCURRENT_PARSING", "5"))
-MAX_CONCURRENT_INDEXING = int(os.getenv("MAX_CONCURRENT_INDEXING", "10"))
-SHUTDOWN_TASK_TIMEOUT = float(os.getenv("SHUTDOWN_TASK_TIMEOUT", "240.0"))
-MAX_PENDING_INDEXING_TASKS = int(
-    os.getenv(
-        "MAX_PENDING_INDEXING_TASKS",
-        str(max(MAX_CONCURRENT_PARSING, MAX_CONCURRENT_INDEXING) * 4),
-    )
-)
+class MessagingEnvConfig:
+    """Reads messaging-related environment variables lazily.
+
+    Each property reads ``os.getenv`` on every access so that tests can
+    patch ``os.environ`` between calls without stale cached values.
+    """
+
+    @property
+    def message_broker_type(self) -> MessageBrokerType:
+        raw = os.getenv("MESSAGE_BROKER", MessageBrokerType.KAFKA.value).lower()
+        try:
+            return MessageBrokerType(raw)
+        except ValueError:
+            valid = ", ".join(f"'{m.value}'" for m in MessageBrokerType)
+            raise ValueError(  # noqa: B904
+                f"Unsupported MESSAGE_BROKER type: {raw}. Must be one of {valid}."
+            )
+
+    @property
+    def redis_streams_maxlen(self) -> int:
+        return int(os.getenv("REDIS_STREAMS_MAXLEN", "10000"))
+
+    @property
+    def max_concurrent_parsing(self) -> int:
+        return int(os.getenv("MAX_CONCURRENT_PARSING", "5"))
+
+    @property
+    def max_concurrent_indexing(self) -> int:
+        return int(os.getenv("MAX_CONCURRENT_INDEXING", "10"))
+
+    @property
+    def shutdown_task_timeout(self) -> float:
+        return float(os.getenv("SHUTDOWN_TASK_TIMEOUT", "240.0"))
+
+    @property
+    def max_pending_indexing_tasks(self) -> int:
+        return int(
+            os.getenv(
+                "MAX_PENDING_INDEXING_TASKS",
+                str(max(self.max_concurrent_parsing, self.max_concurrent_indexing) * 4),
+            )
+        )
+
+
+messaging_env = MessagingEnvConfig()
 
 
 def get_message_broker_type() -> MessageBrokerType:
-    """Get the message broker type from environment variable."""
-    raw = MESSAGE_BROKER_ENV.lower()
-    try:
-        return MessageBrokerType(raw)
-    except ValueError:
-        valid = ", ".join(f"'{m.value}'" for m in MessageBrokerType)
-        raise ValueError(
-            f"Unsupported MESSAGE_BROKER type: {raw}. Must be one of {valid}."
-        )
+    """Convenience wrapper around ``messaging_env.message_broker_type``."""
+    return messaging_env.message_broker_type
+
+
+# ---------------------------------------------------------------------------
+# Connection models
+# ---------------------------------------------------------------------------
 
 
 class RedisConfig(BaseModel):
@@ -120,6 +151,7 @@ class RedisStreamsConfig(RedisConfig):
 
     max_len: int = Field(default=10000, description="Max stream length for XADD")
     block_ms: int = Field(default=2000, description="XREADGROUP block timeout in ms")
+    batch_size: int = Field(default=10, description="Messages per XREADGROUP call")
     client_id: str = "pipeshub"
     group_id: str = "default_group"
     topics: list[str] = Field(default_factory=list)

@@ -10,13 +10,10 @@ from aiokafka import AIOKafkaConsumer  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 
 from app.services.messaging.config import (
-    MAX_CONCURRENT_INDEXING,
-    MAX_CONCURRENT_PARSING,
-    MAX_PENDING_INDEXING_TASKS,
-    SHUTDOWN_TASK_TIMEOUT,
     IndexingEvent,
     IndexingMessageHandler,
     StreamMessage,
+    messaging_env,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
@@ -92,8 +89,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             asyncio.set_event_loop(self.worker_loop)
 
             # Create semaphores in the worker thread's event loop
-            self.parsing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSING)
-            self.indexing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INDEXING)
+            self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
+            self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
 
             self.logger.info("Worker thread event loop started with semaphores initialized")
 
@@ -193,7 +190,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info("No active futures to wait for during shutdown")
             return
 
-        self.logger.info(f"Waiting for {len(futures_to_wait)} active tasks to complete (timeout: {SHUTDOWN_TASK_TIMEOUT}s)")
+        self.logger.info(f"Waiting for {len(futures_to_wait)} active tasks to complete (timeout: {messaging_env.shutdown_task_timeout}s)")
 
         completed = 0
         timed_out = 0
@@ -201,7 +198,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         for future in futures_to_wait:
             try:
-                future.result(timeout=SHUTDOWN_TASK_TIMEOUT)
+                future.result(timeout=messaging_env.shutdown_task_timeout)
                 completed += 1
             except TimeoutError:
                 timed_out += 1
@@ -253,8 +250,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             self.consume_task = asyncio.create_task(self.__consume_loop())
             self.logger.info(
-                f"Started Kafka consumer task with parsing_slots={MAX_CONCURRENT_PARSING}, "
-                f"indexing_slots={MAX_CONCURRENT_INDEXING}, max_pending_tasks={MAX_PENDING_INDEXING_TASKS}"
+                f"Started Kafka consumer task with parsing_slots={messaging_env.max_concurrent_parsing}, "
+                f"indexing_slots={messaging_env.max_concurrent_indexing}, max_pending_tasks={messaging_env.max_pending_indexing_tasks}"
             )
         except Exception as e:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
@@ -307,7 +304,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """
         active_count = self._get_active_task_count()
 
-        if active_count >= MAX_PENDING_INDEXING_TASKS:
+        if active_count >= messaging_env.max_pending_indexing_tasks:
             # Pause partitions that aren't already paused
             assigned = self.consumer.assignment()
             not_paused = assigned - self.consumer.paused()
@@ -316,7 +313,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not self._backpressure_logged:
                 self.logger.warning(
                     f"Backpressure engaged: {active_count} active tasks queued; "
-                    f"pausing Kafka partition reads at cap {MAX_PENDING_INDEXING_TASKS}"
+                    f"pausing Kafka partition reads at cap {messaging_env.max_pending_indexing_tasks}"
                 )
                 self._backpressure_logged = True
         else:
@@ -326,7 +323,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.consumer.resume(*paused)
             if self._backpressure_logged:
                 self.logger.info(
-                    f"Backpressure cleared: active tasks back to {active_count}/{MAX_PENDING_INDEXING_TASKS}"
+                    f"Backpressure cleared: active tasks back to {active_count}/{messaging_env.max_pending_indexing_tasks}"
                 )
                 self._backpressure_logged = False
 

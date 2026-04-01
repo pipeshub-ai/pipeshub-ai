@@ -78,7 +78,10 @@ class TestCreateProducerRedis:
     def test_auto_detect_broker_type_redis(self, logger, redis_config):
         from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 
-        with patch.dict("os.environ", {"MESSAGE_BROKER": "redis"}):
+        with patch(
+            "app.services.messaging.messaging_factory.get_message_broker_type",
+            return_value=MessageBrokerType.REDIS,
+        ):
             producer = MessagingFactory.create_producer(logger, config=redis_config)
             assert isinstance(producer, RedisStreamsProducer)
 

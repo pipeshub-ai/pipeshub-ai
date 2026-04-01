@@ -45,7 +45,7 @@ class MessagingFactory:
                     f"Expected KafkaProducerConfig, got {type(config).__name__}"
                 )
             return KafkaMessagingProducer(logger, config)
-        elif broker_type == MessageBrokerType.REDIS:
+        else:
             if config is None:
                 raise ValueError("Redis Streams config is required")
             if not isinstance(config, RedisStreamsConfig):
@@ -53,8 +53,6 @@ class MessagingFactory:
                     f"Expected RedisStreamsConfig, got {type(config).__name__}"
                 )
             return RedisStreamsProducer(logger, config)
-        else:
-            raise ValueError(f"Unsupported broker type: {broker_type}")
 
     @staticmethod
     def create_consumer(
@@ -77,7 +75,7 @@ class MessagingFactory:
             if consumer_type == ConsumerType.INDEXING:
                 return IndexingKafkaConsumer(logger, config)
             return KafkaMessagingConsumer(logger, config)
-        elif broker_type == MessageBrokerType.REDIS:
+        else:
             if config is None:
                 raise ValueError("Redis Streams config is required")
             if not isinstance(config, RedisStreamsConfig):
@@ -87,5 +85,3 @@ class MessagingFactory:
             if consumer_type == ConsumerType.INDEXING:
                 return IndexingRedisStreamsConsumer(logger, config)
             return RedisStreamsConsumer(logger, config)
-        else:
-            raise ValueError(f"Unsupported broker type: {broker_type}")

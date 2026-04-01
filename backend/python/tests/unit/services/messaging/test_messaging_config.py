@@ -5,9 +5,6 @@ Tests for messaging config:
   - REQUIRED_TOPICS constant
 """
 
-import os
-from unittest.mock import patch
-
 import pytest
 
 from app.services.messaging.config import (
@@ -20,30 +17,29 @@ from app.services.messaging.config import (
 
 
 class TestGetMessageBrokerType:
-    def test_defaults_to_kafka(self):
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("MESSAGE_BROKER", None)
-            assert get_message_broker_type() == MessageBrokerType.KAFKA
+    def test_defaults_to_kafka(self, monkeypatch):
+        monkeypatch.delenv("MESSAGE_BROKER", raising=False)
+        assert get_message_broker_type() == MessageBrokerType.KAFKA
 
-    def test_returns_kafka(self):
-        with patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}):
-            assert get_message_broker_type() == MessageBrokerType.KAFKA
+    def test_returns_kafka(self, monkeypatch):
+        monkeypatch.setenv("MESSAGE_BROKER", "kafka")
+        assert get_message_broker_type() == MessageBrokerType.KAFKA
 
-    def test_returns_redis(self):
-        with patch.dict(os.environ, {"MESSAGE_BROKER": "redis"}):
-            assert get_message_broker_type() == MessageBrokerType.REDIS
+    def test_returns_redis(self, monkeypatch):
+        monkeypatch.setenv("MESSAGE_BROKER", "redis")
+        assert get_message_broker_type() == MessageBrokerType.REDIS
 
-    def test_case_insensitive(self):
-        with patch.dict(os.environ, {"MESSAGE_BROKER": "KAFKA"}):
-            assert get_message_broker_type() == MessageBrokerType.KAFKA
+    def test_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("MESSAGE_BROKER", "KAFKA")
+        assert get_message_broker_type() == MessageBrokerType.KAFKA
 
-        with patch.dict(os.environ, {"MESSAGE_BROKER": "Redis"}):
-            assert get_message_broker_type() == MessageBrokerType.REDIS
+        monkeypatch.setenv("MESSAGE_BROKER", "Redis")
+        assert get_message_broker_type() == MessageBrokerType.REDIS
 
-    def test_raises_for_unsupported(self):
-        with patch.dict(os.environ, {"MESSAGE_BROKER": "rabbitmq"}):
-            with pytest.raises(ValueError, match="Unsupported MESSAGE_BROKER type"):
-                get_message_broker_type()
+    def test_raises_for_unsupported(self, monkeypatch):
+        monkeypatch.setenv("MESSAGE_BROKER", "rabbitmq")
+        with pytest.raises(ValueError, match="Unsupported MESSAGE_BROKER type"):
+            get_message_broker_type()
 
 
 class TestRedisStreamsConfig:

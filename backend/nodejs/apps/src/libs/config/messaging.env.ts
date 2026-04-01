@@ -11,6 +11,7 @@ import {
   ENV_REDIS_STREAMS_MAXLEN,
   ENV_REDIS_STREAMS_PREFIX,
 } from '../constants/messaging.constants';
+import { parseIntSafe } from '../utils/env.utils';
 
 export interface MessagingEnv {
   /** Raw value before normalization (e.g. kafka, KAFKA). */
@@ -22,10 +23,9 @@ export interface MessagingEnv {
 export function loadMessagingEnv(): MessagingEnv {
   return {
     messageBrokerRaw: process.env[ENV_MESSAGE_BROKER] ?? DEFAULT_MESSAGE_BROKER,
-    redisStreamsMaxLen: parseInt(
-      process.env[ENV_REDIS_STREAMS_MAXLEN] ??
-        String(DEFAULT_REDIS_STREAMS_MAXLEN),
-      10,
+    redisStreamsMaxLen: parseIntSafe(
+      process.env[ENV_REDIS_STREAMS_MAXLEN],
+      DEFAULT_REDIS_STREAMS_MAXLEN,
     ),
     redisStreamsKeyPrefix:
       process.env[ENV_REDIS_STREAMS_PREFIX] ?? DEFAULT_REDIS_STREAMS_PREFIX,

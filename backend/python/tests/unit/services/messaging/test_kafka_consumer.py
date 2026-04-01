@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.messaging.config import StreamMessage
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
 
@@ -255,13 +256,16 @@ class TestProcessMessage:
         consumer.message_handler = handler
 
         msg = _make_message(
-            value=json.dumps({"key": "val"}).encode("utf-8"),
+            value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"),
             offset=10,
         )
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
         assert result is True
-        handler.assert_awaited_once_with({"key": "val"})
+        handler.assert_awaited_once()
+        called_arg = handler.call_args[0][0]
+        assert isinstance(called_arg, StreamMessage)
+        assert called_arg.eventType == "test"
 
     @pytest.mark.asyncio
     async def test_valid_json_string(self, consumer):
@@ -269,11 +273,13 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        msg = _make_message(value='{"key": "val"}', offset=11)
+        msg = _make_message(value='{"eventType": "test", "payload": {"key": "val"}}', offset=11)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
         assert result is True
-        handler.assert_awaited_once_with({"key": "val"})
+        handler.assert_awaited_once()
+        called_arg = handler.call_args[0][0]
+        assert isinstance(called_arg, StreamMessage)
 
     @pytest.mark.asyncio
     async def test_double_encoded_json(self, consumer):
@@ -281,13 +287,16 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        inner = json.dumps({"nested": True})
+        inner = json.dumps({"eventType": "test", "payload": {"nested": True}})
         double_encoded = json.dumps(inner)  # string wrapping JSON
         msg = _make_message(value=double_encoded.encode("utf-8"), offset=12)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
         assert result is True
-        handler.assert_awaited_once_with({"nested": True})
+        handler.assert_awaited_once()
+        called_arg = handler.call_args[0][0]
+        assert isinstance(called_arg, StreamMessage)
+        assert called_arg.payload == {"nested": True}
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_false(self, consumer):
@@ -307,7 +316,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        msg = _make_message(value=b'{"a": 1}', offset=14)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=14)
 
         # Process once
         result1 = await consumer._KafkaMessagingConsumer__process_message(msg)
@@ -335,7 +344,7 @@ class TestProcessMessage:
         """When no message_handler is set, should return False."""
         consumer.message_handler = None
 
-        msg = _make_message(value=b'{"a": 1}', offset=16)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=16)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
         assert result is False
@@ -346,7 +355,7 @@ class TestProcessMessage:
         handler = AsyncMock(side_effect=Exception("handler boom"))
         consumer.message_handler = handler
 
-        msg = _make_message(value=b'{"a": 1}', offset=17)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=17)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
         assert result is False
@@ -369,7 +378,7 @@ class TestProcessMessage:
         handler = AsyncMock(side_effect=Exception("fail"))
         consumer.message_handler = handler
 
-        msg = _make_message(value=b'{"a": 1}', offset=19)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=19)
         await consumer._KafkaMessagingConsumer__process_message(msg)
 
         # Should now be tracked
@@ -584,7 +593,8 @@ class TestStop:
         mock_aio.stop.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_stop_calls_handler_with_none(self, consumer):
+    async def test_stop_does_not_call_handler(self, consumer):
+        """stop() no longer calls handler with None."""
         handler = AsyncMock()
         consumer.message_handler = handler
         consumer.running = True
@@ -594,7 +604,7 @@ class TestStop:
 
         await consumer.stop()
 
-        handler.assert_awaited_once_with(None)
+        handler.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stop_cancels_consume_task(self, consumer):
@@ -728,7 +738,7 @@ class TestProcessMessageWrapper:
         consumer_cov.message_handler = handler
         consumer_cov.consumer = AsyncMock()
 
-        msg = _make_message_cov(value=json.dumps({"key": "val"}).encode("utf-8"), offset=42)
+        msg = _make_message_cov(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=42)
         tp = _make_topic_partition()
 
         await consumer_cov._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
@@ -741,7 +751,7 @@ class TestProcessMessageWrapper:
         consumer_cov.message_handler = handler
         consumer_cov.consumer = AsyncMock()
 
-        msg = _make_message_cov(value=json.dumps({"key": "val"}).encode("utf-8"), offset=43)
+        msg = _make_message_cov(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=43)
         tp = _make_topic_partition()
 
         await consumer_cov._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
@@ -757,7 +767,7 @@ class TestProcessMessageWrapper:
         # Acquire semaphore
         await consumer_cov.semaphore.acquire()
 
-        msg = _make_message_cov(value=json.dumps({"key": "val"}).encode("utf-8"), offset=44)
+        msg = _make_message_cov(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=44)
         tp = _make_topic_partition()
 
         # The wrapper will call __process_message which has its own error handling
@@ -775,7 +785,7 @@ class TestProcessMessageWrapper:
         consumer_cov.message_handler = handler
         consumer_cov.consumer = None
 
-        msg = _make_message_cov(value=json.dumps({"key": "val"}).encode("utf-8"), offset=45)
+        msg = _make_message_cov(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=45)
         tp = _make_topic_partition()
 
         await consumer_cov._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
@@ -869,7 +879,7 @@ class TestStopExtended:
 
     @pytest.mark.asyncio
     async def test_stop_with_handler_and_task(self, consumer_cov):
-        """Stop calls handler with None and cancels task."""
+        """Stop cancels task; no longer calls handler with None."""
         handler = AsyncMock()
         consumer_cov.message_handler = handler
         consumer_cov.running = True
@@ -883,7 +893,7 @@ class TestStopExtended:
 
         await consumer_cov.stop()
 
-        handler.assert_awaited_once_with(None)
+        handler.assert_not_awaited()
         assert consumer_cov.running is False
 
     @pytest.mark.asyncio

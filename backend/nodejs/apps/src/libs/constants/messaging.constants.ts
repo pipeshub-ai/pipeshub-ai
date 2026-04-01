@@ -49,7 +49,7 @@ export const MESSAGING_HEALTH_MESSAGE_TYPE = 'HEALTH_CHECK';
 export const REDIS_STREAMS_DEFAULTS = {
   maxLen: 10000,
   blockMs: 2000,
-  count: 1,
+  count: 10,
   maxRetryTime: 30000,
   idleSleepMs: 100,
   errorBackoffMs: 1000,

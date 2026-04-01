@@ -3,25 +3,31 @@
 Wraps the existing KafkaUtils with broker type detection,
 creating appropriate configs for either Kafka or Redis Streams.
 """
-from app.config.configuration_service import ConfigurationService
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from app.config.constants.service import config_node_constants
-from app.containers.connector import ConnectorAppContainer
-from app.containers.indexing import IndexingAppContainer
-from app.containers.query import QueryAppContainer
 from app.services.messaging.config import (
-    REDIS_STREAMS_MAXLEN,
     MessageBrokerType,
     RedisConfig,
     RedisStreamsConfig,
     Topic,
     get_message_broker_type,
+    messaging_env,
 )
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
 
-AppContainer = ConnectorAppContainer | IndexingAppContainer | QueryAppContainer
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+    from app.containers.connector import ConnectorAppContainer
+    from app.containers.indexing import IndexingAppContainer
+    from app.containers.query import QueryAppContainer
+
+    AppContainer = ConnectorAppContainer | IndexingAppContainer | QueryAppContainer
 
 
 class MessagingUtils:
@@ -49,7 +55,7 @@ class MessagingUtils:
             port=redis_config.port,
             password=redis_config.password,
             db=redis_config.db,
-            max_len=REDIS_STREAMS_MAXLEN,
+            max_len=messaging_env.redis_streams_maxlen,
             client_id=client_id,
             group_id=group_id,
             topics=topics,

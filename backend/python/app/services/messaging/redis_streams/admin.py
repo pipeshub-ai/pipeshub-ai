@@ -32,6 +32,7 @@ class RedisStreamsAdmin(IMessageAdmin):
                 decode_responses=True,
             )
 
+            failures: list[str] = []
             for topic in topic_list:
                 try:
                     exists = await redis.exists(topic)
@@ -47,9 +48,15 @@ class RedisStreamsAdmin(IMessageAdmin):
                     else:
                         self.logger.debug("Redis stream already exists: %s", topic)
                 except Exception as e:
-                    self.logger.warning(
-                        "Error ensuring Redis stream %s: %s", topic, e
+                    self.logger.error(
+                        "Failed to ensure Redis stream %s: %s", topic, e
                     )
+                    failures.append(topic)
+
+            if failures:
+                raise RuntimeError(
+                    f"Failed to ensure {len(failures)} Redis stream(s): {', '.join(failures)}"
+                )
 
             self.logger.info("All required Redis streams verified")
         except Exception as e:

@@ -97,7 +97,7 @@ class RedisStreamsProducer(IMessagingProducer):
 
         except Exception as e:
             self.logger.error("Failed to send message to Redis stream: %s", e)
-            return False
+            raise
 
     @override
     async def send_event(
@@ -107,21 +107,16 @@ class RedisStreamsProducer(IMessagingProducer):
         payload: dict[str, JsonValue],
         key: Optional[str] = None,
     ) -> bool:
-        try:
-            message = {
-                "eventType": event_type,
-                "payload": payload,
-                "timestamp": get_epoch_timestamp_in_ms(),
-            }
+        message: dict[str, JsonValue] = {
+            "eventType": event_type,
+            "payload": payload,
+            "timestamp": get_epoch_timestamp_in_ms(),
+        }
 
-            await self.send_message(topic=topic, message=message, key=key)
-            self.logger.info(
-                "Successfully sent event with type: %s to topic: %s",
-                event_type,
-                topic,
-            )
-            return True
-
-        except Exception as e:
-            self.logger.error("Error sending event: %s", e)
-            return False
+        await self.send_message(topic=topic, message=message, key=key)
+        self.logger.info(
+            "Successfully sent event with type: %s to topic: %s",
+            event_type,
+            topic,
+        )
+        return True

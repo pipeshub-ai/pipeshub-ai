@@ -38,7 +38,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.messaging_factory import MessagingFactory
-from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -103,6 +102,8 @@ class DataSourceEntitiesProcessor:
         self.org_id = ""
 
     async def initialize(self) -> None:
+        from app.services.messaging.utils import MessagingUtils
+
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"
         )

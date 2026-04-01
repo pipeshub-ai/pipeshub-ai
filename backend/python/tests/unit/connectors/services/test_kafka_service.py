@@ -96,11 +96,11 @@ class TestEnsureProducer:
         mock_producer.start.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_multiple_calls_call_start_each_time(self, kafka_service_with_producer, mock_producer):
-        """_ensure_producer calls start every time it is invoked."""
+    async def test_multiple_calls_only_start_once(self, kafka_service_with_producer, mock_producer):
+        """_ensure_producer only calls start once thanks to _producer_started flag."""
         await kafka_service_with_producer._ensure_producer()
         await kafka_service_with_producer._ensure_producer()
-        assert mock_producer.start.await_count == 2
+        assert mock_producer.start.await_count == 1
 
 
 # ===========================================================================
@@ -256,18 +256,18 @@ class TestSendEventToKafka:
         assert sent["payload"]["version"] == 0
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_exception(self, kafka_service_with_producer, mock_producer):
-        """On failure, send_event_to_kafka returns False (does not raise)."""
+    async def test_raises_on_exception(self, kafka_service_with_producer, mock_producer):
+        """On failure, send_event_to_kafka raises the exception."""
         mock_producer.send_message = AsyncMock(side_effect=Exception("boom"))
 
-        result = await kafka_service_with_producer.send_event_to_kafka({"recordId": "r1"})
-        assert result is False
+        with pytest.raises(Exception, match="boom"):
+            await kafka_service_with_producer.send_event_to_kafka({"recordId": "r1"})
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_no_producer(self, kafka_service):
-        """Returns False (not RuntimeError) when no producer is configured."""
-        result = await kafka_service.send_event_to_kafka({"recordId": "r1"})
-        assert result is False
+    async def test_raises_when_no_producer(self, kafka_service):
+        """Raises RuntimeError when no producer is configured."""
+        with pytest.raises(RuntimeError, match="No messaging producer configured"):
+            await kafka_service.send_event_to_kafka({"recordId": "r1"})
 
     @pytest.mark.asyncio
     async def test_sends_to_record_events_topic(self, kafka_service_with_producer, mock_producer):

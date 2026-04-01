@@ -65,6 +65,16 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     else:
                         raise
 
+            # Remove stale consumer entry from a previous run so its PEL
+            # doesn't accumulate indefinitely.
+            for topic in self.config.topics:
+                try:
+                    await self.redis.xgroup_delconsumer(  # type: ignore
+                        topic, self.config.group_id, self.config.client_id
+                    )
+                except Exception:
+                    pass  # consumer may not exist yet
+
             self.logger.info("Successfully initialized Redis Streams consumer")
         except Exception as e:
             self.logger.error("Failed to create consumer: %s", e)
@@ -100,8 +110,6 @@ class RedisStreamsConsumer(IMessagingConsumer):
         message_handler: Optional[MessageHandler] = None,
     ) -> None:
         self.running = False
-        if self.message_handler:
-            await self.message_handler(None)  # type: ignore
 
         if self.consume_task:
             self.consume_task.cancel()
@@ -117,9 +125,48 @@ class RedisStreamsConsumer(IMessagingConsumer):
     def is_running(self) -> bool:
         return self.running
 
+    async def _drain_pending(self) -> None:
+        """Re-process messages left in the Pending Entries List (PEL) from a previous crash."""
+        self.logger.info("Draining pending messages from PEL")
+        while self.running:
+            streams = dict.fromkeys(self.config.topics, "0")
+            results = await self.redis.xreadgroup(  # type: ignore
+                groupname=self.config.group_id,
+                consumername=self.config.client_id,
+                streams=streams,
+                count=10,
+            )
+            if not results or all(len(msgs) == 0 for _, msgs in results):
+                self.logger.info("PEL drained, switching to new messages")
+                break
+            for stream_name, messages in results:
+                for message_id, fields in messages:
+                    try:
+                        success = await self._process_message(
+                            stream_name, message_id, fields
+                        )
+                        if success:
+                            await self.redis.xack(  # type: ignore
+                                stream_name,
+                                self.config.group_id,
+                                message_id,
+                            )
+                            self.logger.info(
+                                "Recovered pending message %s on stream %s",
+                                message_id,
+                                stream_name,
+                            )
+                    except Exception as e:
+                        self.logger.error(
+                            "Error recovering pending message %s: %s",
+                            message_id,
+                            e,
+                        )
+
     async def _consume_loop(self) -> None:
         try:
             self.logger.info("Starting Redis Streams consumer loop")
+            await self._drain_pending()
             while self.running:
                 try:
                     streams = dict.fromkeys(self.config.topics, ">")
@@ -128,7 +175,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
                         streams=streams,
-                        count=1,
+                        count=self.config.batch_size,
                         block=self.config.block_ms,
                     )
 

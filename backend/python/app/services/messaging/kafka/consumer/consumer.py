@@ -114,9 +114,6 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     async def stop(self, message_handler: Optional[MessageHandler] = None) -> None:
         """Stop consuming messages"""
         self.running = False
-        # run the message handler
-        if self.message_handler:
-            await self.message_handler(None) # type: ignore
 
         if self.consume_task:
             self.consume_task.cancel()

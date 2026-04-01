@@ -187,7 +187,16 @@ export abstract class BaseRedisStreamsProducerConnection
     }
 
     try {
-      await pipeline.exec();
+      const results = await pipeline.exec();
+      if (results) {
+        const failures = results.filter(([err]) => err !== null);
+        if (failures.length > 0) {
+          throw new MessageBrokerError(
+            `${failures.length}/${messages.length} failed in batch publish to ${topic}`,
+            { topic, firstError: failures[0]![0]!.message },
+          );
+        }
+      }
       this.logger.debug('Successfully published batch to Redis stream', {
         topic,
         messageCount: messages.length,
@@ -229,6 +238,8 @@ export abstract class BaseRedisStreamsConsumerConnection
   implements IMessageConsumer
 {
   protected redis: Redis;
+  /** Dedicated connection for XACK so it is never queued behind a blocked XREADGROUP. */
+  protected ackRedis: Redis;
   protected initialized = false;
   protected running = false;
   protected subscribedTopics: string[] = [];
@@ -248,12 +259,13 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
     this.count = REDIS_STREAMS_DEFAULTS.count;
     this.redis = new Redis(buildRedisOptions(config));
+    this.ackRedis = new Redis(buildRedisOptions(config));
   }
 
   async connect(): Promise<void> {
     try {
       if (!this.initialized) {
-        await this.redis.connect();
+        await Promise.all([this.redis.connect(), this.ackRedis.connect()]);
         this.initialized = true;
         this.logger.info('Successfully connected Redis Streams consumer');
       }
@@ -273,7 +285,7 @@ export abstract class BaseRedisStreamsConsumerConnection
         this.consumeLoopPromise = null;
       }
       if (this.initialized) {
-        await this.redis.quit();
+        await Promise.all([this.redis.quit(), this.ackRedis.quit()]);
         this.initialized = false;
         this.logger.info('Successfully disconnected Redis Streams consumer');
       }
@@ -323,6 +335,16 @@ export abstract class BaseRedisStreamsConsumerConnection
         }
       }
     }
+    // Remove stale consumer entry from a previous run so its PEL
+    // doesn't accumulate indefinitely.
+    for (const topic of topics) {
+      try {
+        await this.redis.xgroup('DELCONSUMER', topic, this.groupId, this.consumerId);
+      } catch {
+        // consumer may not exist yet
+      }
+    }
+
     this.subscribedTopics = [...new Set([...this.subscribedTopics, ...topics])];
     this.logger.info('Successfully subscribed to Redis streams', {
       topics: this.subscribedTopics,
@@ -338,9 +360,86 @@ export abstract class BaseRedisStreamsConsumerConnection
     this.consumeLoopPromise = this.consumeLoop(handler);
   }
 
+  /**
+   * Drain messages left in the Pending Entries List (PEL) from a previous
+   * crash.  Reading with id "0" returns only already-delivered-but-unacked
+   * messages.  Once every topic returns an empty batch the PEL is clear.
+   */
+  private async drainPending<T>(
+    handler: (message: StreamMessage<T>) => Promise<void>,
+  ): Promise<void> {
+    this.logger.info('Draining pending messages from PEL');
+    while (this.running) {
+      const streams = this.subscribedTopics.flatMap((topic) => [topic, '0']);
+
+      const xreadResult = await this.redis.xreadgroup(
+        'GROUP',
+        this.groupId,
+        this.consumerId,
+        'COUNT',
+        '10',
+        'STREAMS',
+        ...streams,
+      );
+
+      if (!isRedisXReadGroupResult(xreadResult)) break;
+
+      const hasMessages = xreadResult.some(([, entries]) => entries.length > 0);
+      if (!hasMessages) {
+        this.logger.info('PEL drained, switching to new messages');
+        break;
+      }
+
+      for (const result of xreadResult) {
+        const streamName = result[0];
+        const entries = result[1];
+        for (const entry of entries) {
+          const entryId = entry[0];
+          const fields = entry[1];
+          try {
+            const fieldMap: Record<string, string> = {};
+            for (let i = 0; i < fields.length; i += 2) {
+              const key = fields[i];
+              const value = fields[i + 1];
+              if (key !== undefined && value !== undefined) {
+                fieldMap[key] = value;
+              }
+            }
+
+            const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
+            if (rawValue === undefined) {
+              await this.ackRedis.xack(streamName, this.groupId, entryId);
+              continue;
+            }
+
+            const parsedMessage: StreamMessage<T> = {
+              key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
+              value: JSON.parse(rawValue) as T,
+            };
+
+            const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
+            if (rawHeaders !== undefined) {
+              parsedMessage.headers = JSON.parse(rawHeaders) as Record<string, string>;
+            }
+
+            await handler(parsedMessage);
+            await this.ackRedis.xack(streamName, this.groupId, entryId);
+            this.logger.info('Recovered pending message', { stream: streamName, id: entryId });
+          } catch (error) {
+            this.logger.error('Error recovering pending message', {
+              entryId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+        }
+      }
+    }
+  }
+
   private async consumeLoop<T>(
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
+    await this.drainPending(handler);
     while (this.running) {
       try {
         if (this.subscribedTopics.length === 0) {
@@ -392,7 +491,7 @@ export abstract class BaseRedisStreamsConsumerConnection
                     id: entryId,
                   },
                 );
-                await this.redis.xack(streamName, this.groupId, entryId);
+                await this.ackRedis.xack(streamName, this.groupId, entryId);
                 continue;
               }
 
@@ -411,7 +510,7 @@ export abstract class BaseRedisStreamsConsumerConnection
 
               await handler(parsedMessage);
 
-              await this.redis.xack(streamName, this.groupId, entryId);
+              await this.ackRedis.xack(streamName, this.groupId, entryId);
             } catch (error) {
               this.logger.error('Error processing Redis stream message', {
                 entryId,
@@ -421,6 +520,7 @@ export abstract class BaseRedisStreamsConsumerConnection
           }
         }
       } catch (error) {
+        if (!this.running) break;
         this.logger.error('Error in Redis Streams consume loop', {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
@@ -462,10 +562,7 @@ export class RedisStreamsAdminService implements IMessageAdmin {
   constructor(config: RedisBrokerConfig, logger: Logger) {
     this.logger = logger;
     this.redis = new Redis({
-      host: config.host,
-      port: config.port,
-      password: config.password,
-      db: config.db ?? 0,
+      ...buildRedisOptions(config),
       lazyConnect: true,
     });
   }
@@ -477,6 +574,7 @@ export class RedisStreamsAdminService implements IMessageAdmin {
       await this.redis.connect();
       this.logger.info('Connected to Redis for stream administration');
 
+      const failures: Array<{ topic: string; error: string }> = [];
       for (const topicDef of topics) {
         try {
           const exists = await this.redis.exists(topicDef.topic);
@@ -498,10 +596,18 @@ export class RedisStreamsAdminService implements IMessageAdmin {
             this.logger.debug(`Redis stream already exists: ${topicDef.topic}`);
           }
         } catch (error: unknown) {
-          this.logger.warn(`Error ensuring Redis stream ${topicDef.topic}`, {
-            error: error instanceof Error ? error.message : 'Unknown error',
+          const msg = error instanceof Error ? error.message : 'Unknown error';
+          this.logger.error(`Failed to ensure Redis stream ${topicDef.topic}`, {
+            error: msg,
           });
+          failures.push({ topic: topicDef.topic, error: msg });
         }
+      }
+
+      if (failures.length > 0) {
+        throw new Error(
+          `Failed to ensure ${failures.length} Redis stream(s): ${failures.map((f) => f.topic).join(', ')}`,
+        );
       }
 
       this.logger.info('All required Redis streams verified');
