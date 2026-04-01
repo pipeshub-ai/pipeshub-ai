@@ -1,6 +1,9 @@
 """Unit tests for app.config.providers.in_memory_store.InMemoryKeyValueStore."""
 
+import json
 import logging
+import os
+import tempfile
 import time
 from unittest.mock import MagicMock, patch
 
@@ -48,6 +51,96 @@ class TestKeyData:
     def test_value_stored_correctly(self):
         kd = KeyData({"nested": [1, 2]}, ttl=60)
         assert kd.value == {"nested": [1, 2]}
+
+    def test_ttl_zero_treated_as_no_ttl(self):
+        """ttl=0 is falsy, so expiry should be None."""
+        kd = KeyData("val", ttl=0)
+        assert kd.expiry is None
+        assert kd.is_expired() is False
+
+    def test_expiry_set_correctly(self):
+        """Verify the expiry timestamp is approximately now + ttl."""
+        before = time.time()
+        kd = KeyData("v", ttl=100)
+        after = time.time()
+        assert kd.expiry is not None
+        assert before + 100 <= kd.expiry <= after + 100
+
+
+# =========================================================================
+# __init__ with JSON file
+# =========================================================================
+class TestInitWithJson:
+    """Tests for InMemoryKeyValueStore initialisation from a JSON file."""
+
+    def test_load_from_json_file(self, logger):
+        """Loading a JSON file should populate the store with KeyData entries."""
+        data = {"key1": "value1", "key2": 42, "key3": [1, 2, 3]}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(data, f)
+            json_path = f.name
+
+        try:
+            store = InMemoryKeyValueStore(logger, default_json_file_path=json_path)
+            assert store.json_file_path == json_path
+            assert "key1" in store.store
+            assert store.store["key1"].value == "value1"
+            assert store.store["key2"].value == 42
+            assert store.store["key3"].value == [1, 2, 3]
+            # Keys loaded from JSON should have no expiry
+            for kd in store.store.values():
+                assert kd.expiry is None
+        finally:
+            os.unlink(json_path)
+
+    def test_load_from_json_empty_object(self, logger):
+        """Loading an empty JSON object should result in an empty store."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump({}, f)
+            json_path = f.name
+
+        try:
+            store = InMemoryKeyValueStore(logger, default_json_file_path=json_path)
+            assert len(store.store) == 0
+        finally:
+            os.unlink(json_path)
+
+    def test_no_json_file_path(self, logger):
+        """Without a JSON path, the store starts empty and has no json_file_path attr."""
+        store = InMemoryKeyValueStore(logger)
+        assert len(store.store) == 0
+        assert not hasattr(store, "json_file_path")
+
+
+# =========================================================================
+# _load_from_json
+# =========================================================================
+class TestLoadFromJson:
+    """Direct tests for the _load_from_json helper."""
+
+    def test_returns_dict_of_keydata(self, logger):
+        data = {"a": 1, "b": "two"}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(data, f)
+            json_path = f.name
+
+        try:
+            store = InMemoryKeyValueStore(logger)
+            result = store._load_from_json(json_path)
+            assert isinstance(result, dict)
+            assert set(result.keys()) == {"a", "b"}
+            assert result["a"].value == 1
+            assert result["b"].value == "two"
+            for kd in result.values():
+                assert kd.expiry is None
+        finally:
+            os.unlink(json_path)
 
 
 # =========================================================================
@@ -99,6 +192,11 @@ class TestCreateKey:
         await store.create_key("/w", "watched")
 
         callback.assert_called_once_with("watched")
+
+    @pytest.mark.asyncio
+    async def test_create_without_ttl_has_no_expiry(self, store):
+        await store.create_key("/no_ttl", "val")
+        assert store.store["/no_ttl"].expiry is None
 
 
 # =========================================================================
@@ -163,6 +261,22 @@ class TestGetKey:
         await store.create_key("/exp", "val", ttl=1)
         store.store["/exp"].expiry = time.time() - 10
         assert (await store.get_key("/exp")) is None
+
+    @pytest.mark.asyncio
+    async def test_get_expired_key_still_in_store_returns_none(self, store):
+        """Exercise the branch where key IS in store but IS expired (line 189).
+
+        _cleanup_expired_keys runs first, so we need to ensure the key
+        is expired but the cleanup doesn't remove it (by patching cleanup
+        to be a no-op), so the else branch at line 188-189 is hit.
+        """
+        await store.create_key("/exp2", "val", ttl=1)
+        # Force expiry
+        store.store["/exp2"].expiry = time.time() - 10
+        # Patch _cleanup_expired_keys to skip removal so the key remains
+        with patch.object(store, "_cleanup_expired_keys"):
+            result = await store.get_key("/exp2")
+        assert result is None
 
 
 # =========================================================================
@@ -279,6 +393,43 @@ class TestWatchAndCancel:
         cb1.assert_not_called()
         cb2.assert_called_once_with("v")
 
+    @pytest.mark.asyncio
+    async def test_watch_with_error_callback_param(self, store):
+        """error_callback is accepted but unused in-memory; ensure it doesn't break."""
+        cb = MagicMock()
+        err_cb = MagicMock()
+        watch_id = await store.watch_key("/ek", cb, error_callback=err_cb)
+        assert isinstance(watch_id, int)
+
+
+# =========================================================================
+# _notify_watchers — error handling branch
+# =========================================================================
+class TestNotifyWatchersErrorHandling:
+    """Tests for the exception-handling branch in _notify_watchers (lines 111-113)."""
+
+    @pytest.mark.asyncio
+    async def test_watcher_callback_exception_is_caught(self, store):
+        """When a watcher callback raises, the error is logged but not propagated."""
+        bad_callback = MagicMock(side_effect=RuntimeError("callback boom"))
+        good_callback = MagicMock()
+
+        await store.watch_key("/err", bad_callback)
+        await store.watch_key("/err", good_callback)
+
+        # Should not raise; the bad callback's error is swallowed
+        await store.create_key("/err", "val")
+
+        bad_callback.assert_called_once_with("val")
+        # The good callback should still be called even though bad_callback raised
+        good_callback.assert_called_once_with("val")
+
+    @pytest.mark.asyncio
+    async def test_notify_no_watchers_for_key(self, store):
+        """_notify_watchers with no watchers registered should be a no-op."""
+        # Just ensure no exception
+        store._notify_watchers("/no_watchers", "value")
+
 
 # =========================================================================
 # list_keys_in_directory
@@ -361,6 +512,11 @@ class TestCleanupExpiredKeys:
         store._cleanup_expired_keys()
 
         assert len(store.store) == 2
+
+    def test_empty_store_cleanup(self, store):
+        """Cleanup on empty store should be safe."""
+        store._cleanup_expired_keys()
+        assert len(store.store) == 0
 
 
 # =========================================================================

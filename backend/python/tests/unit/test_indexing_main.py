@@ -1169,3 +1169,188 @@ class TestModuleLevelCode:
         """The module-level container_lock is an asyncio.Lock."""
         from app.indexing_main import container_lock
         assert isinstance(container_lock, asyncio.Lock)
+
+
+# ---------------------------------------------------------------------------
+# Additional tests to cover missing branches
+# ---------------------------------------------------------------------------
+
+class TestStartKafkaConsumersCleanupPath:
+    """Cover the consumer cleanup loop (lines 291-296) which runs when
+    consumers have been appended to the list before an error occurs."""
+
+    async def test_cleanup_stops_appended_consumer_on_later_error(self):
+        """Manually inject a consumer into the list, then force error in the cleanup path."""
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        mock_consumer = MagicMock()
+        mock_consumer.start = AsyncMock()
+        mock_consumer.stop = AsyncMock()
+
+        # We need the consumer to be appended (line 284) before an error.
+        # In the current code, append happens after start() succeeds.
+        # The error at line 288 catches and iterates consumers.
+        # For a single-consumer flow, the error must happen after append but
+        # before return. One way: make create_record_message_handler
+        # succeed first (so start is called) but make start raise AFTER
+        # consumers.append is reached.
+        # Actually: record_kafka_consumer.start is at line 283, append at 284.
+        # If start succeeds, append happens, then return at 287 is reached.
+        # We need an error between 284 and 287 - there is none in the
+        # normal flow. However, we can test the cleanup path by monkey-patching.
+
+        # Approach: patch the consumers list to already contain an item,
+        # then trigger the error. We'll make the consumer creation succeed
+        # but message_handler fail, which happens before start/append.
+        # So we need to inject directly.
+
+        # Direct approach: create a scenario where consumers has items and error occurs.
+        # We'll achieve this by patching to use neo4j path which has more steps.
+        mock_gp = MagicMock()
+        mock_gp.client = MagicMock()
+        mock_gp.client.driver = None
+        mock_gp.client.connect = AsyncMock()
+        mock_container._graph_provider = mock_gp
+
+        mock_worker_loop = MagicMock()
+        mock_worker_loop.is_running.return_value = True
+
+        mock_consumer.initialize = AsyncMock()
+        mock_consumer.worker_loop = mock_worker_loop
+
+        # Make start succeed (line 283) so consumer is appended (line 284)
+        # Then make the second handler call fail - but there's only one consumer.
+        # We actually need to cause an error INSIDE the try block after append.
+        # Since append is immediately followed by logger.info and then return,
+        # we make logger.info raise.
+        call_count = 0
+        original_info = mock_container.logger().info
+
+        def info_side_effect(msg, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "Record Kafka consumer started" in str(msg):
+                raise RuntimeError("post-append error")
+            return original_info(msg, *args, **kwargs)
+
+        mock_container.logger().info = MagicMock(side_effect=info_side_effect)
+
+        captured_coro = None
+
+        def capture_coro(coro, loop):
+            nonlocal captured_coro
+            captured_coro = coro
+            future = asyncio.get_event_loop().create_future()
+            future.set_result(None)
+            return future
+
+        with (
+            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
+            patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
+            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=capture_coro),
+            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
+        ):
+            with pytest.raises(RuntimeError, match="post-append error"):
+                await start_kafka_consumers(mock_container)
+
+        # Consumer should have been stopped during cleanup (lines 292-296)
+        mock_consumer.stop.assert_awaited()
+
+
+class TestRunWorkersWarning:
+    """Cover the workers>1 + reload warning path (lines 424-430)."""
+
+    def test_workers_gt_one_with_reload_warns(self):
+        """When reload=True and workers>1, a RuntimeWarning is issued and workers resets to 1."""
+        import warnings
+        from app.indexing_main import run
+
+        with (
+            patch("app.indexing_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"INDEXING_UVICORN_WORKERS": "4"}),
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                run(reload=True)
+
+            # Check that the warning was issued
+            runtime_warnings = [x for x in w if issubclass(x.category, RuntimeWarning)]
+            assert len(runtime_warnings) >= 1
+            assert "not compatible with reload=True" in str(runtime_warnings[0].message)
+
+            # Workers should have been reset to 1
+            mock_uvicorn.assert_called_once_with(
+                "app.indexing_main:app",
+                host="0.0.0.0",
+                port=8091,
+                log_level="info",
+                reload=True,
+                workers=1,
+            )
+
+    def test_workers_gt_one_without_reload(self):
+        """When reload=False and workers>1, no warning and workers is used as-is."""
+        from app.indexing_main import run
+
+        with (
+            patch("app.indexing_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"INDEXING_UVICORN_WORKERS": "4"}),
+        ):
+            run(reload=False)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.indexing_main:app",
+            host="0.0.0.0",
+            port=8091,
+            log_level="info",
+            reload=False,
+            workers=4,
+        )
+
+    def test_workers_from_env_default(self):
+        """When INDEXING_UVICORN_WORKERS env is not set, defaults to 1."""
+        from app.indexing_main import run
+        import os as _os
+
+        env = _os.environ.copy()
+        env.pop("INDEXING_UVICORN_WORKERS", None)
+
+        with (
+            patch("app.indexing_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", env, clear=True),
+        ):
+            run(reload=False)
+
+        mock_uvicorn.assert_called_once()
+        assert mock_uvicorn.call_args.kwargs.get("workers", mock_uvicorn.call_args[1].get("workers")) == 1
+
+
+class TestRecoverInProgressRecordsAdditional:
+    """Additional tests targeting the inner branch at line 136->145
+    (record_id None check when connector is inactive)."""
+
+    async def test_inactive_connector_record_id_none(self):
+        """When connector is inactive and record has _key=None, update_node is skipped (line 136->145)."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+
+        # Record with _key=None
+        in_progress = [{
+            "_key": None,
+            "recordName": "test.pdf",
+            "connectorId": "c1",
+            "origin": "CONNECTOR",
+        }]
+        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_document = AsyncMock(return_value={"isActive": False})
+
+        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=AsyncMock()):
+            await recover_in_progress_records(mock_container, gp)
+
+        # update_node should NOT be called because record_id is None
+        gp.update_node.assert_not_awaited()

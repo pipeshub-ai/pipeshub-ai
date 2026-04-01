@@ -1170,3 +1170,412 @@ class TestReindexRecords:
         nextcloud_connector.current_user_id = "admin"
         record = MagicMock(id="r1", record_name="test.txt")
         await nextcloud_connector.reindex_records([record])
+
+
+# ===========================================================================
+# Additional coverage tests for missing statements and partial branches
+# ===========================================================================
+
+
+class TestParseWebdavGenericException:
+    """Cover the generic Exception handler in parse_webdav_propfind_response (lines 213-216)."""
+
+    def test_unexpected_exception_returns_empty(self):
+        """Non-XML parsing exception still returns empty list."""
+        # Trigger a non-ParseError exception via corrupted ET internals
+        with patch("app.connectors.sources.nextcloud.connector.ET.fromstring",
+                   side_effect=RuntimeError("unexpected XML error")):
+            result = parse_webdav_propfind_response(b"<root/>")
+            assert result == []
+
+
+class TestParseWebdavPartialBranches:
+    """Cover partial branches in parse_webdav_propfind_response."""
+
+    def test_response_without_href(self):
+        """Response element without href (line 152->157 False branch)."""
+        xml_response = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:response>
+                <d:propstat>
+                    <d:prop>
+                        <oc:fileid>55</oc:fileid>
+                        <d:displayname>no-href.txt</d:displayname>
+                        <d:resourcetype/>
+                    </d:prop>
+                </d:propstat>
+            </d:response>
+        </d:multistatus>"""
+        entries = parse_webdav_propfind_response(xml_response)
+        assert len(entries) == 1
+        assert "path" not in entries[0]
+
+    def test_response_without_propstat(self):
+        """Response element without propstat (line 158->200 False branch)."""
+        xml_response = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:response>
+                <d:href>/remote.php/dav/files/admin/no-propstat.txt</d:href>
+            </d:response>
+        </d:multistatus>"""
+        entries = parse_webdav_propfind_response(xml_response)
+        assert entries == []  # No file_id => not included
+
+    def test_propstat_without_prop(self):
+        """Propstat without prop element (line 160->200 False branch)."""
+        xml_response = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:response>
+                <d:href>/remote.php/dav/files/admin/no-prop.txt</d:href>
+                <d:propstat>
+                    <d:status>HTTP/1.1 200 OK</d:status>
+                </d:propstat>
+            </d:response>
+        </d:multistatus>"""
+        entries = parse_webdav_propfind_response(xml_response)
+        assert entries == []  # No file_id => not included
+
+    def test_empty_size_and_content_length(self):
+        """Size and content_length with empty text (lines 184, 188 branch)."""
+        xml_response = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:response>
+                <d:href>/remote.php/dav/files/admin/empty-size.txt</d:href>
+                <d:propstat>
+                    <d:prop>
+                        <oc:fileid>77</oc:fileid>
+                        <oc:size></oc:size>
+                        <d:getcontentlength></d:getcontentlength>
+                        <d:resourcetype/>
+                    </d:prop>
+                </d:propstat>
+            </d:response>
+        </d:multistatus>"""
+        entries = parse_webdav_propfind_response(xml_response)
+        assert len(entries) == 1
+        assert entries[0]["size"] == 0
+        assert entries[0]["content_length"] == 0
+
+    def test_response_without_display_name(self):
+        """Response without displayname element (line 191->195 branch)."""
+        xml_response = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:response>
+                <d:href>/remote.php/dav/files/admin/no-display.txt</d:href>
+                <d:propstat>
+                    <d:prop>
+                        <oc:fileid>88</oc:fileid>
+                        <d:resourcetype/>
+                    </d:prop>
+                </d:propstat>
+            </d:response>
+        </d:multistatus>"""
+        entries = parse_webdav_propfind_response(xml_response)
+        assert len(entries) == 1
+        assert "display_name" not in entries[0]
+
+    def test_href_with_empty_text(self):
+        """Href element with empty text is skipped."""
+        xml_response = b"""<?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+            <d:response>
+                <d:href></d:href>
+                <d:propstat>
+                    <d:prop>
+                        <oc:fileid>99</oc:fileid>
+                        <d:resourcetype/>
+                    </d:prop>
+                </d:propstat>
+            </d:response>
+        </d:multistatus>"""
+        entries = parse_webdav_propfind_response(xml_response)
+        assert len(entries) == 1
+        assert "path" not in entries[0]
+
+
+class TestParseShareResponsePartialBranches:
+    """Cover missing branches in parse_share_response."""
+
+    def test_permissions_invalid_type_falls_to_default(self):
+        """Permissions that are not convertible to int (lines 270-271)."""
+        data = {
+            "ocs": {
+                "meta": {},
+                "data": [{"share_type": 0, "share_with": "user1", "permissions": "invalid"}]
+            }
+        }
+        result = parse_share_response(json.dumps(data).encode("utf-8"))
+        assert len(result) == 1
+        assert result[0]["permissions"] == 1
+
+    def test_permissions_none_type(self):
+        """Permissions that are None (ValueError/TypeError)."""
+        data = {
+            "ocs": {
+                "meta": {},
+                "data": [{"share_type": 0, "share_with": "user1", "permissions": None}]
+            }
+        }
+        result = parse_share_response(json.dumps(data).encode("utf-8"))
+        assert len(result) == 1
+        assert result[0]["permissions"] == 1
+
+    def test_generic_exception_in_parse(self):
+        """Generic exception during parsing (lines 280-283)."""
+        # Force a non-JSONDecodeError exception by making json.loads return
+        # an object whose .get() method raises a non-JSON exception.
+        bad_data = MagicMock()
+        bad_data.get = MagicMock(side_effect=RuntimeError("boom"))
+        with patch("app.connectors.sources.nextcloud.connector.json.loads",
+                   return_value=bad_data):
+            result = parse_share_response(b'{}')
+            assert result == []
+
+    def test_share_with_none_value(self):
+        """share_with value is None (line 260->263 False branch)."""
+        data = {
+            "ocs": {
+                "meta": {},
+                "data": [{"share_type": 0, "share_with": None}]
+            }
+        }
+        result = parse_share_response(json.dumps(data).encode("utf-8"))
+        assert len(result) == 1
+        assert "share_with" not in result[0]
+
+    def test_share_with_non_string(self):
+        """share_with value is not a string (line 260->263 False branch)."""
+        data = {
+            "ocs": {
+                "meta": {},
+                "data": [{"share_type": 0, "share_with": 12345}]
+            }
+        }
+        result = parse_share_response(json.dumps(data).encode("utf-8"))
+        assert len(result) == 1
+        assert "share_with" not in result[0]
+
+    def test_empty_share_no_type_no_with(self):
+        """Share item with only permissions => no share_type or share_with => not added (line 273->245)."""
+        data = {
+            "ocs": {
+                "meta": {},
+                "data": [{"permissions": 1}]
+            }
+        }
+        result = parse_share_response(json.dumps(data).encode("utf-8"))
+        assert result == []
+
+    def test_share_with_only_share_with(self):
+        """Share item with share_with but no share_type is still added (line 251->258 skip)."""
+        data = {
+            "ocs": {
+                "meta": {},
+                "data": [{"share_with": "user1"}]
+            }
+        }
+        result = parse_share_response(json.dumps(data).encode("utf-8"))
+        assert len(result) == 1
+
+
+class TestExtractResponseBodyAdditional:
+    """Cover missing lines in extract_response_body (lines 326-329, 336-338)."""
+
+    def test_text_returns_bytes_directly(self):
+        """When text() returns bytes (not str), return directly (line 326)."""
+        resp = MagicMock(spec=[])
+        resp.text = MagicMock(return_value=b"raw bytes")
+        result = extract_response_body(resp)
+        assert result == b"raw bytes"
+
+    def test_text_exception_falls_to_response(self):
+        """When text() raises, fall through to response.response.content (lines 327-329)."""
+        resp = MagicMock(spec=[])
+        resp.text = MagicMock(side_effect=RuntimeError("text fail"))
+        inner = MagicMock()
+        inner.content = b"inner content"
+        resp.response = inner
+        result = extract_response_body(resp)
+        assert result == b"inner content"
+
+    def test_response_content_exception(self):
+        """When response.response.content raises, return None (lines 336-338)."""
+        # Create a response object that has 'response' attr but accessing content raises
+        resp = MagicMock(spec=["response"])
+
+        class BadInner:
+            @property
+            def content(self):
+                raise RuntimeError("content fail")
+
+        resp.response = BadInner()
+        result = extract_response_body(resp)
+        assert result is None
+
+    def test_text_returns_none_falls_to_response(self):
+        """When text() returns None, falls through to response attribute."""
+        resp = MagicMock(spec=[])
+        resp.text = MagicMock(return_value=None)
+        inner = MagicMock()
+        inner.content = b"fallback content"
+        resp.response = inner
+        result = extract_response_body(resp)
+        assert result == b"fallback content"
+
+
+class TestStreamRecordAdditional:
+    """Cover additional branches in stream_record."""
+
+    @pytest.mark.asyncio
+    async def test_stream_record_path_fallback_on_empty_path(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """When path is empty string, fallback to record_name (line 1587-1588)."""
+        from fastapi import HTTPException
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        file_rec.record_name = "test.txt"
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="")  # empty path
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.bytes = MagicMock(return_value=b"file content")
+        nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
+
+        record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
+        with patch("app.connectors.sources.nextcloud.connector.create_stream_record_response") as mock_stream:
+            mock_stream.return_value = MagicMock()
+            result = await nextcloud_connector.stream_record(record)
+            mock_stream.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stream_record_with_files_path(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """When path contains /files/ prefix, extract relative path."""
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        file_rec.record_name = "doc.txt"
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="/remote.php/dav/files/admin/docs/doc.txt")
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.bytes = MagicMock(return_value=b"content")
+        nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
+
+        record = MagicMock(id="r1", record_name="doc.txt", mime_type="text/plain")
+        with patch("app.connectors.sources.nextcloud.connector.create_stream_record_response") as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await nextcloud_connector.stream_record(record)
+
+    @pytest.mark.asyncio
+    async def test_stream_record_files_path_no_subpath(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """Path with /files/username but no sub-path sets relative_path to '' (line 1617)."""
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        file_rec.record_name = "root.txt"
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="/remote.php/dav/files/admin")
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.bytes = MagicMock(return_value=b"content")
+        nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
+
+        record = MagicMock(id="r1", record_name="root.txt", mime_type="text/plain")
+        with patch("app.connectors.sources.nextcloud.connector.create_stream_record_response") as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await nextcloud_connector.stream_record(record)
+
+    @pytest.mark.asyncio
+    async def test_stream_record_no_files_in_path(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """Path without /files/ prefix uses lstrip (line 1618-1619)."""
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        file_rec.record_name = "simple.txt"
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="/simple.txt")
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.bytes = MagicMock(return_value=b"content")
+        nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
+
+        record = MagicMock(id="r1", record_name="simple.txt", mime_type="text/plain")
+        with patch("app.connectors.sources.nextcloud.connector.create_stream_record_response") as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await nextcloud_connector.stream_record(record)
+
+    @pytest.mark.asyncio
+    async def test_stream_record_download_fails(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """Download response is not successful (line 1628-1632)."""
+        from fastapi import HTTPException
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+
+        mock_resp = MagicMock()
+        mock_resp.success = False
+        mock_resp.error = "download error"
+        nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
+
+        record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
+        with pytest.raises(HTTPException, match="Failed to download"):
+            await nextcloud_connector.stream_record(record)
+
+    @pytest.mark.asyncio
+    async def test_stream_record_empty_content(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """Download succeeds but body is empty (line 1636-1640)."""
+        from fastapi import HTTPException
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.bytes = MagicMock(return_value=None)
+        mock_resp.text = MagicMock(return_value=None)
+        mock_resp.response.content = None
+        nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
+
+        record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
+        with pytest.raises(HTTPException, match="Empty file content"):
+            await nextcloud_connector.stream_record(record)
+
+    @pytest.mark.asyncio
+    async def test_stream_record_generic_exception(self, nextcloud_connector, mock_data_store_provider_fullcov):
+        """Generic exception during download (lines 1654-1659)."""
+        from fastapi import HTTPException
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.current_user_id = "admin"
+        file_rec = MagicMock()
+        file_rec.mime_type = MimeTypes.PLAIN_TEXT
+        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
+        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+
+        nextcloud_connector.data_source.download_file = AsyncMock(
+            side_effect=RuntimeError("unexpected")
+        )
+
+        record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
+        with pytest.raises(HTTPException, match="Error streaming file"):
+            await nextcloud_connector.stream_record(record)
