@@ -88,7 +88,7 @@ async def _fetch_multiple_records_impl(
                                 document_key=record_id,
                                 collection=CollectionNames.RECORDS.value
                             )
-                
+
                 if graphDb_record:
                     indexing_status = graphDb_record.get("indexingStatus")
                     if indexing_status == ProgressStatus.COMPLETED.value:
@@ -111,7 +111,7 @@ async def _fetch_multiple_records_impl(
                             continue
             except Exception:
                 pass
-        
+
         not_available_ids.append(record_id)
 
     result: dict[str, Any] = {}
@@ -123,7 +123,7 @@ async def _fetch_multiple_records_impl(
     else:
         return {"ok": False, "error": f"None of the requested records were found."}
 
-    
+
     result["not_available_ids"] = not_available_ids
 
     return result
