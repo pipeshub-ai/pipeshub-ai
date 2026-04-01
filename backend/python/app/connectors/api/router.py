@@ -62,6 +62,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.sources.folder_sync.connector import FolderSyncConnector
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
@@ -80,6 +81,124 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
+
+
+class FolderSyncFileEvent(BaseModel):
+    type: str
+    path: str
+    oldPath: str | None = None
+    timestamp: int
+    size: int | None = None
+    isDirectory: bool
+
+
+class FolderSyncFileEventBatchRequest(BaseModel):
+    batchId: str
+    events: list[FolderSyncFileEvent]
+    timestamp: int
+
+
+def _unwrap_folder_sync_file_event_payload(raw_payload: Any) -> Any:
+    candidate = raw_payload
+
+    for _ in range(3):
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if not stripped:
+                return candidate
+            try:
+                candidate = json.loads(stripped)
+                continue
+            except json.JSONDecodeError:
+                return candidate
+
+        if not isinstance(candidate, dict):
+            return candidate
+
+        nested = (
+            candidate.get("body")
+            if candidate.get("body") is not None
+            else candidate.get("payload")
+            if candidate.get("payload") is not None
+            else candidate.get("data")
+        )
+        if nested is None:
+            return candidate
+        candidate = nested
+
+    return candidate
+
+
+async def _parse_folder_sync_file_event_batch_request(
+    request: Request,
+) -> FolderSyncFileEventBatchRequest:
+    raw_body = await request.body()
+    if not raw_body:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="Request body is required",
+        )
+
+    try:
+        raw_payload: Any = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raw_payload = raw_body.decode("utf-8", errors="replace")
+
+    payload = _unwrap_folder_sync_file_event_payload(raw_payload)
+    now = get_epoch_timestamp_in_ms()
+
+    if isinstance(payload, list):
+        payload = {
+            "batchId": f"foldersync-replay-{now}",
+            "events": payload,
+            "timestamp": now,
+        }
+    elif isinstance(payload, dict) and isinstance(payload.get("events"), list):
+        batch_id = payload.get("batchId")
+        timestamp = payload.get("timestamp")
+        payload = {
+            "batchId": batch_id
+            if batch_id is not None
+            else f"foldersync-replay-{now}",
+            "events": payload.get("events"),
+            "timestamp": timestamp if timestamp is not None else now,
+        }
+
+    try:
+        return FolderSyncFileEventBatchRequest.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Invalid Folder Sync file event batch payload",
+            extra={"errors": exc.errors()},
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail={
+                "message": "Invalid Folder Sync file event batch payload",
+                "errors": exc.errors(),
+            },
+        ) from exc
+
+
+def _normalize_connector_type_value(value: str) -> str:
+    return value.replace("_", "").replace(" ", "").strip().lower()
+
+
+async def _update_connector_status(
+    graph_provider: IGraphDBProvider,
+    connector_id: str,
+    status: str,
+) -> None:
+    await graph_provider.batch_upsert_nodes(
+        [
+            {
+                "id": connector_id,
+                "status": status,
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+        ],
+        CollectionNames.APPS.value,
+    )
 
 
 def get_mime_type_from_record(record: Record) -> str:
@@ -2826,6 +2945,78 @@ async def get_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector configuration: {str(e)}"
         ) from e
+
+
+@router.post("/api/v1/connectors/{connector_id}/file-events", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+async def submit_connector_file_events(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    payload = await _parse_folder_sync_file_event_batch_request(request)
+
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated",
+        )
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+    if not instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector instance {connector_id} not found or access denied",
+        )
+
+    connector_type = str(instance.get("type", ""))
+    if _normalize_connector_type_value(connector_type) != "foldersync":
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="File event replay is only supported for Folder Sync connectors",
+        )
+
+    await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
+    try:
+        connector = await _ensure_connector_initialized(
+            container,
+            connector_id,
+            connector_type,
+            connector_registry,
+            graph_provider,
+            user_id,
+            org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+        if not isinstance(connector, FolderSyncConnector):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Initialized connector is not a Folder Sync connector",
+            )
+
+        stats = await connector.apply_file_event_batch(
+            [event.model_dump() for event in payload.events]
+        )
+        return {
+            "success": True,
+            "connectorId": connector_id,
+            "batchId": payload.batchId,
+            "stats": stats,
+        }
+    finally:
+        with contextlib.suppress(Exception):
+            await _update_connector_status(graph_provider, connector_id, AppStatus.IDLE.value)
 
 
 @router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])

@@ -22,6 +22,41 @@ const logger = Logger.getInstance({
   service: 'Connector Controller',
 });
 
+const normalizeConnectorFileEventsBody = (body: unknown): unknown => {
+  let candidate = body;
+
+  for (let i = 0; i < 3; i += 1) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (!trimmed) {
+        return candidate;
+      }
+      try {
+        candidate = JSON.parse(trimmed);
+        continue;
+      } catch {
+        return candidate;
+      }
+    }
+
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return candidate;
+    }
+
+    const nested = (candidate as Record<string, unknown>).body
+      ?? (candidate as Record<string, unknown>).payload
+      ?? (candidate as Record<string, unknown>).data;
+
+    if (nested === undefined) {
+      return candidate;
+    }
+
+    candidate = nested;
+  }
+
+  return candidate;
+};
+
 /**
  * Higher-order function to create connector config update handlers.
  * Reduces code duplication by centralizing common validation, header preparation,
@@ -1179,6 +1214,60 @@ export const toggleConnectorInstance =
       const handledError = handleBackendError(
         error,
         'toggle connector instance',
+      );
+      next(handledError);
+    }
+  };
+
+export const submitConnectorFileEvents =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorId } = req.params;
+      const { userId } = req.user || {};
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+      if (!connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      const isAdmin = await isUserAdmin(req);
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+        'X-Is-Admin': isAdmin ? 'true' : 'false',
+      };
+      const payload = normalizeConnectorFileEventsBody(req.body);
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/file-events`,
+        HttpMethod.POST,
+        headers,
+        payload,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Submitting connector file events',
+        'Failed to submit connector file events',
+      );
+    } catch (error: any) {
+      logger.error('Error submitting connector file events', {
+        error: error.message,
+        connectorId: req.params.connectorId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handledError = handleBackendError(
+        error,
+        'submit connector file events',
       );
       next(handledError);
     }

@@ -328,7 +328,7 @@ program
         let hint = "";
         if (e.status === 401 || e.status === 403) {
           hint =
-            " Your OAuth client may need CONNECTOR_READ, CONNECTOR_WRITE, CONNECTOR_SYNC, and KB_WRITE scopes.";
+            " Your OAuth client may need CONNECTOR_READ, CONNECTOR_WRITE, CONNECTOR_SYNC, KB_WRITE, and CRAWL_WRITE (for scheduled Folder Sync in crawling manager).";
         }
         console.error(`${e.message}${hint}`);
         process.exit(1);

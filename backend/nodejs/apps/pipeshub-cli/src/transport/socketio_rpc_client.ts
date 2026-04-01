@@ -29,10 +29,45 @@ type RpcResponse =
 const DEFAULT_TIMEOUT_MS = 90_000;
 const SOCKET_PATH = "/socket.io-cli-rpc";
 
+type FolderSyncRegisterAck =
+  | { ok: true }
+  | {
+      type: "response";
+      id: string;
+      ok: false;
+      error: { code: string; message: string; status?: number };
+    };
+
+export type FolderSyncResyncRequest = {
+  connectorId: string;
+  fullSync?: boolean;
+  origin?: string;
+};
+
+type FolderSyncResyncAck =
+  | {
+      ok: true;
+      replayedBatches?: number;
+      replayedEvents?: number;
+      skippedBatches?: number;
+    }
+  | {
+      ok: false;
+      error?: { code?: string; message?: string };
+    };
+
 export class SocketIoRpcClient {
   private socket: Socket | null = null;
   private connectPromise: Promise<void> | null = null;
   private nextId = 1;
+  private watcherConnectorId: string | null = null;
+  private folderSyncResyncListener:
+    | ((request: FolderSyncResyncRequest) => Promise<{
+        replayedBatches?: number;
+        replayedEvents?: number;
+        skippedBatches?: number;
+      }>)
+    | null = null;
 
   constructor(
     private readonly baseUrl: string,
@@ -67,6 +102,56 @@ export class SocketIoRpcClient {
     });
   }
 
+  async registerFolderSyncWatcher(connectorId: string): Promise<void> {
+    await this.ensureConnected();
+    const normalizedConnectorId = connectorId.trim();
+    this.watcherConnectorId = normalizedConnectorId;
+    await this.emitWatcherRegistration(normalizedConnectorId);
+  }
+
+  async onFolderSyncResync(
+    handler: (request: FolderSyncResyncRequest) => Promise<{
+      replayedBatches?: number;
+      replayedEvents?: number;
+      skippedBatches?: number;
+    }>
+  ): Promise<void> {
+    await this.ensureConnected();
+    this.folderSyncResyncListener = handler;
+    this.socket!.off("foldersync:resync");
+    this.socket!.on(
+      "foldersync:resync",
+      async (
+        request: FolderSyncResyncRequest,
+        ack?: (response: FolderSyncResyncAck) => void
+      ) => {
+        try {
+          const result = await handler(request);
+          ack?.({
+            ok: true,
+            replayedBatches: result.replayedBatches ?? 0,
+            replayedEvents: result.replayedEvents ?? 0,
+            skippedBatches: result.skippedBatches ?? 0,
+          });
+        } catch (error) {
+          ack?.({
+            ok: false,
+            error: {
+              code: "RESYNC_FAILED",
+              message: error instanceof Error ? error.message : String(error),
+            },
+          });
+        }
+      }
+    );
+  }
+
+  disconnect(): void {
+    this.socket?.disconnect();
+    this.socket = null;
+    this.connectPromise = null;
+  }
+
   private async ensureConnected(): Promise<void> {
     if (this.socket && this.socket.connected) return;
     if (this.connectPromise) return this.connectPromise;
@@ -83,6 +168,7 @@ export class SocketIoRpcClient {
 
       socket.on("connect", () => {
         this.connectPromise = null;
+        void this.restoreControlState();
         resolve();
       });
       socket.on("connect_error", (err) => {
@@ -95,6 +181,44 @@ export class SocketIoRpcClient {
       });
     });
     return this.connectPromise;
+  }
+
+  private async restoreControlState(): Promise<void> {
+    if (!this.socket || !this.socket.connected) {
+      return;
+    }
+    if (this.folderSyncResyncListener) {
+      await this.onFolderSyncResync(this.folderSyncResyncListener);
+    }
+    if (this.watcherConnectorId) {
+      await this.emitWatcherRegistration(this.watcherConnectorId);
+    }
+  }
+
+  private async emitWatcherRegistration(connectorId: string): Promise<void> {
+    await this.ensureConnected();
+    return new Promise<void>((resolve, reject) => {
+      this.socket!.emit(
+        "foldersync:registerWatcher",
+        { connectorId },
+        (response: FolderSyncRegisterAck) => {
+          if (response && "ok" in response && response.ok === true) {
+            resolve();
+            return;
+          }
+          const failure =
+            response && "error" in response ? response.error : undefined;
+          const status = failure?.status != null ? ` (status ${failure.status})` : "";
+          reject(
+            new Error(
+              `${failure?.code ?? "WATCHER_REGISTRATION_FAILED"}${status}: ${
+                failure?.message ?? "Folder Sync watcher registration failed"
+              }`
+            )
+          );
+        }
+      );
+    });
   }
 
   private toSocketBaseUrl(base: string): string {

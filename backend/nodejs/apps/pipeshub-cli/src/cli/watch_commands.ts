@@ -8,6 +8,7 @@ import { CredentialStore } from "../auth/credential_store";
 import {
   BackendClient,
   BackendClientError,
+  FOLDER_SYNC_CONNECTOR_TYPE,
   FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY,
   FOLDER_SYNC_SYNC_ROOT_KEY,
 } from "../api/backend_client";
@@ -24,6 +25,7 @@ import {
 import { FileWatcher } from "../sync/file_watcher";
 import type { FileEvent } from "../sync/watcher_state";
 import { watcherEventsJournalPath } from "../sync/watcher_sync_journal";
+import { replayPendingWatchBatches } from "../sync/watcher_resync_replayer";
 import { createBackendClient } from "./context";
 import { pickFolderSyncConnectorForRun } from "./folder_sync_connector_picker";
 import { validateSyncRoot } from "./setup_commands";
@@ -134,6 +136,58 @@ async function promptInteractiveSyncStrategy(): Promise<{
     return null;
   }
   return { strategy, intervalMinutes };
+}
+
+/** Register or clear BullMQ repeat job so scheduled Folder Sync appears under crawling manager. */
+async function applyFolderSyncCrawlingManagerSchedule(
+  api: BackendClient,
+  connectorId: string,
+  strategy: SyncStrategyChoice,
+  intervalMinutes: number,
+  etcd: Record<string, unknown>
+): Promise<void> {
+  const sync = etcd["sync"] as Record<string, unknown> | undefined;
+  const sc = sync?.scheduledConfig as Record<string, unknown> | undefined;
+  const timezone =
+    typeof sc?.timezone === "string" && sc.timezone.trim()
+      ? sc.timezone.trim().toUpperCase()
+      : "UTC";
+  const startTime =
+    typeof sc?.startTime === "number" && Number.isFinite(sc.startTime)
+      ? sc.startTime
+      : undefined;
+
+  if (strategy === "SCHEDULED") {
+    try {
+      await api.scheduleCrawlingManagerJob(FOLDER_SYNC_CONNECTOR_TYPE, connectorId, {
+        intervalMinutes,
+        startTime,
+        timezone,
+      });
+      console.log(
+        `Crawling manager: registered repeat sync every ${intervalMinutes} min (Folder Sync).`
+      );
+    } catch (e) {
+      if (e instanceof BackendClientError && (e.status === 401 || e.status === 403)) {
+        console.warn(
+          `Could not register crawling manager schedule (HTTP ${e.status}). ` +
+            `Add CRAWL_WRITE to your OAuth client so scheduled sync runs on the server.`
+        );
+        return;
+      }
+      throw e;
+    }
+  } else {
+    try {
+      await api.removeCrawlingManagerJob(FOLDER_SYNC_CONNECTOR_TYPE, connectorId);
+    } catch (e) {
+      if (e instanceof BackendClientError && (e.status === 401 || e.status === 403)) {
+        console.warn(
+          `Could not remove crawling manager schedule (HTTP ${e.status}). CRAWL_DELETE may be required.`
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -412,6 +466,13 @@ export async function runSyncAsync(
         }
         throw e;
       }
+      await applyFolderSyncCrawlingManagerSchedule(
+        api,
+        cid,
+        strategy,
+        intervalMinutes,
+        etcdForSync
+      );
     }
 
     if (!foreground) {
@@ -430,6 +491,8 @@ export async function runSyncAsync(
       cid,
       includeSubfolders,
       allowedExtensions: undefined,
+      controlManager: manager,
+      controlBackendBaseUrl: base,
     });
     return;
   }
@@ -496,6 +559,14 @@ export async function runSyncAsync(
     console.log("Full sync has been queued on the server.");
   }
 
+  await applyFolderSyncCrawlingManagerSchedule(
+    api,
+    cid,
+    strategy,
+    intervalMinutes,
+    etcdForSync
+  );
+
   if (!foreground) {
     throwIfWatcherAlreadyRunning(cid);
     const pid = spawnWatchWorker({
@@ -516,6 +587,8 @@ export async function runSyncAsync(
     allowedExtensions,
     manager,
     backendBaseUrl: base,
+    controlManager: manager,
+    controlBackendBaseUrl: base,
   });
 }
 
@@ -527,6 +600,9 @@ async function startFileWatcherAndWait(opts: {
   /** If set, POST file-events to the backend; otherwise local watch only. */
   manager?: AuthManager;
   backendBaseUrl?: string;
+  /** If set, keep a control socket registered for redirected Folder Sync resyncs. */
+  controlManager?: AuthManager;
+  controlBackendBaseUrl?: string;
   /** No [watcher] logs or footer (background worker). */
   quiet?: boolean;
   /** Remove ~/.config/pipeshub/watcher.<cid>.pid on exit (background worker). */
@@ -534,9 +610,12 @@ async function startFileWatcherAndWait(opts: {
 }): Promise<void> {
   const { rootPath, cid, includeSubfolders, allowedExtensions, manager, backendBaseUrl } =
     opts;
+  const controlManager = opts.controlManager;
+  const controlBackendBaseUrl = opts.controlBackendBaseUrl;
   const quiet = opts.quiet === true;
   const removePid = opts.removePidFileOnExit === true;
   const watchOnly = !manager || !backendBaseUrl;
+  const authDir = pipeshubConfigDir();
 
   const log = quiet
     ? () => {}
@@ -567,13 +646,17 @@ async function startFileWatcherAndWait(opts: {
           }
         },
     log,
+    authDir,
   });
+
+  let controlApi: BackendClient | undefined;
 
   let stopping = false;
   const shutdown = async (signal: string) => {
     if (stopping) return;
     stopping = true;
     if (!quiet) console.log(`\n${signal} received. Stopping…`);
+    controlApi?.disconnectControlSocket();
     await watcher.stop();
     if (removePid) {
       try {
@@ -589,6 +672,35 @@ async function startFileWatcherAndWait(opts: {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   await watcher.start();
+
+  if (controlManager && controlBackendBaseUrl) {
+    try {
+      controlApi = new BackendClient(
+        controlBackendBaseUrl,
+        await controlManager.getValidAccessToken()
+      );
+      await controlApi.onFolderSyncResync(async (request) =>
+        replayPendingWatchBatches(
+          authDir,
+          cid,
+          async (events, batchId) => {
+            const freshToken = await controlManager.getValidAccessToken();
+            const freshApi = new BackendClient(controlBackendBaseUrl, freshToken);
+            await freshApi.notifyFileChanges(cid, events, batchId);
+          },
+          {
+            // Explicit/full resync should treat the watcher journal as the source
+            // of truth for connector-side changes, not just retry failed batches.
+            includeSynced: request.fullSync === true,
+          }
+        )
+      );
+      await controlApi.registerFolderSyncWatcherControl(cid);
+    } catch (error) {
+      await watcher.stop();
+      throw error;
+    }
+  }
 
   const status = watcher.getStatus();
   if (!quiet) {
@@ -624,17 +736,26 @@ export async function executeWatchWorker(
       allowedExtensions: cfg.allowedExtensions,
       manager,
       backendBaseUrl: base,
+      controlManager: manager,
+      controlBackendBaseUrl: base,
       quiet,
       removePidFileOnExit: true,
     });
     return;
   }
 
+  const store = new CredentialStore();
+  const manager = new AuthManager(store);
+  const loggedIn = await manager.isLoggedIn();
+  const base = loggedIn ? (await createBackendClient(manager)).base : undefined;
+
   await startFileWatcherAndWait({
     rootPath,
     cid,
     includeSubfolders: cfg.includeSubfolders !== false,
     allowedExtensions: cfg.allowedExtensions,
+    controlManager: loggedIn ? manager : undefined,
+    controlBackendBaseUrl: base,
     quiet,
     removePidFileOnExit: true,
   });

@@ -1,144 +1,165 @@
 # Pipeshub CLI
 
-Sync a local directory to Pipeshub with the personal **Folder Sync** connector. Log in, run **setup** to link a connector and folder, then **run** to queue a sync on the backend. The Python connector service must be running and able to read `sync_root_path`.
+Sync a local directory to Pipeshub using the personal **Folder Sync** connector.
 
-Transport details:
-- `login` / `verify` use REST OAuth endpoints.
-- Operational commands (`setup`, `run`/`sync`, `indexing*`) use Socket.IO RPC on namespace `/cli-rpc`.
+Log in, run `setup` to link a connector and folder, then `run` to queue a sync on the backend. The Python connector service must be running and able to read the configured `sync_root_path`.
 
-**Filters** (dates, extensions, indexing toggles, subfolders beyond defaults, etc.) are configured in the **web app**, not in this CLI.
+> **Note:** Filters (dates, extensions, indexing toggles, subfolder settings beyond defaults, etc.) are configured in the **web app**, not in this CLI.
 
 ## Requirements
 
-- Node.js 20+
-- **Native build for `keytar`** (OS credential storage): Xcode Command Line Tools on macOS; on Linux, `libsecret` development headers (e.g. Debian/Ubuntu: `libsecret-1-dev`); Windows usually builds with `windows-build-tools` / VS Build Tools. If the native addon cannot load, the CLI falls back to the Fernet-encrypted `auth.enc` file in your config directory.
+- **Node.js** 20+
+- **Native build tools** for `keytar` (OS credential storage):
+  - **macOS:** Xcode Command Line Tools
+  - **Linux:** `libsecret` development headers (e.g., `libsecret-1-dev` on Debian/Ubuntu)
+  - **Windows:** `windows-build-tools` or VS Build Tools
 
-## Install
+If the native addon cannot load, the CLI falls back to a Fernet-encrypted `auth.enc` file in your config directory.
 
-From the repo:
+## Installation
+
+From the repo root:
 
 ```bash
 cd backend/nodejs/apps/pipeshub-cli
 npm install
 npm run build
-npm link   # optional: global `pipeshub` on PATH
+npm link   # optional: makes `pipeshub` available globally on PATH
 ```
 
-Or run without linking:
+Or run directly without linking:
 
 ```bash
 node dist/cli.js --help
 ```
 
-The root command only adds **`-h` / `--help`** and **`-V` / `--version`** (Commander defaults). Subcommands use **positional arguments** where noted—no other flags.
+## Quick Start
 
-## Quick start
+### 1. Log in
 
-1. **Log in** with your OAuth2 client ID and client secret (from your Pipeshub app):
+Authenticate with your OAuth2 client ID and client secret (from your Pipeshub app):
 
-   ```bash
-   pipeshub login
-   ```
+```bash
+pipeshub login
+```
 
-   - If **`PIPESHUB_BACKEND_URL`** is not set, you are prompted for the backend base URL (default suggestion: `http://localhost:3000`).
-   - The **client secret** prompt hides input; paste and press **Enter**.
+- If `PIPESHUB_BACKEND_URL` is not set, you will be prompted for the backend base URL (default: `http://localhost:3000`).
+- The client secret prompt hides input — paste and press **Enter**.
+- Credentials and tokens are stored in the **OS keychain** when available, otherwise in `auth.enc` under your config directory (see [Environment](#environment)).
 
-   Credentials and tokens are stored in the **OS keychain** when available; otherwise in **`auth.enc`** under your config directory (see [Environment](#environment)).
+### 2. Verify the token (optional)
 
-2. **Verify the token** (optional):
+```bash
+pipeshub verify
+```
 
-   ```bash
-   pipeshub verify
-   ```
+Prints `OK.` when the token is active.
 
-   Prints `OK.` when the token is active.
+### 3. Setup
 
-3. **Setup** — interactively pick or create a **Folder Sync** instance and set the folder path. The CLI does not mark any row as a “default”; choose the instance you want linked on this machine. The last option when several exist is **create a new** connector. With a single connector you can confirm or create new instead. Rename, disable, or delete connectors in the **web app**.
+Interactively pick or create a **Folder Sync** connector instance and set the sync folder path:
 
-   ```bash
-   pipeshub setup
-   ```
+```bash
+pipeshub setup
+```
 
-   Optional: pass the folder path as the first argument:
+You can also pass the folder path directly:
 
-   ```bash
-   pipeshub setup /absolute/path/to/folder
-   ```
+```bash
+pipeshub setup /absolute/path/to/folder
+```
 
-   If the connector already has a sync folder on the server (or **`daemon.json`** matches this connector), that path is **pre-filled**; press **Enter** to keep it or type another path.
+**How it works:**
 
-   This writes **`daemon.json`** (sync root + connector id) beside `auth.enc`, updates sync path and **`include_subfolders: true`** through WebSocket RPC. The **manual indexing** question appears only when the connector is **inactive** (the API rejects filter changes while it is running). If the connector is **active**, setup still saves the path and tells you to change indexing in the app after you turn the connector off. If the path save fails, set the path in the app (or turn the connector off and run setup again).
+- If multiple connectors exist, choose the one to link on this machine. The last option is always **create a new connector**.
+- If the connector already has a sync folder on the server (or `daemon.json` matches), that path is pre-filled — press **Enter** to keep it or type a new one.
+- Writes `daemon.json` (sync root + connector ID) beside `auth.enc` and updates the sync path with `include_subfolders: true` via WebSocket RPC.
+- The **manual indexing** prompt only appears when the connector is **inactive** (the API rejects filter changes while running). If active, setup saves the path and directs you to change indexing in the web app after disabling the connector.
 
-4. **Queue a sync** (full sync; confirms before proceeding):
+### 4. Queue a sync
 
-   ```bash
-   pipeshub run
-   # alias:
-   pipeshub sync
-   ```
+Run a full sync (confirms before proceeding):
 
-   Optional: use a different folder for this run only:
+```bash
+pipeshub run
+# alias:
+pipeshub sync
+```
 
-   ```bash
-   pipeshub run /other/path
-   ```
+Use a different folder for this run only:
 
-   The CLI refreshes **`include_subfolders`** from the server config (or falls back to `daemon.json`). It does not upload files from your laptop—the connector process must read `sync_root_path`.
+```bash
+pipeshub run /other/path
+```
 
-### Folder Sync: web app vs CLI
+The CLI refreshes `include_subfolders` from the server config (or falls back to `daemon.json`). It does **not** upload files — the connector process must be able to read `sync_root_path` directly.
 
-- **Registry type:** **`Folder Sync`** (same string the API uses when creating an instance).
-- **Web:** Personal → **Folder Sync** — set path, subfolders, batch size, sync filters, and indexing toggles. Save while the connector is **inactive** when the app requires it.
-- **CLI:** **setup** (path, optional manual indexing) + **run** (queue sync). **indexing** lists connectors, lets you pick one, then KB actions. Use the app for other filter details when needed.
+## Commands
 
-### OAuth scopes
-
-- **setup:** **CONNECTOR_READ**, **CONNECTOR_WRITE** (list/create connectors, update sync config).
-- **run:** **CONNECTOR_SYNC**, **KB_WRITE** (toggle sync when inactive; resync when active).
-- **indexing** subcommands: **CONNECTOR_READ** (list connectors and read sync config for the picker), **KB_READ**, **KB_WRITE** as needed for list/stats/reindex/queue.
-
-If you see **403**, add scopes on your OAuth client or use the web app.
+| Command | Description |
+| --- | --- |
+| `pipeshub login` | Prompt for API URL (if needed), client ID, and client secret; store tokens. |
+| `pipeshub logout` | Remove stored credentials. |
+| `pipeshub verify` | Print `OK.` when the access token is valid. |
+| `pipeshub setup [path]` | Interactive Folder Sync setup — link a connector and set folder path. |
+| `pipeshub run [path]` / `sync [path]` | Confirm and queue a **full** sync; optional path override. |
+| `pipeshub indexing [subcommand]` | Knowledge base operations (see [Indexing](#indexing)). |
 
 ## Indexing
 
-Every **indexing** command first prints **all personal Folder Sync connectors** (name, id, active, sync root, subfolders). Nothing is highlighted as a default—you pick **which connector (1–N)** for that run only. After **setup**, **`pipeshub run`** still reads **`daemon.json`** for its connector until you run setup again.
+Every indexing command first lists **all personal Folder Sync connectors** (name, ID, active status, sync root, subfolders). You pick which connector to operate on — nothing is highlighted as a default.
 
-| Subcommand | What it does |
-|------------|----------------|
-| `pipeshub indexing` | Pick connector → KB summary → interactive pick to index a pending file. |
-| `pipeshub indexing status` | Same as default `pipeshub indexing`. |
-| `pipeshub indexing list` | Pick connector → first page of KB records (up to 50 rows). |
-| `pipeshub indexing reindex [recordId]` | With **record id**: queue that record only (no connector list). Without id: pick connector → summary → interactive pick. |
-| `pipeshub indexing queue-manual` | Pick connector → confirm → queue indexing for all **AUTO_INDEX_OFF** records on it. |
+| Subcommand | Description |
+| --- | --- |
+| `pipeshub indexing` | Pick connector, view KB summary, interactively select a pending file to index. |
+| `pipeshub indexing status` | Same as `pipeshub indexing`. |
+| `pipeshub indexing list` | Pick connector, show first page of KB records (up to 50 rows). |
+| `pipeshub indexing reindex [recordId]` | With record ID: queue that record directly. Without: pick connector and select interactively. |
+| `pipeshub indexing queue-manual` | Pick connector, confirm, then queue indexing for all `AUTO_INDEX_OFF` records. |
 
 ## Environment
 
-Optional `.env` in the project directory or next to the CLI package (see `.env.example`):
+Set these in a `.env` file in the project directory or next to the CLI package (see `.env.example`):
 
-| Variable | Purpose |
-|----------|---------|
-| `PIPESHUB_BACKEND_URL` | Backend base URL. If unset at **login**, you are prompted. |
-| `PIPESHUB_WS_URL` | Optional Socket.IO base URL override (default derived from `PIPESHUB_BACKEND_URL`). |
-| `PIPESHUB_CONFIG_DIR` | Override directory for `auth.enc`, `daemon.json`, and related files (no CLI flag). |
+| Variable | Description |
+| --- | --- |
+| `PIPESHUB_BACKEND_URL` | Backend base URL. If unset at login, you will be prompted. |
+| `PIPESHUB_WS_URL` | Socket.IO base URL override (defaults to value derived from `PIPESHUB_BACKEND_URL`). |
+| `PIPESHUB_CONFIG_DIR` | Override directory for `auth.enc`, `daemon.json`, and related files. |
 
-Client ID and secret are **not** read from the environment; enter them at **`pipeshub login`**.
+> Client ID and secret are **not** read from the environment — enter them at `pipeshub login`.
 
-## Auth and tokens
+## Authentication and Tokens
 
-- **OAuth2 client credentials**: collected at **login**; used with the refresh token when the access token expires and for **verify** introspection.
-- **Storage**: access + refresh tokens, **client_id**, **client_secret** — prefer **keychain** (`com.pipeshub.cli` / `oauth-tokens`); else **`auth.enc`** (Fernet + machine/user-bound key).
-- **Refresh**: JWT past `exp` triggers refresh from secure storage. If refresh fails, run **login** again.
+- **OAuth2 client credentials** are collected at login and used with the refresh token when the access token expires.
+- **Storage:** Access token, refresh token, client ID, and client secret are stored in the **OS keychain** (`com.pipeshub.cli` / `oauth-tokens`). Falls back to `auth.enc` (Fernet-encrypted, machine/user-bound key).
+- **Refresh:** When the JWT passes its `exp` time, the CLI automatically refreshes from secure storage. If refresh fails, run `pipeshub login` again.
 
-## Commands (summary)
+## OAuth Scopes
 
-| Command | Description |
-|---------|-------------|
-| `pipeshub login` | Prompt for API URL (if needed), client ID, client secret; store tokens. |
-| `pipeshub logout` | Remove stored credentials. |
-| `pipeshub verify` | Print `OK.` when the access token is valid. |
-| `pipeshub setup [root]` | Interactive Folder Sync link + folder path; optional path argument. |
-| `pipeshub run` / `sync [root]` | Confirm, push sync path, queue **full** sync; optional path override. |
-| `pipeshub indexing …` | KB summary, list, reindex, queue-manual (see [Indexing](#indexing)). |
+| Command | Required Scopes |
+| --- | --- |
+| `setup` | `CONNECTOR_READ`, `CONNECTOR_WRITE` |
+| `run` / `sync` | `CONNECTOR_SYNC`, `KB_WRITE` |
+| `indexing` | `CONNECTOR_READ`, `KB_READ`, `KB_WRITE` (as needed per subcommand) |
+
+If you see **403**, add the required scopes to your OAuth client or use the web app instead.
+
+## Transport
+
+- `login` / `verify` use REST OAuth endpoints.
+- Operational commands (`setup`, `run`/`sync`, `indexing`) use Socket.IO RPC on namespace `/cli-rpc`.
+
+## Web App vs CLI
+
+| Capability | Web App | CLI |
+| --- | --- | --- |
+| Set sync path | Yes | Yes (`setup`) |
+| Subfolder toggle | Yes | Yes (auto-enabled) |
+| Batch size, sync filters | Yes | No |
+| Indexing toggles | Yes | Partial (`setup` when inactive) |
+| Queue sync | Yes | Yes (`run`) |
+| KB operations | Yes | Yes (`indexing`) |
 
 ## Development
 
