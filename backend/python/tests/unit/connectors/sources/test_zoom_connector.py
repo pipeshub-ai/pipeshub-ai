@@ -30,7 +30,7 @@ def _make_connector() -> ZoomConnector:
 
 
 class TestZoomConnectorRecordBuilders:
-    def test_build_meeting_record_uses_join_url_and_unique_name(self):
+    def test_build_meeting_record_uses_join_url_and_unique_name(self) -> None:
         connector = _make_connector()
         meeting_obj = {
             "id": 82768386593,
@@ -57,7 +57,7 @@ class TestZoomConnectorRecordBuilders:
         )
         assert rec.weburl == "https://us06web.zoom.us/j/82768386593?pwd=abc"
 
-    def test_build_meeting_record_weburl_fallback(self):
+    def test_build_meeting_record_weburl_fallback(self) -> None:
         connector = _make_connector()
         meeting_obj = {
             "id": 111222333,
@@ -83,7 +83,7 @@ class TestZoomConnectorRecordBuilders:
 
 class TestZoomConnectorPermissions:
     @pytest.mark.asyncio
-    async def test_permissions_host_alt_hosts_participants_invitees_and_dedup(self):
+    async def test_permissions_host_alt_hosts_participants_invitees_and_dedup(self) -> None:
         connector = _make_connector()
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
             return_value=[
@@ -125,7 +125,7 @@ class TestZoomConnectorPermissions:
         assert "host@example.com" not in read_emails
 
     @pytest.mark.asyncio
-    async def test_permissions_still_work_when_meeting_detail_missing(self):
+    async def test_permissions_still_work_when_meeting_detail_missing(self) -> None:
         connector = _make_connector()
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
             return_value=[{"user_email": "participant@example.com"}]
@@ -140,7 +140,7 @@ class TestZoomConnectorPermissions:
         assert emails == {"host@example.com", "participant@example.com"}
 
     @pytest.mark.asyncio
-    async def test_permissions_when_participants_fetch_fails(self):
+    async def test_permissions_when_participants_fetch_fails(self) -> None:
         connector = _make_connector()
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
             side_effect=Exception("participants api failed")
@@ -163,7 +163,7 @@ class TestZoomConnectorPermissions:
 
 class TestZoomConnectorFreshDatasource:
     @pytest.mark.asyncio
-    async def test_get_fresh_datasource_updates_internal_token(self):
+    async def test_get_fresh_datasource_updates_internal_token(self) -> None:
         connector = _make_connector()
 
         internal = MagicMock()
@@ -181,7 +181,7 @@ class TestZoomConnectorFreshDatasource:
         internal.set_token.assert_called_once_with("new-token")
 
     @pytest.mark.asyncio
-    async def test_get_fresh_datasource_no_update_when_token_same(self):
+    async def test_get_fresh_datasource_no_update_when_token_same(self) -> None:
         connector = _make_connector()
 
         internal = MagicMock()
@@ -198,7 +198,7 @@ class TestZoomConnectorFreshDatasource:
         internal.set_token.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_get_fresh_datasource_raises_when_token_missing(self):
+    async def test_get_fresh_datasource_raises_when_token_missing(self) -> None:
         connector = _make_connector()
         connector.external_client = MagicMock()
         connector.data_source = MagicMock()
@@ -210,7 +210,7 @@ class TestZoomConnectorFreshDatasource:
 
 class TestZoomConnectorSyncFlow:
     @pytest.mark.asyncio
-    async def test_run_sync_continues_when_one_user_fails(self):
+    async def test_run_sync_continues_when_one_user_fails(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._load_filters = AsyncMock()  # type: ignore[method-assign]
@@ -228,7 +228,7 @@ class TestZoomConnectorSyncFlow:
         assert connector._sync_meetings_for_user.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_run_sync_raises_on_fatal_error(self):
+    async def test_run_sync_raises_on_fatal_error(self) -> None:
         """Top-level failure (e.g. list_users crash) re-raises after logging."""
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -242,14 +242,14 @@ class TestZoomConnectorSyncFlow:
             await connector.run_sync()
 
     @pytest.mark.asyncio
-    async def test_run_incremental_sync_delegates_to_run_sync(self):
+    async def test_run_incremental_sync_delegates_to_run_sync(self) -> None:
         connector = _make_connector()
         connector.run_sync = AsyncMock()  # type: ignore[method-assign]
         await connector.run_incremental_sync()
         connector.run_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_sync_meetings_for_user_no_chunks_updates_sync_point(self):
+    async def test_sync_meetings_for_user_no_chunks_updates_sync_point(self) -> None:
         """When calculate_sync_chunks returns [] the sync-point is still bumped."""
         connector = _make_connector()
         today = date(2026, 3, 31)
@@ -273,7 +273,7 @@ class TestZoomConnectorSyncFlow:
         )
 
     @pytest.mark.asyncio
-    async def test_sync_meetings_for_user_skips_meeting_without_uuid(self):
+    async def test_sync_meetings_for_user_skips_meeting_without_uuid(self) -> None:
         """Meetings with empty uuid are skipped; sync point still updated."""
         connector = _make_connector()
         today = date(2026, 3, 31)
@@ -294,7 +294,7 @@ class TestZoomConnectorSyncFlow:
         connector._update_user_meeting_sync_point.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_sync_meetings_per_meeting_exception_continues(self):
+    async def test_sync_meetings_per_meeting_exception_continues(self) -> None:
         """One bad meeting should not abort others in the same chunk."""
         connector = _make_connector()
         today = date(2026, 3, 31)
@@ -318,7 +318,7 @@ class TestZoomConnectorSyncFlow:
         original_build = connector._build_meeting_record
         call_count = {"n": 0}
 
-        def _side_effect(**kwargs):
+        def _side_effect(**kwargs) -> object:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise ValueError("bad meeting data")
@@ -339,7 +339,7 @@ class TestZoomConnectorSyncFlow:
 
 class TestZoomSyncPoint:
     @pytest.mark.asyncio
-    async def test_get_user_meeting_sync_point_valid_date(self):
+    async def test_get_user_meeting_sync_point_valid_date(self) -> None:
         connector = _make_connector()
         connector.sync_point = MagicMock()
         connector.sync_point.read_sync_point = AsyncMock(
@@ -349,7 +349,7 @@ class TestZoomSyncPoint:
         assert result == date(2026, 3, 20)
 
     @pytest.mark.asyncio
-    async def test_get_user_meeting_sync_point_missing_returns_none(self):
+    async def test_get_user_meeting_sync_point_missing_returns_none(self) -> None:
         connector = _make_connector()
         connector.sync_point = MagicMock()
         connector.sync_point.read_sync_point = AsyncMock(return_value={})
@@ -357,7 +357,7 @@ class TestZoomSyncPoint:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_user_meeting_sync_point_bad_date_returns_none(self):
+    async def test_get_user_meeting_sync_point_bad_date_returns_none(self) -> None:
         connector = _make_connector()
         connector.sync_point = MagicMock()
         connector.sync_point.read_sync_point = AsyncMock(
@@ -367,7 +367,7 @@ class TestZoomSyncPoint:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_update_user_meeting_sync_point_writes_correct_key(self):
+    async def test_update_user_meeting_sync_point_writes_correct_key(self) -> None:
         connector = _make_connector()
         connector.sync_point = MagicMock()
         connector.sync_point.update_sync_point = AsyncMock()
@@ -385,7 +385,7 @@ class TestZoomSyncPoint:
 # ============================================================================
 
 class TestCalculateSyncChunks:
-    def test_incremental_has_one_day_overlap(self):
+    def test_incremental_has_one_day_overlap(self) -> None:
         today = date(2026, 3, 31)
         last = date(2026, 3, 20)
         chunks = ZoomConnector._calculate_sync_chunks(
@@ -396,7 +396,7 @@ class TestCalculateSyncChunks:
         assert chunks[0][0] == "2026-03-19"
         assert chunks[0][1] == "2026-03-31"
 
-    def test_no_chunks_when_start_equals_today(self):
+    def test_no_chunks_when_start_equals_today(self) -> None:
         today = date(2026, 3, 31)
         # last_sync = today → start = today - 1, still < today, so 1 chunk
         last = today + timedelta(days=1)  # last is in the future
@@ -405,7 +405,7 @@ class TestCalculateSyncChunks:
         )
         assert chunks == []
 
-    def test_first_sync_respects_six_month_limit(self):
+    def test_first_sync_respects_six_month_limit(self) -> None:
         today = date(2026, 3, 31)
         # user created 2 years ago — must be capped at 180 days ago
         chunks = ZoomConnector._calculate_sync_chunks(
@@ -417,7 +417,7 @@ class TestCalculateSyncChunks:
         assert len(chunks) == 6
         assert chunks[0][0] == (today - timedelta(days=180)).isoformat()
 
-    def test_first_sync_uses_user_created_at_if_recent(self):
+    def test_first_sync_uses_user_created_at_if_recent(self) -> None:
         today = date(2026, 3, 31)
         user_date = today - timedelta(days=10)
         chunks = ZoomConnector._calculate_sync_chunks(
@@ -428,7 +428,7 @@ class TestCalculateSyncChunks:
         assert len(chunks) == 1
         assert chunks[0][0] == user_date.isoformat()
 
-    def test_first_sync_falls_back_on_invalid_created_at(self):
+    def test_first_sync_falls_back_on_invalid_created_at(self) -> None:
         today = date(2026, 3, 31)
         chunks = ZoomConnector._calculate_sync_chunks(
             user_created_at="not-a-date",
@@ -438,7 +438,7 @@ class TestCalculateSyncChunks:
         assert len(chunks) == 6
         assert chunks[0][0] == (today - timedelta(days=180)).isoformat()
 
-    def test_chunks_are_at_most_30_days_each(self):
+    def test_chunks_are_at_most_30_days_each(self) -> None:
         today = date(2026, 3, 31)
         chunks = ZoomConnector._calculate_sync_chunks(
             user_created_at="2020-01-01T00:00:00Z",
@@ -450,7 +450,7 @@ class TestCalculateSyncChunks:
             to_d = date.fromisoformat(to_str)
             assert (to_d - from_d).days <= 30
 
-    def test_consecutive_chunks_are_contiguous(self):
+    def test_consecutive_chunks_are_contiguous(self) -> None:
         today = date(2026, 3, 31)
         chunks = ZoomConnector._calculate_sync_chunks(
             user_created_at="2020-01-01T00:00:00Z",
@@ -467,7 +467,7 @@ class TestCalculateSyncChunks:
 
 class TestZoomApiWrappers:
     @pytest.mark.asyncio
-    async def test_list_users_paginates_and_collects_all(self):
+    async def test_list_users_paginates_and_collects_all(self) -> None:
         connector = _make_connector()
         page1 = MagicMock(success=True, data={
             "users": [{"id": "u1"}, {"id": "u2"}],
@@ -487,7 +487,7 @@ class TestZoomApiWrappers:
         assert ds.users.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_list_users_breaks_on_failure(self):
+    async def test_list_users_breaks_on_failure(self) -> None:
         connector = _make_connector()
         fail = MagicMock(success=False, data=None, message="401")
         ds = MagicMock()
@@ -498,7 +498,7 @@ class TestZoomApiWrappers:
         assert users == []
 
     @pytest.mark.asyncio
-    async def test_list_report_meetings_paginates(self):
+    async def test_list_report_meetings_paginates(self) -> None:
         connector = _make_connector()
         page1 = MagicMock(success=True, data={
             "meetings": [{"uuid": "m1"}, {"uuid": "m2"}],
@@ -516,7 +516,7 @@ class TestZoomApiWrappers:
         assert [m["uuid"] for m in meetings] == ["m1", "m2", "m3"]
 
     @pytest.mark.asyncio
-    async def test_list_report_meetings_breaks_on_failure_with_code(self):
+    async def test_list_report_meetings_breaks_on_failure_with_code(self) -> None:
         connector = _make_connector()
         fail = MagicMock(
             success=False,
@@ -531,7 +531,7 @@ class TestZoomApiWrappers:
         assert meetings == []
 
     @pytest.mark.asyncio
-    async def test_list_meeting_participants_paginates(self):
+    async def test_list_meeting_participants_paginates(self) -> None:
         connector = _make_connector()
         page1 = MagicMock(success=True, data={
             "participants": [{"user_email": "a@x.com"}],
@@ -549,7 +549,7 @@ class TestZoomApiWrappers:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_get_meeting_detail_returns_none_on_failure(self):
+    async def test_get_meeting_detail_returns_none_on_failure(self) -> None:
         connector = _make_connector()
         ds = MagicMock()
         ds.meeting = AsyncMock(return_value=MagicMock(success=False, data=None, message="404"))
@@ -559,7 +559,7 @@ class TestZoomApiWrappers:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_meeting_detail_returns_none_on_exception(self):
+    async def test_get_meeting_detail_returns_none_on_exception(self) -> None:
         connector = _make_connector()
         ds = MagicMock()
         ds.meeting = AsyncMock(side_effect=Exception("network error"))
@@ -574,11 +574,11 @@ class TestZoomApiWrappers:
 # ============================================================================
 
 class TestFetchTranscript:
-    def _make_ds(self):
+    def _make_ds(self) -> MagicMock:
         return MagicMock()
 
     @pytest.mark.asyncio
-    async def test_empty_uuid_returns_none(self):
+    async def test_empty_uuid_returns_none(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
@@ -587,7 +587,7 @@ class TestFetchTranscript:
         ds.meeting_transcript_metadata.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_code_3322_returns_none_silently(self):
+    async def test_code_3322_returns_none_silently(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
@@ -601,7 +601,7 @@ class TestFetchTranscript:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_code_3001_meeting_not_found_returns_none(self):
+    async def test_code_3001_meeting_not_found_returns_none(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
@@ -615,7 +615,7 @@ class TestFetchTranscript:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_no_download_url_returns_none(self):
+    async def test_no_download_url_returns_none(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
@@ -628,7 +628,7 @@ class TestFetchTranscript:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_download_failure_returns_none(self):
+    async def test_download_failure_returns_none(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
@@ -644,7 +644,7 @@ class TestFetchTranscript:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_successful_transcript_returned(self):
+    async def test_successful_transcript_returned(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(return_value=MagicMock(
@@ -661,7 +661,7 @@ class TestFetchTranscript:
         assert result == "Hello world"
 
     @pytest.mark.asyncio
-    async def test_exception_during_fetch_returns_none(self):
+    async def test_exception_during_fetch_returns_none(self) -> None:
         connector = _make_connector()
         ds = self._make_ds()
         ds.meeting_transcript_metadata = AsyncMock(side_effect=RuntimeError("crash"))
@@ -676,7 +676,7 @@ class TestFetchTranscript:
 # ============================================================================
 
 class TestBuildAppUsers:
-    def test_maps_users_with_display_name(self):
+    def test_maps_users_with_display_name(self) -> None:
         connector = _make_connector()
         users = [
             {
@@ -693,25 +693,25 @@ class TestBuildAppUsers:
         assert result[0].email == "user@example.com"
         assert result[0].full_name == "Display Name"
 
-    def test_falls_back_to_first_last_name(self):
+    def test_falls_back_to_first_last_name(self) -> None:
         connector = _make_connector()
         users = [{"id": "u1", "email": "a@b.com", "first_name": "Joe", "last_name": "Smith"}]
         result = connector._build_app_users(users)
         assert result[0].full_name == "Joe Smith"
 
-    def test_skips_users_without_email(self):
+    def test_skips_users_without_email(self) -> None:
         connector = _make_connector()
         users = [{"id": "u1", "email": ""}]
         result = connector._build_app_users(users)
         assert result == []
 
-    def test_skips_users_without_id(self):
+    def test_skips_users_without_id(self) -> None:
         connector = _make_connector()
         users = [{"id": "", "email": "a@b.com"}]
         result = connector._build_app_users(users)
         assert result == []
 
-    def test_multiple_users_all_mapped(self):
+    def test_multiple_users_all_mapped(self) -> None:
         connector = _make_connector()
         users = [
             {"id": "u1", "email": "a@b.com", "first_name": "A", "last_name": "B"},
@@ -726,19 +726,19 @@ class TestBuildAppUsers:
 # ============================================================================
 
 class TestEncodeUuid:
-    def test_simple_uuid_single_encoded(self):
+    def test_simple_uuid_single_encoded(self) -> None:
         uuid = "WJx2ow0jRU2wFut0EeIrEA=="
         encoded = ZoomConnector._encode_uuid(uuid)
         assert "==" not in encoded
         assert "%3D%3D" in encoded
 
-    def test_uuid_starting_with_slash_double_encoded(self):
+    def test_uuid_starting_with_slash_double_encoded(self) -> None:
         uuid = "/Mn/RVBn=="
         encoded = ZoomConnector._encode_uuid(uuid)
         # Double encoded: / → %25 2F
         assert "%252F" in encoded
 
-    def test_uuid_containing_double_slash_double_encoded(self):
+    def test_uuid_containing_double_slash_double_encoded(self) -> None:
         uuid = "abc//def"
         encoded = ZoomConnector._encode_uuid(uuid)
         assert "%252F" in encoded
@@ -749,21 +749,21 @@ class TestEncodeUuid:
 # ============================================================================
 
 class TestZoomIsoToMs:
-    def test_valid_iso_z_suffix(self):
+    def test_valid_iso_z_suffix(self) -> None:
         result = ZoomConnector._zoom_iso_to_ms("2026-03-30T18:00:00Z")
         assert isinstance(result, int)
         assert result > 0
 
-    def test_none_returns_none(self):
+    def test_none_returns_none(self) -> None:
         assert ZoomConnector._zoom_iso_to_ms(None) is None
 
-    def test_empty_returns_none(self):
+    def test_empty_returns_none(self) -> None:
         assert ZoomConnector._zoom_iso_to_ms("") is None
 
-    def test_invalid_string_returns_none(self):
+    def test_invalid_string_returns_none(self) -> None:
         assert ZoomConnector._zoom_iso_to_ms("not-a-date") is None
 
-    def test_non_string_returns_none(self):
+    def test_non_string_returns_none(self) -> None:
         assert ZoomConnector._zoom_iso_to_ms(12345) is None  # type: ignore[arg-type]
 
 
@@ -773,7 +773,7 @@ class TestZoomIsoToMs:
 
 class TestZoomConnectorInit:
     @pytest.mark.asyncio
-    async def test_init_success(self):
+    async def test_init_success(self) -> None:
         connector = _make_connector()
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
@@ -790,7 +790,7 @@ class TestZoomConnectorInit:
         assert connector.external_client is mock_client
 
     @pytest.mark.asyncio
-    async def test_init_failure_returns_false(self):
+    async def test_init_failure_returns_false(self) -> None:
         connector = _make_connector()
         with patch(
             "app.connectors.sources.zoom.connector.ZoomClient"
@@ -803,7 +803,7 @@ class TestZoomConnectorInit:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_test_connection_and_access_success(self):
+    async def test_test_connection_and_access_success(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         ds = MagicMock()
@@ -814,7 +814,7 @@ class TestZoomConnectorInit:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_test_connection_and_access_failure(self):
+    async def test_test_connection_and_access_failure(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         ds = MagicMock()

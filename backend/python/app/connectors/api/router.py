@@ -2357,8 +2357,7 @@ async def create_connector_instance(
             )
 
             if has_oauth_credentials:
-                # Determine OAuth instance name
-                oauth_instance_name = config.get("auth", {}).get("oauthInstanceName", "").strip() or instance_name
+                oauth_instance_name_from_request = config.get("auth", {}).get("oauthInstanceName", "").strip()
 
                 # Get existing OAuth configs to check for name conflicts
                 oauth_config_path = _get_oauth_config_path(connector_type)
@@ -2373,23 +2372,33 @@ async def create_connector_instance(
                 if provided_oauth_config_id:
                     # Updating existing - check conflict excluding the config being updated
                     config_index = None
+                    existing_oauth_config = None
                     for idx, cfg in enumerate(existing_oauth_configs):
                         if cfg.get("_id") == provided_oauth_config_id and cfg.get("orgId") == org_id:
                             config_index = idx
+                            existing_oauth_config = cfg
                             break
 
-                    if config_index is not None:
-                        # Conflict check excluding the config being updated
-                        _check_oauth_name_conflict(
-                            existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
-                        )
+                    if config_index is not None and existing_oauth_config:
+                        # When updating: use request name if provided, otherwise keep existing config name
+                        if oauth_instance_name_from_request:
+                            oauth_instance_name = oauth_instance_name_from_request
+                            existing_name = existing_oauth_config.get("oauthInstanceName", "")
+                            if oauth_instance_name != existing_name:
+                                _check_oauth_name_conflict(
+                                    existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
+                                )
+                        else:
+                            oauth_instance_name = existing_oauth_config.get("oauthInstanceName", instance_name)
                         logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} can be updated with name '{oauth_instance_name}'")
                     else:
                         # Config not found, will create new one instead - check as new
+                        oauth_instance_name = oauth_instance_name_from_request or instance_name
                         _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
                         logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} not found, will create new config with name '{oauth_instance_name}'")
                 else:
                     # Creating new - check for any name conflicts
+                    oauth_instance_name = oauth_instance_name_from_request or instance_name
                     _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
                     logger.debug(f"Pre-validation: New OAuth config with name '{oauth_instance_name}' can be created")
 

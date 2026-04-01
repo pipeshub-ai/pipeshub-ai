@@ -47,6 +47,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.WEBPAGES.value == "Webpage"
         assert Neo4jLabel.COMMENTS.value == "Comment"
         assert Neo4jLabel.TICKETS.value == "Ticket"
+        assert Neo4jLabel.MEETINGS.value == "Meeting"
         assert Neo4jLabel.LINKS.value == "Link"
         assert Neo4jLabel.PROJECTS.value == "Project"
 
@@ -92,7 +93,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_TOOLS.value == "AgentTool"
 
     def test_total_member_count(self):
-        assert len(Neo4jLabel) == 37
+        assert len(Neo4jLabel) == 38
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,7 @@ class TestCollectionToLabelMapping:
             (CollectionNames.WEBPAGES.value, Neo4jLabel.WEBPAGES.value),
             (CollectionNames.COMMENTS.value, Neo4jLabel.COMMENTS.value),
             (CollectionNames.TICKETS.value, Neo4jLabel.TICKETS.value),
+            (CollectionNames.MEETINGS.value, Neo4jLabel.MEETINGS.value),
             (CollectionNames.LINKS.value, Neo4jLabel.LINKS.value),
             (CollectionNames.PROJECTS.value, Neo4jLabel.PROJECTS.value),
             (CollectionNames.USERS.value, Neo4jLabel.USERS.value),
@@ -176,7 +178,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self):
-        assert len(COLLECTION_TO_LABEL) == 35
+        assert len(COLLECTION_TO_LABEL) == 36
 
     def test_all_values_are_strings(self):
         for k, v in COLLECTION_TO_LABEL.items():

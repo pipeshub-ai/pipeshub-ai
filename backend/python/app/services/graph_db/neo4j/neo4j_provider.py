@@ -15796,7 +15796,7 @@ class Neo4jProvider(IGraphDBProvider):
                 agent_data = dict(individual_result[0]["agent"])
                 user_role = individual_result[0]["role"]
                 access_type = "INDIVIDUAL"
-            
+
             # Check org permissions (only if no individual access)
             if not agent_data and org_key:
                 org_query = f"""
@@ -15817,7 +15817,7 @@ class Neo4jProvider(IGraphDBProvider):
                     agent_data = dict(org_result[0]["agent"])
                     user_role = org_result[0]["role"]
                     access_type = "ORG"
-            
+
             # Check team permissions (only if no individual or org access)
             if not agent_data and user_team_ids:
                 team_query = f"""

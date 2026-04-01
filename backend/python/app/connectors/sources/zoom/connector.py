@@ -3,13 +3,18 @@
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    MimeTypes,
+    ProgressStatus,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -19,7 +24,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
 )
-from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType, OAuthScopeConfig
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -37,7 +46,13 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.zoom.common.apps import ZoomApp
-from app.models.blocks import BlockGroup, BlocksContainer, DataFormat, GroupSubType, GroupType
+from app.models.blocks import (
+    BlockGroup,
+    BlocksContainer,
+    DataFormat,
+    GroupSubType,
+    GroupType,
+)
 from app.models.entities import (
     AppUser,
     MeetingRecord,
@@ -194,7 +209,7 @@ class ZoomConnector(BaseConnector):
             self.logger.info("✅ Zoom connector initialised (OAuth).")
             return True
         except Exception as exc:
-            self.logger.error(f"❌ Zoom connector init failed: {exc}", exc_info=True)
+            self.logger.error("❌ Zoom connector init failed: %s", exc, exc_info=True)
             return False
 
     # ============================================================================
@@ -212,16 +227,16 @@ class ZoomConnector(BaseConnector):
             today = self._today()
 
             self.logger.info(
-                f"🚀 Zoom: per-user report sync up to {self._date_str(today)}"
+                "🚀 Zoom: per-user report sync up to %s", self._date_str(today)
             )
 
             users = await self._list_users()
-            self.logger.info(f"👥 Zoom: {len(users)} active users found.")
+            self.logger.info("👥 Zoom: %d active users found.", len(users))
 
             app_users = self._build_app_users(users)
             if app_users:
                 await self.data_entities_processor.on_new_app_users(app_users)
-                self.logger.info(f"👥 Zoom: synced {len(app_users)} app users")
+                self.logger.info("👥 Zoom: synced %d app users", len(app_users))
 
             for zoom_user in users:
                 try:
@@ -229,25 +244,25 @@ class ZoomConnector(BaseConnector):
                 except Exception as exc:
                     user_id = zoom_user.get("id", "unknown")
                     self.logger.error(
-                        f"❌ Zoom: error syncing user {user_id}: {exc}", exc_info=True
+                        "❌ Zoom: error syncing user %s: %s", user_id, exc, exc_info=True
                     )
                     continue
 
             self.logger.info("✅ Zoom: sync complete.")
 
         except Exception as exc:
-            self.logger.error(f"❌ Zoom: sync failed: {exc}", exc_info=True)
+            self.logger.error("❌ Zoom: sync failed: %s", exc, exc_info=True)
             raise
 
     async def run_incremental_sync(self) -> None:
         """Incremental sync — delegates to run_sync which handles checkpoint logic."""
-        self.logger.info(f"🔄 Zoom: starting incremental sync for connector {self.connector_id}")
+        self.logger.info("🔄 Zoom: starting incremental sync for connector %s", self.connector_id)
         await self.run_sync()
         self.logger.info("✅ Zoom: incremental sync completed.")
 
     async def _sync_meetings_for_user(
         self,
-        zoom_user: Dict[str, Any],
+        zoom_user: dict[str, Any],
         today: date,
     ) -> None:
         """Fetch meetings in 30-day chunks, build permissions, persist records."""
@@ -265,19 +280,19 @@ class ZoomConnector(BaseConnector):
             today=today,
         )
         self.logger.debug(
-            f"Zoom user {user_id}: last_sync="
-            f"{self._date_str(last_sync) if last_sync else 'None'}, "
-            f"chunks={len(chunks)}"
+            "Zoom user %s: last_sync=%s, chunks=%d",
+            user_id,
+            self._date_str(last_sync) if last_sync else "None",
+            len(chunks),
         )
 
         if not chunks:
             await self._update_user_meeting_sync_point(user_id, today - timedelta(days=1))
             return
 
-        records_with_perms: List[Tuple[Record, List[Permission]]] = []
-
         for from_str, to_str in chunks:
             raw_meetings = await self._list_report_meetings(user_id, from_str, to_str)
+            chunk_records: list[tuple[Record, list[Permission]]] = []
 
             for meeting_obj in raw_meetings:
                 meeting_uuid = str(meeting_obj.get("uuid", "")).strip()
@@ -301,17 +316,23 @@ class ZoomConnector(BaseConnector):
                         encoded_uuid=encoded_uuid,
                         host_email=host_email,
                     )
-                    records_with_perms.append((rec, perms))
+                    chunk_records.append((rec, perms))
 
                 except Exception as exc:
                     self.logger.error(
-                        f"❌ Zoom: failed to process meeting {meeting_uuid}: {exc}",
+                        "❌ Zoom: failed to process meeting %s: %s", meeting_uuid, exc,
                         exc_info=True,
                     )
                     continue
 
-        if records_with_perms:
-            await self.data_entities_processor.on_new_records(records_with_perms)
+            # Flush each chunk immediately — bounds memory and ensures partial
+            # progress is persisted even if a later chunk fails.
+            if chunk_records:
+                await self.data_entities_processor.on_new_records(chunk_records)
+                self.logger.debug(
+                    "Zoom user %s: flushed %d records for chunk %s–%s",
+                    user_id, len(chunk_records), from_str, to_str,
+                )
 
         await self._update_user_meeting_sync_point(user_id, today - timedelta(days=1))
 
@@ -325,7 +346,7 @@ class ZoomConnector(BaseConnector):
 
     @staticmethod
     def _parse_date(s: str) -> date:
-        return datetime.strptime(s, "%Y-%m-%d").date()
+        return date.fromisoformat(s)
 
     @staticmethod
     def _today() -> date:
@@ -336,7 +357,7 @@ class ZoomConnector(BaseConnector):
         user_created_at: Optional[str],
         last_sync_date: Optional[date],
         today: date,
-    ) -> List[Tuple[str, str]]:
+    ) -> list[tuple[str, str]]:
         """Split the sync window into <=30-day chunks.
 
         Initial sync:  start = max(user.created_at, today - 180 days)
@@ -349,9 +370,7 @@ class ZoomConnector(BaseConnector):
         else:
             if user_created_at:
                 try:
-                    user_date = datetime.fromisoformat(
-                        user_created_at.replace("Z", "+00:00")
-                    ).date()
+                    user_date = datetime.fromisoformat(user_created_at).date()
                 except ValueError:
                     user_date = six_months_ago
             else:
@@ -361,7 +380,7 @@ class ZoomConnector(BaseConnector):
         if start >= today:
             return []
 
-        chunks: List[Tuple[str, str]] = []
+        chunks: list[tuple[str, str]] = []
         current = start
         while current < today:
             chunk_end = min(current + timedelta(days=ZOOM_REPORT_MAX_RANGE_DAYS), today)
@@ -446,10 +465,10 @@ class ZoomConnector(BaseConnector):
     # API wrappers
     # ============================================================================
 
-    async def _list_users(self) -> List[Dict[str, Any]]:
+    async def _list_users(self) -> list[dict[str, Any]]:
         """GET /v2/users?status=active — paginated."""
         datasource = await self._get_fresh_datasource()
-        all_users: List[Dict[str, Any]] = []
+        all_users: list[dict[str, Any]] = []
         next_page_token: Optional[str] = None
         while True:
             resp = await datasource.users(
@@ -457,9 +476,8 @@ class ZoomConnector(BaseConnector):
                 page_size=ZOOM_PAGE_SIZE,
                 next_page_token=next_page_token,
             )
-            self.logger.info(f"Zoom: users() response: {resp}")
             if not resp.success or not resp.data:
-                self.logger.warning(f"Zoom: users() failed — {resp.message}")
+                self.logger.warning("Zoom: users() failed — %s", resp.message)
                 break
             all_users.extend(resp.data.get("users", []))  # type: ignore[union-attr]
             next_page_token = resp.data.get("next_page_token")  # type: ignore[union-attr]
@@ -469,10 +487,10 @@ class ZoomConnector(BaseConnector):
 
     async def _list_report_meetings(
         self, user_id: str, from_str: Optional[str], to_str: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """GET /v2/report/users/{userId}/meetings — paginated."""
         datasource = await self._get_fresh_datasource()
-        meetings: List[Dict[str, Any]] = []
+        meetings: list[dict[str, Any]] = []
         next_page_token: Optional[str] = None
         while True:
             res = await datasource.report_meetings(
@@ -486,8 +504,9 @@ class ZoomConnector(BaseConnector):
                 zoom_code = res.data.get("code") if isinstance(res.data, dict) else None
                 zoom_message = res.data.get("message") if isinstance(res.data, dict) else None
                 self.logger.warning(
-                    f"Zoom: report_meetings({user_id}, {from_str}–{to_str}) failed "
-                    f"(http={res.message}, zoom_code={zoom_code}, zoom_message={zoom_message})"
+                    "Zoom: report_meetings(%s, %s–%s) failed "
+                    "(http=%s, zoom_code=%s, zoom_message=%s)",
+                    user_id, from_str, to_str, res.message, zoom_code, zoom_message,
                 )
                 break
             meetings.extend(res.data.get("meetings", []))  # type: ignore[union-attr]
@@ -498,10 +517,10 @@ class ZoomConnector(BaseConnector):
 
     async def _list_meeting_participants(
         self, encoded_uuid: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """GET /v2/report/meetings/{uuid}/participants — paginated."""
         datasource = await self._get_fresh_datasource()
-        participants: List[Dict[str, Any]] = []
+        participants: list[dict[str, Any]] = []
         next_page_token: Optional[str] = None
         while True:
             res = await datasource.report_meeting_participants(
@@ -517,7 +536,7 @@ class ZoomConnector(BaseConnector):
                 break
         return participants
 
-    async def _get_meeting_detail(self, meeting_id: str) -> Optional[Dict[str, Any]]:
+    async def _get_meeting_detail(self, meeting_id: str) -> Optional[dict[str, Any]]:
         """GET /v2/meetings/{meetingId} — returns full meeting object or None."""
         try:
             datasource = await self._get_fresh_datasource()
@@ -525,11 +544,11 @@ class ZoomConnector(BaseConnector):
             if resp.success and isinstance(resp.data, dict):
                 return resp.data
             self.logger.debug(
-                f"Zoom: meeting detail for {meeting_id} unavailable — {resp.message}"
+                "Zoom: meeting detail for %s unavailable — %s", meeting_id, resp.message
             )
             return None
         except Exception as exc:
-            self.logger.debug(f"Zoom: could not fetch meeting detail for {meeting_id}: {exc}")
+            self.logger.debug("Zoom: could not fetch meeting detail for %s: %s", meeting_id, exc)
             return None
 
     async def _fetch_transcript(self, meeting_uuid: str) -> Optional[str]:
@@ -554,16 +573,17 @@ class ZoomConnector(BaseConnector):
                 )
                 if zoom_code == _ZOOM_CODE_NO_AI_TRANSCRIPT:
                     self.logger.debug(
-                        f"Zoom: no AI transcript for {meeting_uuid} (code 3322)"
+                        "Zoom: no AI transcript for %s (code 3322)", meeting_uuid
                     )
                 elif zoom_code in _ZOOM_CODES_MEETING_NOT_FOUND:
                     self.logger.debug(
-                        f"Zoom: meeting not found/expired for {meeting_uuid} (code {zoom_code})"
+                        "Zoom: meeting not found/expired for %s (code %s)", meeting_uuid, zoom_code
                     )
                 else:
                     self.logger.warning(
-                        f"Zoom: transcript metadata call failed for {meeting_uuid} "
-                        f"(zoom_code={zoom_code}, message={meta_resp.message})"
+                        "Zoom: transcript metadata call failed for %s "
+                        "(zoom_code=%s, message=%s)",
+                        meeting_uuid, zoom_code, meta_resp.message,
                     )
                 return None
 
@@ -573,14 +593,14 @@ class ZoomConnector(BaseConnector):
             download_url = meta_resp.data.get("download_url")
             if not download_url:
                 self.logger.warning(
-                    f"Zoom: transcript metadata has no download_url for {meeting_uuid}"
+                    "Zoom: transcript metadata has no download_url for %s", meeting_uuid
                 )
                 return None
 
             dl_resp = await datasource.meeting_transcript_download(str(download_url))
             if not dl_resp.success:
                 self.logger.warning(
-                    f"Zoom: transcript download failed for {meeting_uuid} — {dl_resp.message}"
+                    "Zoom: transcript download failed for %s — %s", meeting_uuid, dl_resp.message
                 )
                 return None
 
@@ -593,7 +613,7 @@ class ZoomConnector(BaseConnector):
 
         except Exception as exc:
             self.logger.error(
-                f"❌ Zoom: transcript fetch failed for {meeting_uuid}: {exc}",
+                "❌ Zoom: transcript fetch failed for %s: %s", meeting_uuid, exc,
                 exc_info=True,
             )
             return None
@@ -616,11 +636,11 @@ class ZoomConnector(BaseConnector):
         except ValueError:
             return None
 
-    def _build_app_users(self, zoom_users: List[Dict[str, Any]]) -> List[AppUser]:
+    def _build_app_users(self, zoom_users: list[dict[str, Any]]) -> list[AppUser]:
         """Map Zoom directory users to AppUser."""
         org_id = self.data_entities_processor.org_id
         now_ms = get_epoch_timestamp_in_ms()
-        out: List[AppUser] = []
+        out: list[AppUser] = []
         for u in zoom_users:
             user_id = str(u.get("id") or "").strip()
             if not user_id:
@@ -661,8 +681,8 @@ class ZoomConnector(BaseConnector):
         return out
 
     def _build_record_group(
-        self, zoom_user: Dict[str, Any]
-    ) -> Tuple[RecordGroup, List[Permission]]:
+        self, zoom_user: dict[str, Any]
+    ) -> tuple[RecordGroup, list[Permission]]:
         user_id = zoom_user.get("id", "")
         email = (zoom_user.get("email") or "").strip().lower()
         first = zoom_user.get("first_name", "")
@@ -682,7 +702,7 @@ class ZoomConnector(BaseConnector):
             created_at=now_ms,
             updated_at=now_ms,
         )
-        perms: List[Permission] = []
+        perms: list[Permission] = []
         if email:
             perms.append(Permission(
                 email=email,
@@ -693,9 +713,9 @@ class ZoomConnector(BaseConnector):
 
     def _build_meeting_record(
         self,
-        meeting_obj: Dict[str, Any],
+        meeting_obj: dict[str, Any],
         meeting_uuid: str,
-        meeting_detail: Optional[Dict[str, Any]],
+        meeting_detail: Optional[dict[str, Any]],
         host_email: str,
         record_group_id: Optional[str],
     ) -> MeetingRecord:
@@ -717,10 +737,7 @@ class ZoomConnector(BaseConnector):
 
         revision_id = f"{start_time}|{end_time}|{topic}"
 
-        if start_time:
-            display_name = f"{topic} ({start_time})"
-        else:
-            display_name = topic
+        display_name = f"{topic} ({start_time})" if start_time else topic
 
         weburl = ""
         if meeting_detail and isinstance(meeting_detail, dict):
@@ -771,10 +788,10 @@ class ZoomConnector(BaseConnector):
 
     async def _build_meeting_permissions(
         self,
-        meeting_detail: Optional[Dict[str, Any]],
+        meeting_detail: Optional[dict[str, Any]],
         encoded_uuid: str,
         host_email: str,
-    ) -> List[Permission]:
+    ) -> list[Permission]:
         """Build permission list from host, alt-hosts, participants, and invitees.
 
         Flow:
@@ -784,7 +801,7 @@ class ZoomConnector(BaseConnector):
         4. Invitees (settings.meeting_invitees[].email) → READ each
         5. All deduplicated via seen_emails set
         """
-        perms: List[Permission] = []
+        perms: list[Permission] = []
         seen_emails: set[str] = set()
 
         # 1 — host → OWNER
@@ -796,14 +813,14 @@ class ZoomConnector(BaseConnector):
             ))
             seen_emails.add(host_email)
 
-        settings: Dict[str, Any] = {}
+        settings: dict[str, Any] = {}
         if meeting_detail and isinstance(meeting_detail, dict):
             settings = meeting_detail.get("settings") or {}
 
         # 2 — alt-hosts → READ
         alt_hosts_raw: str = settings.get("alternative_hosts") or ""
-        for alt_email in alt_hosts_raw.split(";"):
-            alt_email = alt_email.strip().lower()
+        for raw_alt in alt_hosts_raw.split(";"):
+            alt_email = raw_alt.strip().lower()
             if alt_email and alt_email not in seen_emails:
                 perms.append(Permission(
                     email=alt_email,
@@ -817,10 +834,10 @@ class ZoomConnector(BaseConnector):
             participants = await self._list_meeting_participants(encoded_uuid)
             self._add_participant_permissions(perms, participants, seen_emails)
         except Exception as exc:
-            self.logger.warning(f"Zoom: failed to fetch participants: {exc}")
+            self.logger.warning("Zoom: failed to fetch participants: %s", exc)
 
         # 4 — invitees → READ
-        invitees: List[Dict[str, Any]] = settings.get("meeting_invitees") or []
+        invitees: list[dict[str, Any]] = settings.get("meeting_invitees") or []
         for inv in invitees:
             inv_email = (inv.get("email") or "").strip().lower()
             if inv_email and inv_email not in seen_emails:
@@ -835,8 +852,8 @@ class ZoomConnector(BaseConnector):
 
     @staticmethod
     def _add_participant_permissions(
-        perms: List[Permission],
-        participants: List[Dict[str, Any]],
+        perms: list[Permission],
+        participants: list[dict[str, Any]],
         seen_emails: set[str],
     ) -> None:
         """Append READ permission per participant email."""
@@ -862,29 +879,78 @@ class ZoomConnector(BaseConnector):
     ) -> StreamingResponse:
 
         transcript = ""
-        if record.external_record_id and self.data_source:
-            transcript = await self._fetch_transcript(record.external_record_id) or ""
+        participants_md = ""
 
-        container = BlocksContainer(
-            block_groups=[
-                BlockGroup(
-                    id=str(uuid4()),
-                    index=0,
-                    name="Transcript",
-                    type=GroupType.TEXT_SECTION,
-                    sub_type=GroupSubType.CONTENT,
-                    description="AI Companion transcript for the meeting",
-                    source_group_id=record.external_record_id,
-                    format=DataFormat.MARKDOWN,
-                    weburl=record.weburl or "",
-                    requires_processing=True,
-                    data=transcript,
+        if record.external_record_id and self.data_source:
+            meeting_uuid = record.external_record_id
+            transcript = await self._fetch_transcript(meeting_uuid) or ""
+
+            try:
+                encoded = self._encode_uuid(meeting_uuid)
+                participants = await self._list_meeting_participants(encoded)
+                participants_md = self._build_participants_markdown(participants)
+            except Exception as exc:
+                self.logger.warning(
+                    f"Zoom: could not fetch participants for {meeting_uuid}: {exc}"
                 )
-            ],
-            blocks=[],
-        )
+
+        block_groups = [
+            BlockGroup(
+                id=str(uuid4()),
+                index=0,
+                name="Transcript",
+                type=GroupType.TEXT_SECTION,
+                sub_type=GroupSubType.CONTENT,
+                description="AI Companion transcript for the meeting",
+                source_group_id=record.external_record_id,
+                format=DataFormat.MARKDOWN,
+                weburl=record.weburl or "",
+                requires_processing=True,
+                data=transcript,
+            ),
+            BlockGroup(
+                id=str(uuid4()),
+                index=1,
+                name="Participants",
+                type=GroupType.TEXT_SECTION,
+                sub_type=GroupSubType.CONTENT,
+                description="Meeting participants with attendance duration and timing",
+                source_group_id=record.external_record_id,
+                format=DataFormat.MARKDOWN,
+                weburl=record.weburl or "",
+                requires_processing=True,
+                data=participants_md,
+            ),
+        ]
+
+        container = BlocksContainer(block_groups=block_groups, blocks=[])
         payload = container.model_dump_json().encode("utf-8")
         return StreamingResponse(iter([payload]), media_type=MimeTypes.BLOCKS.value)
+
+    @staticmethod
+    def _build_participants_markdown(participants: list[dict[str, Any]]) -> str:
+        """Render a participant list as a markdown table.
+
+        Columns: Name | Email | Duration (min) | Joined | Left
+        """
+        if not participants:
+            return ""
+
+        rows = [
+            "| Name | Email | Duration (min) | Joined | Left |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for p in participants:
+            name = (p.get("name") or "").strip() or "—"
+            email = (p.get("user_email") or "").strip() or "—"
+            duration_sec = p.get("duration") or 0
+            duration_min = round(int(duration_sec) / 60, 1)
+            join_time = (p.get("join_time") or "—").replace("T", " ").replace("Z", " UTC")
+            leave_time = (p.get("leave_time") or "—").replace("T", " ").replace("Z", " UTC")
+            rows.append(
+                f"| {name} | {email} | {duration_min} | {join_time} | {leave_time} |"
+            )
+        return "\n".join(rows)
 
     # ============================================================================
     # Abstract method implementations
@@ -902,18 +968,16 @@ class ZoomConnector(BaseConnector):
             if resp.success:
                 self.logger.info("✅ Zoom connection test successful")
                 return True
-            self.logger.error(
-                f"❌ Zoom connection test failed: {resp.message}"
-            )
+            self.logger.error("❌ Zoom connection test failed: %s", resp.message)
             return False
         except Exception as exc:
-            self.logger.error(f"❌ Zoom connection test failed: {exc}", exc_info=True)
+            self.logger.error("❌ Zoom connection test failed: %s", exc, exc_info=True)
             return False
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         return None
 
-    def handle_webhook_notification(self, notification: Dict[str, Any]) -> None:
+    def handle_webhook_notification(self, notification: dict[str, Any]) -> None:
         pass
 
     async def cleanup(self) -> None:
@@ -927,16 +991,16 @@ class ZoomConnector(BaseConnector):
                         self.logger.debug("Closed Zoom HTTP client connection")
                 except Exception as exc:
                     self.logger.debug(
-                        f"Error closing Zoom client (may be expected during shutdown): {exc}"
+                        "Error closing Zoom client (may be expected during shutdown): %s", exc
                     )
                 finally:
                     self.external_client = None
             self.data_source = None
             self.logger.info("Zoom connector cleanup completed")
         except Exception as exc:
-            self.logger.warning(f"Error during Zoom cleanup: {exc}")
+            self.logger.warning("Error during Zoom cleanup: %s", exc)
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex Zoom meeting records.
 
         Transcript text is fetched live in ``stream_record``, not refreshed here.
@@ -946,11 +1010,9 @@ class ZoomConnector(BaseConnector):
             if not record_results:
                 return
 
-            self.logger.info(
-                f"Starting reindex for {len(record_results)} Zoom records"
-            )
+            self.logger.info("Starting reindex for %d Zoom records", len(record_results))
 
-            reindexable: List[Record] = []
+            reindexable: list[Record] = []
             skipped_count = 0
 
             for record in record_results:
@@ -958,8 +1020,8 @@ class ZoomConnector(BaseConnector):
                     reindexable.append(record)
                 else:
                     self.logger.warning(
-                        f"⚠️ Record {record.id} ({record.record_type}) is not a "
-                        f"MeetingRecord ({type(record).__name__}), skipping reindex"
+                        "⚠️ Record %s (%s) is not a MeetingRecord (%s), skipping reindex",
+                        record.id, record.record_type, type(record).__name__,
                     )
                     skipped_count += 1
 
@@ -969,20 +1031,20 @@ class ZoomConnector(BaseConnector):
                         reindexable
                     )
                     self.logger.info(
-                        f"Published reindex events for {len(reindexable)} Zoom meeting records"
+                        "Published reindex events for %d Zoom meeting records", len(reindexable)
                     )
                 except NotImplementedError as e:
                     self.logger.warning(
-                        f"Cannot reindex records - to_kafka_record not implemented: {e}"
+                        "Cannot reindex records - to_kafka_record not implemented: %s", e
                     )
 
             if skipped_count:
                 self.logger.warning(
-                    f"⚠️ Skipped reindex for {skipped_count} records not usable as MeetingRecord"
+                    "⚠️ Skipped reindex for %d records not usable as MeetingRecord", skipped_count
                 )
 
         except Exception as e:
-            self.logger.error(f"❌ Error during Zoom reindex: {e}", exc_info=True)
+            self.logger.error("❌ Error during Zoom reindex: %s", e, exc_info=True)
             raise
 
     async def get_filter_options(
