@@ -300,13 +300,19 @@ const ManageAgentPermissionsDialog: React.FC<ManageAgentPermissionsDialogProps> 
 
     setCreatingTeam(true);
     try {
-      const body = {
+      const body: any = {
         name: newTeamName.trim(),
-        description: newTeamDescription.trim() || undefined,
-        userIds: teamUsers.map((u) => u._key),
-        role: teamRole,
       };
-      const { data } = await axios.post('/api/v1/entity/team', body);
+      if (newTeamDescription.trim()) {
+        body.description = newTeamDescription.trim();
+      }
+      if (teamUsers.length > 0) {
+        body.userRoles = teamUsers.map((u) => ({
+          userId: u._key,
+          role: teamRole,
+        }));
+      }
+      const { data } = await axios.post('/api/v1/teams', body);
       const created = data?.data || data;
       const createdTeam: Team = {
         _id: created?._key,

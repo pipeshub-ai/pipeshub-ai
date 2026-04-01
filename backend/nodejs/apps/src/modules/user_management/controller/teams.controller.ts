@@ -19,7 +19,14 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
-
+import { ZodTypeAny } from 'zod';
+import {
+  createTeamSuccessResponseSchema,
+  deleteTeamSuccessResponseSchema,
+  getUserTeamsSuccessResponseSchema,
+  updateTeamSuccessResponseSchema,
+} from '../validators/teams.validator';
+import { sendValidatedJson } from '../../../utils/response-validator';
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
@@ -90,6 +97,7 @@ const handleAIServiceResponse = (
   operation: string,
   failureMessage: string,
   successStatus: number = HTTP_STATUS.OK,
+  responseSchema?: ZodTypeAny,
 ) => {
   if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK && aiResponse.statusCode !== HTTP_STATUS.CREATED) {
     throw handleBackendError(aiResponse, operation);
@@ -97,6 +105,10 @@ const handleAIServiceResponse = (
   const responseData = aiResponse.data;
   if (!responseData) {
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
+  }
+  if (responseSchema) {
+    sendValidatedJson(res, responseSchema, responseData, successStatus);
+    return;
   }
   res.status(successStatus).json(responseData);
 };
@@ -145,6 +157,7 @@ export class TeamsController {
         'Creating team',
         'Team creation failed',
         HTTP_STATUS.CREATED,
+        createTeamSuccessResponseSchema,
       );
     } catch (error: any) {
       this.logger.error('Error creating team', {
@@ -152,8 +165,7 @@ export class TeamsController {
         message: 'Error creating team',
         error: error.message,
       });
-      const handledError = handleBackendError(error, 'create team');
-      next(handledError);
+      next(error);
     }
   }
 
@@ -343,6 +355,8 @@ export class TeamsController {
         res,
         'Updating team',
         'Failed to update team',
+        HTTP_STATUS.OK,
+        updateTeamSuccessResponseSchema,
       );
     } catch (error: any) {
       this.logger.error('Error updating team', {
@@ -350,8 +364,7 @@ export class TeamsController {
         message: 'Error updating team',
         error: error.message,
       });
-      const handledError = handleBackendError(error, 'update team');
-      next(handledError);
+      next(error);
     }
   }
 
@@ -386,6 +399,8 @@ export class TeamsController {
         res,
         'Deleting team',
         'Failed to delete team',
+        HTTP_STATUS.OK,
+        deleteTeamSuccessResponseSchema,
       );
     } catch (error: any) {
       this.logger.error('Error deleting team', {
@@ -537,11 +552,25 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(HTTP_STATUS.OK).json({ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } });
+        sendValidatedJson(
+          res,
+          getUserTeamsSuccessResponseSchema,
+          {
+            status: 'success',
+            message: 'No teams found',
+            teams: [],
+            pagination: { page: 1, limit: 10, total: 0, pages: 0 },
+          },
+          HTTP_STATUS.OK,
+        );
         return;
       }
-      const teams = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(teams);
+      sendValidatedJson(
+        res,
+        getUserTeamsSuccessResponseSchema,
+        aiResponse.data,
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       this.logger.error('Error getting user teams', {
         requestId,

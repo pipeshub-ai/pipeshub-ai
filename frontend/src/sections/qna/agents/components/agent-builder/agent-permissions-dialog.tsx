@@ -52,14 +52,16 @@ const makeAgentApi = (agentId: string): UnifiedPermissionsApi => ({
     }));
     return teams;
   },
-  createTeam: async ({ name, description, userIds, role }) => {
-    const { data } = await axios.post('/api/v1/teams', {
-      name,
-      description,
-      userIds,
-      role,
-    });
+  createTeam: async ({ name, description, memberRoles }) => {
+    const body: any = { name };
+    if (description) body.description = description;
+    if (memberRoles && memberRoles.length > 0) {
+      body.userRoles = memberRoles;
+    }
+
+    const { data } = await axios.post('/api/v1/teams', body);
     const created = data?.data || data;
+
     return {
       id: created?._key,
       userId: created?.userId,

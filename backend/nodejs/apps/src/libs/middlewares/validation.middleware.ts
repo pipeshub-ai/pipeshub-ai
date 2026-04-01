@@ -46,11 +46,11 @@ export class ValidationMiddleware {
         if (error instanceof z.ZodError) {
           const errors = ValidationUtils.formatZodError(error);
           const validationError = new ValidationError(
-            'Validation failed',
+            'Request validation failed',
             errors,
           );
 
-          this.logger.error('Validation failed', {
+          this.logger.error('Request validation failed', {
             path: req.path,
             method: req.method,
             errors,
