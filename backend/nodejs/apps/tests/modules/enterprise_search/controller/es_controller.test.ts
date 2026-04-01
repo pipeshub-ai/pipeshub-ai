@@ -10752,4 +10752,253 @@ describe('Enterprise Search Controller', () => {
       expect(next.called).to.be.true
     })
   })
+
+  // -----------------------------------------------------------------------
+  // Agent Mode Tests - chatMode parsing with agent:mode format
+  // -----------------------------------------------------------------------
+  describe('createConversation - agent mode parsing', () => {
+    it('should parse agent:auto as agentMode=true and chatMode=auto', async () => {
+      const handler = createConversation(createMockAppConfig())
+      
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      const saveStub = sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function(this: any) {
+        // Capture the body and URI from the AIServiceCommand instance
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return {
+          statusCode: 200,
+          data: {
+            answer: 'test answer',
+            citations: [],
+            followUpQuestions: [],
+          },
+        } as any
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent:auto',
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2), email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      // Verify AI service was called with correct chatMode and agent URI
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('auto')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
+    })
+
+    it('should parse agent:quick as agentMode=true and chatMode=quick', async () => {
+      const handler = createConversation(createMockAppConfig())
+      
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function(this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return {
+          statusCode: 200,
+          data: {
+            answer: 'test answer',
+            citations: [],
+            followUpQuestions: [],
+          },
+        } as any
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent:quick',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('quick')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
+    })
+
+    it('should parse plain agent as agentMode=true and chatMode=auto', async () => {
+      const handler = createConversation(createMockAppConfig())
+      
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function(this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return {
+          statusCode: 200,
+          data: {
+            answer: 'test answer',
+            citations: [],
+            followUpQuestions: [],
+          },
+        } as any
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('auto')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
+    })
+
+    it('should not set agentMode when chatMode does not include agent', async () => {
+      const handler = createConversation(createMockAppConfig())
+      
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function(this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return {
+          statusCode: 200,
+          data: {
+            answer: 'test answer',
+            citations: [],
+            followUpQuestions: [],
+          },
+        } as any
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'quick',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('quick')
+      expect(capturedUri).to.not.include('/agent/agentIdPlaceholder')
+    })
+
+    it('should default to quick mode when chatMode is not provided', async () => {
+      const handler = createConversation(createMockAppConfig())
+      
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function(this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return {
+          statusCode: 200,
+          data: {
+            answer: 'test answer',
+            citations: [],
+            followUpQuestions: [],
+          },
+        } as any
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('quick')
+      expect(capturedUri).to.not.include('/agent/agentIdPlaceholder')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // streamChat - agent mode parsing
+  // -----------------------------------------------------------------------
+  describe('streamChat - agent mode parsing', () => {
+    it('should parse agent:auto correctly in streamChat', async () => {
+      const handler = streamChat(createMockAppConfig())
+      
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(async function(this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return mockStream
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent:auto',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('auto')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat/stream')
+
+      mockStream.emit('end')
+      await promise
+    })
+  })
 })

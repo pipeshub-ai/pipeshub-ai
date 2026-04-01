@@ -52,6 +52,7 @@ import { StreamingContext } from './components/chat-message';
 import { processStreamingContentLegacy } from './utils/styles/content-processing';
 import ImageHighlighter from './components/image-highlighter';
 import { Model, ChatMode } from './types';
+import { CHAT_MODES } from './utils/utils';
 
 const DRAWER_WIDTH = 300;
 
@@ -842,15 +843,7 @@ const ChatInterface = () => {
 
     // Set chat mode from conversation if available
     if (conversationModelInfo.chatMode) {
-      const chatModes = [
-        { id: 'quick', name: 'Quick', description: 'Quick responses with minimal context' },
-        {
-          id: 'standard',
-          name: 'Standard',
-          description: 'Balanced responses with moderate creativity',
-        },
-      ];
-      const matchingMode = chatModes.find((m) => m.id === conversationModelInfo.chatMode);
+      const matchingMode = CHAT_MODES.find((m) => m.id === conversationModelInfo.chatMode);
       if (matchingMode) {
         setSelectedChatMode(matchingMode);
       }
@@ -1327,7 +1320,8 @@ const ChatInterface = () => {
             modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
               ? currentModel.modelFriendlyName.trim() 
               : undefined,
-            chatMode: chatMode || currentMode?.id,
+            chatMode:
+              currentMode?.id === 'agent' ? 'agent:auto' : chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
           },
           wasCreatingNewConversation

@@ -145,6 +145,25 @@ const hydrateScopedRequestAsUser = async (
   };
 };
 
+/**
+ * Parses the chatMode from request body and determines if agent mode is enabled.
+ * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
+ * 
+ * @param requestChatMode - The chatMode value from request body
+ * @returns Object containing the parsed chatMode and agentMode flag
+ */
+const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
+  let chatMode: string = requestChatMode || 'quick';
+  let agentMode: boolean = false;
+  
+  if (chatMode.includes('agent')) {
+    chatMode = chatMode.split(':')[1] || 'auto';
+    agentMode = true;
+  }
+  
+  return { chatMode, agentMode };
+};
+
   const handleBackendError = (error: any, operation: string): Error => {
     // Network/connection failure handling first
     if (
@@ -289,6 +308,7 @@ export const streamChat =
         userId,
       });
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
@@ -299,12 +319,12 @@ export const streamChat =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: chatMode,
         conversationId: savedConversation._id?.toString() || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -672,8 +692,10 @@ export const createConversation =
         throw new InternalServerError('Failed to create conversation');
       }
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
+
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat` : `${appConfig.aiBackend}/api/v1/chat`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
         body: {
@@ -685,7 +707,7 @@ export const createConversation =
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
           modelFriendlyName: req.body.modelFriendlyName || null,
-          chatMode: req.body.chatMode || 'quick',
+          chatMode: chatMode,
         },
       };
 
@@ -1330,6 +1352,7 @@ export const addMessageStream =
         ) as IMessage[],
       );
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
@@ -1339,12 +1362,12 @@ export const addMessageStream =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: chatMode,
         conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),

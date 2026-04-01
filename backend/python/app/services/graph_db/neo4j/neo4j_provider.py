@@ -3396,15 +3396,22 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_user_apps(self, user_id: str) -> list:
         """Get all apps associated with a user"""
         try:
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                self.logger.warning(f"User not found: {user_id}")
+                return []
+            user_key = user.get("id")
             query = """
             MATCH (user:User {id: $user_id})-[:USER_APP_RELATION]->(app:App)
             RETURN app
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"user_id": user_id}
+                parameters={"user_id": user_key}
             )
-
+            if not results:
+                self.logger.warning(f"No apps found for user: {user_id}")
+                return []
             apps = []
             for r in results:
                 if r.get("app"):
@@ -3877,14 +3884,9 @@ class Neo4jProvider(IGraphDBProvider):
         )
 
         try:
-            # Step 1: Get user and accessible apps
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                self.logger.warning(f"User not found for userId: {user_id}")
-                return []
+            # Step 1: Get accessible apps
 
-            user_key = user.get('id') or user.get('_key')
-            user_apps_ids = await self._get_user_app_ids(user_key)
+            user_apps_ids = await self._get_user_app_ids(user_id)
 
             if not user_apps_ids:
                 self.logger.warning(f"User {user_id} has no accessible apps")
@@ -6392,7 +6394,7 @@ class Neo4jProvider(IGraphDBProvider):
             user_key = user.get("id")
 
             # Get user's accessible app connector ids
-            user_apps_ids = await self._get_user_app_ids(user_key)
+            user_apps_ids = await self._get_user_app_ids(user_id)
 
             self.logger.info(f"🚀 User apps ids: {user_apps_ids}")
 
@@ -15792,7 +15794,7 @@ class Neo4jProvider(IGraphDBProvider):
                 agent_data = dict(individual_result[0]["agent"])
                 user_role = individual_result[0]["role"]
                 access_type = "INDIVIDUAL"
-            
+
             # Check org permissions (only if no individual access)
             if not agent_data and org_key:
                 org_query = f"""
@@ -15813,7 +15815,7 @@ class Neo4jProvider(IGraphDBProvider):
                     agent_data = dict(org_result[0]["agent"])
                     user_role = org_result[0]["role"]
                     access_type = "ORG"
-            
+
             # Check team permissions (only if no individual or org access)
             if not agent_data and user_team_ids:
                 team_query = f"""
