@@ -398,7 +398,7 @@ async def askAIStream(
                 )
 
                 # Prepare tools
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
                 tools = [fetch_tool]
 
                 tool_runtime_kwargs = {

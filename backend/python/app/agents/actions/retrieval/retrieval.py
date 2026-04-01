@@ -65,6 +65,7 @@ class SearchInternalKnowledgeInput(BaseModel):
     .as_internal()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
     .build_decorator()
+    
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 

@@ -368,6 +368,8 @@ async def _deep_respond_impl(
         )
         fetch_tool = create_fetch_full_record_tool(
             virtual_record_map,
+            org_id=state.get("org_id", ""),
+            graph_provider=state.get("graph_provider"),
         )
         tools = [fetch_tool]
         log.debug(

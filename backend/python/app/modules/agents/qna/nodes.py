@@ -6548,6 +6548,8 @@ async def respond_node(
             )
             fetch_tool = create_fetch_full_record_tool(
                 virtual_record_map,
+                org_id=org_id,
+                graph_provider=graph_provider,
             )
             tools = [fetch_tool]
             log.debug(

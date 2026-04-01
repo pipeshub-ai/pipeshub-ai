@@ -1349,9 +1349,30 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 })
             elif block_type in group_types:
                 block_group_index = result.get("block_group_index")
+                record = virtual_record_id_to_result.get(virtual_record_id)
+                if record is None:
+                    continue
+                block_containers = record.get("block_containers", {})
+                blocks_list = block_containers.get("blocks", [])
+                block_groups_list = block_containers.get("block_groups", [])
+                if block_group_index is None or block_group_index >= len(block_groups_list):
+                    continue
+                block_group = block_groups_list[block_group_index]
+                group_blocks = build_group_blocks(block_groups_list, blocks_list, block_group_index)
+                if not group_blocks:
+                    continue
+                for gb in group_blocks:
+                    gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("index", 0))
+                template = Template(block_group_prompt)
+                rendered_form = template.render(
+                    block_group_index=block_group_index,
+                    block_group_web_url="",
+                    label=block_group.get("type"),
+                    blocks=group_blocks,
+                )
                 content.append({
                     "type": "text",
-                    "text": f"* Block Group Index: {block_group_index}\n* Block Web URL: {block_web_url}\n* Block Group Type: {block_type}\n* Block Group Content: {result.get('content')}\n\n"
+                    "text": f"{rendered_form}\n\n"
                 })
             else:
                 content.append({

@@ -691,6 +691,10 @@ async def execute_tool_calls(
             if tool_result.get("ok"):
                 if tool_name == "fetch_full_record":
                     flattened_contents = [item for sublist in message_contents for item in sublist]
+                    not_available = tool_result.get("not_available_ids", {})
+                    if not_available:
+                        ids_str = ", ".join(f"'{rid}'" for rid in not_available)
+                        flattened_contents.append({"type": "text", "text": f"\nNote: The following record(s) are not available: {ids_str}"})
                     tool_msgs.append(ToolMessage(content=flattened_contents, tool_call_id=tool_result["call_id"]))
                 else:
                     tool_msg = {
