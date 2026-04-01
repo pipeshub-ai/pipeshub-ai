@@ -26,6 +26,8 @@ class Neo4jLabel(Enum):
     TICKETS = "Ticket"
     LINKS = "Link"
     PROJECTS = "Project"
+    SQL_TABLES = "SqlTable"
+    SQL_VIEWS = "SqlView"
 
     # Users and groups
     USERS = "User"
@@ -58,6 +60,9 @@ class Neo4jLabel(Enum):
     SUBCATEGORIES3 = "Subcategories3"
     LANGUAGES = "Languages"
     TOPICS = "Topics"
+
+    # Storage mappings
+    VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "VirtualRecordToDocIdMapping"
 
     # Teams
     TEAMS = "Teams"
@@ -103,6 +108,8 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     CollectionNames.TICKETS.value: Neo4jLabel.TICKETS.value,
     CollectionNames.LINKS.value: Neo4jLabel.LINKS.value,
     CollectionNames.PROJECTS.value: Neo4jLabel.PROJECTS.value,
+    CollectionNames.SQL_TABLES.value: Neo4jLabel.SQL_TABLES.value,
+    CollectionNames.SQL_VIEWS.value: Neo4jLabel.SQL_VIEWS.value,
     CollectionNames.USERS.value: Neo4jLabel.USERS.value,
     CollectionNames.GROUPS.value: Neo4jLabel.GROUPS.value,
     CollectionNames.PEOPLE.value: Neo4jLabel.PEOPLE.value,
@@ -124,6 +131,8 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     CollectionNames.SUBCATEGORIES3.value: Neo4jLabel.SUBCATEGORIES3.value,
     CollectionNames.LANGUAGES.value: Neo4jLabel.LANGUAGES.value,
     CollectionNames.TOPICS.value: Neo4jLabel.TOPICS.value,
+    # Storage mappings
+    CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value: Neo4jLabel.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
     # Teams
     CollectionNames.TEAMS.value: Neo4jLabel.TEAMS.value,
     # Agent Builder collections

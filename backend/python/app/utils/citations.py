@@ -143,8 +143,16 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             if 0 <= chunk_index < len(flattened_final_results):
                 doc = flattened_final_results[chunk_index]
                 content = doc.get("content", "")
+                if not isinstance(content, str):
+                    logger.debug(
+                        "[citations startswith] location=flattened_final_results doc content | "
+                        "old_citation_key=%s chunk_index=%s type=%s repr=%s",
+                        old_citation_key, chunk_index, type(content).__name__, repr(content)[:200],
+                    )
+                else:
+                    logger.debug("[citations startswith] location=flattened_final_results doc content type=str")
                 new_citations.append({
-                    "content": "Image" if content.startswith("data:image/") else content,
+                    "content": "Image" if (isinstance(content, str) and content.startswith("data:image/")) else (content if isinstance(content, str) else str(content)),
                     "chunkIndex": new_citation_num,  # Use new sequential number
                     "metadata": doc.get("metadata", {}),
                     "citationType": "vectordb|document",
@@ -186,12 +194,19 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             block_type = block.get("type")
             data = block.get("data")
             if block_type == BlockType.TABLE_ROW.value:
-                data = data.get("row_natural_language_text","")
+                data = data.get("row_natural_language_text","") if isinstance(data, dict) else data
             elif block_type == BlockType.IMAGE.value:
-                data = data.get("uri","")
+                data = data.get("uri","") if isinstance(data, dict) else data
+            # Diagnostic: catch 'tuple' has no attribute 'startswith'
+            if not isinstance(data, str):
+                logger.warning(
+                    "[citations startswith] location=records block data (first branch) | "
+                    "old_citation_key=%s block_type=%s type(data)=%s repr=%s",
+                    old_citation_key, block_type, type(data).__name__, repr(data)[:200],
+                )
             enhanced_metadata = get_enhanced_metadata(record,block,{})
             new_citations.append({
-                "content": "Image" if data.startswith("data:image/") else data,
+                "content": "Image" if (isinstance(data, str) and data.startswith("data:image/")) else (data if isinstance(data, str) else str(data)),
                 "chunkIndex": new_citation_num,  # Use new sequential number
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
@@ -253,8 +268,14 @@ def process_citations(
             try:
                 # Clean the JSON string before parsing
                 cleaned_content = response_content.strip()
+                # Diagnostic: catch non-str before startswith
+                if not isinstance(cleaned_content, str):
+                    logger.warning(
+                        "[citations startswith] location=cleaned_content (parse LLM response) | "
+                        "type=%s repr=%s", type(cleaned_content).__name__, repr(cleaned_content)[:200],
+                    )
                 # Handle nested JSON (sometimes response is JSON within JSON)
-                if cleaned_content.startswith('"') and cleaned_content.endswith('"'):
+                if isinstance(cleaned_content, str) and cleaned_content.startswith('"') and cleaned_content.endswith('"'):
                     cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
 
                 # Handle escaped newlines and other special characters
@@ -382,54 +403,59 @@ def normalize_citations_and_chunks_for_agent(
                 unique_citations.append(citation_key)
                 seen.add(citation_key)
 
-    if not unique_citations:
-        # No citation markers found, but if final_results exist, create citations from all results
-        if final_results:
-            all_citations = []
-            for idx, doc in enumerate(final_results):
-                content = doc.get("content", "")
-                # Handle table blocks
-                if isinstance(content, tuple):
-                    content = content[0] if content else ""
+    # if not unique_citations:
+    #     # No citation markers found, but if final_results exist, create citations from all results
+    #     if final_results:
+    #         all_citations = []
+    #         for idx, doc in enumerate(final_results):
+    #             content = doc.get("content", "")
+    #             # Handle table blocks
+    #             if isinstance(content, tuple):
+    #                 content = content[0] if content else ""
 
-                # Get metadata and ensure all required fields are present
-                metadata = doc.get("metadata", {}) or {}
+    #             # Get metadata and ensure all required fields are present
+    #             metadata = doc.get("metadata", {}) or {}
 
-                # If metadata is missing required fields, try to get them from virtual_record_id_to_result
-                if virtual_record_id_to_result:
-                    virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
-                    if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
-                        record = virtual_record_id_to_result[virtual_record_id]
-                        # Fill in missing required fields from record
-                        if not metadata.get("origin"):
-                            metadata["origin"] = record.get("origin", "")
-                        if not metadata.get("recordName"):
-                            metadata["recordName"] = record.get("record_name", "")
-                        if not metadata.get("recordId"):
-                            metadata["recordId"] = record.get("id", "")
-                        if not metadata.get("mimeType"):
-                            metadata["mimeType"] = record.get("mime_type", "")
+    #             # If metadata is missing required fields, try to get them from virtual_record_id_to_result
+    #             if virtual_record_id_to_result:
+    #                 virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+    #                 if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+    #                     record = virtual_record_id_to_result[virtual_record_id]
+    #                     # Fill in missing required fields from record
+    #                     if not metadata.get("origin"):
+    #                         metadata["origin"] = record.get("origin", "")
+    #                     if not metadata.get("recordName"):
+    #                         metadata["recordName"] = record.get("record_name", "")
+    #                     if not metadata.get("recordId"):
+    #                         metadata["recordId"] = record.get("id", "")
+    #                     if not metadata.get("mimeType"):
+    #                         metadata["mimeType"] = record.get("mime_type", "")
 
-                # Ensure required fields have at least empty string defaults (validation requirement)
-                metadata["origin"] = metadata.get("origin") or ""
-                metadata["recordName"] = metadata.get("recordName") or ""
-                metadata["recordId"] = metadata.get("recordId") or ""
-                metadata["mimeType"] = metadata.get("mimeType") or ""
-                metadata["orgId"] = metadata.get("orgId") or ""  # Add orgId
+    #             # Ensure required fields have at least empty string defaults (validation requirement)
+    #             metadata["origin"] = metadata.get("origin") or ""
+    #             metadata["recordName"] = metadata.get("recordName") or ""
+    #             metadata["recordId"] = metadata.get("recordId") or ""
+    #             metadata["mimeType"] = metadata.get("mimeType") or ""
+    #             metadata["orgId"] = metadata.get("orgId") or ""  # Add orgId
 
-                # Ensure content is not None
-                citation_content = content or ""
-                if isinstance(citation_content, str) and citation_content.startswith("data:image/"):
-                    citation_content = "Image"
+    #             # Ensure content is not None
+    #             citation_content = content or ""
+    #             if not isinstance(citation_content, str):
+    #                 logger.warning(
+    #                     "[citations startswith] location=citation_content (all_citations path) | "
+    #                     "idx=%s type=%s repr=%s", idx, type(citation_content).__name__, repr(citation_content)[:200],
+    #                 )
+    #             if isinstance(citation_content, str) and citation_content.startswith("data:image/"):
+    #                 citation_content = "Image"
 
-                all_citations.append({
-                    "content": citation_content,
-                    "chunkIndex": idx + 1,
-                    "metadata": metadata,
-                    "citationType": "vectordb|document",
-                })
-            return answer_text, all_citations
-        return answer_text, []
+    #             all_citations.append({
+    #                 "content": citation_content,
+    #                 "chunkIndex": idx + 1,
+    #                 "metadata": metadata,
+    #                 "citationType": "vectordb|document",
+    #             })
+    #         return answer_text, all_citations
+    #     return answer_text, []
 
     # Main citation processing logic (matches normalize_citations_and_chunks)
     citation_mapping = {}
@@ -503,8 +529,15 @@ def normalize_citations_and_chunks_for_agent(
                 metadata["mimeType"] = metadata.get("mimeType") or ""
                 metadata["orgId"] = metadata.get("orgId") or ""
 
+                # Diagnostic: catch 'tuple' has no attribute 'startswith'
+                if not isinstance(content, str):
+                    logger.warning(
+                        "[citations startswith] location=block_number_to_index content (second branch) | "
+                        "old_citation_key=%s type=%s repr=%s",
+                        old_citation_key, type(content).__name__, repr(content)[:200],
+                    )
                 new_citations.append({
-                    "content": "Image" if content.startswith("data:image/") else content,
+                    "content": "Image" if (isinstance(content, str) and content.startswith("data:image/")) else (content if isinstance(content, str) else str(content)),
                     "chunkIndex": new_citation_num,
                     "metadata": metadata,
                     "citationType": "vectordb|document",
@@ -546,10 +579,16 @@ def normalize_citations_and_chunks_for_agent(
             block_type = block.get("type")
             data = block.get("data")
             if block_type == BlockType.TABLE_ROW.value:
-                data = data.get("row_natural_language_text", "")
+                data = data.get("row_natural_language_text", "") if isinstance(data, dict) else data
             elif block_type == BlockType.IMAGE.value:
-                data = data.get("uri", "")
-
+                data = data.get("uri", "") if isinstance(data, dict) else data
+            # Diagnostic: catch 'tuple' has no attribute 'startswith'
+            if not isinstance(data, str):
+                logger.warning(
+                    "[citations startswith] location=records block data (second branch / tool records) | "
+                    "old_citation_key=%s block_type=%s type(data)=%s repr=%s",
+                    old_citation_key, block_type, type(data).__name__, repr(data)[:200],
+                )
             enhanced_metadata = get_enhanced_metadata(record, block, {})
 
             # Ensure required fields
@@ -560,7 +599,7 @@ def normalize_citations_and_chunks_for_agent(
             enhanced_metadata["orgId"] = enhanced_metadata.get("orgId") or ""
 
             new_citations.append({
-                "content": "Image" if data.startswith("data:image/") else data,
+                "content": "Image" if (isinstance(data, str) and data.startswith("data:image/")) else (data if isinstance(data, str) else str(data)),
                 "chunkIndex": new_citation_num,
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",

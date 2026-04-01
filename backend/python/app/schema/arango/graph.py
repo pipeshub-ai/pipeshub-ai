@@ -54,7 +54,7 @@ EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.IS_OF_TYPE.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.FILES.value, CollectionNames.MAILS.value, CollectionNames.WEBPAGES.value, CollectionNames.COMMENTS.value, CollectionNames.TICKETS.value],
+        "to_vertex_collections": [CollectionNames.FILES.value, CollectionNames.MAILS.value, CollectionNames.WEBPAGES.value, CollectionNames.COMMENTS.value, CollectionNames.TICKETS.value, CollectionNames.SQL_TABLES.value, CollectionNames.SQL_VIEWS.value],
     },
     {
         "edge_collection": CollectionNames.RECORD_RELATIONS.value,

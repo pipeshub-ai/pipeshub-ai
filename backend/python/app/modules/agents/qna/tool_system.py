@@ -432,32 +432,8 @@ def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     Get all agent tools (cached).
 
     Returns internal tools + user's configured toolset tools.
-    Also adds dynamic tools like fetch_full_record_tool.
     """
     tools = ToolLoader.load_tools(state)
-
-    # Add dynamic agent fetch_full_record tool
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
-    if virtual_record_map:
-        try:
-            from app.utils.agent_fetch_full_record import (
-                create_agent_fetch_full_record_tool,
-            )
-            record_label_to_uuid_map = state.get("record_label_to_uuid_map", {})
-            fetch_tool = create_agent_fetch_full_record_tool(
-                virtual_record_map,
-                label_to_virtual_record_id=record_label_to_uuid_map if record_label_to_uuid_map else None,
-            )
-            tools.append(fetch_tool)
-
-            state_logger = state.get("logger")
-            if state_logger:
-                state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
-        except Exception as e:
-            state_logger = state.get("logger")
-            if state_logger:
-                state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
-
     return tools
 
 
@@ -647,6 +623,31 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
+
+        # Add dynamic execute_sql_query tool for database queries
+        config_service = state.get("config_service")
+        if config_service:
+            try:
+                from app.utils.execute_query import create_execute_query_tool
+                graph_provider = state.get("graph_provider")
+                org_id = state.get("org_id")
+                conversation_id = state.get("conversation_id")
+                blob_store = state.get("blob_store")
+                execute_query_tool = create_execute_query_tool(
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    conversation_id=conversation_id,
+                    blob_store=blob_store,
+                )
+                structured_tools.append(execute_query_tool)
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.debug("✅ Added execute_sql_query_tool for database queries")
+            except Exception as e:
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
 
         # Cache the StructuredTools for reuse
         state["_cached_schema_tools"] = structured_tools

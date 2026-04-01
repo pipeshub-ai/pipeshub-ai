@@ -31,23 +31,49 @@ qna_prompt = """
 </task>
 
 <tools>
-  You have access to a tool called "fetch_full_record" that allows you to retrieve the complete content of multiple records when the provided chunks are insufficient to answer the query comprehensively.
+  <tool>
+    You have access to a tool called "fetch_full_record" that allows you to retrieve the complete content of multiple records when the provided chunks are insufficient to answer the query comprehensively.
 
-  **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
+    **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
 
-  Use this tool when:
-  - The provided blocks contain partial information that leaves gaps in your understanding
-  - You need more context from specific records to provide a complete answer
-  - The chunks suggest that important information exists in the records but is not fully captured
-  - You encounter references to content that should be in the records but isn't in the provided blocks
+    Use this tool when:
+    - The provided blocks contain partial information that leaves gaps in your understanding
+    - You need more context from specific records to provide a complete answer
+    - The chunks suggest that important information exists in the records but is not fully captured
+    - You encounter references to content that should be in the records but isn't in the provided blocks
 
-  The tool requires:
-  - record_ids: A LIST of virtualRecordIds from the search result metadata (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"])
-  - reason: A clear explanation of why you need the full records
+    The tool requires:
+    - record_ids: A LIST of virtualRecordIds from the search result metadata (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"])
+    - reason: A clear explanation of why you need the full records
 
-  **IMPORTANT: Pass ALL record IDs you need in a SINGLE call. Do NOT make multiple separate fetch_full_record calls.**
+    **IMPORTANT: Pass ALL record IDs you need in a SINGLE call. Do NOT make multiple separate fetch_full_record calls.**
 
-  After calling the tool, integrate the additional content with the existing blocks to provide a comprehensive answer.
+    After calling the tool, integrate the additional content with the existing blocks to provide a comprehensive answer.
+  </tool>
+
+  <tool>
+    You have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
+
+    **When to use execute_sql_query:**
+    - When you need to retrieve live data from a connected database
+    - When the user asks for specific data that requires a SQL query
+    - When you have table schema information and need to fetch actual data
+
+    **How to use:**
+    - query: The SQL query to execute
+    - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake", "MariaDB") - case-insensitive
+    - connector_id: connector instance ID from record metadata (Connector Id) when multiple connectors of same source type exist
+    - reason: Brief explanation of why you need this data
+
+    **CRITICAL RULES:**
+    - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
+    - **ALWAYS pass the connector_id when present in retrieved record context. If connector_id is unavailable, call the tool without it and rely on default connector resolution.**
+    - **NEVER write a single SQL query that joins tables from different connector_id values or different databases/connectors.**
+    - **If data is split across connectors/databases, make separate execute_sql_query calls (one per connector/database), then combine/aggregate the results yourself in reasoning.**
+    - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
+    - The user wants to see data results.. Formulate the query internally and execute it via the tool.
+    - After receiving results, present them in a clear markdown format (tables, lists, summaries).
+  </tool>
 </tools>
 
 <context>
@@ -184,11 +210,12 @@ qna_prompt_instructions_1 = """
 </task>
 
 <tools>
-  You have access to a tool called "fetch_full_record" that retrieves the complete content of multiple records when provided blocks are insufficient.
+  <tool>
+    You have access to a tool called "fetch_full_record" that retrieves the complete content of multiple records when provided blocks are insufficient.
 
-  **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
+    **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
 
-  **When to use:**
+    **When to use:**
   - Provided blocks contain partial information with gaps in understanding
   - Need more context from specific records for a complete answer
   - Blocks suggest important information exists but isn't fully captured
@@ -201,6 +228,31 @@ qna_prompt_instructions_1 = """
   - Provide a clear reason explaining why you need the full records
   - The tool returns the complete content of all requested records including all blocks
   - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
+  </tool>
+
+  <tool>
+    You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
+
+    **When to use execute_sql_query:**
+    - When you need to retrieve live data from a connected database
+    - When the user asks for specific data that requires a SQL query
+    - When you have table schema information and need to fetch actual data
+
+    **How to use:**
+    - query: The SQL query to execute
+    - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake", "MariaDB") - case-insensitive
+    - connector_id: Connector instance ID from record metadata (Connector Id) when multiple connectors of same source type exist
+    - reason: Brief explanation of why you need this data
+
+    **CRITICAL RULES:**
+    - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
+    - **ALWAYS pass the connector_id when present in retrieved record context. If connector_id is unavailable, call the tool without it and rely on default connector resolution.**
+    - **NEVER write a single SQL query that joins tables from different connector_id values or different databases/connectors.**
+    - **If data is split across connectors/databases, make separate execute_sql_query calls (one per connector/database), then combine/aggregate the results yourself in reasoning.**
+    - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
+    - The user wants to see data results.. Formulate the query internally and execute it via the tool.
+    - After receiving results, present them in a clear markdown format (tables, lists, summaries).
+  </tool>
 </tools>
 
 <context>
@@ -264,6 +316,7 @@ qna_prompt_instructions_2 = """
     * Multiple queries are asked but blocks only partially address them
   - **STEP 4 - Default to calling the tool:** When in doubt between answering with blocks vs. fetching full record, ALWAYS choose to fetch the full record
   - **Tool call format:** When using the tool, explain your reasoning clearly in the "reason" parameter
+  - **Cross-connector SQL rule:** If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
   - **Integration:** After receiving tool results, seamlessly integrate the information with existing blocks
 
   4. Improvements Focus:
