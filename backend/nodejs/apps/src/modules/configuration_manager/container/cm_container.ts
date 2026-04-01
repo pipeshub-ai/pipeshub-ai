@@ -2,13 +2,22 @@ import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { ConfigurationManagerConfig } from '../config/config';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
-import { SyncEventProducer } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
+
+export enum CMContainerToken {
+  ConfigurationManagerConfig = 'ConfigurationManagerConfig',
+  AppConfig = 'AppConfig',
+  Logger = 'Logger',
+  KeyValueStoreService = 'KeyValueStoreService',
+  ConfigService = 'ConfigService',
+  AuthMiddleware = 'AuthMiddleware',
+  SamlController = 'SamlController',
+}
+
 const loggerConfig = {
   service: 'Configuration Manager Service',
 };
@@ -25,11 +34,11 @@ export class ConfigurationManagerContainer {
 
     // Bind configuration
     container
-      .bind<ConfigurationManagerConfig>('ConfigurationManagerConfig')
+      .bind<ConfigurationManagerConfig>(CMContainerToken.ConfigurationManagerConfig)
       .toConstantValue(configurationManagerConfig);
-    container.bind<AppConfig>('AppConfig').toConstantValue(appConfig);
+    container.bind<AppConfig>(CMContainerToken.AppConfig).toConstantValue(appConfig);
     // Bind logger
-    container.bind<Logger>('Logger').toConstantValue(this.logger);
+    container.bind<Logger>(CMContainerToken.Logger).toConstantValue(this.logger);
 
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
@@ -44,36 +53,22 @@ export class ConfigurationManagerContainer {
   ): Promise<void> {
     try {
       const configurationManagerConfig =
-        container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
+        container.get<ConfigurationManagerConfig>(
+          CMContainerToken.ConfigurationManagerConfig,
+        );
       const keyValueStoreService = KeyValueStoreService.getInstance(
         configurationManagerConfig,
       );
 
       await keyValueStoreService.connect();
       container
-        .bind<KeyValueStoreService>('KeyValueStoreService')
+        .bind<KeyValueStoreService>(CMContainerToken.KeyValueStoreService)
         .toConstantValue(keyValueStoreService);
 
-      const syncEventsService = new SyncEventProducer(
-        appConfig.kafka,
-        container.get('Logger'),
-      );
-      container
-        .bind<SyncEventProducer>('SyncEventProducer')
-        .toConstantValue(syncEventsService);
-
-      const entityEventsService = new EntitiesEventProducer(
-        appConfig.kafka,
-        container.get('Logger'),
-      );
-      container
-        .bind<EntitiesEventProducer>('EntitiesEventProducer')
-        .toConstantValue(entityEventsService);
-
-      container.bind<ConfigService>('ConfigService').toDynamicValue(() => {
-        return new ConfigService(appConfig, container.get('Logger'));
+      container.bind<ConfigService>(CMContainerToken.ConfigService).toDynamicValue(() => {
+        return new ConfigService(appConfig, container.get(CMContainerToken.Logger));
       });
-      container.bind<SamlController>('SamlController').toDynamicValue(() => {
+      container.bind<SamlController>(CMContainerToken.SamlController).toDynamicValue(() => {
         return new SamlController(appConfig, container.get('Logger'));
       });
 
@@ -82,12 +77,13 @@ export class ConfigurationManagerContainer {
         appConfig.scopedJwtSecret,
       );
       const authMiddleware = new AuthMiddleware(
-        container.get('Logger'),
+        container.get(CMContainerToken.Logger),
         authTokenService,
       );
       container
-        .bind<AuthMiddleware>('AuthMiddleware')
+        .bind<AuthMiddleware>(CMContainerToken.AuthMiddleware)
         .toConstantValue(authMiddleware);
+
       this.logger.info(
         'Configuration Manager services initialized successfully',
       );
@@ -111,35 +107,17 @@ export class ConfigurationManagerContainer {
       try {
         // Get only services that need to be disconnected
         const keyValueStoreService = this.instance.isBound(
-          'KeyValueStoreService',
+          CMContainerToken.KeyValueStoreService,
         )
-          ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
-          : null;
-
-        const entityEventsService = this.instance.isBound(
-          'EntitiesEventProducer',
-        )
-          ? this.instance.get<EntitiesEventProducer>('EntitiesEventProducer')
-          : null;
-
-        const syncEventsService = this.instance.isBound('SyncEventProducer')
-          ? this.instance.get<SyncEventProducer>('SyncEventProducer')
+          ? this.instance.get<KeyValueStoreService>(
+              CMContainerToken.KeyValueStoreService,
+            )
           : null;
 
         // Disconnect services if they have a disconnect method
         if (keyValueStoreService && keyValueStoreService.isConnected()) {
           await keyValueStoreService.disconnect();
           this.logger.info('KeyValueStoreService disconnected successfully');
-        }
-
-        if (entityEventsService && entityEventsService.isConnected()) {
-          await entityEventsService.disconnect();
-          this.logger.info('EntitiesEventProducer disconnected successfully');
-        }
-
-        if (syncEventsService && syncEventsService.isConnected()) {
-          await syncEventsService.disconnect();
-          this.logger.info('SyncEventProducer disconnected successfully');
         }
 
         this.logger.info(
