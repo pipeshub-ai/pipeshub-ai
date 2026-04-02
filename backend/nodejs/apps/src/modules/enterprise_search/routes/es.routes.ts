@@ -1,11 +1,9 @@
-import { NextFunction, Router, Response } from 'express';
+import { Router } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
-  addMessage,
   archiveConversation,
   archiveSearch,
-  createConversation,
   deleteConversationById,
   deleteSearchById,
   deleteSearchHistory,
@@ -26,30 +24,18 @@ import {
   updateTitle,
   streamChat,
   addMessageStream,
-  createAgentConversation,
   streamAgentConversation,
   streamAgentConversationInternal,
-  addMessageToAgentConversation,
   addMessageStreamToAgentConversation,
   addMessageStreamToAgentConversationInternal,
   getAllAgentConversations,
   getAgentConversationById,
   deleteAgentConversationById,
-  createAgentTemplate,
-  getAgentTemplate,
-  deleteAgentTemplate,
-  listAgentTemplates,
   createAgent,
   getAgent,
   deleteAgent,
   updateAgent,
-  updateAgentTemplate,
   listAgents,
-  getAvailableTools,
-  shareAgent,
-  unshareAgent,
-  updateAgentPermissions,
-  getAgentPermissions,
   regenerateAgentAnswers,
   streamChatInternal,
   addMessageStreamInternal,
@@ -68,11 +54,16 @@ import {
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
   regenerateAgentAnswersParamsSchema,
+  agentStreamSchema,
+  agentAddMessageSchema,
+  agentKeyParamsOnlySchema,
+  agentConversationParamsSchema,
+  createAgentSchema,
+  updateAgentSchema,
 } from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
-import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import { AppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
-import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
@@ -80,40 +71,6 @@ export function createConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
-  /**
-   * @route POST /api/v1/conversations
-   * @desc Create a new conversation with initial query
-   * @access Private
-   * @body {
-   *   query: string
-   * }
-   */
-  router.post(
-    '/create',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(enterpriseSearchCreateSchema),
-    createConversation(appConfig),
-  );
-
-  /**
-
-   * @route POST /api/v1/conversations
-   * @desc Create a new conversation with initial query
-   * @access Private
-   * @body {
-   *   query: string
-   * }
-   */
-
-  router.post(
-    '/internal/create',
-    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(enterpriseSearchCreateSchema),
-    createConversation(appConfig),
-  );
 
   /**
    * @route POST /api/v1/conversations/stream
@@ -140,42 +97,6 @@ export function createConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     streamChatInternal(appConfig),
-  );
-
-  /**
-   * @route POST /api/v1/conversations/:conversationId/messages
-   * @desc Add a new message to existing conversation
-   * @access Private
-   * @param {string} conversationId - Conversation ID
-   * @body {
-   *   query: string
-   * }
-   */
-  router.post(
-    '/:conversationId/messages',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(addMessageParamsSchema),
-    addMessage(appConfig),
-  );
-
-  /**
-   * @route POST /api/v1/conversations/:conversationId/messages
-   * @desc Add a new message to existing conversation
-   * @access Private
-   * @param {string} conversationId - Conversation ID
-   * @body {
-   *   query: string
-   * }
-   */
-
-  router.post(
-    '/internal/:conversationId/messages',
-    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(addMessageParamsSchema),
-    addMessage(appConfig),
   );
 
   /**
@@ -460,32 +381,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     unarchiveSearch,
   );
 
-  router.post(
-    '/updateAppConfig',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    async (
-      _req: AuthenticatedServiceRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        appConfig = await loadAppConfig();
-
-        container
-          .rebind<AppConfig>('AppConfig')
-          .toDynamicValue(() => appConfig);
-
-        res.status(200).json({
-          message: 'User configuration updated successfully',
-          config: appConfig,
-        });
-        return;
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
   return router;
 }
 
@@ -495,27 +390,12 @@ export function createAgentConversationalRouter(container: Container): Router {
   let appConfig = container.get<AppConfig>('AppConfig');
 
   router.post(
-    '/:agentKey/conversations',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
-    createAgentConversation(appConfig),
-  );
-
-  router.post(
     '/:agentKey/conversations/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentStreamSchema),
     streamAgentConversation(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/conversations/:conversationId/messages',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
-    addMessageToAgentConversation(appConfig),
   );
 
   router.post(
@@ -523,6 +403,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentAddMessageSchema),
     addMessageStreamToAgentConversation(appConfig),
   );
 
@@ -531,6 +412,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentAddMessageSchema),
     addMessageStreamToAgentConversationInternal(appConfig),
   );
 
@@ -539,6 +421,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentStreamSchema),
     streamAgentConversationInternal(appConfig),
   );
 
@@ -558,6 +441,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentKeyParamsOnlySchema),
     getAllAgentConversations,
   );
 
@@ -566,6 +450,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
     getAgentConversationById,
   );
 
@@ -574,54 +459,17 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
     deleteAgentConversationById,
   );
 
-  router.post(
-    '/template',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    createAgentTemplate(appConfig),
-  );
-
-  router.get(
-    '/template/:templateId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAgentTemplate(appConfig),
-  );
-
-  router.put(
-    '/template/:templateId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    updateAgentTemplate(appConfig),
-  );
-
-  router.delete(
-    '/template/:templateId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    deleteAgentTemplate(appConfig),
-  );
-
-  router.get(
-    '/template',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    listAgentTemplates(appConfig),
-  );
 
   router.post(
     '/create',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(createAgentSchema),
     createAgent(appConfig),
   );
 
@@ -630,6 +478,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentKeyParamsOnlySchema),
     getAgent(appConfig),
   );
 
@@ -638,6 +487,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(updateAgentSchema),
     updateAgent(appConfig),
   );
 
@@ -646,6 +496,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentKeyParamsOnlySchema),
     deleteAgent(appConfig),
   );
 
@@ -655,46 +506,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
     listAgents(appConfig),
-  );
-
-  router.get(
-    '/tools/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAvailableTools(appConfig),
-  );
-
-  router.get(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAgentPermissions(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/share',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    shareAgent(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/unshare',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    unshareAgent(appConfig),
-  );
-
-  router.put(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    updateAgentPermissions(appConfig),
   );
 
   return router;

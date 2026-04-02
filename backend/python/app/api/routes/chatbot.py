@@ -3,10 +3,10 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
@@ -20,7 +20,6 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import get_flattened_results, get_message_content
-from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
@@ -36,8 +35,8 @@ router = APIRouter()
 
 # Pydantic models
 class ChatQuery(BaseModel):
-    query: str
-    limit: Optional[int] = 50
+    query: str = Field(min_length=1)
+    limit: Optional[int] = Field(default=50, ge=1, le=200)
     previousConversations: List[Dict] = []
     filters: Optional[Dict[str, Any]] = None
     retrievalMode: Optional[str] = "HYBRID"
@@ -47,6 +46,14 @@ class ChatQuery(BaseModel):
     modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
     mode: Optional[str] = "json"  # "json" for full metadata, "simple" for answer only
+
+    @field_validator("query")
+    @classmethod
+    def _validate_query(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("query must not be empty")
+        return v
 
 
 # Dependency injection functions
@@ -722,40 +729,3 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control"
         }
     )
-
-
-@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
-@inject
-async def askAI(
-    request: Request,
-    query_info: ChatQuery,
-    retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    reranker_service: RerankerService = Depends(get_reranker_service),
-    config_service: ConfigurationService = Depends(get_config_service),
-) -> JSONResponse:
-    """Perform semantic search across documents"""
-    try:
-        container = request.app.container
-        logger = container.logger()
-
-        # Process query using shared logic
-        llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
-            query_info, request, retrieval_service, graph_provider, reranker_service, config_service, logger
-        )
-
-        # Make async LLM call with tools
-        final_ai_msg = await resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4)
-
-        # Guard: ensure we have content
-        if not getattr(final_ai_msg, "content", None):
-            raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")
-
-        return process_citations(final_ai_msg, final_results, records=[], from_agent=False)
-
-    except HTTPException as he:
-        # Re-raise HTTP exceptions with their original status codes
-        raise he
-    except Exception as e:
-        logger.error(f"Error in askAI: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
