@@ -2,7 +2,7 @@ import { SocketIoRpcClient } from "../transport/socketio_rpc_client";
 import type { LocalFsResyncRequest } from "../transport/socketio_rpc_client";
 import { buildCronFromSchedule } from "../sync/cron_from_schedule";
 
-/** Web/registry name — Python `LOCAL_FS_CONNECTOR_NAME` in local_fs/connector.py */
+/** Registry name — must match Python `LOCAL_FS_CONNECTOR_NAME` (local_fs/connector.py). */
 export const LOCAL_FS_CONNECTOR_TYPE = "Local FS";
 const FETCH_TIMEOUT_MS = 90_000;
 const REINDEX_CONCURRENCY = 8;
@@ -55,17 +55,12 @@ function secondsUntil429Retry(resp: Response, jsonBody: unknown): number {
 }
 
 function isLocalFsInstanceType(instType: string): boolean {
-  // DB/registry uses `FOLDER_SYNC` string; UI may use "Local FS" (legacy: "Folder Sync"). Strip spaces and underscores.
   const n = instType
     .trim()
     .replace(/_/g, "")
     .replace(/\s+/g, "")
     .toLowerCase();
-  return (
-    n === "foldersync" ||
-    n === "localfilesystem" ||
-    n === "localfs"
-  );
+  return n === "localfs" || n === "localfilesystem";
 }
 
 export class BackendClientError extends Error {
