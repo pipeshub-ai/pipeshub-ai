@@ -1,7 +1,6 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
-from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector

@@ -12,7 +12,6 @@ The adaptation process:
 """
 
 import copy
-from typing import Optional
 
 from app.config.constants.arangodb import CollectionNames
 from app.schema.arango.documents import (
