@@ -1595,7 +1595,7 @@ class MeetingRecord(Record):
     Fields that are already covered by the base Record are intentionally omitted:
     - record_name  → meeting topic
     - external_record_id → meeting UUID (used for live transcript fetch in stream_record)
-    - weburl → Zoom recording URL (set during sync)
+    - weburl → transcript listing page with #:~:text= fragment for the meeting topic
     - source_created_at / source_updated_at → derived from meeting start_time
 
     Transcript text is NOT stored; it is fetched live via stream_record().
@@ -1611,6 +1611,11 @@ class MeetingRecord(Record):
     start_time: str | None = Field(default=None, description="Meeting start time ISO-8601 UTC")
     end_time: str | None = Field(default=None, description="Meeting end time ISO-8601 UTC")
     timezone: str | None = Field(default=None, description="Timezone reported by Zoom")
+    recording_url: str | None = Field(
+        default=None,
+        description="Cloud recording share URL (https://zoom.us/rec/share/...). "
+                    "Available only when cloud recording exists for the meeting.",
+    )
 
     def to_llm_context(self, frontend_url: str | None = None) -> str:
         base = super().to_llm_context(frontend_url=frontend_url)
@@ -1624,6 +1629,8 @@ class MeetingRecord(Record):
             specific_lines.append(f"* End Time: {self.end_time}")
         if self.duration_minutes is not None:
             specific_lines.append(f"* Duration: {self.duration_minutes} minutes")
+        if self.recording_url:
+            specific_lines.append(f"* Recording: {self.recording_url}")
         if specific_lines:
             lines.append("Meeting Information:")
             lines.extend(specific_lines)
@@ -1639,6 +1646,7 @@ class MeetingRecord(Record):
             "startTime": self.start_time,
             "endTime": self.end_time,
             "timezone": self.timezone,
+            "recordingUrl": self.recording_url,
         }
 
     @staticmethod
@@ -1678,6 +1686,7 @@ class MeetingRecord(Record):
             start_time=meeting_doc.get("startTime"),
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
+            recording_url=meeting_doc.get("recordingUrl"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1708,6 +1717,7 @@ class MeetingRecord(Record):
             "startTime": self.start_time,
             "endTime": self.end_time,
             "timezone": self.timezone,
+            "recordingUrl": self.recording_url,
         }
 
 
