@@ -1,7 +1,7 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
-from typing import Dict, Optional, Type
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -57,13 +57,14 @@ from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zoom.connector import ZoomConnector
 
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
 
     # Registry of available connectors
-    _connector_registry: Dict[str, Type[BaseConnector]] = {
+    _connector_registry: dict[str, type[BaseConnector]] = {
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
         "outlook": OutlookConnector,
@@ -91,11 +92,12 @@ class ConnectorFactory:
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,
+        "zoom": ZoomConnector,
     }
 
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
-    _beta_connector_definitions: Dict[str, Type[BaseConnector]] = {
+    _beta_connector_definitions: dict[str, type[BaseConnector]] = {
         'slack': SlackConnector,
         'calendar': CalendarConnector,
         'meet': MeetConnector,
@@ -108,7 +110,7 @@ class ConnectorFactory:
 
 
     @classmethod
-    def register_connector(cls, name: str, connector_class: Type[BaseConnector]) -> None:
+    def register_connector(cls, name: str, connector_class: type[BaseConnector]) -> None:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
 
@@ -119,7 +121,7 @@ class ConnectorFactory:
             cls.register_connector(name.lower(), connector)
 
     @classmethod
-    def list_beta_connectors(cls) -> Dict[str, Type[BaseConnector]]:
+    def list_beta_connectors(cls) -> dict[str, type[BaseConnector]]:
         """
         Get the dictionary of beta connectors.
 
@@ -132,12 +134,12 @@ class ConnectorFactory:
         return cls._beta_connector_definitions.copy()
 
     @classmethod
-    def get_connector_class(cls, name: str) -> Optional[Type[BaseConnector]]:
+    def get_connector_class(cls, name: str) -> Optional[type[BaseConnector]]:
         """Get connector class by name"""
         return cls._connector_registry.get(name.lower())
 
     @classmethod
-    def list_connectors(cls) -> Dict[str, Type[BaseConnector]]:
+    def list_connectors(cls) -> dict[str, type[BaseConnector]]:
         """List all registered connectors"""
         return cls._connector_registry.copy()
 

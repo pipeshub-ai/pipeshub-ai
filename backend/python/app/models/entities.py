@@ -67,6 +67,7 @@ class RecordType(str, Enum):
     LINK = "LINK"
     PROJECT = "PROJECT"
     PULL_REQUEST = "PULL_REQUEST"
+    MEETING = "MEETING"
     OTHERS = "OTHERS"
 
 
@@ -1587,6 +1588,128 @@ class AppRole(BaseModel):
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
+
+class MeetingRecord(Record):
+    """Record model for a Zoom meeting synced via user past-meetings report APIs.
+
+    Fields that are already covered by the base Record are intentionally omitted:
+    - record_name  → meeting topic
+    - external_record_id → meeting UUID (used for live transcript fetch in stream_record)
+    - weburl → Zoom recording URL (set during sync)
+    - source_created_at / source_updated_at → derived from meeting start_time
+
+    Transcript text is NOT stored; it is fetched live via stream_record().
+    """
+
+    host_email: str | None = Field(default=None, description="Email of the meeting host")
+    host_id: str | None = Field(default=None, description="Zoom user ID of the host")
+    meeting_type: int | None = Field(
+        default=None,
+        description="Zoom meeting type code (e.g. 1=instant, 2=scheduled, 3/8=recurring)",
+    )
+    duration_minutes: int | None = Field(default=None, description="Meeting duration in minutes")
+    start_time: str | None = Field(default=None, description="Meeting start time ISO-8601 UTC")
+    end_time: str | None = Field(default=None, description="Meeting end time ISO-8601 UTC")
+    timezone: str | None = Field(default=None, description="Timezone reported by Zoom")
+
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+        specific_lines = []
+        if self.host_email:
+            specific_lines.append(f"* Host: {self.host_email}")
+        if self.start_time:
+            specific_lines.append(f"* Start Time: {self.start_time}")
+        if self.end_time:
+            specific_lines.append(f"* End Time: {self.end_time}")
+        if self.duration_minutes is not None:
+            specific_lines.append(f"* Duration: {self.duration_minutes} minutes")
+        if specific_lines:
+            lines.append("Meeting Information:")
+            lines.extend(specific_lines)
+        return "\n".join(lines)
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "hostEmail": self.host_email,
+            "hostId": self.host_id,
+            "meetingType": self.meeting_type,
+            "durationMinutes": self.duration_minutes,
+            "startTime": self.start_time,
+            "endTime": self.end_time,
+            "timezone": self.timezone,
+        }
+
+    @staticmethod
+    def from_arango_record(meeting_doc: dict, record_doc: dict) -> "MeetingRecord":
+        """Create MeetingRecord from ArangoDB documents (records + meetings collections)"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return MeetingRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            host_email=meeting_doc.get("hostEmail"),
+            host_id=meeting_doc.get("hostId"),
+            meeting_type=meeting_doc.get("meetingType"),
+            duration_minutes=meeting_doc.get("durationMinutes"),
+            start_time=meeting_doc.get("startTime"),
+            end_time=meeting_doc.get("endTime"),
+            timezone=meeting_doc.get("timezone"),
+        )
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "recordGroupId": self.record_group_id,
+            "virtualRecordId": self.virtual_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "hostEmail": self.host_email,
+            "hostId": self.host_id,
+            "meetingType": self.meeting_type,
+            "durationMinutes": self.duration_minutes,
+            "startTime": self.start_time,
+            "endTime": self.end_time,
+            "timezone": self.timezone,
+        }
+
 
 # Rebuild models to resolve forward references after all imports are complete
 # Call rebuild function after all models are defined to avoid circular import issues

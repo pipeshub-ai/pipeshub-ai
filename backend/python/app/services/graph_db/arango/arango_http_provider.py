@@ -40,6 +40,7 @@ from app.models.entities import (
     FileRecord,
     LinkRecord,
     MailRecord,
+    MeetingRecord,
     Person,
     ProjectRecord,
     Record,
@@ -59,6 +60,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     link_record_schema,
     mail_record_schema,
+    meeting_record_schema,
     orgs_schema,
     people_schema,
     project_record_schema,
@@ -120,6 +122,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
@@ -632,6 +635,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return LinkRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.PROJECTS.value:
                 return ProjectRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -3099,6 +3104,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -6331,6 +6338,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
