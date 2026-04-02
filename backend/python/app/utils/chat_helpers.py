@@ -1653,6 +1653,11 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
         if not snippet:
             return base_url
 
+        # If the URL already carries a #:~:text= fragment (set deliberately by a
+        # connector, e.g. Zoom transcript listing page), preserve it as-is.
+        if '#:~:text=' in base_url:
+            return base_url
+
         start_text, end_text = extract_start_end_text(snippet)
 
         if not start_text:
