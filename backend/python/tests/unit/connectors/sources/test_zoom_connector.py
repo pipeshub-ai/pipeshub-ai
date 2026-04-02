@@ -32,6 +32,8 @@ def _make_connector() -> ZoomConnector:
         data_store_provider=dsp,
         config_service=config_service,
         connector_id="zoom-conn-1",
+        scope="personal",
+        created_by="test-user-1",
     )
 
 
@@ -434,8 +436,11 @@ class TestCalculateSyncChunks:
             last_sync_date=None,
             today=today,
         )
-        assert len(chunks) == 1
-        assert chunks[0][0] == user_date.isoformat()
+        # Even if user was created 10 days ago, we enforce 180-day minimum history
+        # so we expect 6 chunks (180 days / 30 days per chunk)
+        assert len(chunks) == 6
+        six_months_ago = today - timedelta(days=180)
+        assert chunks[0][0] == six_months_ago.isoformat()
 
     def test_first_sync_falls_back_on_invalid_created_at(self) -> None:
         today = date(2026, 3, 31)

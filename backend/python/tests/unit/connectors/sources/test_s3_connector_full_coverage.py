@@ -71,6 +71,8 @@ def s3_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-fc",
+            scope="personal",
+            created_by="test-user-1",
         )
     return connector
 
@@ -87,7 +89,7 @@ class TestS3ConnectorInitScopeFalsy:
     async def test_init_no_scope_in_config_defaults_to_personal(
         self, mock_filters, mock_ds_cls, mock_build, s3_connector
     ):
-        """When config has no 'scope' key, connector_scope stays PERSONAL."""
+        """When config has no 'scope' key, scope stays PERSONAL."""
         s3_connector.config_service.get_config = AsyncMock(return_value={
             "auth": {
                 "accessKey": "AKIA_TEST",
@@ -102,7 +104,7 @@ class TestS3ConnectorInitScopeFalsy:
 
         result = await s3_connector.init()
         assert result is True
-        assert s3_connector.connector_scope == ConnectorScope.PERSONAL.value
+        assert s3_connector.scope == ConnectorScope.PERSONAL.value
 
     @patch("app.connectors.sources.s3.connector.S3Client.build_from_services", new_callable=AsyncMock)
     @patch("app.connectors.sources.s3.connector.S3DataSource")
@@ -110,7 +112,7 @@ class TestS3ConnectorInitScopeFalsy:
     async def test_init_scope_empty_string_stays_personal(
         self, mock_filters, mock_ds_cls, mock_build, s3_connector
     ):
-        """When config has scope as empty string, connector_scope stays PERSONAL."""
+        """When config has scope as empty string, scope stays PERSONAL."""
         s3_connector.config_service.get_config = AsyncMock(return_value={
             "auth": {
                 "accessKey": "AKIA_TEST",
@@ -124,7 +126,7 @@ class TestS3ConnectorInitScopeFalsy:
 
         result = await s3_connector.init()
         assert result is True
-        assert s3_connector.connector_scope == ConnectorScope.PERSONAL.value
+        assert s3_connector.scope == ConnectorScope.PERSONAL.value
 
     @patch("app.connectors.sources.s3.connector.S3Client.build_from_services", new_callable=AsyncMock)
     @patch("app.connectors.sources.s3.connector.S3DataSource")
@@ -132,7 +134,7 @@ class TestS3ConnectorInitScopeFalsy:
     async def test_init_scope_none_stays_personal(
         self, mock_filters, mock_ds_cls, mock_build, s3_connector
     ):
-        """When config has scope as None, connector_scope stays PERSONAL."""
+        """When config has scope as None, scope stays PERSONAL."""
         s3_connector.config_service.get_config = AsyncMock(return_value={
             "auth": {
                 "accessKey": "AKIA_TEST",
@@ -146,7 +148,7 @@ class TestS3ConnectorInitScopeFalsy:
 
         result = await s3_connector.init()
         assert result is True
-        assert s3_connector.connector_scope == ConnectorScope.PERSONAL.value
+        assert s3_connector.scope == ConnectorScope.PERSONAL.value
 
 
 # ===========================================================================
@@ -213,6 +215,8 @@ class TestS3CreateConnector:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-factory",
+            scope="personal",
+            created_by="test-user-1",
         )
 
         assert isinstance(connector, S3Connector)
@@ -238,6 +242,8 @@ class TestS3CreateConnector:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-factory-2",
+            scope="personal",
+            created_by="test-user-1",
         )
 
         # The parent_url_generator should have been set on the processor
@@ -266,6 +272,8 @@ class TestS3CreateConnector:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-factory-3",
+            scope="personal",
+            created_by="test-user-1",
         )
 
         mock_proc_cls.assert_called_once_with(
@@ -294,6 +302,8 @@ class TestS3CreateConnector:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-factory-4",
+            scope="personal",
+            created_by="test-user-1",
             extra_param="should_be_ignored",
         )
 
@@ -318,6 +328,8 @@ class TestS3CreateConnector:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-factory-5",
+            scope="personal",
+            created_by="test-user-1",
         )
 
         # Test the bucket-only URL (no path after bucket name)

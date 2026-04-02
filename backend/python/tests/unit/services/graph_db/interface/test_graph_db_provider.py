@@ -370,6 +370,9 @@ class TestAbstractMethodInventory:
         "delete_all_team_permissions",
         "get_team_owner_removal_info",
         "get_team_permissions_and_owner_count",
+        "add_user_to_all_team",
+        "ensure_all_team_with_users",
+        "ensure_team_app_edge",
         # User operations
         "get_organization_users",
     ]
