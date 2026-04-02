@@ -7,9 +7,9 @@ import {
   knowledgeBaseRecordDocumentKey,
 } from "../api/backend_client";
 import { createBackendClient } from "./context";
-import { pickFolderSyncConnectorForIndexing } from "./folder_sync_connector_picker";
+import { pickLocalFsConnectorForIndexing } from "./local_fs_connector_picker";
 
-export { pickFolderSyncConnectorForIndexing };
+export { pickLocalFsConnectorForIndexing };
 
 export function kbCommandErrorHint(e: BackendClientError): string {
   if (e.status === 401 || e.status === 403) {
@@ -83,7 +83,7 @@ export async function printConnectorIndexingSummary(
     api.getConnectorKnowledgeStats(cid),
   ]);
   const label =
-    String(registry.name ?? "Folder Sync").trim() || "Folder Sync";
+    String(registry.name ?? "Local FS").trim() || "Local FS";
   console.log(label);
   console.log("");
   printKnowledgeBaseIndexingSummaryCompact(stats);
@@ -98,7 +98,7 @@ type IndexingPickRow = {
 
 type IndexingPickerListMode = "pending" | "all";
 
-/** Prefer AUTO_INDEX_OFF backlog; if empty, list all files for this instance (scoped in backend_client for Folder Sync + Neo4j). */
+/** Prefer AUTO_INDEX_OFF backlog; if empty, list all files for this instance (scoped in backend_client for Local FS + Neo4j). */
 async function loadRecordsForIndexingPicker(
   api: BackendClient,
   cid: string
@@ -205,7 +205,7 @@ export async function runIndexingPickPrompt(
 
 /** Same flow as `pipeshub indexing` default and `pipeshub indexing status`. */
 export async function runIndexingStatusFlow(api: BackendClient): Promise<void> {
-  const cid = await pickFolderSyncConnectorForIndexing(api);
+  const cid = await pickLocalFsConnectorForIndexing(api);
   await printConnectorIndexingSummary(api, cid);
   await runIndexingPickPrompt(api, cid, "Files waiting to index:");
   process.exit(0);

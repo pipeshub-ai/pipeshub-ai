@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`app.connectors.sources.folder_sync.connector`.
+"""Unit tests for :mod:`app.connectors.sources.local_fs.connector`.
 
 ``connector.py`` registers via ``ConnectorBuilder.build_decorator``, which imports
 ``connector_registry`` and thus ``ConnectorAppContainer``. Install lightweight
@@ -74,29 +74,29 @@ from app.connectors.core.registry.filters import (  # noqa: E402
     MultiselectOperator,
     SyncFilterKey,
 )
-from app.connectors.sources.folder_sync.connector import (  # noqa: E402
-    FOLDER_SYNC_CONNECTOR_NAME,
-    FolderSyncApp,
-    FolderSyncConnector,
+from app.connectors.sources.local_fs.connector import (  # noqa: E402
+    LOCAL_FS_CONNECTOR_NAME,
+    LocalFsApp,
+    LocalFsConnector,
     SYNC_ROOT_PATH_KEY,
 )
-from app.connectors.sources.folder_sync.models import FolderSyncFileEvent  # noqa: E402
+from app.connectors.sources.local_fs.models import LocalFsFileEvent  # noqa: E402
 from app.models.entities import FileRecord, OriginTypes, RecordType, RecordGroupType, User  # noqa: E402
 from app.models.permission import PermissionType  # noqa: E402
 
 
-class TestFolderSyncApp:
+class TestLocalFsApp:
     def test_init_sets_connector_type(self):
-        app = FolderSyncApp("conn-x")
+        app = LocalFsApp("conn-x")
         assert app.get_connector_id() == "conn-x"
 
 
 @pytest.fixture
-def folder_connector() -> FolderSyncConnector:
+def folder_connector() -> LocalFsConnector:
     logger = MagicMock()
     proc = MagicMock()
     proc.org_id = "org-1"
-    return FolderSyncConnector(
+    return LocalFsConnector(
         logger,
         proc,
         MagicMock(),
@@ -105,18 +105,18 @@ def folder_connector() -> FolderSyncConnector:
     )
 
 
-class TestFolderSyncConnectorHelpers:
-    def test_record_group_external_id(self, folder_connector: FolderSyncConnector):
+class TestLocalFsConnectorHelpers:
+    def test_record_group_external_id(self, folder_connector: LocalFsConnector):
         assert folder_connector._record_group_external_id() == (
-            "folder_sync:connector-instance-1"
+            "local_fs:connector-instance-1"
         )
 
-    def test_external_record_id_normalized(self, folder_connector: FolderSyncConnector):
+    def test_external_record_id_normalized(self, folder_connector: LocalFsConnector):
         a = folder_connector._external_record_id_for_rel_path("a\\b.txt")
         b = folder_connector._external_record_id_for_rel_path("a/b.txt")
         assert a == b
 
-    def test_resolve_event_file_path_ok(self, folder_connector: FolderSyncConnector, tmp_path: Path):
+    def test_resolve_event_file_path_ok(self, folder_connector: LocalFsConnector, tmp_path: Path):
         root = tmp_path / "root"
         root.mkdir()
         f = root / "sub" / "f.txt"
@@ -126,7 +126,7 @@ class TestFolderSyncConnectorHelpers:
         assert p.is_file()
 
     def test_resolve_event_file_path_rejects_escape(
-        self, folder_connector: FolderSyncConnector, tmp_path: Path
+        self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
         root = tmp_path / "root"
         root.mkdir()
@@ -134,14 +134,14 @@ class TestFolderSyncConnectorHelpers:
             folder_connector._resolve_event_file_path(root, "../outside")
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
-    def test_coerce_user_none(self, folder_connector: FolderSyncConnector):
+    def test_coerce_user_none(self, folder_connector: LocalFsConnector):
         assert folder_connector._coerce_user(None) is None
 
-    def test_coerce_user_passthrough(self, folder_connector: FolderSyncConnector):
+    def test_coerce_user_passthrough(self, folder_connector: LocalFsConnector):
         u = User(email="a@b.com", id="u1")
         assert folder_connector._coerce_user(u) is u
 
-    def test_coerce_user_from_dict(self, folder_connector: FolderSyncConnector):
+    def test_coerce_user_from_dict(self, folder_connector: LocalFsConnector):
         u = folder_connector._coerce_user(
             {"id": "x", "email": "e@x.com", "orgId": "o1"}
         )
@@ -149,11 +149,11 @@ class TestFolderSyncConnectorHelpers:
         assert u.id == "x"
         assert u.email == "e@x.com"
 
-    def test_extension_allowed_empty_filter(self, folder_connector: FolderSyncConnector):
+    def test_extension_allowed_empty_filter(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(filters=[])
         assert folder_connector._extension_allowed(Path("a.PDF"), coll) is True
 
-    def test_extension_allowed_restricted(self, folder_connector: FolderSyncConnector):
+    def test_extension_allowed_restricted(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(
             filters=[
                 Filter(
@@ -168,7 +168,7 @@ class TestFolderSyncConnectorHelpers:
         assert folder_connector._extension_allowed(Path("x.md"), coll) is False
 
     def test_build_file_record_sets_indexing_off_when_files_disabled(
-        self, folder_connector: FolderSyncConnector, tmp_path: Path
+        self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
         root = tmp_path
         f = root / "n.txt"
@@ -198,7 +198,7 @@ class TestFolderSyncConnectorHelpers:
         assert len(perms) == 1
         assert perms[0].type == PermissionType.OWNER
 
-    def test_to_app_user(self, folder_connector: FolderSyncConnector):
+    def test_to_app_user(self, folder_connector: LocalFsConnector):
         u = User(email="u@x.com", id="uid", org_id="org-1", full_name="U")
         app_u = folder_connector._to_app_user(u)
         assert app_u.email == "u@x.com"
@@ -206,8 +206,8 @@ class TestFolderSyncConnectorHelpers:
 
 
 @pytest.mark.asyncio
-class TestFolderSyncConnectorAsync:
-    async def test_apply_file_event_batch_no_sync_root(self, folder_connector: FolderSyncConnector):
+class TestLocalFsConnectorAsync:
+    async def test_apply_file_event_batch_no_sync_root(self, folder_connector: LocalFsConnector):
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {SYNC_ROOT_PATH_KEY: ""}}
         )
@@ -216,7 +216,7 @@ class TestFolderSyncConnectorAsync:
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
         assert "not configured" in ei.value.detail.lower()
 
-    async def test_apply_file_event_batch_invalid_path(self, folder_connector: FolderSyncConnector):
+    async def test_apply_file_event_batch_invalid_path(self, folder_connector: LocalFsConnector):
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {SYNC_ROOT_PATH_KEY: "/nonexistent/path/xyz123"}}
         )
@@ -225,7 +225,7 @@ class TestFolderSyncConnectorAsync:
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_apply_file_event_batch_rejects_directory_event(
-        self, folder_connector: FolderSyncConnector, tmp_path: Path
+        self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
@@ -242,14 +242,14 @@ class TestFolderSyncConnectorAsync:
             return_value=txn
         )
         with patch(
-            "app.connectors.sources.folder_sync.connector.load_connector_filters",
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
             new=AsyncMock(
                 return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
             ),
         ):
             folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
             folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
-            ev = FolderSyncFileEvent(
+            ev = LocalFsFileEvent(
                 type="CREATED",
                 path="x",
                 oldPath=None,
@@ -262,7 +262,7 @@ class TestFolderSyncConnectorAsync:
             assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_stream_record_returns_bytes(
-        self, folder_connector: FolderSyncConnector, tmp_path: Path
+        self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
         f = tmp_path / "blob.bin"
         f.write_bytes(b"hello-stream")
@@ -272,7 +272,7 @@ class TestFolderSyncConnectorAsync:
             external_record_id="e1",
             version=0,
             origin=OriginTypes.CONNECTOR,
-            connector_name=Connectors.FOLDER_SYNC,
+            connector_name=Connectors.LOCAL_FS,
             connector_id="c1",
             is_file=True,
             path=str(f),
@@ -286,7 +286,7 @@ class TestFolderSyncConnectorAsync:
         body = b"".join(chunks)
         assert body == b"hello-stream"
 
-    async def test_stream_record_not_file_record(self, folder_connector: FolderSyncConnector):
+    async def test_stream_record_not_file_record(self, folder_connector: LocalFsConnector):
         from app.models.entities import Record
 
         rec = Record(
@@ -295,23 +295,23 @@ class TestFolderSyncConnectorAsync:
             external_record_id="e",
             version=0,
             origin=OriginTypes.CONNECTOR,
-            connector_name=Connectors.FOLDER_SYNC,
+            connector_name=Connectors.LOCAL_FS,
             connector_id="c1",
         )
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
-    async def test_get_filter_options_empty(self, folder_connector: FolderSyncConnector):
+    async def test_get_filter_options_empty(self, folder_connector: LocalFsConnector):
         out = await folder_connector.get_filter_options("anything")
         assert out.success is True
         assert out.options == []
 
-    async def test_test_connection_empty_root_ok(self, folder_connector: FolderSyncConnector):
+    async def test_test_connection_empty_root_ok(self, folder_connector: LocalFsConnector):
         folder_connector.sync_root_path = ""
         assert await folder_connector.test_connection_and_access() is True
 
-    async def test_init_no_config_ok(self, folder_connector: FolderSyncConnector):
+    async def test_init_no_config_ok(self, folder_connector: LocalFsConnector):
         folder_connector.config_service.get_config = AsyncMock(return_value=None)
         assert await folder_connector.init() is True
 
@@ -320,7 +320,7 @@ class TestFolderSyncConnectorAsync:
 async def test_handle_webhook_notification_logs():
     logger = MagicMock()
     proc = MagicMock()
-    c = FolderSyncConnector(logger, proc, MagicMock(), MagicMock(), "id")
+    c = LocalFsConnector(logger, proc, MagicMock(), MagicMock(), "id")
     c.handle_webhook_notification({})
     logger.debug.assert_called()
 
@@ -329,10 +329,10 @@ async def test_handle_webhook_notification_logs():
 async def test_cleanup_logs():
     logger = MagicMock()
     proc = MagicMock()
-    c = FolderSyncConnector(logger, proc, MagicMock(), MagicMock(), "id")
+    c = LocalFsConnector(logger, proc, MagicMock(), MagicMock(), "id")
     await c.cleanup()
     logger.info.assert_called()
 
 
-def test_folder_sync_connector_name_constant():
-    assert FOLDER_SYNC_CONNECTOR_NAME == "Folder Sync"
+def test_local_fs_connector_name_constant():
+    assert LOCAL_FS_CONNECTOR_NAME == "Local FS"

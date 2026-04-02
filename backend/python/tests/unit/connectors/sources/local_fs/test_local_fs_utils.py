@@ -1,4 +1,4 @@
-"""Tests for folder_sync utility helpers."""
+"""Tests for local_fs utility helpers."""
 
 import sys
 import types
@@ -58,13 +58,13 @@ from app.connectors.core.registry.filters import (  # noqa: E402
     FilterType,
     SyncFilterKey,
 )
-from app.connectors.sources.folder_sync.connector import (  # noqa: E402
-    _folder_sync_passes_date_filters as folder_sync_passes_date_filters,
+from app.connectors.sources.local_fs.connector import (  # noqa: E402
+    _local_fs_passes_date_filters as local_fs_passes_date_filters,
     _parse_batch_size_from_sync as parse_batch_size_from_sync,
     _stat_created_epoch_ms as stat_created_epoch_ms,
     _validate_host_path as validate_host_path,
 )
-from app.connectors.sources.folder_sync.utils import parse_sync_bool  # noqa: E402
+from app.connectors.sources.local_fs.utils import parse_sync_bool  # noqa: E402
 
 
 class TestParseSyncBool:
@@ -161,10 +161,10 @@ def test_validate_host_path_missing(tmp_path: Path):
     assert "does not exist" in detail
 
 
-def test_folder_sync_passes_date_filters_no_filters():
+def test_local_fs_passes_date_filters_no_filters():
     st = _make_stat(mtime_s=1000, ctime_s=1000)
     empty = FilterCollection(filters=[])
-    assert folder_sync_passes_date_filters(st, empty) is True
+    assert local_fs_passes_date_filters(st, empty) is True
 
 
 def _dt_between_filter(key: str, start_ms: int, end_ms: int) -> Filter:
@@ -176,29 +176,29 @@ def _dt_between_filter(key: str, start_ms: int, end_ms: int) -> Filter:
     )
 
 
-def test_folder_sync_passes_modified_window():
+def test_local_fs_passes_modified_window():
     st = _make_stat(mtime_s=3.0, ctime_s=1.0)
     flt = _dt_between_filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
     coll = FilterCollection(filters=[flt])
-    assert folder_sync_passes_date_filters(st, coll) is True
+    assert local_fs_passes_date_filters(st, coll) is True
 
 
-def test_folder_sync_fails_modified_before_window():
+def test_local_fs_fails_modified_before_window():
     st = _make_stat(mtime_s=1.0, ctime_s=1.0)
     flt = _dt_between_filter(SyncFilterKey.MODIFIED.value, 2000, 4000)
     coll = FilterCollection(filters=[flt])
-    assert folder_sync_passes_date_filters(st, coll) is False
+    assert local_fs_passes_date_filters(st, coll) is False
 
 
-def test_folder_sync_passes_created_window():
+def test_local_fs_passes_created_window():
     st = _make_stat(mtime_s=10.0, ctime_s=5.0, birthtime_s=3.0)
     flt = _dt_between_filter(SyncFilterKey.CREATED.value, 2000, 4000)
     coll = FilterCollection(filters=[flt])
-    assert folder_sync_passes_date_filters(st, coll) is True
+    assert local_fs_passes_date_filters(st, coll) is True
 
 
-def test_folder_sync_fails_created_outside_window():
+def test_local_fs_fails_created_outside_window():
     st = _make_stat(mtime_s=10.0, ctime_s=5.0, birthtime_s=1.0)
     flt = _dt_between_filter(SyncFilterKey.CREATED.value, 2000, 4000)
     coll = FilterCollection(filters=[flt])
-    assert folder_sync_passes_date_filters(st, coll) is False
+    assert local_fs_passes_date_filters(st, coll) is False

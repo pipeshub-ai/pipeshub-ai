@@ -1,12 +1,9 @@
 import { SocketIoRpcClient } from "../transport/socketio_rpc_client";
-import type { FolderSyncResyncRequest } from "../transport/socketio_rpc_client";
+import type { LocalFsResyncRequest } from "../transport/socketio_rpc_client";
 import { buildCronFromSchedule } from "../sync/cron_from_schedule";
 
-/** Web/registry name — Python `FOLDER_SYNC_CONNECTOR_NAME` in folder_sync/connector.py */
-export const FOLDER_SYNC_CONNECTOR_TYPE = "Folder Sync";
-/** Stored on graph records (`connectorName`) — Python `Connectors.FOLDER_SYNC` value */
-const FOLDER_SYNC_RECORD_CONNECTOR_NAME = "FOLDER_SYNC";
-
+/** Web/registry name — Python `LOCAL_FS_CONNECTOR_NAME` in local_fs/connector.py */
+export const LOCAL_FS_CONNECTOR_TYPE = "Local FS";
 const FETCH_TIMEOUT_MS = 90_000;
 const REINDEX_CONCURRENCY = 8;
 
@@ -14,8 +11,8 @@ const REINDEX_CONCURRENCY = 8;
 const MAX_429_RETRIES = 8;
 
 /** Sync config keys — must match Python `SYNC_ROOT_PATH_KEY` / `INCLUDE_SUBFOLDERS_KEY` */
-export const FOLDER_SYNC_SYNC_ROOT_KEY = "sync_root_path";
-export const FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY = "include_subfolders";
+export const LOCAL_FS_SYNC_ROOT_KEY = "sync_root_path";
+export const LOCAL_FS_INCLUDE_SUBFOLDERS_KEY = "include_subfolders";
 
 function errnoFromUnknown(e: unknown): string | null {
   if (e instanceof Error && "cause" in e && e.cause) {
@@ -57,14 +54,18 @@ function secondsUntil429Retry(resp: Response, jsonBody: unknown): number {
   return 5;
 }
 
-function isFolderSyncInstanceType(instType: string): boolean {
-  // DB/registry uses `FOLDER_SYNC`; UI may use "Folder Sync". Strip spaces and underscores.
+function isLocalFsInstanceType(instType: string): boolean {
+  // DB/registry uses `FOLDER_SYNC` string; UI may use "Local FS" (legacy: "Folder Sync"). Strip spaces and underscores.
   const n = instType
     .trim()
     .replace(/_/g, "")
     .replace(/\s+/g, "")
     .toLowerCase();
-  return n === "foldersync" || n === "localfilesystem";
+  return (
+    n === "foldersync" ||
+    n === "localfilesystem" ||
+    n === "localfs"
+  );
 }
 
 export class BackendClientError extends Error {
@@ -162,18 +163,18 @@ export class BackendClient {
     return this.base;
   }
 
-  async registerFolderSyncWatcherControl(connectorInstanceId: string): Promise<void> {
-    await this.rpc.registerFolderSyncWatcher(connectorInstanceId);
+  async registerLocalFsWatcherControl(connectorInstanceId: string): Promise<void> {
+    await this.rpc.registerLocalFsWatcher(connectorInstanceId);
   }
 
-  async onFolderSyncResync(
-    handler: (request: FolderSyncResyncRequest) => Promise<{
+  async onLocalFsResync(
+    handler: (request: LocalFsResyncRequest) => Promise<{
       replayedBatches?: number;
       replayedEvents?: number;
       skippedBatches?: number;
     }>
   ): Promise<void> {
-    await this.rpc.onFolderSyncResync(handler);
+    await this.rpc.onLocalFsResync(handler);
   }
 
   disconnectControlSocket(): void {
@@ -385,20 +386,20 @@ export class BackendClient {
     return all;
   }
 
-  async listFolderSyncInstances(): Promise<Record<string, unknown>[]> {
+  async listLocalFsInstances(): Promise<Record<string, unknown>[]> {
     const out: Record<string, unknown>[] = [];
     for (const inst of await this.listPersonalConnectorInstances()) {
-      if (isFolderSyncInstanceType(String(inst.type || ""))) {
+      if (isLocalFsInstanceType(String(inst.type || ""))) {
         out.push(inst);
       }
     }
     return out;
   }
 
-  async createFolderSyncInstance(instanceName: string): Promise<string> {
+  async createLocalFsInstance(instanceName: string): Promise<string> {
     const url = `${this.base}/api/v1/connectors/`;
     const body = {
-      connectorType: FOLDER_SYNC_CONNECTOR_TYPE,
+      connectorType: LOCAL_FS_CONNECTOR_TYPE,
       instanceName,
       scope: "personal",
       authType: "NONE",
@@ -629,7 +630,7 @@ export class BackendClient {
     const resp = await this.request(url, {
       method: "POST",
       body: JSON.stringify({
-        connectorName: FOLDER_SYNC_CONNECTOR_TYPE,
+        connectorName: LOCAL_FS_CONNECTOR_TYPE,
         connectorId: connectorInstanceId,
         fullSync: opts.fullSync ?? true,
       }),
@@ -1064,7 +1065,7 @@ export class BackendClient {
   /**
    * POST reindex for each record id (same path as the web app per file).
    * Use for bulk manual indexing when {@link reindexConnectorRecordsByStatus} matches
-   * no rows (Neo4j `get_records_by_status` requires `Record.connectorId`; Folder Sync
+   * no rows (Neo4j `get_records_by_status` requires `Record.connectorId`; Local FS
    * files under a record group may not have it set).
    */
   async queueKnowledgeBaseReindexForRecordIds(recordIds: string[]): Promise<void> {
@@ -1138,7 +1139,7 @@ export class BackendClient {
     const resp = await this.request(url, {
       method: "POST",
       body: JSON.stringify({
-        app: FOLDER_SYNC_CONNECTOR_TYPE,
+        app: LOCAL_FS_CONNECTOR_TYPE,
         connectorId: connectorInstanceId,
         statusFilters,
       }),

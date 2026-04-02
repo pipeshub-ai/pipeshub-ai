@@ -1,4 +1,4 @@
-"""Helpers for the Folder Sync connector."""
+"""Helpers for the Local FS connector."""
 
 from typing import Any
 
