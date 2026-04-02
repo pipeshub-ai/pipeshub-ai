@@ -12,6 +12,7 @@ import { type FileEvent, type FileEventType, normalizeRelKey } from "./watcher_s
  */
 
 const QUICK_HASH_BYTES = 4096;
+const MAX_PENDING_UNLINK_ENTRIES = 10_000;
 
 export type RawEventType = "add" | "addDir" | "unlink" | "unlinkDir" | "change";
 
@@ -170,6 +171,9 @@ export class EventCorrelator {
       this.unlinkInodes.set(raw.inode!, { ...raw });
     }
     this.scheduleFlush();
+    if (this.pendingUnlinks.size > MAX_PENDING_UNLINK_ENTRIES) {
+      this.flush();
+    }
   }
 
   private async handleAdd(raw: RawEvent): Promise<void> {

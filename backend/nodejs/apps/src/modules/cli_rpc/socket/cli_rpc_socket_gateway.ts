@@ -4,6 +4,10 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { folderSyncWatcherRegistry } from './folder_sync_watcher_registry';
+import {
+  DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
+  normalizeAndAssertCliRpcProxyPath,
+} from './cli_rpc_path_allowlist';
 
 type CliRpcSocketData = {
   userId: string;
@@ -44,11 +48,7 @@ type RpcResponse =
       error: { code: string; message: string; status?: number };
     };
 
-const ALLOWED_PREFIXES = [
-  '/api/v1/connectors',
-  '/api/v1/knowledgeBase',
-  '/api/v1/crawlingManager',
-];
+const ALLOWED_PREFIXES = DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES;
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const NAMESPACE = '/cli-rpc';
 const SOCKET_PATH = '/socket.io-cli-rpc';
@@ -163,7 +163,7 @@ export class CliRpcSocketGateway {
     }
     const { id, payload } = req;
     const methodRaw = payload.method.trim();
-    const path = payload.path.trim();
+    const rawPath = payload.path.trim();
     const method = methodRaw ? methodRaw.toUpperCase() : 'GET';
     if (!ALLOWED_METHODS.has(method)) {
       return {
@@ -176,21 +176,52 @@ export class CliRpcSocketGateway {
         },
       };
     }
-    if (!ALLOWED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+
+    const handshakeToken = this.getHandshakeToken(socket);
+    const extractedForVerify = this.extractToken(handshakeToken);
+    if (!extractedForVerify) {
+      return {
+        type: 'response',
+        id,
+        ok: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Authentication token missing',
+          status: 401,
+        },
+      };
+    }
+    try {
+      await this.authTokenService.verifyToken(extractedForVerify);
+    } catch {
+      return {
+        type: 'response',
+        id,
+        ok: false,
+        error: {
+          code: 'TOKEN_EXPIRED',
+          message: 'Authentication token expired or invalid',
+          status: 401,
+        },
+      };
+    }
+
+    const pathCheck = normalizeAndAssertCliRpcProxyPath(rawPath, ALLOWED_PREFIXES);
+    if (!pathCheck.ok) {
       return {
         type: 'response',
         id,
         ok: false,
         error: {
           code: 'PATH_NOT_ALLOWED',
-          message: 'Path is not allowed for CLI RPC',
+          message: pathCheck.reason,
         },
       };
     }
 
-    const url = this.buildInternalUrl(path, payload.query);
+    const url = this.buildInternalUrl(pathCheck.normalizedPath, payload.query);
     try {
-      const token = this.extractToken(this.getHandshakeToken(socket)) ?? '';
+      const token = extractedForVerify;
       const response = await fetch(url, {
         method,
         headers: {

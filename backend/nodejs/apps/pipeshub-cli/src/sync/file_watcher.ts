@@ -192,6 +192,18 @@ export class FileWatcher {
     );
   }
 
+  private scanOptions(): {
+    includeSubfolders: boolean;
+    previousByRelPath: Map<string, FileEntry>;
+  } {
+    return {
+      includeSubfolders: this.includeSubfolders,
+      previousByRelPath: new Map(
+        Object.entries(this.stateStore.getSnapshot().files)
+      ),
+    };
+  }
+
   /** Refresh persisted snapshot from a full tree scan (matches disk after correlated events). */
   private scheduleStateSyncFromDisk(): void {
     if (this.stateSyncTimer) {
@@ -205,9 +217,7 @@ export class FileWatcher {
 
   private async syncStateFromDisk(): Promise<void> {
     try {
-      const scan = await scanSyncRoot(this.syncRoot, {
-        includeSubfolders: this.includeSubfolders,
-      });
+      const scan = await scanSyncRoot(this.syncRoot, this.scanOptions());
       this.stateStore.applyScan(scan);
       this.stateStore.flushSave();
     } catch (err) {
@@ -235,9 +245,7 @@ export class FileWatcher {
 
     if (hasPreviousState) {
       this.log("Performing startup reconciliation...");
-      const currentScan = await scanSyncRoot(this.syncRoot, {
-        includeSubfolders: this.includeSubfolders,
-      });
+      const currentScan = await scanSyncRoot(this.syncRoot, this.scanOptions());
       const offlineEvents = this.stateStore.commitReconcile(currentScan);
       if (offlineEvents.length > 0) {
         const filtered = this.applyFilters(offlineEvents);
@@ -252,7 +260,7 @@ export class FileWatcher {
     }
 
     // Start chokidar
-    const depth = this.includeSubfolders ? undefined : 1;
+    const depth = this.includeSubfolders ? undefined : 0;
 
     this.watcher = watch(this.syncRoot, {
       ignored: IGNORED_PATTERNS,
@@ -359,9 +367,7 @@ export class FileWatcher {
   /** Scan the sync root and save as baseline without emitting events. */
   private async captureBaseline(): Promise<void> {
     try {
-      const scan = await scanSyncRoot(this.syncRoot, {
-        includeSubfolders: this.includeSubfolders,
-      });
+      const scan = await scanSyncRoot(this.syncRoot, this.scanOptions());
       this.stateStore.applyScan(scan);
       this.stateStore.flushSave();
       this.log(`Baseline captured: ${scan.size} file(s)/folder(s) tracked.`);
@@ -397,9 +403,7 @@ export class FileWatcher {
    */
   async rescan(): Promise<FileEvent[]> {
     this.log("Performing manual rescan...");
-    const scan = await scanSyncRoot(this.syncRoot, {
-      includeSubfolders: this.includeSubfolders,
-    });
+    const scan = await scanSyncRoot(this.syncRoot, this.scanOptions());
     const events = this.stateStore.commitReconcile(scan);
     this.stateStore.flushSave();
     return events;

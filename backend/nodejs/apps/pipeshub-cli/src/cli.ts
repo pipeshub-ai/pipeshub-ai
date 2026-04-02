@@ -13,6 +13,7 @@ import {
   loadDaemonConfig,
 } from "./config/daemon_config";
 import { CredentialStore } from "./auth/credential_store";
+import { getBackendBaseUrl } from "./auth/backend_url";
 import { loadEnvFiles } from "./cli/env";
 import {
   pickFolderSyncConnectorForIndexing,
@@ -45,27 +46,12 @@ program
 program
   .command("login")
   .description(
-    "Log in with your Pipeshub client ID and secret. Tokens are stored in the OS keychain when available, else in an encrypted local file. API base URL: set PIPESHUB_BACKEND_URL or you will be prompted."
+    "Log in with your Pipeshub OAuth client ID and secret (client_credentials). " +
+      "Tokens and client credentials are stored in the OS keychain when available, else in a Fernet-encrypted local file (obfuscation if keychain is unavailable). " +
+      "Set PIPESHUB_BACKEND_URL for a remote server; otherwise http://localhost:3000 is used."
   )
   .action(async () => {
-    let resolvedBase = (process.env.PIPESHUB_BACKEND_URL || "")
-      .trim()
-      .replace(/\/$/, "");
-    if (!resolvedBase) {
-      const { v: baseInput } = await prompts({
-        type: "text",
-        name: "v",
-        message: "Backend base URL",
-        initial: "http://localhost:3000",
-      });
-      resolvedBase = String(baseInput || "")
-        .trim()
-        .replace(/\/$/, "");
-    }
-    if (!resolvedBase) {
-      console.error("Backend URL is required (set PIPESHUB_BACKEND_URL or enter when prompted).");
-      process.exit(1);
-    }
+    const resolvedBase = getBackendBaseUrl();
 
     const { v: cid } = await prompts({
       type: "text",
@@ -90,14 +76,14 @@ program
     }
 
     const store = new CredentialStore();
-    const manager = new AuthManager(store, resolvedBase);
+    const manager = new AuthManager(store);
     try {
-      await manager.login(clientId, clientSecret, resolvedBase);
+      await manager.login(clientId, clientSecret);
     } catch (e) {
       console.error(`Login failed: ${e}`);
       process.exit(1);
     }
-    console.log("Login successful.");
+    console.log(`Login successful (API: ${resolvedBase}).`);
   });
 
 program
