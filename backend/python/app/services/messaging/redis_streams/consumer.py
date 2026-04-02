@@ -73,7 +73,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
     async def cleanup(self) -> None:
         try:
             if self.redis:
-                await self.redis.close()
+                await self.redis.aclose()
                 self.logger.info("Redis Streams consumer stopped")
         except Exception as e:
             self.logger.error("Error during cleanup: %s", e)
@@ -109,7 +109,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 pass
 
         if self.redis:
-            await self.redis.close()
+            await self.redis.aclose()
             self.logger.info("Redis Streams consumer stopped")
 
     def is_running(self) -> bool:

@@ -53,7 +53,7 @@ class RedisStreamsProducer(IMessagingProducer):
         async with self._lock:
             if self.redis:
                 try:
-                    await self.redis.close()
+                    await self.redis.aclose()
                     self.redis = None
                     self.logger.info("Redis Streams producer stopped successfully")
                 except Exception as e:

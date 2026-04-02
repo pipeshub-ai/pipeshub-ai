@@ -82,7 +82,7 @@ def neo4j_driver() -> Generator[Driver, None, None]:
     try:
         yield driver
     finally:
-        driver.close()
+        driver.aclose()
 
 
 @pytest.fixture(scope="session")

@@ -96,7 +96,7 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
     )
     await client.ping()
     yield client
-    await client.close()
+    await client.aclose()
 
 
 @pytest_asyncio.fixture

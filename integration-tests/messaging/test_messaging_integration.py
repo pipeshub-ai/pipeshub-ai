@@ -566,7 +566,7 @@ class TestRedisNegative:
         await pre.xadd(stream, {"value": "not-valid-json{{"})
         valid = new_record_event()
         await pre.xadd(stream, {"value": json.dumps(valid)})
-        await pre.close()
+        await pre.aclose()
 
         consumer = RedisStreamsConsumer(logger, config)
         received: list[StreamMessage] = []
