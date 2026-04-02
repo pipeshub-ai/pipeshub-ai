@@ -187,3 +187,5 @@ CLAUDE.md
 nul
 backend/python/requirements.txt
 backend/python/r.txt
+.claude/skills/unit-test/SKILL.md
+backend/python/uv.lock
