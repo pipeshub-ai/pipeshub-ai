@@ -207,7 +207,9 @@ export const AuthenticationView = () => {
   const dispatch = useDispatch();
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState('');
+  const [samlProvider, setSamlProvider] = useState('SSO');
   const [authSteps, setAuthSteps] = useState<AuthStep[]>([]);
+  const [storeAuthSteps, setStoreAuthSteps] = useState<AuthStep[]>([]);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [selectedTabs, setSelectedTabs] = useState<number[]>([0, 0]); // Track selected tab for each step
   const emailFromStore = useSelector((state: RootState) => state.auth.email);
@@ -244,32 +246,54 @@ export const AuthenticationView = () => {
   const currentStep = authSteps[currentStepIndex] || null;
   const selectedTab = selectedTabs[currentStepIndex] || 0;
 
-  // Initial authentication configuration
-  const onSubmit = async (data: InitialSchemaType) => {
-    setLoading(true);
-    setError('');
-    try {
-      const response = await authInitConfig(data.email);
-      if (response) {
-        // Initialize first auth step
-        const newStep: AuthStep = {
-          step: response.currentStep,
-          methods: response.allowedMethods,
-          authProviders: response.authProviders || {},
-          isJitProvisioning: response.isJitProvisioning,
-          jitEnabledMethods: response.jitEnabledMethods,
-        };
+  useEffect(() => {
+    const initAuth = async () => {
+      setLoading(true);
+      setError('');
 
-        setAuthSteps([newStep]);
-        setCurrentStepIndex(0);
-        setSelectedTabs([0, 0]); // Reset tab selections
-        dispatch(setEmail(data.email));
+      try {
+        const response = await authInitConfig();
+
+        if (response) {
+          const newStep: AuthStep = {
+            step: response.currentStep,
+            methods: response.allowedMethods,
+            authProviders: response.authProviders || {},
+            isJitProvisioning: response.isJitProvisioning,
+            jitEnabledMethods: response.jitEnabledMethods,
+          };
+
+          const emailRequired = response.allowedMethods.includes('password') ||
+            response.allowedMethods.includes('otp');
+
+          if (!emailRequired) {
+            // If SAML is available, we initialize the steps immediately
+            setAuthSteps([newStep]);
+            setCurrentStepIndex(0);
+            setSelectedTabs([0, 0]);
+            setSamlProvider(response?.authProviders?.saml?.samlPlatform)
+          }
+          setStoreAuthSteps([newStep])
+
+
+        }
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+    };
+
+    initAuth();
+  }, []);
+
+ 
+
+  const onSubmit = async (data: InitialSchemaType) => {
+    setAuthSteps([...storeAuthSteps]);
+    setCurrentStepIndex(0);
+    setSelectedTabs([0, 0]);
+    dispatch(setEmail(data.email));
   };
   // Handle the next step in MFA
   const handleNextAuthStep = (response: AuthResponse) => {
@@ -443,6 +467,30 @@ export const AuthenticationView = () => {
     });
   };
 
+  // Split methods into tabs and social logins
+  const loginMethods = currentStep?.methods ?? [];
+
+  // Auth tab methods
+  const tabMethods = loginMethods.filter((method) =>
+    ['password', 'otp', 'samlSso'].includes(method)
+  );
+
+  // Social login methods
+  const socialMethods = loginMethods.filter((method) =>
+    ['google', 'microsoft', 'azureAd', 'oauth'].includes(method)
+  );
+
+  // Selected method (safe)
+  const currentMethod =
+    selectedTab >= 0 && selectedTab < tabMethods.length
+      ? tabMethods[selectedTab]
+      : undefined;
+
+  // Component resolution
+  const CurrentAuthComponent =
+    tabConfig[currentMethod as keyof typeof tabConfig]?.component ?? null;
+  
+
   // Track when components have mounted to prevent re-initializing
   useEffect(() => {
     if (currentStep) {
@@ -569,20 +617,10 @@ export const AuthenticationView = () => {
     return null;
   }
 
-  // Split methods into tabs and social logins
-  const tabMethods = currentStep.methods.filter((method) =>
-    ['password', 'otp', 'samlSso'].includes(method)
-  );
-  const socialMethods = currentStep.methods.filter((method) =>
-    ['google', 'microsoft', 'azureAd', 'oauth'].includes(method)
-  );
+
 
   // Get the component for the current tab
-  const currentMethod = tabMethods[selectedTab];
-  const CurrentAuthComponent =
-    currentMethod && tabConfig[currentMethod as keyof typeof tabConfig]
-      ? tabConfig[currentMethod as keyof typeof tabConfig].component
-      : null;
+
 
   return (
     <Fade in timeout={450} key={`step-${currentStepIndex}-tab-${selectedTab}`}>
@@ -604,6 +642,7 @@ export const AuthenticationView = () => {
             <Tooltip title="Back to email">
               <IconButton
                 onClick={handleBack}
+                disabled={currentMethod !== "password" && currentMethod !== "otp"}
                 sx={{
                   mr: 2,
                   color: 'text.secondary',
@@ -707,6 +746,7 @@ export const AuthenticationView = () => {
                     onNextStep={handleNextAuthStep}
                     onAuthComplete={handleAuthComplete}
                     onForgotPassword={handleForgotPassword}
+                    providerName={samlProvider ?? "SSO"}
                   />
                 </Box>
               )}
@@ -793,7 +833,7 @@ export const AuthenticationView = () => {
 
                   if (method === 'oauth') {
                     const oauthConfig = currentStep?.authProviders?.oauth;
-                    
+
                     if (!oauthConfig) {
                       return null;
                     }

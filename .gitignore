@@ -196,3 +196,8 @@ pyrightconfig.json
 CLAUDE.md
 nul
 backend/python/requirements.txt
+
+# TypeScript build cache files
+*.tsbuildinfo
+backend/python/r.txt
+backend/python/uv.lock

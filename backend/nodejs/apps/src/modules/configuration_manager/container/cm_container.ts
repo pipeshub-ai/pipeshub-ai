@@ -8,6 +8,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
 import { SyncEventProducer } from '../services/kafka_events.service';
+import { SamlController } from '../../auth/controller/saml.controller';
 const loggerConfig = {
   service: 'Configuration Manager Service',
 };
@@ -71,6 +72,9 @@ export class ConfigurationManagerContainer {
 
       container.bind<ConfigService>('ConfigService').toDynamicValue(() => {
         return new ConfigService(appConfig, container.get('Logger'));
+      });
+      container.bind<SamlController>('SamlController').toDynamicValue(() => {
+        return new SamlController(appConfig, container.get('Logger'));
       });
 
       const authTokenService = new AuthTokenService(

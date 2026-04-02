@@ -70,6 +70,8 @@ logger = create_logger("connector_service")
 
 router = APIRouter()
 
+OAUTH_INSTANCE_NAME = "oauthInstanceName"
+
 
 def get_mime_type_from_record(record: Record) -> str:
     """
@@ -454,7 +456,7 @@ async def get_signed_url(
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
 
-@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
 async def handle_record_deletion(
     record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
@@ -683,7 +685,7 @@ async def download_file(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
 
 
-@router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def stream_record(
     request: Request,
@@ -696,34 +698,13 @@ async def stream_record(
     Stream a record to the client.
     """
     try:
-        try:
-            logger.info(f"Stream Record Start: {time.time()}")
-            logger.info(f"Convert To: {convertTo}")
-            auth_header = request.headers.get("Authorization")
-            if not auth_header or not auth_header.startswith("Bearer "):
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Missing or invalid Authorization header",
-                )
-            # Extract the token
-            token = auth_header.split(" ")[1]
-            secret_keys = await config_service.get_config(
-                config_node_constants.SECRET_KEYS.value
-            )
-            jwt_secret = secret_keys.get("jwtSecret")
-            payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        logger.info(f"Stream Record Start: {time.time()}")
+        logger.info(f"Convert To: {convertTo}")
 
-            org_id = payload.get("orgId")
-            user_id = payload.get("userId")
-        except JWTError as e:
-            logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
-        except ValidationError as e:
-            logger.error("Payload validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
-        except Exception as e:
-            logger.error("Unexpected error during token validation: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token") from e
+        # Use the already-authenticated user from the auth middleware
+        user = request.state.user
+        org_id = user.get("orgId")
+        user_id = user.get("userId")
 
         org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         record_task = graph_provider.get_record_by_id(
@@ -745,6 +726,7 @@ async def stream_record(
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
+
         access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
@@ -1092,7 +1074,7 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_records(
     request:Request,
@@ -1200,7 +1182,7 @@ async def get_records(
             "error": str(e),
         }
 
-@router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
     record_id: str,
@@ -1232,7 +1214,7 @@ async def get_record_by_id(
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
-@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
 async def delete_record(
     record_id: str,
@@ -1294,7 +1276,7 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record)])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -1377,7 +1359,7 @@ async def reindex_single_record(
             detail=f"Internal server error while reindexing record: {str(e)}"
         ) from e
 
-@router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 async def get_connector_stats_endpoint(
     request: Request,
     org_id: str,
@@ -1397,7 +1379,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record_group)])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record_group)])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -1812,7 +1794,7 @@ async def get_connector_instances(
         ) from e
 
 
-@router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_WRITE))])
 async def get_active_connector_instances(request: Request) -> dict[str, Any]:
     """
     Get all active connector instances.
@@ -2031,7 +2013,7 @@ async def _handle_oauth_config_creation(
         existing_oauth_configs = []
 
     # Determine OAuth instance name
-    oauth_instance_name_from_request = auth_config.get("oauthInstanceName", "").strip()
+    oauth_instance_name_from_request = auth_config.get(OAUTH_INSTANCE_NAME, "").strip()
 
     # If creating new (no oauth_app_id)
     if not oauth_app_id:
@@ -2055,7 +2037,7 @@ async def _handle_oauth_config_creation(
             if oauth_instance_name_from_request:
                 oauth_instance_name = oauth_instance_name_from_request
                 # Only check conflict if name is actually changing
-                existing_name = existing_config.get("oauthInstanceName", "")
+                existing_name = existing_config.get(OAUTH_INSTANCE_NAME, "")
                 if oauth_instance_name != existing_name:
                     _check_oauth_name_conflict(
                         existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
@@ -2065,7 +2047,7 @@ async def _handle_oauth_config_creation(
                     logger.info(f"Updating OAuth config {oauth_app_id} (name unchanged)")
             else:
                 # Keep existing name when updating
-                oauth_instance_name = existing_config.get("oauthInstanceName", instance_name)
+                oauth_instance_name = existing_config.get(OAUTH_INSTANCE_NAME, instance_name)
                 logger.info(f"Updating OAuth config {oauth_app_id} with existing name '{oauth_instance_name}'")
         else:
             # Config not found, create new instead
@@ -2140,7 +2122,7 @@ async def _prepare_connector_config(
 
             for key, value in auth_config_raw.items():
                 # Keep OAuth references and metadata
-                if key in ["oauthConfigId", "oauthInstanceName", "authType", "connectorScope"]:
+                if key in ["oauthConfigId", OAUTH_INSTANCE_NAME, "authType", "connectorScope"]:
                     auth_config_clean[key] = value
                 # Keep non-OAuth credential fields (skip OAuth credential fields like clientId, clientSecret, etc.)
                 elif key not in oauth_field_names:
@@ -2381,8 +2363,7 @@ async def create_connector_instance(
             )
 
             if has_oauth_credentials:
-                # Determine OAuth instance name
-                oauth_instance_name = config.get("auth", {}).get("oauthInstanceName", "").strip() or instance_name
+                oauth_instance_name_from_request = config.get("auth", {}).get(OAUTH_INSTANCE_NAME, "").strip()
 
                 # Get existing OAuth configs to check for name conflicts
                 oauth_config_path = _get_oauth_config_path(connector_type)
@@ -2397,23 +2378,33 @@ async def create_connector_instance(
                 if provided_oauth_config_id:
                     # Updating existing - check conflict excluding the config being updated
                     config_index = None
+                    existing_oauth_config = None
                     for idx, cfg in enumerate(existing_oauth_configs):
                         if cfg.get("_id") == provided_oauth_config_id and cfg.get("orgId") == org_id:
                             config_index = idx
+                            existing_oauth_config = cfg
                             break
 
-                    if config_index is not None:
-                        # Conflict check excluding the config being updated
-                        _check_oauth_name_conflict(
-                            existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
-                        )
+                    if config_index is not None and existing_oauth_config:
+                        # When updating: use request name if provided, otherwise keep existing config name
+                        if oauth_instance_name_from_request:
+                            oauth_instance_name = oauth_instance_name_from_request
+                            existing_name = existing_oauth_config.get(OAUTH_INSTANCE_NAME, "")
+                            if oauth_instance_name != existing_name:
+                                _check_oauth_name_conflict(
+                                    existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
+                                )
+                        else:
+                            oauth_instance_name = existing_oauth_config.get(OAUTH_INSTANCE_NAME, instance_name)
                         logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} can be updated with name '{oauth_instance_name}'")
                     else:
                         # Config not found, will create new one instead - check as new
+                        oauth_instance_name = oauth_instance_name_from_request or instance_name
                         _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
                         logger.debug(f"Pre-validation: OAuth config {provided_oauth_config_id} not found, will create new config with name '{oauth_instance_name}'")
                 else:
                     # Creating new - check for any name conflicts
+                    oauth_instance_name = oauth_instance_name_from_request or instance_name
                     _check_oauth_name_conflict(existing_oauth_configs, oauth_instance_name, org_id)
                     logger.debug(f"Pre-validation: New OAuth config with name '{oauth_instance_name}' can be created")
 
@@ -2536,7 +2527,7 @@ async def create_connector_instance(
         ) from e
 
 
-@router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_WRITE))])
 async def get_connector_instance(
     connector_id: str,
     request: Request
@@ -2848,7 +2839,7 @@ async def update_connector_instance_auth_config(
 
                 # Determine OAuth instance name
                 instance_name = instance.get("name", f"{connector_type} Connector")
-                oauth_instance_name_from_request = auth_config_raw.get("oauthInstanceName", "").strip()
+                oauth_instance_name_from_request = auth_config_raw.get(OAUTH_INSTANCE_NAME, "").strip()
 
                 # If creating new (no oauth_app_id)
                 if not oauth_app_id:
@@ -2872,7 +2863,7 @@ async def update_connector_instance_auth_config(
                         if oauth_instance_name_from_request:
                             oauth_instance_name = oauth_instance_name_from_request
                             # Only check conflict if name is actually changing
-                            existing_name = existing_config.get("oauthInstanceName", "")
+                            existing_name = existing_config.get(OAUTH_INSTANCE_NAME, "")
                             if oauth_instance_name != existing_name:
                                 _check_oauth_name_conflict(
                                     existing_oauth_configs, oauth_instance_name, org_id, exclude_index=config_index
@@ -2882,7 +2873,7 @@ async def update_connector_instance_auth_config(
                                 logger.info(f"Updating OAuth config {oauth_app_id} (name unchanged)")
                         else:
                             # Keep existing name when updating
-                            oauth_instance_name = existing_config.get("oauthInstanceName", instance_name)
+                            oauth_instance_name = existing_config.get(OAUTH_INSTANCE_NAME, instance_name)
                             logger.info(f"Updating OAuth config {oauth_app_id} with existing name '{oauth_instance_name}'")
                     else:
                         # Config not found, create new instead
@@ -2940,7 +2931,7 @@ async def update_connector_instance_auth_config(
             oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
             for key, value in auth_config_raw.items():
                 # Keep OAuth app ID references and metadata fields
-                if key in ["oauthConfigId", "oauthInstanceName", "authType", "connectorScope"]:
+                if key in ["oauthConfigId", OAUTH_INSTANCE_NAME, "authType", "connectorScope"]:
                     auth_config_clean[key] = value
                 # Keep non-OAuth credential fields (skip OAuth credential fields like clientId, clientSecret, etc.)
                 elif key not in oauth_field_names:
@@ -3361,7 +3352,7 @@ async def update_connector_instance_config(
                         if "auth" not in new_config:
                             new_config["auth"] = {}
                         new_config["auth"]["oauthConfigId"] = oauth_config_id
-                        new_config["auth"]["oauthInstanceName"] = shared_oauth_config.get("oauthInstanceName")
+                        new_config["auth"][OAUTH_INSTANCE_NAME] = shared_oauth_config.get(OAUTH_INSTANCE_NAME)
                         logger.info(f"Referenced OAuth config {oauth_config_id} for connector auth config")
 
                     except HTTPException:
@@ -3784,7 +3775,7 @@ def _check_oauth_name_conflict(
         if idx == exclude_index:
             continue
 
-        if (config.get("oauthInstanceName") == name and
+        if (config.get(OAUTH_INSTANCE_NAME) == name and
             config.get("orgId") == org_id):
             raise HTTPException(
                 status_code=HttpStatusCode.CONFLICT.value,
@@ -5957,7 +5948,7 @@ async def get_all_oauth_configs(
             all_configs = [
                 config for config in all_configs
                 if (
-                    search_lower in (config.get("oauthInstanceName") or "").lower() or
+                    search_lower in (config.get(OAUTH_INSTANCE_NAME) or "").lower() or
                     search_lower in (config.get("appGroup") or "").lower() or
                     search_lower in (config.get("appDescription") or "").lower() or
                     search_lower in (config.get("connectorType") or "").lower() or
@@ -5969,7 +5960,7 @@ async def get_all_oauth_configs(
         all_configs.sort(
             key=lambda x: (
                 -(x.get("updatedAtTimestamp") or x.get("createdAtTimestamp") or 0),
-                (x.get("oauthInstanceName") or "").lower()
+                (x.get(OAUTH_INSTANCE_NAME) or "").lower()
             )
         )
 
@@ -6146,7 +6137,7 @@ async def _create_or_update_oauth_config(
 
             new_oauth_config = {
                 "_id": _generate_oauth_config_id(),
-                "oauthInstanceName": instance_name,
+                OAUTH_INSTANCE_NAME: instance_name,
                 "connectorType": connector_type,
                 "userId": user_id,
                 "orgId": org_id,
@@ -6216,7 +6207,7 @@ def _extract_essential_oauth_fields(oauth_config: dict[str, Any], connector_type
     """
     return {
         "_id": oauth_config.get("_id"),
-        "oauthInstanceName": oauth_config.get("oauthInstanceName"),  # camelCase for frontend
+        OAUTH_INSTANCE_NAME: oauth_config.get(OAUTH_INSTANCE_NAME),  # camelCase for frontend
         "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
         "appGroup": oauth_config.get("appGroup", ""),
         "appDescription": oauth_config.get("appDescription", ""),
@@ -6285,7 +6276,7 @@ async def create_oauth_config(
         _validate_admin_only(is_admin=user_context["is_admin"], action="create OAuth configurations")
 
         body = await request.json()
-        oauth_instance_name = (body.get("oauthInstanceName") or "").strip()
+        oauth_instance_name = (body.get(OAUTH_INSTANCE_NAME) or "").strip()
         config = body.get("config", {})
         base_url = body.get("baseUrl", "")
 
@@ -6328,7 +6319,7 @@ async def create_oauth_config(
         # Create new OAuth config
         new_config = {
             "_id": _generate_oauth_config_id(),
-            "oauthInstanceName": oauth_instance_name,
+            OAUTH_INSTANCE_NAME: oauth_instance_name,
             "userId": user_context["user_id"],
             "orgId": user_context["org_id"],
             "config": config,  # Full config with sensitive fields
@@ -6514,7 +6505,7 @@ async def get_oauth_config_by_id(
                 "success": True,
                 "oauthConfig": {
                     "_id": oauth_config.get("_id"),
-                    "oauthInstanceName": oauth_config.get("oauthInstanceName"),  # camelCase
+                    OAUTH_INSTANCE_NAME: oauth_config.get(OAUTH_INSTANCE_NAME),  # camelCase
                     "iconPath": oauth_config.get("iconPath", "/assets/icons/connectors/default.svg"),
                     "appGroup": oauth_config.get("appGroup", ""),
                     "appDescription": oauth_config.get("appDescription", ""),
@@ -6578,7 +6569,7 @@ async def update_oauth_config(
         _validate_admin_only(is_admin=user_context["is_admin"], action="update OAuth configurations")
 
         body = await request.json()
-        new_name = body.get("oauthInstanceName")
+        new_name = body.get(OAUTH_INSTANCE_NAME)
         new_config = body.get("config")
         base_url = body.get("baseUrl", "")
 
@@ -6598,7 +6589,7 @@ async def update_oauth_config(
             )
 
         # Check if new name conflicts with existing configs (within same org)
-        if new_name and new_name.strip() != oauth_config.get("oauthInstanceName"):
+        if new_name and new_name.strip() != oauth_config.get(OAUTH_INSTANCE_NAME):
             new_name = new_name.strip()
             _check_oauth_name_conflict(
                 oauth_configs, new_name, user_context["org_id"], exclude_index=config_index
@@ -6606,7 +6597,7 @@ async def update_oauth_config(
 
         # Update config
         if new_name:
-            oauth_config["oauthInstanceName"] = new_name.strip()
+            oauth_config[OAUTH_INSTANCE_NAME] = new_name.strip()
         if new_config:
             oauth_config["config"] = new_config
 

@@ -88,6 +88,10 @@ class ToolDiscoveryConfig:
             app_name="notion",
             client_builder="NotionClient",
         ),
+        "clickup": AppConfiguration(
+            app_name="clickup",
+            client_builder="ClickUpClient",
+        ),
         # Simple utility apps
         "calculator": AppConfiguration(
             app_name="calculator",
@@ -149,6 +153,10 @@ class ToolDiscoveryConfig:
             app_name="mariadb",
             client_builder="MariaDBClient",
         ),
+        "redshift": AppConfiguration(
+            app_name="redshift",
+            client_builder="RedshiftClient",
+        ),
         # "linkedin": AppConfiguration(
         #     app_name="linkedin",
         #     client_builder="LinkedInClient",
@@ -197,6 +205,10 @@ class ToolDiscoveryConfig:
         #     app_name="zendesk",
         #     client_builder="ZendeskClient",
         # )
+        "zoom": AppConfiguration(
+            app_name="zoom",
+            client_builder="ZoomClient",
+        ),
 
     }
 

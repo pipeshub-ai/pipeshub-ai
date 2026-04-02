@@ -173,6 +173,7 @@ const handleOAuthCallbackSchema = z.object({
 const updateUserToolsetInstanceSchema = z.object({
   body: z.object({
     auth: z.object({
+      email: z.string().optional(),
       apiToken: z.string().optional(),
       username: z.string().optional(),
       password: z.string().optional(),
@@ -180,6 +181,30 @@ const updateUserToolsetInstanceSchema = z.object({
   }),
   params: z.object({
     instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+});
+
+
+/**
+ * Schema for getting my toolsets.
+ * HTTP query params always arrive as strings, so numeric fields must be
+ * coerced and boolean fields preprocessed — identical to toolsetListSchema.
+ */
+const getMyToolsetsSchema = z.object({
+  query: z.object({
+    page: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .optional(),
+    limit: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .optional(),
+    search: z.string().optional(),
+    includeRegistry: z
+      .preprocess((arg) => arg === 'true', z.boolean())
+      .optional(),
+    authStatus: z
+      .enum(['authenticated', 'not-authenticated'])
+      .optional(),
   }),
 });
 
@@ -367,6 +392,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/my-toolsets',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getMyToolsetsSchema),
     getMyToolsets(config)
   );
 

@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 from logging import Logger
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
@@ -1724,25 +1724,64 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
-async def get_agents(request: Request) -> JSONResponse:
-    """Get all agents"""
+async def get_agents(
+    request: Request,
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    limit: int = Query(20, ge=1, le=200, description="Items per page"),
+    search: str | None = Query(None, description="Search by name/description/tags"),
+    sort_by: str = Query("updatedAtTimestamp", description="Field to sort by"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
+) -> JSONResponse:
+    """Get all agents with pagination and search"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agents = await services["graph_provider"].get_all_agents(user_doc["_key"], org_key)
+        user_key = user_doc["_key"]
 
-        if not agents:
-            raise HTTPException(status_code=404, detail="No agents found")
+        # Delegate pagination/search/sort to graph provider
+        result = await services["graph_provider"].get_all_agents(
+            user_key,
+            org_key,
+            page=page,
+            limit=limit,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+        # Providers return either a simple list (backward-compat) or a dict with agents and totalItems
+        if isinstance(result, list):
+            agents = result
+            total_items = len(agents)
+        else:
+            agents = result.get("agents", [])
+            total_items = int(result.get("totalItems", len(agents)))
+
+        # Build pagination envelope
+        current_page = page
+        per_page = limit
+        total_pages = (total_items + per_page - 1) // per_page if per_page > 0 else 0
+        has_next = current_page < total_pages
+        has_prev = current_page > 1
+
+        # Avoid 404s; return empty list with valid pagination
 
         return JSONResponse(
             status_code=200,
             content={
-                "status": "success",
-                "message": "Agents retrieved successfully",
-                "agents": agents,
+                "success": True,
+                "agents": agents or [],
+                "pagination": {
+                    "currentPage": current_page,
+                    "limit": per_page,
+                    "totalItems": total_items,
+                    "totalPages": total_pages,
+                    "hasNext": has_next,
+                    "hasPrev": has_prev,
+                },
             }
         )
     except HTTPException:

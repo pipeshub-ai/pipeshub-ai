@@ -211,7 +211,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             self.config = {"credentials": config}
 
-            auth_config = config.get("auth")
+            auth_config = config.get("auth") or {}
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:
@@ -373,6 +373,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     is_updated = True
 
                 if existing_record and drive_id != existing_record.external_record_group_id:
+                    is_updated = True
+                    metadata_changed = True
+
+                parent_external_record_id = (metadata.get("parents") or [None])[0]
+                if existing_record and parent_external_record_id != existing_record.parent_external_record_id:
                     is_updated = True
                     metadata_changed = True
 

@@ -1,5 +1,5 @@
 // src/sections/qna/agents/components/flow-agent-builder.tsx
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNodesState, useEdgesState, addEdge, Connection, Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Box, useTheme, alpha } from '@mui/material';
@@ -633,12 +633,20 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   // Compute whether the current flow has any toolsets connected to the agent
   const hasToolsets = nodes.some((node) => node.data?.type?.startsWith('toolset-'));
 
+  // Guard to prevent duplicate submissions from rapid clicks
+  const saveSubmittingRef = useRef(false);
+
   // Save agent
   const handleSave = useCallback(async () => {
     if (isReadOnly) {
       setError('You have view-only access to this agent.');
       return;
     }
+    // Prevent duplicate submissions from rapid clicks
+    if (saveSubmittingRef.current) {
+      return;
+    }
+    saveSubmittingRef.current = true;
     try {
       setSaving(true);
       setError(null);
@@ -660,13 +668,17 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       setSuccess(currentAgent ? 'Agent updated successfully!' : 'Agent created successfully!');
       setTimeout(() => {
         onSuccess(agent);
+        // Re-enable save only after navigation hook completes
+        setSaving(false);
+        saveSubmittingRef.current = false;
       }, 1000);
     } catch (err: any) {
       const message = err?.response?.data?.detail || (editingAgent ? 'Failed to update agent' : 'Failed to create agent');
       setError(message);
       console.error('Error saving agent:', err);
-    } finally {
+      // Allow retry on failure
       setSaving(false);
+      saveSubmittingRef.current = false;
     }
   }, [
     agentName,

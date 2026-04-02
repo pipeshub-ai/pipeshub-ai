@@ -345,7 +345,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         try {
           if (!isManageMode) setLoading(true);
           const schema = await ToolsetApiService.getToolsetSchema(toolsetType);
-          setToolsetSchema(schema);
+          setToolsetSchema((schema as ToolsetSchema) ?? null);
           
           // Determine initial auth type for CREATE mode
           let initialAuthType = 'API_TOKEN';
@@ -2088,7 +2088,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                       '&:hover': { boxShadow: 'none' },
                     }}
                   >
-                    {saving ? 'Saving...' : 'Update Credentials'}
+                    {saving ? 'Saving...' : isAuthenticated ? 'Update Credentials' : 'Authenticate'}
                   </Button>
                 )}
               </>

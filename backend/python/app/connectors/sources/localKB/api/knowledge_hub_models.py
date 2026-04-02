@@ -77,6 +77,7 @@ class NodeItem(BaseModel):
     previewRenderable: Optional[bool] = Field(None, description="Whether preview can be rendered for this record")
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
     sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
+    isInternal: bool = Field(False, description="True when the node is an internal/system record group or record (doesn't come from source)")
 
     class Config:
         use_enum_values = True

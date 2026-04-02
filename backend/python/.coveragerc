@@ -1,0 +1,20 @@
+[run]
+source = app
+branch = True
+omit =
+    app/sources/external/*
+    app/services/graph_db/neo4j/*
+    app/migrations/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if __name__ == .__main__
+    if TYPE_CHECKING
+    raise NotImplementedError
+    pass
+    @abstractmethod
+
+show_missing = True
+precision = 1

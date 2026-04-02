@@ -9,6 +9,7 @@ import {
   accountCreation,
   appUserInvite,
   loginWithOTPRequest,
+  resetEmail,
   resetPassword,
   suspiciousLoginAttempt,
 } from '../utils/emailTemplates';
@@ -50,7 +51,7 @@ export class MailController {
     templateData: Record<string, any>,
   ) {
     let emailContent;
-    this.logger.info('emailTemplateType', emailTemplateType);
+    this.logger.debug('emailTemplateType', emailTemplateType);
     switch (emailTemplateType) {
       case EmailTemplateType.LoginWithOtp:
         emailContent = loginWithOTPRequest(templateData);
@@ -66,6 +67,9 @@ export class MailController {
 
       case EmailTemplateType.ResetPassword:
         emailContent = resetPassword(templateData);
+        return emailContent;
+      case EmailTemplateType.ResetEmail:
+        emailContent = resetEmail(templateData);
         return emailContent;
 
       case EmailTemplateType.AppuserInvite:

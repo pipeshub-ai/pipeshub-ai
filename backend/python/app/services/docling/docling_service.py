@@ -1,8 +1,8 @@
 import asyncio
 import base64
-from typing import Optional
+import logging
+from typing import Any
 
-import uvicorn
 from docling_core.types.doc.document import DoclingDocument
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -19,13 +19,13 @@ PDF_PARSING_TIMEOUT_SECONDS = 40 * 60
 class ProcessRequest(BaseModel):
     record_name: str
     pdf_binary: str  # base64 encoded PDF binary data
-    org_id: Optional[str] = None
+    org_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict] = None
-    error: Optional[str] = None
+    block_containers: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class ParseRequest(BaseModel):
@@ -35,23 +35,23 @@ class ParseRequest(BaseModel):
 
 class ParseResponse(BaseModel):
     success: bool
-    parse_result: Optional[str] = None  # JSON-encoded document data
-    error: Optional[str] = None
+    parse_result: str | None = None  # JSON-encoded document data
+    error: str | None = None
 
 
 class CreateBlocksRequest(BaseModel):
     parse_result: str  # JSON-encoded document data
-    page_number: Optional[int] = None
+    page_number: int | None = None
 
 
 class CreateBlocksResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict] = None
-    error: Optional[str] = None
+    block_containers: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class DoclingService:
-    def __init__(self, config_service=None, logger=None) -> None:
+    def __init__(self, config_service: object | None = None, logger: logging.Logger | None = None) -> None:
         self.logger = logger or create_logger(__name__)
         self.config_service = config_service
         self.processor = None
@@ -112,7 +112,7 @@ class DoclingService:
             raise
 
     async def create_blocks_from_parse_result(
-        self, doc: DoclingDocument, page_number: Optional[int] = None
+        self, doc: DoclingDocument, page_number: int | None = None
     ) -> BlocksContainer:
         """Create blocks from DoclingDocument (involves LLM calls for tables).
 
@@ -152,7 +152,7 @@ class DoclingService:
 
 
 # Global service instance (to be set by the application wiring)
-docling_service: Optional[DoclingService] = None
+docling_service: DoclingService | None = None
 
 def set_docling_service(service: DoclingService) -> None:
     """Wire an initialized DoclingService instance for the route handlers to use."""
@@ -181,7 +181,7 @@ async def startup_event() -> None:
 
 
 @app.get("/health")
-async def health_check() -> dict:
+async def health_check() -> dict[str, Any]:
     """Health check endpoint"""
     return {"status": "healthy", "service": "docling"}
 
@@ -197,7 +197,7 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid base64 PDF data: {str(e)}"
-            )
+            ) from e
 
         # Ensure service is wired
         if docling_service is None:
@@ -235,7 +235,7 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             error=f"Processing failed: {str(e)}"
         )
 
-def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
+def serialize_blocks_container(blocks_container: BlocksContainer) -> dict[str, Any]:
     """Serialize BlocksContainer to dictionary for JSON response"""
     try:
         # Convert to dict using the model's dict method.
@@ -278,7 +278,7 @@ async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid base64 PDF data: {str(e)}"
-            )
+            ) from e
 
         # Ensure service is wired
         if docling_service is None:
@@ -326,7 +326,7 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid parse_result data: {str(e)}"
-            )
+            ) from e
 
         # Ensure service is wired
         if docling_service is None:
@@ -362,17 +362,3 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
             error=f"Block creation failed: {str(e)}"
         )
 
-
-def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
-    """Run the Docling service"""
-    uvicorn.run(
-        "app.services.docling.docling_service:app",
-        host=host,
-        port=port,
-        log_level="info",
-        reload=reload
-    )
-
-
-if __name__ == "__main__":
-    run(reload=False)

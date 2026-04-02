@@ -1,6 +1,13 @@
+import asyncio
 import hashlib
+import logging
+import math
+import multiprocessing
 import os
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
+from typing import Any
 from uuid import uuid4
 
 import fitz
@@ -13,22 +20,79 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
+from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+def _get_pdf_ocr_detection_worker_count() -> int:
+    raw_value = os.getenv("PDF_OCR_DETECTION_WORKERS")
+    if raw_value:
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return 1
+
+    return 1
+
+PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
+
+
+@lru_cache(maxsize=1)
+def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(
+        max_workers=PDF_OCR_DETECTION_WORKERS,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
+
+
+def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
+    logger = logging.getLogger(__name__)
+
+    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
+        page_count = len(temp_doc)
+        if page_count == 0:
+            return False
+
+        threshold = math.ceil(page_count * 0.5)
+        ocr_pages = 0
+
+        for page_index, page in enumerate(temp_doc):
+            if OCRStrategy.needs_ocr(page, logger):
+                ocr_pages += 1
+                if ocr_pages >= threshold:
+                    return True
+
+            remaining_pages = page_count - (page_index + 1)
+            if ocr_pages + remaining_pages < threshold:
+                return False
+
+        return ocr_pages >= threshold
+
+
 class EventProcessor:
-    def __init__(self, logger, processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService = None) -> None:
+    def __init__(self, logger: logging.Logger, processor: Processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService | None = None) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
         self.graph_provider = graph_provider
         self.config_service = config_service
 
+    async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
+        if PDF_OCR_DETECTION_WORKERS <= 1:
+            return await asyncio.to_thread(_detect_pdf_needs_ocr, file_content)
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _get_pdf_ocr_detection_pool(),
+            _detect_pdf_needs_ocr,
+            file_content,
+        )
 
 
-    async def mark_record_status(self, doc: dict, status: ProgressStatus) -> None:
+
+    async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """
         Mark the record status to IN_PROGRESS
         """
@@ -63,7 +127,7 @@ class EventProcessor:
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str,
-        doc: dict,
+        doc: dict[str, Any],
     ) -> bool:
         """
         Check for duplicate records by MD5 hash and handle accordingly.
@@ -77,17 +141,20 @@ class EventProcessor:
             False if no duplicate found (caller should proceed with processing)
         """
         # Calculate MD5 from content
-        md5_checksum = doc.get("md5Checksum")
+        existing_md5_checksum = doc.get("md5Checksum")
         size_in_bytes = doc.get("sizeInBytes")
         record_type = doc.get("recordType")
+        md5_checksum = None
 
-        if md5_checksum is None and content:
+        if content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
             md5_checksum = hashlib.md5(content).hexdigest()
-            doc.update({"md5Checksum": md5_checksum})
-            self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
-            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            if existing_md5_checksum != md5_checksum:
+                doc.update({"md5Checksum": md5_checksum})
+                await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+            self.logger.info("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
         if not md5_checksum:
             return False
@@ -151,7 +218,7 @@ class EventProcessor:
         self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
         return False  # No duplicate found, proceed with processing
 
-    async def on_event(self, event_data: dict) -> AsyncGenerator[Dict[str, Any], None]:
+    async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
         Process events received from Kafka consumer, yielding phase completion events.
 
@@ -174,7 +241,11 @@ class EventProcessor:
             event_type = event_data.get(
                 "eventType", EventTypes.NEW_RECORD.value
             )  # default to create
-            event_data = event_data.get("payload")
+            payload = event_data.get("payload")
+            if payload is None:
+                self.logger.error("❌ No payload in event data")
+                return
+            event_data = payload
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
@@ -188,11 +259,14 @@ class EventProcessor:
                 record_id, CollectionNames.RECORDS.value
             )
 
+            if record is None:
+                self.logger.error("❌ Record %s not found", record_id)
+                return
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-            doc = dict(record)
+            doc: dict[str, Any] = dict(record)
 
             # Extract necessary data
             record_version = event_data.get("version", 0)
@@ -203,6 +277,10 @@ class EventProcessor:
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
             file_content = event_data.get("buffer")
+
+            if file_content is None:
+                self.logger.error("❌ No file content (buffer) in event data")
+                return
 
             self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
 
@@ -330,15 +408,10 @@ class EventProcessor:
 
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
-                    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
-
-                        # Check if 50% or more pages need OCR
-                        ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
-                        needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
-
-                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser'}")
+                    needs_ocr = await self._pdf_needs_ocr(file_content)
+                    self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to layout parser")
+                    self.logger.warning("⚠️ Error checking OCR need: %s, defaulting to layout parser", str(e))
                     needs_ocr = False
 
                 if needs_ocr:

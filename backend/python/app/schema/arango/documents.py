@@ -404,12 +404,12 @@ ticket_record_schema = {
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assignee_source_id":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
@@ -433,6 +433,24 @@ project_record_schema = {
     },
 }
 
+meeting_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "hostEmail": {"type": ["string", "null"]},
+            "hostId": {"type": ["string", "null"]},
+            "meetingType": {"type": ["integer", "number", "null"]},
+            "durationMinutes": {"type": ["integer", "number", "null"]},
+            "startTime": {"type": ["string", "null"]},
+            "endTime": {"type": ["string", "null"]},
+            "timezone": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the meeting record schema.",
+}
+
 
 pull_request_record_schema = {
     "rule": {
@@ -443,31 +461,31 @@ pull_request_record_schema = {
             "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "assignee":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assigneeEmail":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
             "reviewEmail":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": []
             },
             "reviewName":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": []
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },

@@ -40,6 +40,7 @@ from app.models.entities import (
     FileRecord,
     LinkRecord,
     MailRecord,
+    MeetingRecord,
     Person,
     ProjectRecord,
     Record,
@@ -59,6 +60,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     link_record_schema,
     mail_record_schema,
+    meeting_record_schema,
     orgs_schema,
     people_schema,
     project_record_schema,
@@ -120,6 +122,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
@@ -632,6 +635,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return LinkRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.PROJECTS.value:
                 return ProjectRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -1420,7 +1425,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            await self._reset_indexing_status_to_queued(record_id)
+            if not rec.get("isInternal"):
+                await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
             try:
@@ -3098,6 +3104,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -4210,7 +4218,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not user_doc:
                 return None
-            return User.from_arango_user(user_doc)
+            # NOTE: This class of type can be removed once get_user_by_user_id returns User object
+            if isinstance(user_doc, dict):
+                user = User.from_arango_user(user_doc)
+            else:
+                user = user_doc
+            return user
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
             return None
@@ -4315,7 +4328,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if results:
                 with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
@@ -6326,6 +6338,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
@@ -11512,7 +11525,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not files:
             return []
         valid_files: list[dict] = []
-        valid_files: list[dict] = []
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
             record = file_data.get("record") or {}
@@ -13156,7 +13168,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: rg.webUrl,
                     hasChildren: has_children,
                     previewRenderable: true,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: rg.isInternal ? true : false
                 }}
         )
 
@@ -13199,7 +13212,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: file_info ? file_info.extension : null,
                     webUrl: record.webUrl,
                     hasChildren: has_children,
-                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true
+                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
 
@@ -14475,6 +14489,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
                         FILTER doc.recordType != @drive_record_type
+                        FILTER doc.isInternal != true
 
                         LET targetDoc = FIRST(
                             FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
@@ -14615,7 +14630,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal ? true : false
                 }})
         )
         """
@@ -14694,7 +14710,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         ) : []
         RETURN internal_records
@@ -14782,7 +14799,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal ? true : false
                 }}
         )
         RETURN child_rgs
@@ -14846,7 +14864,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
         RETURN direct_records
@@ -14860,7 +14879,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Combine results: use internal_records if available, otherwise use child_rgs + direct_records
         all_children = internal_records or child_rgs + direct_records
-
         filtered_children = [
             node for node in all_children
             if not only_containers or node.get("hasChildren") or node.get("nodeType") in ["app", "recordGroup", "folder"]
@@ -14948,7 +14966,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         ) : []
 
@@ -15026,7 +15045,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal ? true : false
                 }}
         )
 
@@ -15080,7 +15100,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
 
@@ -15170,7 +15191,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
         """
@@ -18018,27 +18040,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             )
 
-            // Check team permissions on the agent (only if no individual access)
-            LET team_access = LENGTH(individual_access) == 0 ? (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "TEAM"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            ) : []
-
-            // Check org permissions on the agent (only if no individual or team access)
-            LET org_access = LENGTH(individual_access) == 0 && LENGTH(team_access) == 0 && org_key != null ? (
+            // Check org permissions on the agent (only if no individual access)
+            LET org_access = LENGTH(individual_access) == 0 && org_key != null ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
                     FILTER perm._to == agent_path
@@ -18056,11 +18059,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             ) : []
 
-            // Get base agent with permissions
+            // Check team permissions on the agent (only if no individual or org access)
+            LET team_access = LENGTH(individual_access) == 0 && LENGTH(org_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Get base agent with permissions (first available access type)
             LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) :
-                (LENGTH(org_access) > 0 ? FIRST(org_access) : null))
+                (LENGTH(org_access) > 0 ? FIRST(org_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null))
 
             // Get linked toolsets with their tools
             LET linked_toolsets = base_agent != null ? (
@@ -18210,8 +18232,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def get_all_agents(self, user_id: str, org_id: str, transaction: str | None = None) -> list[dict]:
-        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
+    async def get_all_agents(
+        self,
+        user_id: str,
+        org_id: str,
+        page: int | None = None,
+        limit: int | None = None,
+        search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict] | dict[str, Any]:
+        """Get agents accessible to a user with optional pagination and search.
+
+        The AQL pipeline guarantees correct search-aware pagination:
+          base     = all deduplicated permission-visible agents
+          filtered = search ? FILTER(base, query) : base
+          sorted   = SORT(filtered, sort_field, direction)
+          totalItems = LENGTH(sorted)            ← count AFTER search, used for
+                                                    totalPages / hasNext on all pages
+          agents   = do_page ? SLICE(sorted, offset, limit) : sorted
+
+        This means requesting 'page 2 while searching for X' correctly returns
+        the second chunk of X-matching agents with totalItems = count(X-matches).
+
+        Returns:
+          - List[dict]       when page / limit are both None  (backward-compat)
+          - Dict[str, Any]   {'agents': [...], 'totalItems': int}  otherwise
+        """
         try:
             query = f"""
             LET user_key = @user_id
@@ -18294,33 +18342,113 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // Combine all permissions and deduplicate by agent_id, keeping highest priority
             LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
 
-            // Deduplicate: group by agent_id and keep entry with lowest priority number
-            FOR perm_entry IN combined
-                COLLECT agent_id = perm_entry.agent_id INTO groups
-                LET best_entry = (
-                    FOR entry IN groups[*].perm_entry
-                        SORT entry.priority ASC
-                        LIMIT 1
-                        RETURN entry
-                )[0]
-                RETURN MERGE(best_entry.agent, {{
-                    access_type: best_entry.access_type,
-                    user_role: best_entry.role,
-                    can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                    can_delete: best_entry.role == "OWNER",
-                    can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
-                    can_view: true,
-                    shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
-                }})
+            // Deduplicate into a base array
+            LET base = (
+                FOR perm_entry IN combined
+                    COLLECT agent_id = perm_entry.agent_id INTO groups
+                    LET best_entry = (
+                        FOR entry IN groups[*].perm_entry
+                            SORT entry.priority ASC
+                            LIMIT 1
+                            RETURN entry
+                    )[0]
+                    RETURN MERGE(best_entry.agent, {{
+                        access_type: best_entry.access_type,
+                        user_role: best_entry.role,
+                        can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: best_entry.role == "OWNER",
+                        can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true,
+                        shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
+                    }})
+            )
+
+            // Apply search filter if provided
+            LET filtered = (
+                @has_search
+                ? (
+                    FOR a IN base
+                        LET nameMatch = a.name != null && CONTAINS(LOWER(a.name), @q)
+                        LET descMatch = a.description != null && CONTAINS(LOWER(a.description), @q)
+                        LET tagsMatch = IS_ARRAY(a.tags) && LENGTH(
+                            FOR t IN a.tags
+                                FILTER t != null && CONTAINS(LOWER(t), @q)
+                                RETURN 1
+                        ) > 0
+                        FILTER nameMatch || descMatch || tagsMatch
+                        RETURN a
+                  )
+                : base
+            )
+
+            // Sort by requested field or sensible defaults
+            LET sorted = (
+                @sort_asc
+                ? (
+                    FOR a IN filtered
+                        LET sortValue = (
+                            HAS(a, @sort_by) && a[@sort_by] != null
+                            ? a[@sort_by]
+                            : (a.updatedAtTimestamp != null ? a.updatedAtTimestamp : a.createdAtTimestamp)
+                        )
+                        SORT sortValue ASC
+                        RETURN a
+                  )
+                : (
+                    FOR a IN filtered
+                        LET sortValue = (
+                            HAS(a, @sort_by) && a[@sort_by] != null
+                            ? a[@sort_by]
+                            : (a.updatedAtTimestamp != null ? a.updatedAtTimestamp : a.createdAtTimestamp)
+                        )
+                        SORT sortValue DESC
+                        RETURN a
+                  )
+            )
+
+            LET totalItems = LENGTH(sorted)
+
+            RETURN {{
+                agents: @do_page ? SLICE(sorted, @offset, @limit) : sorted,
+                totalItems: totalItems
+            }}
             """
+
+            # Normalise search term once so every downstream use is consistent.
+            q_norm: str = search.strip().lower() if search and search.strip() else ""
+            has_search: bool = bool(q_norm)
+
+            do_page: bool = page is not None and limit is not None
+            # offset / limit are only referenced by the AQL when do_page=True.
+            offset: int = max((page - 1) * limit, 0) if do_page else 0
+            page_limit: int = limit if do_page else 0  # 0 is safe; never used when do_page=False
 
             bind_vars = {
                 "user_id": user_id,
                 "org_id": org_id,
+                "has_search": has_search,
+                "q": q_norm,
+                "sort_by": (sort_by or "updatedAtTimestamp"),
+                "sort_asc": (sort_order or "desc").lower() == "asc",
+                "do_page": do_page,
+                "offset": offset,
+                "limit": page_limit,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            return result if result else []
+            if not result:
+                return {"agents": [], "totalItems": 0} if do_page else []
+
+            # The AQL always returns a single envelope object.
+            payload = result[0] if isinstance(result, list) else result
+            if do_page:
+                return {
+                    "agents": payload.get("agents", []),
+                    # totalItems = count AFTER search filter (see docstring)
+                    "totalItems": payload.get("totalItems", 0),
+                }
+            # Backward-compat: no paging requested → flat list
+            return payload.get("agents", [])
 
         except Exception as e:
             self.logger.error(f"Failed to get all agents: {str(e)}")

@@ -20,7 +20,7 @@ Welcome to our open source project! We're excited that you're interested in cont
 #### Linux
 ```bash
 sudo apt update
-sudo apt install python3.10-venv
+sudo apt install python3.12-venv
 sudo apt-get install libreoffice
 sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 ```
@@ -32,7 +32,7 @@ sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 
 
 # Install required packages
-brew install python@3.10
+brew install python@3.12
 brew install libreoffice
 brew install ocrmypdf ghostscript unpaper qpdf
 
@@ -42,7 +42,7 @@ brew install tesseract
 
 #### Windows
 ```bash
-- Install Python 3.10
+- Install Python 3.12
 - Install Tesseract OCR if you need to test OCR functionality
 - Consider using WSL2 for a Linux-like environment
 ```
@@ -51,7 +51,7 @@ brew install tesseract
 ```bash
 1. **Docker** - Install Docker for your platform
 2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.10** - Install as shown above
+3. **Python 3.12** - Install as shown above
 4. **Optional debugging tools:**
    - MongoDB Compass or Studio 3T
    - etcd-manager
@@ -175,7 +175,7 @@ npm run dev
 cd backend/python
 cp ../env.template .env
 # Create and activate virtual environment
-python3.10 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
@@ -249,6 +249,56 @@ Our project consists of three main components:
 - Ensure all tests pass before submitting a PR
 - Include integration tests where appropriate
 - Document manual testing steps for complex features
+
+### Running Node.js Unit Tests
+
+Tests use **Mocha** as the test runner with **c8** for code coverage. Test files are located in `backend/nodejs/apps/tests/` and follow the `*.test.ts` naming convention.
+
+```bash
+cd backend/nodejs/apps
+
+# Run all unit tests (parallel, 4 workers)
+npm run test
+
+# Run tests with detailed coverage report (text + lcov + html)
+npm run test:coverage
+
+# Run tests with coverage thresholds (90% lines/functions/statements, 80% branches)
+npm run test:coverage-check
+
+# Run a specific test file
+npx mocha --require ts-node/register tests/libs/utils/password.utils.test.ts
+```
+
+### Running Python Unit Tests
+
+Tests use **pytest** and are located in `backend/python/tests/`. Test files follow the `test_*.py` naming convention.
+
+```bash
+cd backend/python
+source venv/bin/activate
+
+# Run all unit tests
+pytest
+
+# Run tests with verbose output
+pytest -v
+
+# Run a specific test file
+pytest tests/unit/connectors/sources/test_dropbox_connector.py
+
+# Run a specific test function
+pytest tests/unit/connectors/sources/test_dropbox_connector.py::test_function_name
+
+# Run tests matching a keyword expression
+pytest -k "gmail"
+
+# Run tests with coverage
+pytest --cov=app --cov-report=term-missing
+
+# Run tests in parallel (requires pytest-xdist)
+pytest -n auto
+```
 
 ## Documentation
 
