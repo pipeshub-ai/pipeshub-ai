@@ -4316,7 +4316,7 @@ class TestLoadToolsetInstances:
     async def test_success(self):
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value=[{"_id": "i1"}])
+        cs.get_config = AsyncMock(return_value=[{"_id": "i1", "orgId": "o1"}])
         result = await _load_toolset_instances("o1", cs)
         assert len(result) == 1
 
@@ -6987,7 +6987,7 @@ class TestLoadToolsetInstancesFullCoverage:
     async def test_success(self):
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value=[{"_id": "i1"}])
+        cs.get_config = AsyncMock(return_value=[{"_id": "i1", "orgId": "org1"}])
         result = await _load_toolset_instances("org1", cs)
         assert len(result) == 1
 
@@ -7318,3 +7318,465 @@ class TestPrepareToolsetAuthConfigFullCoverage:
             {"type": "OAUTH"}, "jira", registry, cs
         )
         assert "app.example.com" in result["redirectUri"]
+
+
+class TestAgentScopedToolsets:
+    def test_get_agent_auth_path(self):
+        from app.api.routes.toolsets import _get_agent_auth_path
+        assert _get_agent_auth_path("inst-1", "agent-1") == "/services/toolsets/inst-1/agent-1"
+
+    def test_encode_decode_state_with_instance_for_agent_flow(self):
+        from app.api.routes.toolsets import _decode_state_with_instance, _encode_state_with_instance
+
+        encoded = _encode_state_with_instance("orig-state", "inst-1", "agent-1", is_agent=True)
+        decoded = _decode_state_with_instance(encoded)
+
+        assert decoded["state"] == "orig-state"
+        assert decoded["instance_id"] == "inst-1"
+        assert decoded["user_id"] == "agent-1"
+        assert decoded["is_agent"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_agent_toolsets_builds_response_with_agent_auth_fetcher(self):
+        from app.api.routes.toolsets import get_agent_toolsets
+
+        request = _make_request()
+        request.app.state.toolset_registry = _make_registry("jira")
+        config_service = AsyncMock()
+        expected = {"status": "success", "toolsets": [], "pagination": {}, "filterCounts": {}}
+
+        with patch("app.api.routes.toolsets._resolve_agent_with_permission", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._build_toolsets_list_response", new_callable=AsyncMock, return_value=expected) as mock_build:
+            result = await get_agent_toolsets("a1", request, config_service=config_service)
+
+        assert result == expected
+        fetch_auth_fn = mock_build.await_args.kwargs["fetch_auth_for_instance"]
+        config_service.get_config = AsyncMock(return_value={"isAuthenticated": True})
+        await fetch_auth_fn("inst-99")
+        config_service.get_config.assert_awaited_with("/services/toolsets/inst-99/a1", default=None)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_agent_toolset_rejects_oauth_instances(self):
+        from app.api.routes.toolsets import authenticate_agent_toolset
+
+        request = _make_request(body_dict={"auth": {"apiToken": "x"}})
+        config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "google", "authType": "OAUTH"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            with pytest.raises(HTTPException) as exc:
+                await authenticate_agent_toolset("a1", "i1", request, config_service=config_service)
+        assert exc.value.status_code == 400
+
+    # ------------------------------------------------------------------
+    # _resolve_agent_with_permission
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_resolve_agent_user_not_found_raises_401(self):
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_resolve_agent_malformed_user_raises_401(self):
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={})
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_resolve_agent_no_permission_raises_404(self):
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.check_agent_permission = AsyncMock(return_value=None)
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_resolve_agent_agent_doc_not_found_raises_404(self):
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        graph_provider.get_agent = AsyncMock(return_value=None)
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_resolve_agent_unexpected_exception_raises_500(self):
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_resolve_agent_success_merges_perm(self):
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        graph_provider.get_agent = AsyncMock(return_value={"_key": "a1", "name": "Bot"})
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            agent = await _resolve_agent_with_permission("a1", request)
+
+        assert agent["name"] == "Bot"
+        assert agent["can_edit"] is True
+
+    # ------------------------------------------------------------------
+    # _require_agent_edit_access
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_require_agent_edit_access_no_edit_raises_403(self):
+        from app.api.routes.toolsets import _require_agent_edit_access
+
+        request = _make_request()
+        with patch(
+            "app.api.routes.toolsets._resolve_agent_with_permission",
+            new_callable=AsyncMock,
+            return_value={"_key": "a1", "can_edit": False, "isServiceAccount": True},
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await _require_agent_edit_access("a1", request)
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_require_agent_edit_access_not_sa_raises_400(self):
+        from app.api.routes.toolsets import _require_agent_edit_access
+
+        request = _make_request()
+        with patch(
+            "app.api.routes.toolsets._resolve_agent_with_permission",
+            new_callable=AsyncMock,
+            return_value={"_key": "a1", "can_edit": True, "isServiceAccount": False},
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await _require_agent_edit_access("a1", request)
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_require_agent_edit_access_success_returns_agent(self):
+        from app.api.routes.toolsets import _require_agent_edit_access
+
+        request = _make_request()
+        agent_doc = {"_key": "a1", "can_edit": True, "isServiceAccount": True}
+        with patch(
+            "app.api.routes.toolsets._resolve_agent_with_permission",
+            new_callable=AsyncMock,
+            return_value=agent_doc,
+        ):
+            result = await _require_agent_edit_access("a1", request)
+        assert result is agent_doc
+
+    # ------------------------------------------------------------------
+    # authenticate_agent_toolset – additional branches
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_authenticate_agent_toolset_instance_not_found(self):
+        from app.api.routes.toolsets import authenticate_agent_toolset
+
+        request = _make_request(body_dict={"auth": {"apiToken": "tok"}})
+        config_service = AsyncMock()
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(HTTPException) as exc:
+                await authenticate_agent_toolset("a1", "no-such-instance", request, config_service=config_service)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_authenticate_agent_toolset_missing_credentials_raises_400(self):
+        from app.api.routes.toolsets import authenticate_agent_toolset
+
+        request = _make_request(body_dict={})
+        config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            with pytest.raises(HTTPException) as exc:
+                await authenticate_agent_toolset("a1", "i1", request, config_service=config_service)
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_authenticate_agent_toolset_api_token_success(self):
+        from app.api.routes.toolsets import authenticate_agent_toolset
+
+        request = _make_request(body_dict={"auth": {"apiToken": "my-token"}})
+        config_service = AsyncMock()
+        config_service.set_config = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await authenticate_agent_toolset("a1", "i1", request, config_service=config_service)
+
+        assert result["status"] == "success"
+        assert result["isAuthenticated"] is True
+        config_service.set_config.assert_awaited_once()
+        saved_path, saved_val = config_service.set_config.await_args[0]
+        assert saved_path == "/services/toolsets/i1/a1"
+        assert saved_val["agentKey"] == "a1"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_agent_toolset_missing_api_token_field_raises(self):
+        from app.api.routes.toolsets import authenticate_agent_toolset, InvalidAuthConfigError
+
+        request = _make_request(body_dict={"auth": {"apiToken": ""}})
+        config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            with pytest.raises(InvalidAuthConfigError):
+                await authenticate_agent_toolset("a1", "i1", request, config_service=config_service)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_agent_toolset_missing_basic_auth_fields_raises(self):
+        from app.api.routes.toolsets import authenticate_agent_toolset, InvalidAuthConfigError
+
+        request = _make_request(body_dict={"auth": {"username": "user", "password": ""}})
+        config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "BASIC_AUTH"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            with pytest.raises(InvalidAuthConfigError):
+                await authenticate_agent_toolset("a1", "i1", request, config_service=config_service)
+
+    # ------------------------------------------------------------------
+    # update_agent_toolset_credentials
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_update_agent_toolset_credentials_missing_auth_raises_400(self):
+        from app.api.routes.toolsets import update_agent_toolset_credentials
+
+        request = _make_request(body_dict={})
+        config_service = AsyncMock()
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}):
+            with pytest.raises(HTTPException) as exc:
+                await update_agent_toolset_credentials("a1", "i1", request, config_service=config_service)
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_update_agent_toolset_credentials_no_existing_raises_404(self):
+        from app.api.routes.toolsets import update_agent_toolset_credentials
+
+        request = _make_request(body_dict={"auth": {"apiToken": "new-tok"}})
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=None)
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}):
+            with pytest.raises(HTTPException) as exc:
+                await update_agent_toolset_credentials("a1", "i1", request, config_service=config_service)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_update_agent_toolset_credentials_success(self):
+        from app.api.routes.toolsets import update_agent_toolset_credentials
+
+        request = _make_request(body_dict={"auth": {"apiToken": "new-tok"}})
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "auth": {"apiToken": "old-tok"}, "authType": "API_TOKEN"}
+        )
+        config_service.set_config = AsyncMock()
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}):
+            result = await update_agent_toolset_credentials("a1", "i1", request, config_service=config_service)
+
+        assert result["status"] == "success"
+        saved_val = config_service.set_config.await_args[0][1]
+        assert saved_val["auth"]["apiToken"] == "new-tok"
+        assert saved_val["agentKey"] == "a1"
+
+    # ------------------------------------------------------------------
+    # remove_agent_toolset_credentials
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_remove_agent_toolset_credentials_success(self):
+        from app.api.routes.toolsets import remove_agent_toolset_credentials
+
+        request = _make_request()
+        config_service = AsyncMock()
+        config_service.delete_config = AsyncMock()
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets.startup_service", MagicMock(), create=True):
+            result = await remove_agent_toolset_credentials("a1", "i1", request, config_service=config_service)
+
+        assert result["status"] == "success"
+        config_service.delete_config.assert_awaited_with("/services/toolsets/i1/a1")
+
+    # ------------------------------------------------------------------
+    # reauthenticate_agent_toolset
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_reauthenticate_agent_toolset_instance_not_found_raises_404(self):
+        from app.api.routes.toolsets import reauthenticate_agent_toolset
+
+        request = _make_request()
+        config_service = AsyncMock()
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(HTTPException) as exc:
+                await reauthenticate_agent_toolset("a1", "no-instance", request, config_service=config_service)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_reauthenticate_agent_toolset_success(self):
+        from app.api.routes.toolsets import reauthenticate_agent_toolset
+
+        request = _make_request()
+        config_service = AsyncMock()
+        config_service.delete_config = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await reauthenticate_agent_toolset("a1", "i1", request, config_service=config_service)
+
+        assert result["status"] == "success"
+        config_service.delete_config.assert_awaited_with("/services/toolsets/i1/a1")
+
+    # ------------------------------------------------------------------
+    # get_agent_toolset_oauth_url
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_get_agent_toolset_oauth_url_instance_not_found_raises_404(self):
+        from app.api.routes.toolsets import get_agent_toolset_oauth_url
+
+        request = _make_request()
+        config_service = AsyncMock()
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(HTTPException) as exc:
+                await get_agent_toolset_oauth_url("a1", "missing", request, config_service=config_service)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_agent_toolset_oauth_url_non_oauth_instance_raises(self):
+        from app.api.routes.toolsets import get_agent_toolset_oauth_url, OAuthConfigError
+
+        request = _make_request()
+        config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN"}]
+
+        with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            with pytest.raises(OAuthConfigError):
+                await get_agent_toolset_oauth_url("a1", "i1", request, config_service=config_service)
+
+    # ------------------------------------------------------------------
+    # _build_toolsets_list_response — empty-instances fast path
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_build_toolsets_list_response_no_instances_no_registry(self):
+        from app.api.routes.toolsets import _build_toolsets_list_response
+
+        request = _make_request()
+        request.app.state.toolset_registry = _make_registry("jira")
+        config_service = AsyncMock()
+
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
+            result = await _build_toolsets_list_response(
+                request=request,
+                org_id="o1",
+                config_service=config_service,
+                search=None,
+                page=1,
+                limit=20,
+                include_registry=False,
+                fetch_auth_for_instance=AsyncMock(return_value=None),
+            )
+
+        assert result["status"] == "success"
+        assert result["toolsets"] == []
+
+    @pytest.mark.asyncio
+    async def test_build_toolsets_list_response_with_authenticated_instance(self):
+        from app.api.routes.toolsets import _build_toolsets_list_response
+
+        request = _make_request()
+        request.app.state.toolset_registry = _make_registry("jira", supported_auth=["API_TOKEN"])
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "API_TOKEN",
+             "instanceName": "My Jira"}
+        ]
+
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await _build_toolsets_list_response(
+                request=request,
+                org_id="o1",
+                config_service=config_service,
+                search=None,
+                page=1,
+                limit=20,
+                include_registry=False,
+                fetch_auth_for_instance=AsyncMock(return_value={"isAuthenticated": True}),
+                include_has_credentials=True,
+            )
+
+        assert result["status"] == "success"
+        assert len(result["toolsets"]) == 1
+        ts = result["toolsets"][0]
+        assert ts["instanceId"] == "i1"
+        assert ts["isAuthenticated"] is True
+        assert ts["isConfigured"] is True
+        assert "hasCredentials" in ts
+        assert result["filterCounts"]["authenticated"] == 1
+        assert result["filterCounts"]["notAuthenticated"] == 0

@@ -10,13 +10,13 @@ from collections.abc import AsyncGenerator
 from logging import Logger
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -185,6 +185,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     return {
         "userId": user_id,
         "orgId": org_id,
+        "isServiceAccount": bool(user.get("isServiceAccount", False)),
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
 
@@ -1371,6 +1372,8 @@ async def create_agent(request: Request) -> JSONResponse:
         raw_models = body.get("models", [])
         model_entries, has_reasoning_model = _parse_models(raw_models, logger)
 
+
+
         if not model_entries:
             raise InvalidRequestError(
                 "At least one AI model is required. Please add a model to your configuration."
@@ -1386,7 +1389,10 @@ async def create_agent(request: Request) -> JSONResponse:
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
-        share_with_org = body.get("shareWithOrg", False)
+        is_service_account = bool(body.get("isServiceAccount", False))
+        # Service account agents must always be org-wide so internal calls can access them
+        # without requiring individual user permission edges.
+        share_with_org = True if is_service_account else bool(body.get("shareWithOrg", False))
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -1400,6 +1406,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "models": model_entries,
             "tags": body.get("tags", []) or [],
             "isActive": True,
+            "isServiceAccount": is_service_account,
             "createdBy": user_key,
             "updatedBy": None,
             "createdAtTimestamp": time,
@@ -1690,6 +1697,48 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.error(f"Error creating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+@router.get("/{agent_id}/internal/service-account", dependencies=[Depends(authMiddleware)])
+async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
+    """
+    Internal route: verify that an agent is a service account and return its
+    data.  Called by the Node.js gateway after hydrating a Slack scoped token
+    into a regular user JWT (the hydrated user is the org admin, who always has
+    access to any org-shared agent).
+
+    Returns 403 if the agent exists but is NOT a service account, 404 if not
+    found.  Service account agents are always org-wide by invariant, so the
+    standard get_agent() permission check will pass for the hydrated admin user.
+    """
+    try:
+        services = await get_services(request)
+
+        agent = await services["graph_provider"].get_agent(agent_id)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+
+        # Guard: this internal route is exclusively for service account agents.
+        if not agent.get("isServiceAccount"):
+            raise HTTPException(
+                status_code=403,
+                detail="This endpoint is only accessible for service account agents.",
+            )
+
+        await _enrich_agent_models(agent, services["config_service"], services["logger"])
+        agent.pop("modelsEnriched", None)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent retrieved successfully",
+                "isServiceAccount": True,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
@@ -1699,10 +1748,16 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
+        perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+        if not perm:
+            raise AgentNotFoundError(agent_id)
+
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
+
+        agent.update(perm)
 
         # Enrich models with configurations
         await _enrich_agent_models(agent, services["config_service"], services["logger"])
@@ -1819,13 +1874,36 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     "At least one reasoning model is required. Please add a reasoning model to your configuration."
                 )
 
-        # Check permissions
-        agent = await services["graph_provider"].get_agent(agent_id, user_key, org_key)
+        # Check permissions first, then fetch full agent data
+        perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
+        if not perm:
+            raise AgentNotFoundError(agent_id)
+
+        if not perm.get("can_edit", False):
+            raise PermissionDeniedError("edit this agent (only owner can edit)")
+
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
-        if not agent.get("can_edit", False):
-            raise PermissionDeniedError("edit this agent (only owner can edit)")
+        agent.update(perm)
+
+        # Guard: once an agent is marked as a service account it cannot be downgraded.
+        # Allowing the reverse would leave orphaned agent-scoped toolset credentials
+        # (stored under /services/toolsets/{instanceId}/{agentKey}) with no clear owner
+        # and would confuse the toolset-fetching logic on the frontend.
+        if "isServiceAccount" in body:
+            current_is_sa = bool(agent.get("isServiceAccount", False))
+            requested_is_sa = bool(body.get("isServiceAccount", False))
+            if current_is_sa and not requested_is_sa:
+                raise InvalidRequestError(
+                    "A service account agent cannot be converted back to a regular agent."
+                )
+            # When converting to a service account, ensure org-wide sharing is enabled.
+            # Service account agents must always have an ORG permission edge so that
+            # internal calls (e.g. from Slack) can access them via the org admin user.
+            if requested_is_sa and not current_is_sa:
+                body["shareWithOrg"] = True
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -1851,7 +1929,13 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.info(f"Created org permission edge for agent {agent_id}")
 
             elif not new_share_with_org and current_share_with_org:
-                # Turning OFF org sharing: delete the org permission edge using the standard delete_edge method
+                # Service account agents must always be org-shared — reject the request.
+                if bool(agent.get("isServiceAccount", False)):
+                    raise InvalidRequestError(
+                        "Cannot disable org-wide sharing for a service account agent. "
+                        "Service account agents must always be shared across the organisation."
+                    )
+                # Turning OFF org sharing: delete the org permission edge
                 await services["graph_provider"].delete_edge(
                     from_id=org_key,
                     from_collection=CollectionNames.ORGS.value,
@@ -1863,6 +1947,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
 
         # Update agent document
+        # Persist update (use original body to avoid changing storage format)
         result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent")
@@ -2161,13 +2246,19 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
+        perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+        if not perm:
+            raise AgentNotFoundError(agent_id)
+
+        if not perm.get("can_delete", False):
+            raise PermissionDeniedError("delete this agent (only owner can delete)")
+
+        agent = await services["graph_provider"].get_agent(agent_id, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
-        if not agent.get("can_delete", False):
-            raise PermissionDeniedError("delete this agent (only owner can delete)")
+        agent.update(perm)
 
         # Begin transaction for atomic deletion
         txn_id = await services["graph_provider"].begin_transaction(
@@ -2200,6 +2291,37 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         # Commit transaction on success
         await services["graph_provider"].commit_transaction(txn_id)
         services["logger"].info(f"✅ Successfully deleted agent {agent_id} in transaction {txn_id}")
+
+        # For service account agents, clean up per-agent toolset credentials from ETCD.
+        # These live at /services/toolsets/{instanceId}/{agentKey} and are outside the
+        # graph DB transaction, so they must be deleted separately after the commit.
+        if agent.get("isServiceAccount"):
+            try:
+                config_service = services["config_service"]
+                all_keys = await config_service.list_keys_in_directory("/services/toolsets/")
+                refresh_service = None
+                try:
+                    from app.connectors.core.base.token_service.startup_service import (
+                        startup_service,
+                    )
+                    refresh_service = startup_service.get_toolset_token_refresh_service()
+                except Exception:
+                    pass
+                for key in all_keys:
+                    # Path format: /services/toolsets/{instanceId}/{ownerId}
+                    parts = key.strip("/").split("/")
+                    if len(parts) >= 4 and parts[3] == agent_id:
+                        if refresh_service:
+                            refresh_service.cancel_refresh_task(key)
+                        try:
+                            await config_service.delete_config(key)
+                            services["logger"].info(f"Cleaned up agent credential path: {key}")
+                        except Exception as e:
+                            services["logger"].warning(f"Failed to delete agent credential {key}: {e}")
+            except Exception as e:
+                services["logger"].warning(
+                    f"Failed to cleanup ETCD credentials for deleted service account agent {agent_id}: {e}"
+                )
 
         return JSONResponse(
             status_code=200,
@@ -2253,12 +2375,12 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         team_ids = body.get("teamIds", [])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
-        if not agent:
+        perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+        if not perm:
             raise AgentNotFoundError(agent_id)
 
-        if not agent.get("can_share", False):
+        if not perm.get("can_share", False):
             raise PermissionDeniedError("share this agent")
 
         result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
@@ -2289,12 +2411,12 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         team_ids = body.get("teamIds", [])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
-        if not agent:
+        perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+        if not perm:
             raise AgentNotFoundError(agent_id)
 
-        if not agent.get("can_share", False):
+        if not perm.get("can_share", False):
             raise PermissionDeniedError("unshare this agent")
 
         result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
@@ -2391,17 +2513,36 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
+        is_service_account = user_context.get("isServiceAccount", False)
 
-
-        # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-        enriched_user_info = await _enrich_user_info(user_context, user_doc)
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
-        # Get agent
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
+        if is_service_account:
+            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
+            # Service account agents are always org-wide, so skip user-specific permission checks
+            # and the user document lookup which would fail.
+            enriched_user_info = {
+                "userId": user_context["userId"],
+                "orgId": user_context["orgId"],
+                "userEmail": user_context.get("email", user_context["userId"]),
+                "_key": None,
+            }
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent or not agent.get("isServiceAccount"):
+                raise AgentNotFoundError(agent_id)
+            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+        else:
+            # Standard user path: look up the user document and verify permissions.
+            user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+            enriched_user_info = await _enrich_user_info(user_context, user_doc)
+            perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+            if not perm:
+                raise AgentNotFoundError(agent_id)
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent:
+                raise AgentNotFoundError(agent_id)
+
+        agent.update(perm)
 
         # Build filters from knowledge array (new format)
         filters = chat_query.filters.copy() if chat_query.filters else {}
@@ -2536,19 +2677,39 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
+        is_service_account = user_context.get("isServiceAccount", False)
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
 
-        # Get user and org info first (needed to fetch agent)
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-        enriched_user_info = await _enrich_user_info(user_context, user_doc)
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
-        # Get agent before LLM init so we can fall back to its model config
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
+        if is_service_account:
+            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
+            # Service account agents are always org-wide, so skip user-specific permission checks
+            # and the user document lookup which would fail.
+            enriched_user_info = {
+                "userId": user_context["userId"],
+                "orgId": user_context["orgId"],
+                "userEmail": user_context.get("email", user_context["userId"]),
+                "_key": None,
+            }
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent or not agent.get("isServiceAccount"):
+                raise AgentNotFoundError(agent_id)
+            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+        else:
+            # Standard user path: look up the user document and verify permissions.
+            user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+            enriched_user_info = await _enrich_user_info(user_context, user_doc)
+            perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+            if not perm:
+                raise AgentNotFoundError(agent_id)
+            agent = await services["graph_provider"].get_agent(agent_id, org_key)
+            if not agent:
+                raise AgentNotFoundError(agent_id)
+
+        agent.update(perm)
 
         # Determine model key/name: prefer explicit query params, then agent's first model
         model_key = chat_query.modelKey
@@ -2597,22 +2758,29 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             agent_toolsets = filtered_toolsets
 
         # ============================================================================
-        # LOAD TOOLSET CONFIGS FOR EXECUTING USER (SECURITY-CRITICAL)
+        # LOAD TOOLSET CONFIGS (SECURITY-CRITICAL)
         # ============================================================================
-        # Load toolset configs from ETCD using the EXECUTING user's ID, not the owner's.
+        # For normal agents: load toolset configs using the EXECUTING user's ID.
         # This ensures that when a shared agent is executed, the credentials of the
         # user making the request are used — not the agent creator's credentials.
+        #
+        # For service account agents: load toolset configs using the AGENT KEY.
+        # The agent has its own credentials stored at /services/toolsets/{instanceId}/{agentKey}
+        # These credentials are shared across all users who use this agent.
         #
         # SECURITY MODEL:
         # 1. Toolset nodes in graph DB contain ONLY: instanceId, name, displayName, tools
         # 2. NO userId is stored in toolset nodes (prevents credential leakage)
-        # 3. User credentials fetched from: /services/toolsets/{instanceId}/{userId}
-        # 4. userId ALWAYS comes from authenticated request context (not stored in DB)
-        # 5. instanceId is the UUID of the admin-created toolset instance
+        # 3. User credentials: /services/toolsets/{instanceId}/{userId}
+        # 4. Agent credentials: /services/toolsets/{instanceId}/{agentKey}
+        # 5. The lookup key comes from authenticated request context (user) or agent key
         # ============================================================================
 
+        is_service_account = bool(agent.get("isServiceAccount", False))
         executing_user_id = user_context["userId"]
-        toolset_configs: dict = {}  # SENSITIVE: Contains user credentials
+        # For service account agents, credentials are keyed by agentKey not userId
+        credential_lookup_id = agent_id if is_service_account else executing_user_id
+        toolset_configs: dict = {}  # SENSITIVE: Contains user/agent credentials
 
         # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
         named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
@@ -2625,12 +2793,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 Uses instanceId (admin-created instance) if available, otherwise falls
                 back to the legacy toolset name for backward compatibility.
+                For service account agents, uses agentKey as the credential owner.
                 """
                 instance_id = toolset.get("instanceId")
                 toolset_name = toolset.get("name", "")
                 lookup_key = instance_id
                 try:
-                    etcd_path = get_toolset_config_path(lookup_key, executing_user_id)
+                    etcd_path = get_toolset_config_path(lookup_key, credential_lookup_id)
                     config = await services["config_service"].get_config(etcd_path)
                     return toolset, config
                 except Exception as exc:
@@ -2659,17 +2828,19 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 elif config:
                     # Config saved but authentication not completed (e.g. OAuth flow pending)
                     unauthenticated_toolset_display_names.append(display_name)
+                    cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
                     logger.warning(
                         f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
-                        f"authenticated for user '{executing_user_id}'. User needs to complete the auth flow."
+                        f"authenticated for {cred_owner}. Auth flow needs to be completed."
                     )
                 else:
                     # No config found at all
                     missing_toolset_display_names.append(display_name)
+                    cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
                     logger.warning(
-                        f"Toolset config not found for user '{executing_user_id}' / "
+                        f"Toolset config not found for {cred_owner} / "
                         f"toolset '{toolset_name}' (instance='{instance_id}'). "
-                        "User needs to configure this integration."
+                        "Credentials need to be configured."
                     )
 
             # Hard-block if ANY toolset is either unconfigured or unauthenticated
@@ -2682,13 +2853,21 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_toolset_display_names)
                     problem_parts.append(f"not authenticated: {unauth_list}")
 
-                error_message = (
-                    f"This agent requires the following toolset(s) to be set up — "
-                    f"{'; '.join(problem_parts)}. "
-                    "Please connect your account(s) in Settings → Toolsets before using this agent."
-                )
+                if is_service_account:
+                    error_message = (
+                        f"This service account agent requires the following toolset(s) to be configured — "
+                        f"{'; '.join(problem_parts)}. "
+                        "Please configure the agent's toolset credentials in the Agent Builder → Manage Credentials."
+                    )
+                else:
+                    error_message = (
+                        f"This agent requires the following toolset(s) to be set up — "
+                        f"{'; '.join(problem_parts)}. "
+                        "Please connect your account(s) in Settings → Toolsets before using this agent."
+                    )
                 logger.info(
-                    f"Blocking agent {agent_id} execution for user '{executing_user_id}': "
+                    f"Blocking agent {agent_id} execution "
+                    f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
                     f"toolset issue(s) — {'; '.join(problem_parts)}"
                 )
 
@@ -2785,6 +2964,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "knowledge": agent_knowledge,
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
+            "is_service_account": is_service_account,
         }
 
         return StreamingResponse(

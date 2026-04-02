@@ -11,6 +11,7 @@ import type {
   ConnectorInstance,
 } from 'src/types/agent';
 import { KBPermission } from 'src/sections/knowledgebase/types/kb';
+import type { MyToolset, PaginationInfo, BackendFilterCounts } from 'src/services/toolset-api';
 
 export interface PaginationParams {
   page?: number;
@@ -536,7 +537,106 @@ class AgentApiService {
     const response = await axios.get(`/api/v1/agents/${agentId}/permissions`);
     return response.data.permissions;
   }
-  
+
+  // ============================================================================
+  // Agent-Scoped Toolset Methods (Service Account Agents)
+  // Credentials are stored at /services/toolsets/{instanceId}/{agentKey} in etcd.
+  // ============================================================================
+
+  /**
+   * Get all toolset instances with agent-level auth status for a service account agent.
+   */
+  static async getAgentToolsets(
+    agentKey: string,
+    params?: { includeRegistry?: boolean; page?: number; limit?: number; search?: string }
+  ): Promise<{ toolsets: MyToolset[]; pagination: PaginationInfo; filterCounts: BackendFilterCounts }> {
+    const response = await axios.get(`/api/v1/toolsets/agents/${agentKey}`, {
+      params,
+    });
+    const data = response.data;
+    // Provide fallback pagination for backward compat in case the server returns old shape
+    const toolsets = (data.toolsets || []) as MyToolset[];
+    const fallbackPagination: PaginationInfo = {
+      page: params?.page ?? 1,
+      limit: params?.limit ?? 20,
+      total: toolsets.length,
+      totalPages: 1,
+      hasNext: false,
+      hasPrev: false,
+    };
+    return {
+      toolsets,
+      pagination: data.pagination ?? fallbackPagination,
+      filterCounts: data.filterCounts ?? { all: toolsets.length, authenticated: 0, notAuthenticated: toolsets.length },
+    };
+  }
+
+  /**
+   * Authenticate a toolset instance on behalf of a service account agent
+   * (non-OAuth: API token, bearer, username/password).
+   */
+  static async authenticateAgentToolset(
+    agentKey: string,
+    instanceId: string,
+    auth: Record<string, any>
+  ): Promise<any> {
+    const response = await axios.post(
+      `/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/authenticate`,
+      { auth }
+    );
+    return response.data;
+  }
+
+  /**
+   * Update credentials for a toolset instance on behalf of a service account agent.
+   */
+  static async updateAgentToolsetCredentials(
+    agentKey: string,
+    instanceId: string,
+    auth: Record<string, any>
+  ): Promise<any> {
+    const response = await axios.put(
+      `/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/credentials`,
+      { auth }
+    );
+    return response.data;
+  }
+
+  /**
+   * Remove credentials for a toolset instance on behalf of a service account agent.
+   */
+  static async removeAgentToolsetCredentials(
+    agentKey: string,
+    instanceId: string
+  ): Promise<void> {
+    await axios.delete(
+      `/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/credentials`
+    );
+  }
+
+  /**
+   * Clear agent's OAuth tokens for an instance, forcing re-authentication.
+   */
+  static async reauthenticateAgentToolset(agentKey: string, instanceId: string): Promise<void> {
+    await axios.post(
+      `/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/reauthenticate`
+    );
+  }
+
+  /**
+   * Get OAuth authorization URL for a toolset instance scoped to a service account agent.
+   */
+  static async getAgentToolsetOAuthUrl(
+    agentKey: string,
+    instanceId: string,
+    baseUrl?: string
+  ): Promise<{ authorizationUrl: string; success: boolean }> {
+    const response = await axios.get(
+      `/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/oauth/authorize`,
+      { params: baseUrl ? { base_url: baseUrl } : undefined }
+    );
+    return response.data;
+  }
 }
 
 export default AgentApiService;

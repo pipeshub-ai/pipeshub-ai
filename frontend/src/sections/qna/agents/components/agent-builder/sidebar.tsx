@@ -43,10 +43,16 @@ interface FlowBuilderSidebarProps {
   configuredConnectors: Connector[];
   connectorRegistry: any[];
   toolsets: any[]; // Pre-loaded toolsets with status
-  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth
+  refreshToolsets: (agentKey?: string, isServiceAccount?: boolean, search?: string) => Promise<void>;
+  loadMoreToolsets: () => Promise<void>;
+  toolsetsHasMore: boolean;
+  toolsetsLoadingMore: boolean;
   isBusiness: boolean;
   activeToolsetTypes?: string[];
-  userId?: string; // For toolsets section
+  // Service account support
+  isServiceAccount?: boolean;
+  agentKey?: string;
+  onManageAgentToolsetCredentials?: (toolset: any) => void;
 }
 
 const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
@@ -59,9 +65,15 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   connectorRegistry,
   toolsets,
   refreshToolsets,
+  loadMoreToolsets,
+  toolsetsHasMore,
+  toolsetsLoadingMore,
   isBusiness,
   activeToolsetTypes = [],
-  userId = '',
+  // userId is kept for backward compat but unused (toolsets are passed pre-loaded)
+  isServiceAccount = false,
+  agentKey,
+  onManageAgentToolsetCredentials,
 }) => {
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState('');
@@ -383,9 +395,16 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         onAppToggle={handleAppToggle}
                         toolsets={toolsets}
                         refreshToolsets={refreshToolsets}
+                        onSearch={(q) => refreshToolsets(agentKey, isServiceAccount, q)}
+                        onLoadMore={loadMoreToolsets}
+                        hasMore={toolsetsHasMore}
+                        loadingMore={toolsetsLoadingMore}
                         loading={loading}
                         isBusiness={isBusiness}
                         activeToolsetTypes={activeToolsetTypes}
+                        isServiceAccount={isServiceAccount}
+                        agentKey={agentKey}
+                        onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
                       />
                     ) : config.name === 'LLM Models' ? (
                       <List dense sx={{ py: 0 }}>
