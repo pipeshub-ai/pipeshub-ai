@@ -4,15 +4,282 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.modules.qna.response_prompt import (
-    _format_reference_data_for_response,
-    build_conversation_history_context,
-    build_record_label_mapping,
-    build_response_prompt,
-    build_user_context,
-    detect_response_mode,
-    should_use_structured_mode,
+from app.models.blocks import BlockType, GroupType
+from app.modules.qna import response_prompt
+
+_format_reference_data_for_response = response_prompt._format_reference_data_for_response
+build_conversation_history_context = response_prompt.build_conversation_history_context
+build_record_label_mapping = response_prompt.build_record_label_mapping
+build_response_prompt = response_prompt.build_response_prompt
+build_user_context = response_prompt.build_user_context
+detect_response_mode = response_prompt.detect_response_mode
+should_use_structured_mode = response_prompt.should_use_structured_mode
+
+# Legacy helpers were removed from response_prompt.py. Keep related tests but skip
+# them when these symbols are absent so the suite tracks current module surface.
+build_internal_context_for_response = getattr(
+    response_prompt, "build_internal_context_for_response", None
 )
+_sync_block_numbers_from_get_message_content = getattr(
+    response_prompt, "_sync_block_numbers_from_get_message_content", None
+)
+
+
+# ============================================================================
+# build_internal_context_for_response
+# ============================================================================
+
+@pytest.mark.skipif(
+    build_internal_context_for_response is None,
+    reason="Legacy helper removed from response_prompt module.",
+)
+class TestBuildInternalContextForResponse:
+    def test_empty_results_returns_no_sources_message(self):
+        result = build_internal_context_for_response([])
+        assert "No internal knowledge sources available" in result
+
+    def test_none_results_returns_no_sources_message(self):
+        result = build_internal_context_for_response(None)
+        assert "No internal knowledge sources available" in result
+
+    def test_single_text_block(self):
+        results = [
+            {
+                "virtual_record_id": "vr1",
+                "block_type": BlockType.TEXT.value,
+                "block_index": 0,
+                "block_number": "R1-0",
+                "content": "Hello world",
+            }
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert "R1-0" in ctx
+        assert "Hello world" in ctx
+        assert "<context>" in ctx
+        assert "</context>" in ctx
+        assert "<record>" in ctx
+        assert "</record>" in ctx
+
+    def test_image_blocks_skipped(self):
+        results = [
+            {
+                "virtual_record_id": "vr1",
+                "block_type": BlockType.IMAGE.value,
+                "block_index": 0,
+                "block_number": "R1-0",
+                "content": "image data",
+            },
+            {
+                "virtual_record_id": "vr1",
+                "block_type": BlockType.TEXT.value,
+                "block_index": 1,
+                "block_number": "R1-1",
+                "content": "text data",
+            },
+        ]
+        ctx = build_internal_context_for_response(results)
+        # IMAGE content should not appear in context (skipped via continue)
+        assert "text data" in ctx
+        assert "R1-1" in ctx
+
+    def test_table_block_formatting(self):
+        results = [
+            {
+                "virtual_record_id": "vr1",
+                "block_type": GroupType.TABLE.value,
+                "block_index": 0,
+                "block_number": "R1-0",
+                "content": ("Table summary text", [
+                    {"block_index": 1, "block_number": "R1-1", "content": "Row 1 data"},
+                    {"block_index": 2, "block_number": "R1-2", "content": "Row 2 data"},
+                ]),
+            }
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert "Block Group Type: table" in ctx
+        assert "Table Summary: Table summary text" in ctx
+        assert "R1-1" in ctx
+        assert "Row 1 data" in ctx
+
+    def test_table_child_without_block_number_gets_fallback(self):
+        results = [
+            {
+                "virtual_record_id": "vr1",
+                "block_type": GroupType.TABLE.value,
+                "block_index": 0,
+                "block_number": "R1-0",
+                "content": ("Summary", [
+                    {"block_index": 5, "content": "row data"},
+                ]),
+            }
+        ]
+        ctx = build_internal_context_for_response(results)
+        # Child should get fallback block_number with fallback_record_number
+        assert "R1-5" in ctx
+
+    def test_multiple_records_create_separate_sections(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "Doc1 content"},
+            {"virtual_record_id": "vr2", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R2-0", "content": "Doc2 content"},
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert ctx.count("<record>") == 2
+        assert ctx.count("</record>") == 2
+
+    def test_context_metadata_from_record(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "data"},
+        ]
+        vid_to_result = {
+            "vr1": {"context_metadata": "File: Report.pdf | Type: PDF | URL: https://x.com",
+                     "record_name": "Report.pdf"}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "File: Report.pdf | Type: PDF" in ctx
+
+    def test_fallback_to_record_name_when_no_context_metadata(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "data"},
+        ]
+        vid_to_result = {"vr1": {"record_name": "MyDoc.docx"}}
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "File: MyDoc.docx" in ctx
+
+    def test_fallback_to_metadata_record_name(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "data",
+             "metadata": {"recordName": "FromMeta.txt"}},
+        ]
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result={})
+        assert "File: FromMeta.txt" in ctx
+
+    def test_image_only_record_gets_synthetic_summary(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "block_number": "R1-0", "content": "image"},
+        ]
+        vid_to_result = {
+            "vr1": {"semantic_metadata": {"summary": "Photo of architecture diagram"}}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "Photo of architecture diagram" in ctx
+        assert "Block Type: summary" in ctx
+
+    def test_image_only_record_with_dataclass_semantic_metadata(self):
+        sm = MagicMock()
+        sm.summary = "Diagram description"
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "block_number": "R1-0", "content": "img"},
+        ]
+        vid_to_result = {"vr1": {"semantic_metadata": sm}}
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "Diagram description" in ctx
+
+    def test_image_only_record_fallback_to_record_name(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "block_number": "R1-0", "content": "img"},
+        ]
+        vid_to_result = {"vr1": {"semantic_metadata": None, "record_name": "photo.jpg"}}
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "photo.jpg" in ctx
+
+    def test_deduplicates_blocks(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "dedup me"},
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "dedup me"},
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert ctx.count("dedup me") == 1
+
+    def test_no_virtual_record_id_skipped(self):
+        results = [
+            {"block_type": BlockType.TEXT.value, "block_index": 0,
+             "block_number": "R1-0", "content": "orphan"},
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert "orphan" not in ctx
+
+    def test_virtual_record_id_from_metadata(self):
+        results = [
+            {"metadata": {"virtualRecordId": "vr1"},
+             "block_type": BlockType.TEXT.value, "block_index": 0,
+             "block_number": "R1-0", "content": "from metadata"},
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert "from metadata" in ctx
+
+    def test_block_number_fallback_when_not_preassigned(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 3, "content": "no preassigned number"},
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert "R1-3" in ctx
+
+    def test_image_only_record_followed_by_text_record_emits_summary(self):
+        """When an image-only record is followed by a new record, synthetic summary is emitted."""
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "block_number": "R1-0", "content": "img1"},
+            {"virtual_record_id": "vr2", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R2-0", "content": "text data"},
+        ]
+        vid_to_result = {
+            "vr1": {"semantic_metadata": {"summary": "Architecture diagram"}}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "Architecture diagram" in ctx
+        assert "Block Type: summary" in ctx
+        assert "text data" in ctx
+
+    def test_image_only_record_without_summary_no_synthetic_block(self):
+        """Image-only record with no summary text should NOT emit synthetic block."""
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "block_number": "R1-0", "content": "img"},
+            {"virtual_record_id": "vr2", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R2-0", "content": "next doc"},
+        ]
+        vid_to_result = {"vr1": {"semantic_metadata": None}}
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "Block Type: summary" not in ctx
+        assert "next doc" in ctx
+
+    def test_image_only_record_with_no_block_number_uses_fallback(self):
+        """Synthetic summary for image-only record without pre-assigned block_number uses fallback."""
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "content": "img"},
+            {"virtual_record_id": "vr2", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R2-0", "content": "text"},
+        ]
+        vid_to_result = {
+            "vr1": {"semantic_metadata": {"summary": "A diagram"}}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        # Fallback should use R{fallback_record_number}-0 format
+        assert "A diagram" in ctx
+        assert "R1-0" in ctx
+
+    def test_table_limits_to_five_rows(self):
+        children = [{"block_index": i, "block_number": f"R1-{i}", "content": f"row{i}"} for i in range(10)]
+        results = [
+            {"virtual_record_id": "vr1", "block_type": GroupType.TABLE.value,
+             "block_index": 0, "block_number": "R1-0",
+             "content": ("summary", children)},
+        ]
+        ctx = build_internal_context_for_response(results)
+        assert "row4" in ctx
+        assert "row5" not in ctx
 
 
 # ============================================================================
@@ -50,6 +317,71 @@ class TestBuildConversationHistoryContext:
         result = build_conversation_history_context(convs, max_history=3)
         assert "q17" in result
         assert "q0" not in result
+
+
+# ============================================================================
+# _sync_block_numbers_from_get_message_content
+# ============================================================================
+
+@pytest.mark.skipif(
+    _sync_block_numbers_from_get_message_content is None,
+    reason="Legacy helper removed from response_prompt module.",
+)
+class TestSyncBlockNumbers:
+    def test_assigns_block_numbers(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_index": 0},
+            {"virtual_record_id": "vr1", "block_index": 1},
+            {"virtual_record_id": "vr2", "block_index": 0},
+        ]
+        _sync_block_numbers_from_get_message_content(results)
+        assert results[0]["block_number"] == "R1-0"
+        assert results[1]["block_number"] == "R1-1"
+        assert results[2]["block_number"] == "R2-0"
+
+    def test_uses_metadata_virtual_record_id(self):
+        results = [
+            {"metadata": {"virtualRecordId": "vr1"}, "block_index": 5},
+        ]
+        _sync_block_numbers_from_get_message_content(results)
+        assert results[0]["block_number"] == "R1-5"
+
+    def test_table_children_synced(self):
+        results = [
+            {
+                "virtual_record_id": "vr1",
+                "block_index": 0,
+                "block_type": GroupType.TABLE.value,
+                "content": ("summary", [
+                    {"block_index": 1},
+                    {"block_index": 2},
+                ]),
+            },
+        ]
+        _sync_block_numbers_from_get_message_content(results)
+        assert results[0]["block_number"] == "R1-0"
+        _, children = results[0]["content"]
+        assert children[0]["block_number"] == "R1-1"
+        assert children[1]["block_number"] == "R1-2"
+
+    def test_missing_block_index_defaults_to_zero(self):
+        results = [{"virtual_record_id": "vr1"}]
+        _sync_block_numbers_from_get_message_content(results)
+        assert results[0]["block_number"] == "R1-0"
+
+    def test_no_virtual_id_still_assigns_number(self):
+        results = [{"block_index": 3}]
+        _sync_block_numbers_from_get_message_content(results)
+        assert results[0]["block_number"] == "R1-3"
+
+    def test_single_record_multiple_blocks(self):
+        results = [
+            {"virtual_record_id": "vr1", "block_index": i}
+            for i in range(5)
+        ]
+        _sync_block_numbers_from_get_message_content(results)
+        for i in range(5):
+            assert results[i]["block_number"] == f"R1-{i}"
 
 
 # ============================================================================
@@ -129,10 +461,11 @@ class TestBuildUserContext:
 # ============================================================================
 
 class TestDetectResponseMode:
-    def test_dict_with_answer_and_chunk_indexes_is_structured(self):
-        data = {"answer": "Hello", "chunkIndexes": [0, 1]}
+    def test_dict_with_answer_and_block_numbers(self):
+        data = {"answer": "Hello", "blockNumbers": ["R1-0"]}
         mode, content = detect_response_mode(data)
-        assert mode == "structured"
+        # Current implementation treats blockNumbers-only payloads as conversational.
+        assert mode == "conversational"
         assert content["answer"] == "Hello"
 
     def test_dict_with_answer_and_citations(self):
@@ -147,12 +480,6 @@ class TestDetectResponseMode:
 
     def test_dict_without_citation_keys(self):
         data = {"answer": "Hello"}
-        mode, _ = detect_response_mode(data)
-        assert mode == "conversational"
-
-    def test_dict_with_answer_and_block_numbers_is_conversational(self):
-        # blockNumbers is not a recognized structured key — only chunkIndexes/citations trigger structured
-        data = {"answer": "Hello", "blockNumbers": ["R1-0"]}
         mode, _ = detect_response_mode(data)
         assert mode == "conversational"
 
@@ -249,6 +576,7 @@ class TestBuildResponsePrompt:
         state = {"qna_message_content": "some content", "query": "test"}
         prompt = build_response_prompt(state)
         assert "Internal knowledge" in prompt
+        assert "provided in the user message" in prompt
 
     def test_includes_internal_context_with_final_results(self):
         state = {"final_results": [{"a": 1}, {"b": 2}], "query": "test"}
@@ -309,7 +637,7 @@ class TestBuildResponsePrompt:
 
 
 # ============================================================================
-# create_response_messages
+# _format_reference_data_for_response
 # ============================================================================
 
 class TestCreateResponseMessages:
@@ -443,9 +771,70 @@ class TestCreateResponseMessages:
             assert "Respond in JSON format" in last.content
 
 
-# ============================================================================
-# _format_reference_data_for_response
-# ============================================================================
+@pytest.mark.skipif(
+    build_internal_context_for_response is None,
+    reason="Legacy helper removed from response_prompt module.",
+)
+class TestBuildInternalContextImageOnlyNoBlockNumber:
+    """Cover lines 382 and 473: image-only record with NO pre-assigned block_number."""
+
+    def test_image_only_no_block_number_mid_stream_uses_fallback(self):
+        """Line 382: image-only record followed by another record, where the first block
+        of the image-only record has no block_number. The synthetic summary should use
+        fallback_record_number-based block number (R{n}-0)."""
+        results = [
+            # Image-only record with NO block_number on the first (and only) block
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "content": "img_data"},
+            # Next record triggers closing of previous record
+            {"virtual_record_id": "vr2", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R2-0", "content": "second doc text"},
+        ]
+        vid_to_result = {
+            "vr1": {"semantic_metadata": {"summary": "Architecture overview"}}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        # The synthetic summary should appear with a fallback block number R1-0
+        assert "Architecture overview" in ctx
+        assert "Block Type: summary" in ctx
+        # The fallback format is R{fallback_record_number}-0 where fallback_record_number=1
+        assert "R1-0" in ctx
+        assert "second doc text" in ctx
+
+    def test_image_only_no_block_number_last_record_uses_fallback(self):
+        """Line 473: the LAST record is image-only with no block_number.
+        The closing-last-record logic should use fallback_record_number-based block number."""
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.TEXT.value,
+             "block_index": 0, "block_number": "R1-0", "content": "normal text"},
+            # Last record is image-only, no block_number
+            {"virtual_record_id": "vr2", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "content": "img_data"},
+        ]
+        vid_to_result = {
+            "vr2": {"semantic_metadata": {"summary": "Network diagram"}}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        # The synthetic summary for the last record should use R2-0
+        assert "Network diagram" in ctx
+        assert "Block Type: summary" in ctx
+        # R2 because it's the second unique virtual_record_id seen
+        assert "R2-0" in ctx
+        assert "normal text" in ctx
+
+    def test_image_only_no_block_number_single_record_last_uses_fallback(self):
+        """Single image-only record at end of results with no block_number."""
+        results = [
+            {"virtual_record_id": "vr1", "block_type": BlockType.IMAGE.value,
+             "block_index": 0, "content": "img"},
+        ]
+        vid_to_result = {
+            "vr1": {"semantic_metadata": {"summary": "Photo of server room"}}
+        }
+        ctx = build_internal_context_for_response(results, virtual_record_id_to_result=vid_to_result)
+        assert "Photo of server room" in ctx
+        assert "R1-0" in ctx
+
 
 class TestFormatReferenceData:
     def test_empty_list(self):

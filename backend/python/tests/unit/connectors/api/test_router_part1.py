@@ -146,7 +146,8 @@ class TestGetMimeTypeFromRecord:
     def test_empty_mime_type_triggers_fallback(self):
         record = _mock_record(mime_type="", record_name="data.csv")
         result = get_mime_type_from_record(record)
-        assert result == "text/csv"
+        # Windows registry may guess spreadsheet MIME for .csv
+        assert result in ("text/csv", "application/vnd.ms-excel")
 
     def test_no_extension_triggers_octet_stream(self):
         record = _mock_record(mime_type="", record_name="README")
