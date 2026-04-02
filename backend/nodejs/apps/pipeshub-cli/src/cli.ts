@@ -16,7 +16,7 @@ import { CredentialStore } from "./auth/credential_store";
 import { getBackendBaseUrl } from "./auth/backend_url";
 import { loadEnvFiles } from "./cli/env";
 import {
-  pickFolderSyncConnectorForIndexing,
+  pickLocalFsConnectorForIndexing,
   printConnectorIndexingSummary,
   runIndexingAuthenticated,
   runIndexingPickPrompt,
@@ -39,7 +39,7 @@ const program = new Command();
 program
   .name("pipeshub")
   .description(
-    "Pipeshub CLI — authenticate, link Folder Sync, run sync, and manage indexing."
+    "Pipeshub CLI — authenticate, link Local FS, run sync, and manage indexing."
   )
   .version("0.1.0");
 
@@ -89,7 +89,7 @@ program
 program
   .command("setup")
   .description(
-    "Interactively link a personal Folder Sync connector and save the folder path. Configure filters in the web app."
+    "Interactively link a personal Local FS connector and save the folder path. Configure filters in the web app."
   )
   .argument("[root]", "Optional absolute path to the folder (otherwise you are prompted).")
   .action(async (rootArg: string | undefined) => {
@@ -152,13 +152,13 @@ program
 const indexingCmd = program
   .command("indexing")
   .description(
-    "Knowledge-base indexing: choose a Folder Sync connector, then list / reindex / queue-manual (subcommands)."
+    "Knowledge-base indexing: choose a Local FS connector, then list / reindex / queue-manual (subcommands)."
   );
 
 indexingCmd
   .command("status")
   .description(
-    "Pick a Folder Sync connector (see details), then KB summary and file pick."
+    "Pick a Local FS connector (see details), then KB summary and file pick."
   )
   .action(async () => {
     await runIndexingAuthenticated(runIndexingStatusFlow);
@@ -167,11 +167,11 @@ indexingCmd
 indexingCmd
   .command("list")
   .description(
-    "Choose a Folder Sync connector, then list KB records (first page, up to 50 rows)."
+    "Choose a Local FS connector, then list KB records (first page, up to 50 rows)."
   )
   .action(async () => {
     await runIndexingAuthenticated(async (api) => {
-      const cid = await pickFolderSyncConnectorForIndexing(api);
+      const cid = await pickLocalFsConnectorForIndexing(api);
       const page = 1;
       const limit = 50;
       const allForConnector = await api.listKnowledgeBaseRecordsForConnectorInstance(
@@ -215,7 +215,7 @@ indexingCmd
         console.log(`Queued indexing for record ${rid}.`);
         process.exit(0);
       }
-      const cid = await pickFolderSyncConnectorForIndexing(api);
+      const cid = await pickLocalFsConnectorForIndexing(api);
       try {
         await printConnectorIndexingSummary(api, cid);
         await runIndexingPickPrompt(api, cid, "Pick a file to index:");
@@ -234,7 +234,7 @@ indexingCmd
   )
   .action(async () => {
     await runIndexingAuthenticated(async (api) => {
-      const cid = await pickFolderSyncConnectorForIndexing(api);
+      const cid = await pickLocalFsConnectorForIndexing(api);
       const { ok } = await prompts({
         type: "confirm",
         name: "ok",
@@ -314,7 +314,7 @@ program
         let hint = "";
         if (e.status === 401 || e.status === 403) {
           hint =
-            " Your OAuth client may need CONNECTOR_READ, CONNECTOR_WRITE, CONNECTOR_SYNC, KB_WRITE, and CRAWL_WRITE (for scheduled Folder Sync in crawling manager).";
+            " Your OAuth client may need CONNECTOR_READ, CONNECTOR_WRITE, CONNECTOR_SYNC, KB_WRITE, and CRAWL_WRITE (for scheduled Local FS in crawling manager).";
         }
         console.error(`${e.message}${hint}`);
         process.exit(1);

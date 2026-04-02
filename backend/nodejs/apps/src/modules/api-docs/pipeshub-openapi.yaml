@@ -4165,9 +4165,9 @@ components:
           enum: [sync, agent]
           description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
 
-    FolderSyncFileEvent:
+    LocalFsFileEvent:
       type: object
-      description: Single filesystem change event for Folder Sync replay
+      description: Single filesystem change event for Local FS replay
       required:
         - type
         - path
@@ -4196,9 +4196,9 @@ components:
           type: boolean
           description: Must be false when sent from the CLI (directories are expanded client-side)
 
-    FolderSyncFileEventBatchRequest:
+    LocalFsFileEventBatchRequest:
       type: object
-      description: Batch of Folder Sync file events (also accepts a bare JSON array of events, which the server wraps)
+      description: Batch of Local FS file events (also accepts a bare JSON array of events, which the server wraps)
       required:
         - batchId
         - events
@@ -4209,15 +4209,15 @@ components:
         events:
           type: array
           items:
-            $ref: '#/components/schemas/FolderSyncFileEvent'
+            $ref: '#/components/schemas/LocalFsFileEvent'
         timestamp:
           type: integer
           format: int64
           description: Batch timestamp in epoch milliseconds
 
-    FolderSyncFileEventStats:
+    LocalFsFileEventStats:
       type: object
-      description: Counts returned after applying a Folder Sync file event batch
+      description: Counts returned after applying a Local FS file event batch
       properties:
         processed:
           type: integer
@@ -17778,11 +17778,11 @@ paths:
     post:
       tags:
         - Connector Control
-      summary: Submit Folder Sync file events
+      summary: Submit Local FS file events
       description: |
-        Replays a batch of filesystem change events for a **Folder Sync** connector instance.
+        Replays a batch of filesystem change events for a **Local FS** connector instance.
         Used by the local CLI to apply incremental changes without a full directory rescan.
-        Only Folder Sync connector instances accept this endpoint; other connector types receive 400.
+        Only Local FS connector instances accept this endpoint; other connector types receive 400.
       operationId: submitConnectorFileEvents
       security:
         - bearerAuth: []
@@ -17798,7 +17798,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/FolderSyncFileEventBatchRequest'
+              $ref: '#/components/schemas/LocalFsFileEventBatchRequest'
       responses:
         '200':
           description: File event batch applied
@@ -17820,9 +17820,9 @@ paths:
                   batchId:
                     type: string
                   stats:
-                    $ref: '#/components/schemas/FolderSyncFileEventStats'
+                    $ref: '#/components/schemas/LocalFsFileEventStats'
         '400':
-          description: Not a Folder Sync connector, or invalid path or event payload
+          description: Not a Local FS connector, or invalid path or event payload
         '401':
           description: Unauthorized
         '403':

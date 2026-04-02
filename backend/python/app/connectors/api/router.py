@@ -62,9 +62,9 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
-from app.connectors.sources.folder_sync.connector import FolderSyncConnector
-from app.connectors.sources.folder_sync.models import (
-    FolderSyncFileEventBatchRequest,
+from app.connectors.sources.local_fs.connector import LocalFsConnector
+from app.connectors.sources.local_fs.models import (
+    LocalFsFileEventBatchRequest,
 )
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
@@ -86,7 +86,7 @@ router = APIRouter()
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
 
 
-def _unwrap_folder_sync_file_event_payload(raw_payload: Any) -> Any:
+def _unwrap_local_fs_file_event_payload(raw_payload: Any) -> Any:
     candidate = raw_payload
 
     for _ in range(3):
@@ -117,9 +117,9 @@ def _unwrap_folder_sync_file_event_payload(raw_payload: Any) -> Any:
     return candidate
 
 
-async def _parse_folder_sync_file_event_batch_request(
+async def _parse_local_fs_file_event_batch_request(
     request: Request,
-) -> FolderSyncFileEventBatchRequest:
+) -> LocalFsFileEventBatchRequest:
     raw_body = await request.body()
     if not raw_body:
         raise HTTPException(
@@ -132,12 +132,12 @@ async def _parse_folder_sync_file_event_batch_request(
     except json.JSONDecodeError:
         raw_payload = raw_body.decode("utf-8", errors="replace")
 
-    payload = _unwrap_folder_sync_file_event_payload(raw_payload)
+    payload = _unwrap_local_fs_file_event_payload(raw_payload)
     now = get_epoch_timestamp_in_ms()
 
     if isinstance(payload, list):
         payload = {
-            "batchId": f"foldersync-replay-{now}",
+            "batchId": f"localfs-replay-{now}",
             "events": payload,
             "timestamp": now,
         }
@@ -147,22 +147,22 @@ async def _parse_folder_sync_file_event_batch_request(
         payload = {
             "batchId": batch_id
             if batch_id is not None
-            else f"foldersync-replay-{now}",
+            else f"localfs-replay-{now}",
             "events": payload.get("events"),
             "timestamp": timestamp if timestamp is not None else now,
         }
 
     try:
-        return FolderSyncFileEventBatchRequest.model_validate(payload)
+        return LocalFsFileEventBatchRequest.model_validate(payload)
     except ValidationError as exc:
         logger.warning(
-            "Invalid Folder Sync file event batch payload",
+            "Invalid Local FS file event batch payload",
             extra={"errors": exc.errors()},
         )
         raise HTTPException(
             status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
             detail={
-                "message": "Invalid Folder Sync file event batch payload",
+                "message": "Invalid Local FS file event batch payload",
                 "errors": exc.errors(),
             },
         ) from exc
@@ -2947,7 +2947,7 @@ async def submit_connector_file_events(
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-    payload = await _parse_folder_sync_file_event_batch_request(request)
+    payload = await _parse_local_fs_file_event_batch_request(request)
 
     if not user_id or not org_id:
         raise HTTPException(
@@ -2968,10 +2968,11 @@ async def submit_connector_file_events(
         )
 
     connector_type = str(instance.get("type", ""))
-    if _normalize_connector_type_value(connector_type) != "foldersync":
+    _ct_norm = _normalize_connector_type_value(connector_type)
+    if _ct_norm not in ("foldersync", "localfs"):
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="File event replay is only supported for Folder Sync connectors",
+            detail="File event replay is only supported for Local FS connectors",
         )
 
     await _update_connector_status(graph_provider, connector_id, AppStatus.SYNCING.value)
@@ -2987,10 +2988,10 @@ async def submit_connector_file_events(
             is_admin=is_admin,
             logger=logger,
         )
-        if not isinstance(connector, FolderSyncConnector):
+        if not isinstance(connector, LocalFsConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Initialized connector is not a Folder Sync connector",
+                detail="Initialized connector is not a Local FS connector",
             )
 
         stats = await connector.apply_file_event_batch(payload.events)
