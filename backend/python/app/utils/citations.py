@@ -78,7 +78,9 @@ def _renumber_citation_links(
         new_num = url_to_citation_num.get(url)
         if new_num is not None:
             replacement = f"[{new_num}]({match.group(2)})"
-            text = text[:match.start()] + replacement + text[match.end():]
+        else:
+            replacement = ""
+        text = text[:match.start()] + replacement + text[match.end():]
     return text
 
 
