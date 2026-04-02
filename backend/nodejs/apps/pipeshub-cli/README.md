@@ -33,6 +33,10 @@ Or run directly without linking:
 node dist/cli.js --help
 ```
 
+## Development
+
+Run unit tests from this directory: `npm test` (same stack as `backend/nodejs/apps`: Mocha + ts-node + c8, parallel by default). Coverage is written under `coverage/` when using `npm run test:coverage`.
+
 ## Quick Start
 
 ### 1. Log in
