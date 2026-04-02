@@ -852,7 +852,6 @@ class ZoomConnector(BaseConnector):
         record_group_id: Optional[str],
         share_url: str = "",
     ) -> MeetingRecord:
-        str(meeting_obj.id) if meeting_obj.id is not None else ""
         topic = meeting_obj.topic
         host_id = meeting_obj.host_id
         start_time = meeting_obj.start_time
