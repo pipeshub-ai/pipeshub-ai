@@ -2184,8 +2184,8 @@ async def _prepare_connector_config(
     # Only authorizeUrl and tokenUrl: use etcd when present, else registry
     if auth_type == "OAUTH":
         if shared_oauth_config:
-            authorize_url = shared_oauth_config.get("authorizeUrl", "")
-            token_url = shared_oauth_config.get("tokenUrl", "")
+            authorize_url = shared_oauth_config.get("authorizeUrl", "") or registry_oauth_config.get("authorizeUrl", "")
+            token_url = shared_oauth_config.get("tokenUrl", "") or registry_oauth_config.get("tokenUrl", "")
         else:
             authorize_url = registry_oauth_config.get("authorizeUrl", "")
             token_url = registry_oauth_config.get("tokenUrl", "")
@@ -3373,8 +3373,8 @@ async def update_connector_instance_config(
 
                 # Only authorizeUrl and tokenUrl: use etcd when present, else registry
                 if shared_oauth_config:
-                    authorize_url = shared_oauth_config.get("authorizeUrl", "")
-                    token_url = shared_oauth_config.get("tokenUrl", "")
+                    authorize_url = shared_oauth_config.get("authorizeUrl", "") or registry_oauth_config.get("authorizeUrl", "")
+                    token_url = shared_oauth_config.get("tokenUrl", "") or registry_oauth_config.get("tokenUrl", "")
                 else:
                     authorize_url = registry_oauth_config.get("authorizeUrl", "")
                     token_url = registry_oauth_config.get("tokenUrl", "")

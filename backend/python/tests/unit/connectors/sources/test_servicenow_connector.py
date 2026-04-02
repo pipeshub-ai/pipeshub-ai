@@ -1090,7 +1090,7 @@ class TestSyncKnowledgeBases:
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_knowledge_bases([admin_user])
-            tx.batch_upsert_record_group_permissions.assert_called()
+            servicenow_connector.data_entities_processor.on_new_record_groups.assert_called()
 
     async def test_empty_kbs(self, servicenow_connector):
         servicenow_connector.kb_sync_point = AsyncMock()
