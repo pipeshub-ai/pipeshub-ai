@@ -16,7 +16,6 @@ import hashlib
 import mimetypes
 import os
 import uuid
-from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +36,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
+    create_initialized_data_source_entities_processor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
@@ -69,6 +69,10 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.utils.time_conversion import parse_timestamp
+
+from .models import FolderSyncFileEvent, FolderSyncFileEventBatchStats
+from .utils import parse_sync_bool
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
 FOLDER_SYNC_CONNECTOR_NAME = "Folder Sync"
@@ -81,7 +85,10 @@ INCLUDE_SUBFOLDERS_KEY = "include_subfolders"
 def _stat_created_epoch_ms(st: os.stat_result) -> int:
     """
     Best-effort file creation time for sync filters.
-    Uses st_birthtime when present (macOS/BSD); otherwise st_ctime (Linux metadata change).
+
+    Uses st_birthtime when present (macOS/BSD). Otherwise uses st_ctime: on Linux
+    this is metadata change time (not birth); on Windows ``st_ctime`` is creation
+    time, which matches the intended “created” semantics.
     """
     birth = getattr(st, "st_birthtime", None)
     if birth is not None:
@@ -89,18 +96,12 @@ def _stat_created_epoch_ms(st: os.stat_result) -> int:
     return int(st.st_ctime * 1000)
 
 
-def _iso_to_epoch_ms(iso_s: Optional[str]) -> Optional[int]:
-    if not iso_s:
-        return None
-    dt = datetime.fromisoformat(iso_s.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
-
-
 def _bounds_ms_from_datetime_filter(fl: Filter) -> Tuple[Optional[int], Optional[int]]:
     after_iso, before_iso = fl.get_datetime_iso()
-    return _iso_to_epoch_ms(after_iso), _iso_to_epoch_ms(before_iso)
+    return (
+        parse_timestamp(after_iso) if after_iso else None,
+        parse_timestamp(before_iso) if before_iso else None,
+    )
 
 
 def _folder_sync_passes_date_filters(
@@ -143,6 +144,11 @@ def _validate_host_path(root: str) -> Tuple[bool, str]:
     """
     Return (ok, detail) for whether this process can use ``root`` as a sync root.
     ``detail`` is a resolved path when ok, or a short reason when not.
+
+    Works on Windows and POSIX: :class:`pathlib.Path` resolves drive and UNC
+    paths; ``os.access`` is used for readability. On Windows, execute
+    permission is not checked the same way as on Unix, but the read check still
+    reflects typical access failures.
     """
     raw = root.strip()
     if not raw:
@@ -186,7 +192,7 @@ class FolderSyncApp(App):
         .add_documentation_link(
             DocumentationLink(
                 "Folder Sync",
-                "https://docs.pipeshub.ai/connectors/folder-sync",
+                "https://docs.pipeshub.com/connectors/overview",
                 "setup",
             )
         )
@@ -317,13 +323,6 @@ class FolderSyncConnector(BaseConnector):
         self.batch_size: int = 50
         self._owner_user_for_permissions: Optional[User] = None
 
-    def _parse_bool(self, raw: Any, default: bool) -> bool:
-        if isinstance(raw, bool):
-            return raw
-        if isinstance(raw, str):
-            return raw.strip().lower() in ("1", "true", "yes", "on")
-        return default
-
     async def init(self) -> bool:
         try:
             config = await self.config_service.get_config(
@@ -338,7 +337,7 @@ class FolderSyncConnector(BaseConnector):
             sync_cfg = config.get("sync", {}) or {}
             root = str(sync_cfg.get(SYNC_ROOT_PATH_KEY, "")).strip()
             self.sync_root_path = root
-            self.include_subfolders = self._parse_bool(
+            self.include_subfolders = parse_sync_bool(
                 sync_cfg.get(INCLUDE_SUBFOLDERS_KEY, True), True
             )
             self.batch_size = _parse_batch_size_from_sync(sync_cfg)
@@ -406,7 +405,7 @@ class FolderSyncConnector(BaseConnector):
         )
         sync_cfg = (config or {}).get("sync", {}) or {}
         self.sync_root_path = str(sync_cfg.get(SYNC_ROOT_PATH_KEY, "")).strip()
-        self.include_subfolders = self._parse_bool(
+        self.include_subfolders = parse_sync_bool(
             sync_cfg.get(INCLUDE_SUBFOLDERS_KEY, True), True
         )
         self.batch_size = _parse_batch_size_from_sync(sync_cfg)
@@ -616,8 +615,8 @@ class FolderSyncConnector(BaseConnector):
 
     async def apply_file_event_batch(
         self,
-        events: List[Dict[str, Any]],
-    ) -> Dict[str, int]:
+        events: List[FolderSyncFileEvent],
+    ) -> FolderSyncFileEventBatchStats:
         await self._reload_sync_settings()
         root_raw = self.sync_root_path.strip()
         if not root_raw:
@@ -643,10 +642,10 @@ class FolderSyncConnector(BaseConnector):
             )
 
             for event in events:
-                event_type = str(event.get("type", "")).upper()
-                rel_path = str(event.get("path", "")).strip().replace("\\", "/")
+                event_type = event.type.strip().upper()
+                rel_path = event.path.strip().replace("\\", "/")
                 old_rel_path = (
-                    str(event.get("oldPath", "")).strip().replace("\\", "/")
+                    event.oldPath.strip().replace("\\", "/") if event.oldPath else ""
                 )
 
                 if not rel_path:
@@ -654,7 +653,7 @@ class FolderSyncConnector(BaseConnector):
                         status_code=HttpStatusCode.BAD_REQUEST.value,
                         detail="File event path is required",
                     )
-                if event.get("isDirectory"):
+                if event.isDirectory:
                     raise HTTPException(
                         status_code=HttpStatusCode.BAD_REQUEST.value,
                         detail="Directory events must be expanded client-side before replay",
@@ -695,10 +694,7 @@ class FolderSyncConnector(BaseConnector):
                     detail=f"Unsupported Folder Sync file event type: {event_type}",
                 )
 
-            return {
-                "processed": processed,
-                "deleted": deleted,
-            }
+            return FolderSyncFileEventBatchStats(processed=processed, deleted=deleted)
         finally:
             self._owner_user_for_permissions = None
 
@@ -861,10 +857,9 @@ class FolderSyncConnector(BaseConnector):
         config_service: ConfigurationService,
         connector_id: str,
     ) -> "FolderSyncConnector":
-        data_entities_processor = DataSourceEntitiesProcessor(
+        data_entities_processor = await create_initialized_data_source_entities_processor(
             logger, data_store_provider, config_service
         )
-        await data_entities_processor.initialize()
         return FolderSyncConnector(
             logger,
             data_entities_processor,
