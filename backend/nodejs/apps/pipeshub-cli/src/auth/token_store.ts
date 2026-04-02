@@ -2,7 +2,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-const FernetCtor = require("fernet") as typeof import("fernet");
+import FernetCtor from "fernet";
 
 const MAGIC = Buffer.from("pipeshub-daemon-auth-v1", "utf8");
 const ITERATIONS = 600_000;

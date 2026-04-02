@@ -2007,3 +2007,14 @@ class DataSourceEntitiesProcessor:
     #             exc_info=True
     #         )
     #         return False
+
+
+async def create_initialized_data_source_entities_processor(
+    logger: Any,
+    data_store_provider: DataStoreProvider,
+    config_service: ConfigurationService,
+) -> DataSourceEntitiesProcessor:
+    """Create and initialize a ``DataSourceEntitiesProcessor`` for connector factories."""
+    processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
+    await processor.initialize()
+    return processor
