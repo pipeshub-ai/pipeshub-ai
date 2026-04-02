@@ -5021,7 +5021,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             # Show a concrete parallel-calls example when there are multiple connectors
             if len(indexed_apps) > 1:
                 example_calls = ",\n".join(
-                    f'    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "<your query>", "connector_ids": ["{app["connector_id"]}"]}}}}' 
+                    f'    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "<your query>", "connector_ids": ["{app["connector_id"]}"]}}}}'
                     for app in indexed_apps
                 )
                 lines.append(
