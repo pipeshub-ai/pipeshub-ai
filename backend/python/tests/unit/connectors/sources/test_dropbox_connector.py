@@ -1,17 +1,22 @@
 """Tests for Dropbox Team and Dropbox Individual connectors."""
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from dropbox.exceptions import ApiError
 from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata
+from dropbox.sharing import AccessLevel
+from dropbox.team_log import EventCategory
 
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection
+from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    SyncFilterKey,
+)
 from app.connectors.sources.dropbox.connector import (
     DropboxConnector,
     get_file_extension,
@@ -27,40 +32,9 @@ from app.connectors.sources.dropbox_individual.connector import (
 from app.connectors.sources.dropbox_individual.connector import (
     get_parent_path_from_path as ind_get_parent_path_from_path,
 )
-from app.models.entities import AppUser, RecordGroupType, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
-from app.config.constants.arangodb import Connectors, MimeTypes
-from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
-from app.models.entities import AppUser, FileRecord, RecordType
-from dataclasses import dataclass
-from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata, ListFolderResult
-from dropbox.sharing import AccessLevel
-from dropbox.team_log import EventCategory
-from app.config.constants.arangodb import (
-    CollectionNames,
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-    ProgressStatus,
-)
-from app.connectors.core.registry.filters import (
-    FilterCollection,
-    FilterOperator,
-    IndexingFilterKey,
-    SyncFilterKey,
-)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-)
+from app.models.entities import AppUser
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 # ---------------------------------------------------------------------------
@@ -1038,7 +1012,9 @@ class TestDropboxIndividualConnectorInit:
     def test_constructor(self, mock_app, mock_logger,
                          mock_data_entities_processor,
                          mock_data_store_provider, mock_config_service):
-        from app.connectors.sources.dropbox_individual.connector import DropboxIndividualConnector
+        from app.connectors.sources.dropbox_individual.connector import (
+            DropboxIndividualConnector,
+        )
         conn = DropboxIndividualConnector(
             logger=mock_logger,
             data_entities_processor=mock_data_entities_processor,
@@ -1162,7 +1138,6 @@ class TestDropboxHandleRecordUpdates:
     """Tests for _handle_record_updates."""
 
     async def test_deleted_record(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         update = RecordUpdate(
             record=None,
             is_new=False,
@@ -1177,7 +1152,6 @@ class TestDropboxHandleRecordUpdates:
         dropbox_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
 
     async def test_metadata_changed(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         mock_record = MagicMock()
         mock_record.record_name = "file.pdf"
         update = RecordUpdate(
@@ -1194,7 +1168,6 @@ class TestDropboxHandleRecordUpdates:
         dropbox_connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
 
     async def test_content_changed(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         mock_record = MagicMock()
         mock_record.record_name = "file.pdf"
         update = RecordUpdate(
@@ -1211,7 +1184,6 @@ class TestDropboxHandleRecordUpdates:
         dropbox_connector.data_entities_processor.on_record_content_update.assert_awaited_once()
 
     async def test_permissions_changed(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         mock_record = MagicMock()
         mock_record.record_name = "file.pdf"
         new_perms = [MagicMock()]
@@ -1230,7 +1202,6 @@ class TestDropboxHandleRecordUpdates:
         dropbox_connector.data_entities_processor.on_updated_record_permissions.assert_awaited_once()
 
     async def test_exception_handled(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         update = RecordUpdate(
             record=None,
             is_new=False,
@@ -1247,7 +1218,6 @@ class TestDropboxHandleRecordUpdates:
         await dropbox_connector._handle_record_updates(update)  # Should not raise
 
     async def test_new_record_no_action(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         mock_record = MagicMock()
         mock_record.record_name = "new_file.pdf"
         update = RecordUpdate(
@@ -1267,7 +1237,6 @@ class TestDropboxProcessDropboxItemsGenerator:
     """Tests for _process_dropbox_items_generator."""
 
     async def test_yields_new_records(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         mock_record = MagicMock()
         mock_record.is_shared = False
         mock_update = RecordUpdate(
@@ -1316,7 +1285,6 @@ class TestDropboxProcessDropboxItemsGenerator:
         assert len(results) == 0
 
     async def test_shared_filter_sets_auto_index_off(self, dropbox_connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         mock_record = MagicMock()
         mock_record.is_shared = True
         mock_update = RecordUpdate(

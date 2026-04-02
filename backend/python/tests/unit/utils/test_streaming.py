@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -164,7 +164,7 @@ class TestStringifyContent:
         assert _stringify_content(content) == "prefix:body42"
 
     def test_dict_returns_json(self):
-        content: Dict[str, Any] = {"key": "value"}
+        content: dict[str, Any] = {"key": "value"}
         result = _stringify_content(content)
         # dict falls through to str() which gives repr-like output
         assert "key" in result
@@ -3246,6 +3246,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_400_error(self):
         """400 Bad Request should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3269,6 +3270,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_403_error(self):
         """403 Forbidden should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3291,6 +3293,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_404_error(self):
         """404 Not Found should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3313,6 +3316,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_500_error(self):
         """Non-standard error code should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3336,6 +3340,7 @@ class TestStreamContentCoverage:
         """aiohttp.ClientError should raise HTTPException."""
         import aiohttp
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_session = AsyncMock()
@@ -3351,7 +3356,6 @@ class TestStreamContentCoverage:
     @pytest.mark.asyncio
     async def test_stream_content_long_url_truncation(self):
         """Long URLs should be truncated in logging."""
-        from fastapi import HTTPException
         from app.utils.streaming import stream_content
 
         long_url = "https://example.com/" + "a" * 300
@@ -3382,6 +3386,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_error_body_read_failure(self):
         """When error body text fails to read, should still raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3836,7 +3841,7 @@ class TestHandleSimpleModeCoverage:
 
         async def failing_aiter(llm, msgs, parts=None):
             raise RuntimeError("stream broke")
-            yield  # noqa
+            yield
 
         with patch("app.utils.streaming.aiter_llm_stream", side_effect=failing_aiter):
             events = []
@@ -4041,7 +4046,7 @@ class TestStreamLlmResponseWithToolsCoverage:
 
         async def mock_execute(*args, **kwargs):
             raise RuntimeError("tool exec failed")
-            yield  # noqa
+            yield
 
         with patch("app.utils.streaming.execute_tool_calls", side_effect=mock_execute):
             events = []
@@ -4120,7 +4125,7 @@ class TestStreamLlmResponseWithToolsCoverage:
 
         async def mock_json_mode(*args, **kwargs):
             raise RuntimeError("json mode crashed")
-            yield  # noqa
+            yield
 
         with patch("app.utils.streaming.handle_json_mode", side_effect=mock_json_mode):
             events = []
@@ -4245,8 +4250,9 @@ class TestStreamLlmResponseBaseMessageFastPath:
     @pytest.mark.asyncio
     async def test_base_message_fast_path_json_mode(self):
         """When last message is a BaseMessage (not AIMessage) with type='ai', use fast path in JSON mode."""
-        from app.utils.streaming import stream_llm_response
         from langchain_core.messages import ChatMessage
+
+        from app.utils.streaming import stream_llm_response
 
         json_content = json.dumps({
             "answer": "base answer",
@@ -4973,8 +4979,8 @@ class TestStreamContentUrlParseException:
         long_url = "https://example.com/" + "a" * 300
         # This just tests that the function initializes correctly with a long URL
         # It will fail at the HTTP request, but the URL parsing should succeed
-        from fastapi import HTTPException
         import aiohttp
+        from fastapi import HTTPException
 
         with pytest.raises((HTTPException, TypeError, aiohttp.ClientError, Exception)):
             async for _ in stream_content(long_url, record_id="r1", file_name="test.pdf"):
@@ -4986,7 +4992,7 @@ class TestExecuteToolCallsInvalidToolName:
 
     @pytest.mark.asyncio
     async def test_tool_name_mismatch(self):
-        from app.utils.streaming import execute_tool_calls, call_aiter_llm_stream
+        from app.utils.streaming import execute_tool_calls
 
         # Create a tool with name "real_tool"
         mock_tool = MagicMock()

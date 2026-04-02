@@ -25,14 +25,10 @@ Targets uncovered lines/branches:
 - 711-713: outer exception in generate_stream
 """
 
-import json
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-
 
 # ===================================================================
 # askAIStream — invalid JSON body (line 498-499)
@@ -188,7 +184,7 @@ class TestAskAIStreamOuterException:
                             # that gets caught by the outer except
                             async def failing_stream(*args, **kwargs):
                                 raise RuntimeError("stream error")
-                                yield  # noqa
+                                yield
 
                             mock_stream.return_value = failing_stream()
 
@@ -523,7 +519,7 @@ class TestAskAIStreamContextLengthFallback:
         mock_content, mock_fetch_tool
     ):
         """When config has no contextLength, DEFAULT_CONTEXT_LENGTH is used."""
-        from app.api.routes.chatbot import askAIStream, DEFAULT_CONTEXT_LENGTH
+        from app.api.routes.chatbot import DEFAULT_CONTEXT_LENGTH, askAIStream
 
         mock_llm = MagicMock()
         # No contextLength in config

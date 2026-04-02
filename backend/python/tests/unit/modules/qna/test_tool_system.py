@@ -10,32 +10,31 @@ get_agent_tools_with_schemas.
 """
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.modules.agents.qna.tool_system import (
-    MAX_TOOLS_LIMIT,
-    MAX_RESULT_PREVIEW_LENGTH,
     FAILURE_LOOKBACK_WINDOW,
     FAILURE_THRESHOLD,
+    MAX_RESULT_PREVIEW_LENGTH,
+    MAX_TOOLS_LIMIT,
     ToolLoader,
+    _extract_tool_names_from_toolsets,
+    _get_blocked_tools,
+    _initialize_tool_state,
+    _is_internal_tool,
+    _is_knowledge_dependent_tool,
+    _load_all_tools,
+    _parse_tool_name,
     _requires_sanitized_tool_names,
     _sanitize_tool_name_if_needed,
-    _load_all_tools,
-    _extract_tool_names_from_toolsets,
-    _is_knowledge_dependent_tool,
-    _is_internal_tool,
-    _get_blocked_tools,
-    _parse_tool_name,
-    _initialize_tool_state,
-    get_agent_tools,
-    get_tool_by_name,
     clear_tool_cache,
-    get_tool_results_summary,
+    get_agent_tools,
     get_agent_tools_with_schemas,
+    get_tool_by_name,
+    get_tool_results_summary,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -6,7 +6,6 @@ update_connector_instance_name.
 
 import asyncio
 import base64
-import io
 import json
 import os
 import tempfile
@@ -20,9 +19,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from app.config.constants.arangodb import (
     AppStatus,
-    CollectionNames,
     Connectors,
-    MimeTypes,
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -40,7 +37,6 @@ from app.connectors.api.router import (
     get_mime_type_from_record,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
-
 
 # ============================================================================
 # Helpers
@@ -467,21 +463,27 @@ class TestRequireConnectorNotLockedForRecordGroup:
     """Tests for require_connector_not_locked_for_record_group."""
 
     async def test_record_group_not_found_passes(self):
-        from app.connectors.api.router import require_connector_not_locked_for_record_group
+        from app.connectors.api.router import (
+            require_connector_not_locked_for_record_group,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value=None)
         await require_connector_not_locked_for_record_group("rg-1", gp)
 
     async def test_no_connector_id_passes(self):
-        from app.connectors.api.router import require_connector_not_locked_for_record_group
+        from app.connectors.api.router import (
+            require_connector_not_locked_for_record_group,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={"connectorId": None})
         await require_connector_not_locked_for_record_group("rg-1", gp)
 
     async def test_locked_raises(self):
-        from app.connectors.api.router import require_connector_not_locked_for_record_group
+        from app.connectors.api.router import (
+            require_connector_not_locked_for_record_group,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
@@ -493,7 +495,9 @@ class TestRequireConnectorNotLockedForRecordGroup:
         assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_unlocked_passes(self):
-        from app.connectors.api.router import require_connector_not_locked_for_record_group
+        from app.connectors.api.router import (
+            require_connector_not_locked_for_record_group,
+        )
 
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
@@ -3147,7 +3151,9 @@ class TestUpdateConnectorInstanceFiltersSyncConfig:
     """Tests for update_connector_instance_filters_sync_config."""
 
     async def test_missing_sync_and_filters_raises_400(self):
-        from app.connectors.api.router import update_connector_instance_filters_sync_config
+        from app.connectors.api.router import (
+            update_connector_instance_filters_sync_config,
+        )
 
         gp = AsyncMock()
         container = MagicMock()
@@ -3175,7 +3181,9 @@ class TestUpdateConnectorInstanceFiltersSyncConfig:
         assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_active_connector_raises_400(self):
-        from app.connectors.api.router import update_connector_instance_filters_sync_config
+        from app.connectors.api.router import (
+            update_connector_instance_filters_sync_config,
+        )
 
         gp = AsyncMock()
         container = MagicMock()
@@ -3197,7 +3205,9 @@ class TestUpdateConnectorInstanceFiltersSyncConfig:
         assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_success(self):
-        from app.connectors.api.router import update_connector_instance_filters_sync_config
+        from app.connectors.api.router import (
+            update_connector_instance_filters_sync_config,
+        )
 
         gp = AsyncMock()
         config_service = AsyncMock()

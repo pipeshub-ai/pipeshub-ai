@@ -38,7 +38,7 @@ from app.schema.arango.documents import (
 )
 
 
-def adapt_schema(arango_schema: Optional[dict]) -> Optional[dict]:
+def adapt_schema(arango_schema: dict | None) -> dict | None:
     """
     Adapt an ArangoDB schema for use with jsonschema library.
 
@@ -71,7 +71,7 @@ def adapt_schema(arango_schema: Optional[dict]) -> Optional[dict]:
 
 # Build the node schema registry mapping collection names to adapted schemas
 # This mirrors the NODE_COLLECTIONS list from base_arango_service.py (lines 89-123)
-NODE_SCHEMA_REGISTRY: dict[str, Optional[dict]] = {
+NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.RECORDS.value: adapt_schema(record_schema),
     CollectionNames.DRIVES.value: None,  # No schema
     CollectionNames.FILES.value: adapt_schema(file_record_schema),
@@ -108,7 +108,7 @@ NODE_SCHEMA_REGISTRY: dict[str, Optional[dict]] = {
 }
 
 
-def get_node_schema(collection: str) -> Optional[dict]:
+def get_node_schema(collection: str) -> dict | None:
     """
     Get the adapted JSON Schema for a collection.
 

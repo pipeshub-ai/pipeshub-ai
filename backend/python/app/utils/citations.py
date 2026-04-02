@@ -394,7 +394,7 @@ def _normalize_markdown_link_citations_for_agent(
             metadata["recordId"] = metadata.get("recordId") or ""
             metadata["mimeType"] = metadata.get("mimeType") or ""
             metadata["orgId"] = metadata.get("orgId") or ""
-            
+
             if isinstance(content, tuple):
                 content = content[0]
             elif not isinstance(content, str):

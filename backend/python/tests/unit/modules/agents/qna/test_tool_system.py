@@ -9,8 +9,6 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.modules.agents.qna.tool_system import (
     FAILURE_LOOKBACK_WINDOW,
     FAILURE_THRESHOLD,
@@ -22,7 +20,6 @@ from app.modules.agents.qna.tool_system import (
     clear_tool_cache,
     get_tool_results_summary,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1093,9 +1090,9 @@ class TestGetAgentToolsWithSchemasCoverage:
     @patch("app.modules.agents.qna.tool_system.RegistryToolWrapper")
     @patch("app.modules.agents.qna.tool_system._global_tools_registry")
     def test_returns_structured_tools_with_schema(self, mock_registry, mock_wrapper):
-        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
-
         from pydantic import BaseModel, Field
+
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
 
         class MySchema(BaseModel):
             query: str = Field(description="Search query")

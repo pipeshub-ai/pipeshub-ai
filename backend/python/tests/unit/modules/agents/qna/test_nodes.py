@@ -46,7 +46,6 @@ from app.modules.agents.qna.nodes import (
     should_execute_tools,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1883,8 +1882,9 @@ class TestFormatToolDescriptions:
 
     def test_tool_with_pydantic_schema(self):
         """Tool with args_schema gets parameter info formatted."""
-        from app.modules.agents.qna.nodes import _format_tool_descriptions
         from pydantic import BaseModel, Field
+
+        from app.modules.agents.qna.nodes import _format_tool_descriptions
 
         class SearchArgs(BaseModel):
             query: str = Field(description="Search query")
@@ -2124,6 +2124,7 @@ class TestPlannerNode:
     async def test_planner_timeout_returns_fallback(self):
         """When LLM times out, planner returns a fallback plan."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         llm = AsyncMock()
@@ -2148,6 +2149,7 @@ class TestPlannerNode:
     async def test_planner_llm_error_returns_fallback(self):
         """When LLM raises an exception, planner returns a fallback plan."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         llm = AsyncMock()
@@ -2171,6 +2173,7 @@ class TestPlannerNode:
     async def test_planner_empty_response_returns_fallback(self):
         """When LLM returns empty content, planner falls back gracefully."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         mock_response = MagicMock()
@@ -2197,6 +2200,7 @@ class TestPlannerNode:
     async def test_planner_no_tools_no_knowledge_sets_hint(self):
         """When agent has no tools and no knowledge, agent_not_configured_hint is set."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         mock_response = MagicMock()
@@ -2226,6 +2230,7 @@ class TestPlannerNode:
     async def test_planner_with_continue_mode(self):
         """When is_continue is True, continue context is built and state updated."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         mock_response = MagicMock()
@@ -2299,6 +2304,7 @@ class TestExecuteNodeDeeper:
     async def test_execute_with_tool_error(self):
         """When tool execution fails, error results are captured in state."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import execute_node
 
         state = self._make_state(
@@ -2329,6 +2335,7 @@ class TestExecuteNodeDeeper:
     async def test_execute_multiple_tools_success(self):
         """Multiple tools executed, accumulates results correctly."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import execute_node
 
         state = self._make_state(
@@ -2357,6 +2364,7 @@ class TestExecuteNodeDeeper:
     async def test_execute_accumulates_across_iterations(self):
         """Results accumulate across iterations (not replaced)."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import execute_node
 
         existing_results = [{"tool_name": "previous.tool", "status": "success"}]
@@ -2426,6 +2434,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_all_success_no_continue(self):
         """When all tools succeed and task is complete, respond_success."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         state = self._make_state(
@@ -2446,6 +2455,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_all_success_needs_continue(self):
         """When tools succeed but task incomplete, continue."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         state = self._make_state(
@@ -2468,6 +2478,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_partial_success_primary_succeeded(self):
         """Partial success with primary tool succeeded -> respond_success."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         state = self._make_state(
@@ -2489,6 +2500,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_unrecoverable_error(self):
         """Permission denied triggers respond_error immediately."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         state = self._make_state(
@@ -2508,6 +2520,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_recoverable_unbounded_jql_retry(self):
         """Unbounded JQL error triggers retry_with_fix."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         state = self._make_state(
@@ -2530,6 +2543,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_llm_timeout_returns_error(self):
         """When reflection LLM times out, responds with error."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         llm = AsyncMock()
@@ -2555,6 +2569,7 @@ class TestReflectNodeDeeper:
     async def test_reflect_llm_exception_returns_error(self):
         """When reflection LLM raises an exception, responds with error."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import reflect_node
 
         llm = AsyncMock()
@@ -2623,6 +2638,7 @@ class TestRespondNodeDeeper:
     async def test_respond_direct_answer(self):
         """When can_answer_directly and no tool results, generates direct response."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import respond_node
 
         state = self._make_state(
@@ -3080,8 +3096,9 @@ class TestToolStreamingCallback:
 
     def test_write_event_success(self):
         """_write_event calls writer and returns True."""
-        from app.modules.agents.qna.nodes import _ToolStreamingCallback
         from unittest.mock import patch
+
+        from app.modules.agents.qna.nodes import _ToolStreamingCallback
 
         writer = MagicMock()
         config = {"configurable": {}}
@@ -3098,8 +3115,9 @@ class TestToolStreamingCallback:
 
     def test_write_event_failure(self):
         """_write_event returns False when writer raises."""
-        from app.modules.agents.qna.nodes import _ToolStreamingCallback
         from unittest.mock import patch
+
+        from app.modules.agents.qna.nodes import _ToolStreamingCallback
 
         writer = MagicMock(side_effect=RuntimeError("stream closed"))
         config = {"configurable": {}}
@@ -3115,9 +3133,10 @@ class TestToolStreamingCallback:
     @pytest.mark.asyncio
     async def test_on_tool_start(self):
         """on_tool_start stores tool name and writes event."""
-        from app.modules.agents.qna.nodes import _ToolStreamingCallback
         from unittest.mock import patch
         from uuid import uuid4
+
+        from app.modules.agents.qna.nodes import _ToolStreamingCallback
 
         writer = MagicMock()
         config = {"configurable": {}}
@@ -3138,9 +3157,10 @@ class TestToolStreamingCallback:
     @pytest.mark.asyncio
     async def test_on_tool_end_success(self):
         """on_tool_end removes tool name and writes result event."""
-        from app.modules.agents.qna.nodes import _ToolStreamingCallback
         from unittest.mock import patch
         from uuid import uuid4
+
+        from app.modules.agents.qna.nodes import _ToolStreamingCallback
 
         writer = MagicMock()
         config = {"configurable": {}}
@@ -3162,9 +3182,10 @@ class TestToolStreamingCallback:
     @pytest.mark.asyncio
     async def test_on_tool_end_error_writes_retry_message(self):
         """on_tool_end with error result writes retry status."""
-        from app.modules.agents.qna.nodes import _ToolStreamingCallback
         from unittest.mock import patch
         from uuid import uuid4
+
+        from app.modules.agents.qna.nodes import _ToolStreamingCallback
 
         writer = MagicMock()
         config = {"configurable": {}}
@@ -3184,9 +3205,10 @@ class TestToolStreamingCallback:
     @pytest.mark.asyncio
     async def test_on_tool_error(self):
         """on_tool_error writes error status."""
-        from app.modules.agents.qna.nodes import _ToolStreamingCallback
         from unittest.mock import patch
         from uuid import uuid4
+
+        from app.modules.agents.qna.nodes import _ToolStreamingCallback
 
         writer = MagicMock()
         config = {"configurable": {}}
@@ -3215,8 +3237,9 @@ class TestExtractParametersFromSchema:
 
     def test_pydantic_v2_schema(self):
         """Pydantic v2 model schema extracts correctly."""
-        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
         from pydantic import BaseModel, Field
+
+        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
 
         class MySchema(BaseModel):
             query: str = Field(description="Search query")
@@ -3527,23 +3550,21 @@ class TestExtractUrlsForReferenceData:
 # NEW ASYNC TESTS — Increasing coverage of async orchestration code
 # ============================================================================
 
-import asyncio
-from unittest.mock import AsyncMock, patch, PropertyMock
+from unittest.mock import PropertyMock
 from uuid import UUID as UUID
 
 import pytest
 
 from app.modules.agents.qna.nodes import (
     ToolExecutor,
-    _build_conversation_messages,
     _build_continue_context,
+    _build_conversation_messages,
     _build_knowledge_context,
     _build_retry_context,
     _format_reference_data,
     _format_tool_descriptions,
     _format_user_context,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared async test helpers
@@ -5122,30 +5143,6 @@ from app.modules.agents.qna.nodes import (
     prepare_retry_node,
     respond_node,
 )
-from app.modules.agents.qna.nodes import (
-    NodeConfig,
-    PlaceholderResolver,
-    ToolResultExtractor,
-    _build_tool_results_context,
-    _check_if_task_needs_continue,
-    _check_primary_tool_success,
-    _create_fallback_plan,
-    _detect_tool_result_status,
-    _extract_missing_params_from_error,
-    _extract_urls_for_reference_data,
-    _get_tool_status_message,
-    _is_retrieval_tool,
-    _is_semantically_empty,
-    _parse_planner_response,
-    _underscore_to_dotted,
-    check_for_error,
-    clean_tool_result,
-    format_result_for_llm,
-    merge_and_number_retrieval_results,
-    route_after_reflect,
-    should_execute_tools,
-)
-
 
 # ============================================================================
 # 44. _parse_reflection_response
@@ -5263,11 +5260,11 @@ class TestGetFieldTypeName:
         assert _get_field_type_name(field) == "str"
 
     def test_optional_type(self):
-        from typing import Optional
+
         from pydantic import BaseModel
 
         class M(BaseModel):
-            value: Optional[int] = None
+            value: int | None = None
 
         field = M.model_fields["value"]
         result = _get_field_type_name(field)
@@ -5806,7 +5803,9 @@ class TestStandaloneProcessRetrievalOutput:
     """Tests for the standalone _process_retrieval_output function (not ToolExecutor method)."""
 
     def test_dict_retrieval_output(self):
-        from app.modules.agents.qna.nodes import _process_retrieval_output as standalone_proc
+        from app.modules.agents.qna.nodes import (
+            _process_retrieval_output as standalone_proc,
+        )
         result = {
             "content": "Knowledge text",
             "final_results": [{"text": "b1", "virtual_record_id": "r1", "block_index": 0}],
@@ -5819,7 +5818,9 @@ class TestStandaloneProcessRetrievalOutput:
         assert content == "Knowledge text"
 
     def test_string_retrieval_output(self):
-        from app.modules.agents.qna.nodes import _process_retrieval_output as standalone_proc
+        from app.modules.agents.qna.nodes import (
+            _process_retrieval_output as standalone_proc,
+        )
         result_dict = {
             "content": "KB text",
             "final_results": [],
@@ -5832,13 +5833,17 @@ class TestStandaloneProcessRetrievalOutput:
         assert content == "KB text"
 
     def test_plain_string_fallback(self):
-        from app.modules.agents.qna.nodes import _process_retrieval_output as standalone_proc
+        from app.modules.agents.qna.nodes import (
+            _process_retrieval_output as standalone_proc,
+        )
         state = {}
         content = standalone_proc("just a string", state, _mock_log())
         assert content == "just a string"
 
     def test_non_list_existing_state(self):
-        from app.modules.agents.qna.nodes import _process_retrieval_output as standalone_proc
+        from app.modules.agents.qna.nodes import (
+            _process_retrieval_output as standalone_proc,
+        )
         result = {
             "content": "text",
             "final_results": [{"text": "b"}],
@@ -6024,8 +6029,9 @@ class TestExtractFinalResponse:
     """Tests for _extract_final_response."""
 
     def test_last_ai_message_without_tool_calls(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+
         from app.modules.agents.qna.nodes import _extract_final_response
-        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
         messages = [
             HumanMessage(content="What is X?"),
@@ -6035,8 +6041,9 @@ class TestExtractFinalResponse:
         assert result == "X is a thing."
 
     def test_skips_ai_message_with_tool_calls(self):
-        from app.modules.agents.qna.nodes import _extract_final_response
         from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.modules.agents.qna.nodes import _extract_final_response
 
         tool_calling_msg = AIMessage(content="Let me search")
         tool_calling_msg.tool_calls = [{"name": "tool", "args": {}}]
@@ -6052,8 +6059,9 @@ class TestExtractFinalResponse:
         assert result == "Here is your answer."
 
     def test_fallback_to_any_content(self):
-        from app.modules.agents.qna.nodes import _extract_final_response
         from langchain_core.messages import AIMessage
+
+        from app.modules.agents.qna.nodes import _extract_final_response
 
         # All AI messages have tool_calls
         msg = AIMessage(content="Reasoning text")
@@ -6070,8 +6078,9 @@ class TestExtractFinalResponse:
         assert "couldn't generate a response" in result
 
     def test_messages_with_no_content_returns_default(self):
-        from app.modules.agents.qna.nodes import _extract_final_response
         from langchain_core.messages import AIMessage
+
+        from app.modules.agents.qna.nodes import _extract_final_response
 
         msg = AIMessage(content="")
         messages = [msg]
@@ -6556,11 +6565,11 @@ class TestGetFieldTypeNameEdgeCases:
 
     def test_type_without_name_attr(self):
         """Annotation without __name__ goes to str() fallback."""
+
         from pydantic import BaseModel
-        from typing import List
 
         class M(BaseModel):
-            items: List[str] = []
+            items: list[str] = []
 
         field = M.model_fields["items"]
         result = _get_field_type_name(field)
@@ -6736,6 +6745,7 @@ class TestGetCachedToolDescriptions:
     def test_without_toolsets_returns_fallback(self):
         """When no toolsets, returns retrieval fallback."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import _get_cached_tool_descriptions
 
         log = _mock_log()
@@ -6756,6 +6766,7 @@ class TestGetCachedToolDescriptions:
     def test_with_toolsets_and_tools(self):
         """When tools are available, returns formatted descriptions."""
         from unittest.mock import MagicMock, patch
+
         from app.modules.agents.qna.nodes import _get_cached_tool_descriptions
 
         log = _mock_log()
@@ -6781,6 +6792,7 @@ class TestGetCachedToolDescriptions:
     def test_cache_hit(self):
         """Cached descriptions are returned without calling tool system."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import _get_cached_tool_descriptions
 
         log = _mock_log()
@@ -6802,6 +6814,7 @@ class TestGetCachedToolDescriptions:
     def test_tool_load_exception_returns_fallback(self):
         """When tool loading fails, returns fallback description."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import _get_cached_tool_descriptions
 
         log = _mock_log()
@@ -6831,6 +6844,7 @@ class TestExtractParametersFromSchema:
     def test_pydantic_v2_model(self):
         """Pydantic v2 model with model_fields."""
         from pydantic import BaseModel, Field
+
         from app.modules.agents.qna.nodes import _extract_parameters_from_schema
 
         class MyModel(BaseModel):
@@ -6894,8 +6908,9 @@ class TestExtractParametersFromSchema:
 
     def test_nested_pydantic_model(self):
         """Pydantic v2 model with nested model field."""
-        from typing import Optional
+
         from pydantic import BaseModel, Field
+
         from app.modules.agents.qna.nodes import _extract_parameters_from_schema
 
         class InnerModel(BaseModel):
@@ -6903,7 +6918,7 @@ class TestExtractParametersFromSchema:
 
         class OuterModel(BaseModel):
             inner: InnerModel = Field(description="Nested model")
-            label: Optional[str] = Field(default=None, description="Optional label")
+            label: str | None = Field(default=None, description="Optional label")
 
         log = _mock_log()
         params = _extract_parameters_from_schema(OuterModel, log)
@@ -6914,6 +6929,7 @@ class TestExtractParametersFromSchema:
     def test_schema_extraction_exception_returns_empty(self):
         """When schema extraction raises, returns empty dict."""
         from unittest.mock import MagicMock, PropertyMock
+
         from app.modules.agents.qna.nodes import _extract_parameters_from_schema
 
         log = _mock_log()
@@ -6988,6 +7004,7 @@ class TestRespondNode:
     async def test_direct_answer_path(self, base_state, mock_writer, mock_config):
         """When can_answer_directly and no tool results, uses direct response."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import respond_node
 
         base_state["execution_plan"] = {"can_answer_directly": True}
@@ -7102,6 +7119,7 @@ class TestReactAgentNode:
     async def test_import_error_sets_error_state(self, base_state, mock_writer, mock_config):
         """When langchain.agents import fails, sets error state."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import react_agent_node
 
         with patch(
@@ -7116,6 +7134,7 @@ class TestReactAgentNode:
     async def test_generic_exception_sets_error_state(self, base_state, mock_writer, mock_config):
         """When a generic exception occurs, sets error state with message."""
         from unittest.mock import patch
+
         from app.modules.agents.qna.nodes import react_agent_node
 
         with patch(
@@ -7138,7 +7157,9 @@ class TestPlanWithValidationRetry:
     async def test_first_try_success(self):
         """When first plan is valid, returns immediately."""
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from langchain_core.messages import HumanMessage
+
         from app.modules.agents.qna.nodes import _plan_with_validation_retry
 
         mock_llm = AsyncMock()
@@ -7173,8 +7194,10 @@ class TestPlanWithValidationRetry:
     @pytest.mark.asyncio
     async def test_validation_fail_then_retry_success(self):
         """First plan has invalid tools, retry succeeds."""
-        from unittest.mock import AsyncMock, MagicMock, call, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
+
         from langchain_core.messages import HumanMessage
+
         from app.modules.agents.qna.nodes import _plan_with_validation_retry
 
         mock_llm = AsyncMock()
@@ -7224,8 +7247,10 @@ class TestPlanWithValidationRetry:
     async def test_max_retries_exceeded_removes_invalid(self):
         """After max retries, invalid tools are removed from plan."""
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from langchain_core.messages import HumanMessage
-        from app.modules.agents.qna.nodes import NodeConfig, _plan_with_validation_retry
+
+        from app.modules.agents.qna.nodes import _plan_with_validation_retry
 
         mock_llm = AsyncMock()
         resp = MagicMock()
@@ -7262,7 +7287,9 @@ class TestPlanWithValidationRetry:
     async def test_timeout_returns_fallback(self):
         """When LLM times out, returns fallback plan."""
         from unittest.mock import AsyncMock, patch
+
         from langchain_core.messages import HumanMessage
+
         from app.modules.agents.qna.nodes import _plan_with_validation_retry
 
         mock_llm = AsyncMock()
@@ -7293,7 +7320,9 @@ class TestPlanWithValidationRetry:
     async def test_generic_exception_returns_fallback(self):
         """When LLM raises generic exception, returns fallback plan."""
         from unittest.mock import AsyncMock, patch
+
         from langchain_core.messages import HumanMessage
+
         from app.modules.agents.qna.nodes import _plan_with_validation_retry
 
         mock_llm = AsyncMock()
@@ -7367,6 +7396,7 @@ class TestPlannerNode:
     async def test_planner_node_success(self, base_state, mock_writer, mock_config):
         """When planner succeeds, planned_tool_calls are populated."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         mock_llm = AsyncMock()
@@ -7391,6 +7421,7 @@ class TestPlannerNode:
     async def test_planner_node_timeout(self, base_state, mock_writer, mock_config):
         """When LLM times out, planner falls back gracefully."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         mock_llm = AsyncMock()
@@ -7410,6 +7441,7 @@ class TestPlannerNode:
     async def test_planner_node_validation_retry(self, base_state, mock_writer, mock_config):
         """When first plan has invalid tools, retry with corrected plan."""
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from app.modules.agents.qna.nodes import planner_node
 
         mock_llm = AsyncMock()
@@ -7500,6 +7532,7 @@ class TestExecuteNode:
     async def test_execute_node_has_tools_runs_execution(self, base_state, mock_writer, mock_config):
         """When tools are planned, executes them via ToolExecutor."""
         from unittest.mock import AsyncMock, patch
+
         from app.modules.agents.qna.nodes import execute_node
 
         base_state["planned_tool_calls"] = [
@@ -7624,7 +7657,8 @@ class TestReflectNode:
     @pytest.mark.asyncio
     async def test_reflect_llm_invoked_for_complex_decisions(self, base_state, mock_writer, mock_config):
         """When LLM reflection is needed, the reflect_node should invoke LLM."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
+
         from app.modules.agents.qna.nodes import reflect_node
 
         mock_llm = AsyncMock()
@@ -8012,8 +8046,9 @@ class TestExtractParametersFromSchema:
     """Tests for _extract_parameters_from_schema()."""
 
     def test_pydantic_v2_schema(self):
-        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
         from pydantic import BaseModel, Field
+
+        from app.modules.agents.qna.nodes import _extract_parameters_from_schema
 
         class TestSchema(BaseModel):
             query: str = Field(description="Search query")
@@ -8069,8 +8104,9 @@ class TestGetFieldTypeName:
     """Tests for _get_field_type_name()."""
 
     def test_string_field(self):
-        from app.modules.agents.qna.nodes import _get_field_type_name
         from pydantic import BaseModel
+
+        from app.modules.agents.qna.nodes import _get_field_type_name
 
         class M(BaseModel):
             name: str
@@ -8080,8 +8116,9 @@ class TestGetFieldTypeName:
         assert result == "str"
 
     def test_int_field(self):
-        from app.modules.agents.qna.nodes import _get_field_type_name
         from pydantic import BaseModel
+
+        from app.modules.agents.qna.nodes import _get_field_type_name
 
         class M(BaseModel):
             count: int
@@ -8335,7 +8372,10 @@ class TestBuildReactSystemPromptExtra:
 
     def test_with_slack_tools(self):
         """When Slack tools are configured, Slack guidance is added."""
-        from app.modules.agents.qna.nodes import _build_react_system_prompt, _has_slack_tools
+        from app.modules.agents.qna.nodes import (
+            _build_react_system_prompt,
+            _has_slack_tools,
+        )
 
         state = {
             "agent_toolsets": [{"name": "Slack Integration"}],
@@ -8377,7 +8417,10 @@ class TestBuildReactSystemPromptExtra:
 
     def test_with_github_tools(self):
         """When GitHub tools are configured, GitHub guidance is added."""
-        from app.modules.agents.qna.nodes import _build_react_system_prompt, _has_github_tools
+        from app.modules.agents.qna.nodes import (
+            _build_react_system_prompt,
+            _has_github_tools,
+        )
 
         state = {
             "agent_toolsets": [{"name": "GitHub Integration"}],
@@ -8465,8 +8508,9 @@ class TestFormatToolDescriptionsExtra:
 
     def test_tool_param_without_description(self):
         """Parameters without description get type-only format."""
-        from app.modules.agents.qna.nodes import _format_tool_descriptions
         from pydantic import BaseModel
+
+        from app.modules.agents.qna.nodes import _format_tool_descriptions
 
         class Args(BaseModel):
             query: str
@@ -9404,7 +9448,10 @@ class TestGenerateFastApiResponse:
     @pytest.mark.asyncio
     async def test_fast_api_truncates_large_raw_data(self):
         """Raw data exceeding _RAW_DATA_SIZE_LIMIT is truncated."""
-        from app.modules.agents.qna.nodes import _generate_fast_api_response, _RAW_DATA_SIZE_LIMIT
+        from app.modules.agents.qna.nodes import (
+            _RAW_DATA_SIZE_LIMIT,
+            _generate_fast_api_response,
+        )
 
         state = {"instructions": "", "system_prompt": "", "conversation_id": None}
         llm = AsyncMock()
@@ -9648,8 +9695,9 @@ class TestBuildToolSchemaReference:
         assert result == ""
 
     def test_tools_with_schema(self):
-        from app.modules.agents.qna.nodes import _build_tool_schema_reference
         from pydantic import BaseModel, Field
+
+        from app.modules.agents.qna.nodes import _build_tool_schema_reference
 
         class SearchArgs(BaseModel):
             query: str = Field(description="The search query")
@@ -10015,8 +10063,9 @@ class TestGetFieldTypeName:
         assert result == "str"
 
     def test_optional_type(self):
-        from app.modules.agents.qna.nodes import _get_field_type_name
         from typing import Optional
+
+        from app.modules.agents.qna.nodes import _get_field_type_name
 
         field_info = MagicMock()
         field_info.annotation = Optional[int]
@@ -10725,7 +10774,10 @@ class TestConvMsgsUncov2:
         from app.modules.agents.qna.nodes import _build_conversation_messages
         assert len(_build_conversation_messages([{"role": "bot_response", "content": "Hi"}, {"role": "user_query", "content": "Q"}], _mock_log())) >= 1
     def test_sliding(self):
-        from app.modules.agents.qna.nodes import MAX_CONVERSATION_HISTORY, _build_conversation_messages
+        from app.modules.agents.qna.nodes import (
+            MAX_CONVERSATION_HISTORY,
+            _build_conversation_messages,
+        )
         c = []
         for i in range(MAX_CONVERSATION_HISTORY + 5):
             c.extend([{"role": "user_query", "content": f"Q{i}"}, {"role": "bot_response", "content": f"A{i}"}])
@@ -10760,12 +10812,14 @@ class TestFieldTypeV1_2:
         f = MagicMock(); f.outer_type_ = str; assert _get_field_type_name_v1(f) == "str"
     def test_opt(self):
         from typing import Optional
+
         from app.modules.agents.qna.nodes import _get_field_type_name_v1
         f = MagicMock(); f.outer_type_ = Optional[int]; assert _get_field_type_name_v1(f) == "int"
 
 class TestFieldTypeOpt2:
     def test_opt(self):
         from typing import Optional
+
         from app.modules.agents.qna.nodes import _get_field_type_name
         f = MagicMock(); f.annotation = Optional[str]; assert _get_field_type_name(f) == "str"
 

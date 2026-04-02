@@ -3,8 +3,6 @@
 import re
 from unittest.mock import patch
 
-import pytest
-
 from app.models.blocks import BlockType, GroupType
 from app.utils.citations import (
     _extract_block_index_from_url,

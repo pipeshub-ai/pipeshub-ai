@@ -642,8 +642,9 @@ class TestBuildResponsePrompt:
 
 class TestCreateResponseMessages:
     def test_basic_message_creation(self):
-        from app.modules.qna.response_prompt import create_response_messages
         from langchain_core.messages import HumanMessage, SystemMessage
+
+        from app.modules.qna.response_prompt import create_response_messages
 
         with patch("app.modules.agents.qna.conversation_memory.ConversationMemory") as MockMem:
             MockMem.extract_tool_context_from_history.return_value = {}
@@ -661,8 +662,9 @@ class TestCreateResponseMessages:
             assert msgs[1].content == "formatted content with R-labels"
 
     def test_fallback_plain_query_with_knowledge(self):
-        from app.modules.qna.response_prompt import create_response_messages
         from langchain_core.messages import HumanMessage
+
+        from app.modules.qna.response_prompt import create_response_messages
 
         with patch("app.modules.agents.qna.conversation_memory.ConversationMemory") as MockMem:
             MockMem.extract_tool_context_from_history.return_value = {}
@@ -679,8 +681,9 @@ class TestCreateResponseMessages:
             assert "Respond in JSON format" in last.content
 
     def test_fallback_plain_query_no_knowledge(self):
-        from app.modules.qna.response_prompt import create_response_messages
         from langchain_core.messages import HumanMessage
+
+        from app.modules.qna.response_prompt import create_response_messages
 
         with patch("app.modules.agents.qna.conversation_memory.ConversationMemory") as MockMem:
             MockMem.extract_tool_context_from_history.return_value = {}
@@ -696,8 +699,9 @@ class TestCreateResponseMessages:
             assert last.content == "Hello"
 
     def test_conversation_history_included(self):
-        from app.modules.qna.response_prompt import create_response_messages
         from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.modules.qna.response_prompt import create_response_messages
 
         with patch("app.modules.agents.qna.conversation_memory.ConversationMemory") as MockMem:
             MockMem.extract_tool_context_from_history.return_value = {}
@@ -753,8 +757,9 @@ class TestCreateResponseMessages:
             assert state.get("is_contextual_followup") is True
 
     def test_knowledge_tool_result_adds_json_reminder(self):
-        from app.modules.qna.response_prompt import create_response_messages
         from langchain_core.messages import HumanMessage
+
+        from app.modules.qna.response_prompt import create_response_messages
 
         with patch("app.modules.agents.qna.conversation_memory.ConversationMemory") as MockMem:
             MockMem.extract_tool_context_from_history.return_value = {}

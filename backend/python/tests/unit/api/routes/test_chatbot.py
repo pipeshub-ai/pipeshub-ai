@@ -1,11 +1,8 @@
 """Tests for app.api.routes.chatbot helper functions and models."""
-import logging
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
-
 
 # ---------------------------------------------------------------------------
 # ChatQuery model
@@ -692,8 +689,9 @@ class TestAskAIStreamEndpoint:
 
     @pytest.mark.asyncio
     async def test_invalid_json_body_raises_400(self):
-        from app.api.routes.chatbot import askAIStream
         from fastapi import HTTPException
+
+        from app.api.routes.chatbot import askAIStream
 
         request = MagicMock()
         request.json = AsyncMock(side_effect=Exception("bad json"))
@@ -704,8 +702,9 @@ class TestAskAIStreamEndpoint:
 
     @pytest.mark.asyncio
     async def test_invalid_params_raises_400(self):
-        from app.api.routes.chatbot import askAIStream
         from fastapi import HTTPException
+
+        from app.api.routes.chatbot import askAIStream
 
         request = MagicMock()
         # Missing required 'query' field
@@ -717,8 +716,9 @@ class TestAskAIStreamEndpoint:
 
     @pytest.mark.asyncio
     async def test_returns_streaming_response(self):
-        from app.api.routes.chatbot import askAIStream
         from fastapi.responses import StreamingResponse
+
+        from app.api.routes.chatbot import askAIStream
 
         request = MagicMock()
         request.json = AsyncMock(return_value={"query": "hello"})
@@ -868,8 +868,9 @@ class TestAskAIStream:
         mock_content, mock_fetch_tool
     ):
         """Full streaming flow emits status events and stream events."""
-        from app.api.routes.chatbot import askAIStream, ChatQuery
         from fastapi.responses import StreamingResponse
+
+        from app.api.routes.chatbot import askAIStream
 
         mock_llm = MagicMock()
         config = {"provider": "openai", "isMultimodal": False, "contextLength": 4096}
@@ -1317,9 +1318,10 @@ class TestAskAI:
     @patch("app.api.routes.chatbot.process_chat_query", new_callable=AsyncMock)
     async def test_ask_ai_happy_path(self, mock_process, mock_resolve, mock_citations):
         """Happy path: returns JSONResponse."""
-        from app.api.routes.chatbot import askAI, ChatQuery
-        from langchain_core.messages import AIMessage
         from fastapi.responses import JSONResponse
+        from langchain_core.messages import AIMessage
+
+        from app.api.routes.chatbot import ChatQuery, askAI
 
         mock_llm = MagicMock()
         mock_blob = MagicMock()
@@ -1362,9 +1364,10 @@ class TestAskAI:
     @patch("app.api.routes.chatbot.process_chat_query", new_callable=AsyncMock)
     async def test_ask_ai_no_content_raises(self, mock_process, mock_resolve):
         """When LLM returns no content, raises HTTPException 500."""
-        from app.api.routes.chatbot import askAI, ChatQuery
         from fastapi import HTTPException
         from langchain_core.messages import AIMessage
+
+        from app.api.routes.chatbot import ChatQuery, askAI
 
         mock_llm = MagicMock()
         mock_process.return_value = (
@@ -1396,8 +1399,9 @@ class TestAskAI:
     @patch("app.api.routes.chatbot.process_chat_query", new_callable=AsyncMock)
     async def test_ask_ai_generic_error_raises_400(self, mock_process):
         """Generic exception in askAI raises HTTPException 400."""
-        from app.api.routes.chatbot import askAI, ChatQuery
         from fastapi import HTTPException
+
+        from app.api.routes.chatbot import ChatQuery, askAI
 
         mock_process.side_effect = RuntimeError("unexpected error")
 
@@ -1423,8 +1427,9 @@ class TestAskAI:
     @patch("app.api.routes.chatbot.process_chat_query", new_callable=AsyncMock)
     async def test_ask_ai_http_exception_reraises(self, mock_process):
         """HTTPException is re-raised with original status code."""
-        from app.api.routes.chatbot import askAI, ChatQuery
         from fastapi import HTTPException
+
+        from app.api.routes.chatbot import ChatQuery, askAI
 
         mock_process.side_effect = HTTPException(status_code=503, detail="Service unavailable")
 

@@ -678,6 +678,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                     record["context_metadata"] = ""
 
             record["frontend_url"] = frontend_url or ""
+            record["virtual_record_id"] = virtual_record_id
             virtual_record_id_to_result[virtual_record_id] = record
         else:
             virtual_record_id_to_result[virtual_record_id] = None

@@ -134,7 +134,7 @@ class ConnectorFactory:
         return cls._beta_connector_definitions.copy()
 
     @classmethod
-    def get_connector_class(cls, name: str) -> Optional[type[BaseConnector]]:
+    def get_connector_class(cls, name: str) -> type[BaseConnector] | None:
         """Get connector class by name"""
         return cls._connector_registry.get(name.lower())
 
@@ -152,7 +152,7 @@ class ConnectorFactory:
         config_service: ConfigurationService,
         connector_id: str,
         **kwargs
-    ) -> Optional[BaseConnector]:
+    ) -> BaseConnector | None:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
@@ -182,7 +182,7 @@ class ConnectorFactory:
         config_service: ConfigurationService,
         connector_id: str,
         **kwargs
-    ) -> Optional[BaseConnector]:
+    ) -> BaseConnector | None:
         """Create and initialize a connector"""
         connector = await cls.create_connector(
             name=name,
@@ -216,7 +216,7 @@ class ConnectorFactory:
         config_service: ConfigurationService,
         connector_id: str,
         **kwargs
-    ) -> Optional[BaseConnector]:
+    ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
         connector = await cls.initialize_connector(
             name=name,

@@ -7,7 +7,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
     LinkPublicStatus,
@@ -38,7 +38,6 @@ from app.utils.chat_helpers import (
     get_record,
     record_to_message_content,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

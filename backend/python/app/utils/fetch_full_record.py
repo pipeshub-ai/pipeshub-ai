@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import uuid
 from collections.abc import Callable
 from typing import Any
+
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
 from app.modules.transformers.blob_storage import BlobStorage
-from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from app.utils.chat_helpers import get_record
 from app.utils.logger import create_logger
 
 logger = create_logger(__name__)
@@ -94,19 +95,20 @@ async def _fetch_multiple_records_impl(
                     if indexing_status == ProgressStatus.COMPLETED.value:
                         vrid = graphDb_record.get("virtualRecordId")
                         blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
-                        blob_record = await blob_store.get_record_from_storage(virtual_record_id=vrid, org_id=org_id)
+                        frontend_url = None
+                        try:
+                            endpoints_config = await blob_store.config_service.get_config(
+                                config_node_constants.ENDPOINTS.value,
+                                default={}
+                            )
+                            if isinstance(endpoints_config, dict):
+                                frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
+                        except Exception:
+                            pass
+                        virtual_to_record_map = {vrid: graphDb_record}
+                        await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
+                        blob_record = virtual_record_id_to_result.get(vrid)
                         if blob_record:
-                            frontend_url = None
-                            try:
-                                endpoints_config = await blob_store.config_service.get_config(
-                                    config_node_constants.ENDPOINTS.value,
-                                    default={}
-                                )
-                                if isinstance(endpoints_config, dict):
-                                    frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
-                            except Exception:
-                                pass
-                            blob_record["frontend_url"] = frontend_url or ""
                             found_records.append(blob_record)
                             continue
             except Exception:
@@ -121,7 +123,7 @@ async def _fetch_multiple_records_impl(
         result["ok"] = True
         result["records"] = found_records
     else:
-        return {"ok": False, "error": f"None of the requested records were found."}
+        return {"ok": False, "error": "None of the requested records were found."}
 
 
     result["not_available_ids"] = not_available_ids

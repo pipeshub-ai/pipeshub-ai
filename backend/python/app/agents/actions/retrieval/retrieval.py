@@ -65,7 +65,7 @@ class SearchInternalKnowledgeInput(BaseModel):
     .as_internal()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
     .build_decorator()
-    
+
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 
@@ -183,7 +183,7 @@ class Retrieval:
             else:
                 # No LLM input — use full agent scope
                 filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
-            
+
             agent_apps_len = len(agent_apps)
             agent_kbs_len = len(agent_kbs)
             if agent_apps_len > 0 and agent_kbs_len > 0:

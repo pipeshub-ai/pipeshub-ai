@@ -38,7 +38,6 @@ from app.modules.agents.deep.respond import (
     _trim_analyses_to_budget,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -597,7 +596,10 @@ class TestExtractUrlsFromValue:
         assert len(links) == 2
 
     def test_depth_limit(self):
-        from app.modules.agents.deep.respond import _extract_urls_from_value, _MAX_URL_EXTRACT_DEPTH
+        from app.modules.agents.deep.respond import (
+            _MAX_URL_EXTRACT_DEPTH,
+            _extract_urls_from_value,
+        )
 
         seen: set = set()
         links: list = []
@@ -2335,8 +2337,8 @@ class TestDeepRespondImplExtended:
     @pytest.mark.asyncio
     async def test_retrieval_path_with_qna_content(self):
         """When qna_message_content is set, uses simple retrieval messages."""
+
         from app.modules.agents.deep.respond import _deep_respond_impl
-        from langchain_core.messages import HumanMessage, SystemMessage
 
         state = {
             "logger": _mock_log(),
@@ -2518,8 +2520,8 @@ class TestDeepRespondImplUserDataBranches:
     @pytest.mark.asyncio
     async def test_non_enterprise_account_type_user_data(self):
         """Non-Enterprise/Business account type produces simpler user_data."""
+
         from app.modules.agents.deep.respond import _deep_respond_impl
-        from langchain_core.messages import HumanMessage
 
         state = {
             "logger": _mock_log(),
@@ -2588,8 +2590,9 @@ class TestDeepRespondImplContextBuilding:
     @pytest.mark.asyncio
     async def test_analyses_with_has_api_results_no_retrieval(self):
         """Analyses + has_api_results but no retrieval produces correct context."""
-        from app.modules.agents.deep.respond import _deep_respond_impl
         from langchain_core.messages import HumanMessage
+
+        from app.modules.agents.deep.respond import _deep_respond_impl
 
         state = {
             "logger": _mock_log(),
@@ -2656,8 +2659,9 @@ class TestDeepRespondImplContextBuilding:
     @pytest.mark.asyncio
     async def test_analyses_only_no_api_results(self):
         """Analyses without has_api_results — analyses-only context path (line 325/330)."""
-        from app.modules.agents.deep.respond import _deep_respond_impl
         from langchain_core.messages import HumanMessage
+
+        from app.modules.agents.deep.respond import _deep_respond_impl
 
         state = {
             "logger": _mock_log(),
@@ -2720,8 +2724,9 @@ class TestDeepRespondImplContextBuilding:
     @pytest.mark.asyncio
     async def test_context_appended_to_list_content_message(self):
         """When last message has list content, context is appended as text item (line 343)."""
-        from app.modules.agents.deep.respond import _deep_respond_impl
         from langchain_core.messages import HumanMessage
+
+        from app.modules.agents.deep.respond import _deep_respond_impl
 
         last_msg = HumanMessage(content=[{"type": "text", "text": "existing content"}])
 
@@ -3429,8 +3434,9 @@ class TestHandleDirectAnswerWithConversation:
     @pytest.mark.asyncio
     async def test_direct_answer_with_previous_conversations(self):
         """Direct answer includes conversation context when previous conversations exist."""
-        from app.modules.agents.deep.respond import _handle_direct_answer
         from langchain_core.messages import HumanMessage as HM
+
+        from app.modules.agents.deep.respond import _handle_direct_answer
 
         async def mock_stream(*args, **kwargs):
             yield {"event": "complete", "data": {"answer": "Follow-up answer", "citations": []}}
