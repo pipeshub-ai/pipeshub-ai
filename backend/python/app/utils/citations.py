@@ -143,6 +143,10 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             if 0 <= chunk_index < len(flattened_final_results):
                 doc = flattened_final_results[chunk_index]
                 content = doc.get("content", "")
+                if isinstance(content, tuple) or isinstance(content, list):
+                    content = content[0] if content else ""
+                else:
+                    content = str(content)
                 new_citations.append({
                     "content": "Image" if content.startswith("data:image/") else content,
                     "chunkIndex": new_citation_num,  # Use new sequential number
@@ -191,7 +195,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 data = data.get("uri","")
             enhanced_metadata = get_enhanced_metadata(record,block,{})
             new_citations.append({
-                "content": "Image" if data.startswith("data:image/") else data,
+                "content": "Image" if data.startswith("data:image/") else str(data),
                 "chunkIndex": new_citation_num,  # Use new sequential number
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
@@ -478,6 +482,10 @@ def normalize_citations_and_chunks_for_agent(
             if 0 <= chunk_index < len(flattened_final_results):
                 doc = flattened_final_results[chunk_index]
                 content = doc.get("content", "")
+                if isinstance(content, tuple) or isinstance(content, list):
+                    content = content[0] if content else ""
+                else:
+                    content = str(content)
 
                 # Get metadata and ensure all required fields
                 metadata = doc.get("metadata", {}) or {}
@@ -560,7 +568,7 @@ def normalize_citations_and_chunks_for_agent(
             enhanced_metadata["orgId"] = enhanced_metadata.get("orgId") or ""
 
             new_citations.append({
-                "content": "Image" if data.startswith("data:image/") else data,
+                "content": "Image" if data.startswith("data:image/") else str(data),
                 "chunkIndex": new_citation_num,
                 "metadata": enhanced_metadata,
                 "citationType": "vectordb|document",
