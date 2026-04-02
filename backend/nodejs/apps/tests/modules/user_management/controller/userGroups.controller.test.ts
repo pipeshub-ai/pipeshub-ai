@@ -324,7 +324,6 @@ describe('UserGroupController', () => {
         updatedAt: '2026-04-01T12:21:03.665Z',
         slug: 'usergroup-custom',
         __v: 0,
-        save: mockGroup.save,
       });
     });
 
@@ -451,7 +450,6 @@ describe('UserGroupController', () => {
         slug: 'usergroup-custom',
         __v: 0,
         deletedBy: req.user.userId,
-        save: mockGroup.save,
       });
     });
 

@@ -6,20 +6,20 @@ export const UserGroupIdUrlParams = z.object({
   });
   
 export const UserGroupIdValidationSchema = z.object({
-body: z.object({}),
-query: z.object({}),
-params: UserGroupIdUrlParams,
-headers: z.object({}),
+  body: z.object({}),
+  query: z.object({}),
+  params: UserGroupIdUrlParams,
+  headers: z.object({}),
 });
 
 export const groupValidationSchema = z.object({
-body: z.object({
-    type: z.string().min(1, 'type is required'),
-    name: z.string().min(1, 'name is required'),
-}),
-query: z.object({}),
-params: z.object({}),
-headers: z.object({}),
+  body: z.object({
+      type: z.string().min(1, 'type is required'),
+      name: z.string().min(1, 'name is required'),
+  }),
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
 });
 
 const userGroupTypeEnum = z.enum(['admin', 'standard', 'everyone', 'custom']);
@@ -34,13 +34,13 @@ export const CreateUserGroupResponseSchema = z
     orgId: z.coerce.string(),
     users: z.array(z.coerce.string()),
     isDeleted: z.boolean(),
+    deletedBy: z.coerce.string().optional(),
     _id: z.coerce.string(),
     createdAt: z.union([z.string(), z.date()]),
     updatedAt: z.union([z.string(), z.date()]),
     slug: z.string(),
     __v: z.number(),
   })
-  .passthrough();
 
 /** GET /user-groups — array of group documents (same shape as create response per item). */
 export const GetAllUserGroupsResponseSchema = z.array(
@@ -65,7 +65,6 @@ const groupSummaryForUserSchema = z
     name: z.string(),
     type: userGroupTypeEnum,
   })
-  .passthrough();
 
 /** GET /user-groups/users/:userId */
 export const GetGroupsForUserResponseSchema = z.array(groupSummaryForUserSchema);
@@ -111,6 +110,5 @@ const groupStatisticsRowSchema = z
     totalUsers: z.number(),
     avgUsers: z.number(),
   })
-  .passthrough();
 
 export const GetGroupStatisticsResponseSchema = z.array(groupStatisticsRowSchema);
