@@ -4997,9 +4997,10 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
             "\n### 📚 INDEXED KNOWLEDGE → `retrieval.search_internal_knowledge`"
         )
         lines.append(
-            "Retrieval performs **semantic search** across ALL indexed sources at once.\n"
+            "Retrieval performs **semantic search** across indexed sources.\n"
             "Use it when the query asks *what is / find / search by topic or keyword*.\n"
-            "⚠️  Retrieval returns a **snapshot** — it may lag behind the live system."
+            "⚠️  Retrieval returns a **snapshot** — it may lag behind the live system.\n"
+            "⚠️  When multiple app connectors are configured, call retrieval ONCE PER CONNECTOR in parallel."
         )
 
         if kb_sources:
@@ -5009,12 +5010,28 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         if indexed_apps:
             lines.append(
                 "\n**Indexed App Connectors** (text is searchable via retrieval):\n"
-                "  Use the type_key or connector_id in `filters.apps` for retrieval:"
+                "  ⚠️ **ONE CALL PER CONNECTOR** — make one separate `retrieval.search_internal_knowledge`\n"
+                "  call per connector in **parallel** (do NOT combine all connectors in one call).\n"
+                "  Results are automatically merged and deduplicated across all calls."
             )
             lines.extend(
                 f"  - 🔗 `{app['type_key']}` ({app['label']}) — connector_id: `{app['connector_id']}`"
                 for app in indexed_apps
             )
+            # Show a concrete parallel-calls example when there are multiple connectors
+            if len(indexed_apps) > 1:
+                example_calls = ",\n".join(
+                    f'    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "<your query>", "connector_ids": ["{app["connector_id"]}"]}}}}' 
+                    for app in indexed_apps
+                )
+                lines.append(
+                    f"\n  **Example — parallel retrieval calls for {len(indexed_apps)} connectors:**\n"
+                    "  ```json\n"
+                    "  [\n"
+                    f"{example_calls}\n"
+                    "  ]\n"
+                    "  ```"
+                )
         else:
             lines.append(
                 "\n⚠️  **NO app connectors are indexed** — only Knowledge Bases above are available.\n"
@@ -5134,9 +5151,12 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         "Ambiguous / unclear intent                                                     →  retrieval (DEFAULT)\n"
         "```\n"
         "⚠️ **RETRIEVAL FILTER RULE**:\n"
-        "   • `filters.apps` should ONLY contain app names listed in 'Indexed App Connectors' above.\n"
-        "   • If no app connectors are indexed (only KB), use `\"filters\": {{}}` (empty).\n"
-        "   • NEVER set `filters.apps` to a live-API-only service.\n"
+        "   • When app connectors are indexed, make ONE retrieval call PER connector (parallel).\n"
+        "   • Each call must set `connector_ids` to a single connector_id from the list above.\n"
+        "   • Do NOT combine multiple connector_ids in a single call — separate calls ensure\n"
+        "     each connector contributes results fairly to the final merged answer.\n"
+        "   • If no app connectors are indexed (only KB), use a single call with no `connector_ids`.\n"
+        "   • NEVER set `connector_ids` to a live-API-only service connector.\n"
         "\n"
         "⚠️ **EFFICIENCY**: If a previous tool already returned IDs/keys, use them\n"
         "   directly in the next write tool. Do NOT re-fetch items you already have."

@@ -94,7 +94,7 @@ def _build_citation_reflection_message(
         "do NOT alter the record ID, block index, or any other part of the path.\n"
         "  3. If a fact cannot be matched to a block with a valid 'Block Web URL:', "
         "omit the inline citation for that fact rather than inventing a URL.\n\n"
-        "Please regenerate your complete answer now with all citation links corrected. "
+        "Please rewrite your previous response now with all citation links corrected. "
         "Every [source](URL) link must use an exact 'Block Web URL:' value from the context."
     )
 

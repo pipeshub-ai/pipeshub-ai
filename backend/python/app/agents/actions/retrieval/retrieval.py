@@ -146,8 +146,6 @@ class Retrieval:
 
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
-            base_limit = 50
-            adjusted_limit = min(base_limit, 100)
 
             # Normalize list inputs
             connector_ids = _normalize_list_param(connector_ids)
@@ -158,6 +156,10 @@ class Retrieval:
             agent_filters = self.state.get("filters", {}) or {}
             agent_apps = set(agent_filters.get("apps") or [])
             agent_kbs = set(agent_filters.get("kb") or [])
+
+            agent_connector_ids_count = len(agent_apps) if agent_apps else 0
+            agent_collection_ids_count = len(agent_kbs) if agent_kbs else 0
+            adjusted_limit = 50 // min(agent_connector_ids_count + agent_collection_ids_count, 5) if agent_connector_ids_count + agent_collection_ids_count > 0 else 50
 
             # Start from agent scope (ensure it's a dict, not None)
             filter_groups = dict(agent_filters) if agent_filters else {}
@@ -183,11 +185,6 @@ class Retrieval:
             else:
                 # No LLM input — use full agent scope
                 filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
-
-            agent_apps_len = len(agent_apps)
-            agent_kbs_len = len(agent_kbs)
-            if agent_apps_len > 0 and agent_kbs_len > 0:
-                adjusted_limit = 50//(agent_apps_len + agent_kbs_len)
 
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))

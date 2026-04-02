@@ -428,25 +428,98 @@ def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
 
     parts = []
     if has_knowledge:
-        parts.append(
-            "## Knowledge Base Available\n"
+        # Classify knowledge sources into KB stores vs indexed app connectors
+        agent_knowledge: list = state.get("agent_knowledge", []) or []
+        kb_sources: list[str] = []
+        indexed_connectors: list[dict] = []  # {"label": str, "connector_id": str, "type_key": str}
+
+        for k in agent_knowledge:
+            if not isinstance(k, dict):
+                continue
+            name = k.get("displayName") or k.get("name") or ""
+            ktype = (k.get("type") or "").strip()
+            ktype_up = ktype.upper()
+            connector_id = (k.get("connectorId") or "").strip()
+
+            if ktype_up == "KB":
+                kb_sources.append(name or "Knowledge Base")
+            elif connector_id:
+                type_key = ktype.lower().split()[0] if ktype else ""
+                label = name or type_key.capitalize() or "App Connector"
+                indexed_connectors.append({
+                    "label": label,
+                    "connector_id": connector_id,
+                    "type_key": type_key,
+                })
+
+        # Build the knowledge context block
+        knowledge_lines: list[str] = [
+            "## Knowledge Sources Available\n"
             "An internal knowledge base is configured with indexed documents.\n\n"
             "**RULE**: When a knowledge base is available, you MUST set `can_answer_directly: false` "
-            "and create at least one retrieval task for ANY substantive question — even if you "
+            "and create retrieval task(s) for ANY substantive question — even if you "
             "think you know the answer. The knowledge base contains organization-specific content "
-            "that your training data does not have. Only greetings and trivial arithmetic skip retrieval.\n\n"
-            "Create a task with `\"domains\": [\"retrieval\"]` to search the knowledge base. "
-            "The retrieval sub-agent will use the `search_internal_knowledge` tool.\n\n"
-            "**Write descriptive retrieval task descriptions**: The task description IS the instruction "
-            "for the retrieval sub-agent. Specify what to search for, key topics to cover, and "
-            "what aspects matter. Example: instead of just \"Search KB for X\", write "
-            "\"Search the knowledge base for X. Cover aspects like features, pricing, integrations, "
-            "and differences between editions. Use multiple search queries with different phrasings.\"\n\n"
+            "that your training data does not have. Only greetings and trivial arithmetic skip retrieval."
+        ]
+
+        # KB-only sources (no connector_id filter needed)
+        if kb_sources:
+            knowledge_lines.append(
+                "\n**Knowledge Base collections** (searched without connector filter):\n"
+                + "\n".join(f"  - 📄 {kb}" for kb in kb_sources)
+            )
+
+        # App connector sources — CRITICAL: one task per connector
+        if indexed_connectors:
+            connector_list = "\n".join(
+                f"  - 🔗 `{c['type_key']}` ({c['label']}) — connector_id: `{c['connector_id']}`"
+                for c in indexed_connectors
+            )
+            knowledge_lines.append(
+                f"\n**Indexed App Connectors** ({len(indexed_connectors)} configured):\n"
+                + connector_list
+            )
+
+            if len(indexed_connectors) == 1:
+                c = indexed_connectors[0]
+                knowledge_lines.append(
+                    f"\n⚠️ **ONE RETRIEVAL TASK REQUIRED**: Create one retrieval task that instructs "
+                    f"the sub-agent to call `search_internal_knowledge` with "
+                    f"`connector_ids: [\"{c['connector_id']}\"]` for the `{c['label']}` connector."
+                )
+            else:
+                task_examples = "\n".join(
+                    f'    {{"task_id": "retrieval_{c["type_key"]}", '
+                    f'"description": "Search the {c["label"]} connector (connector_id: {c["connector_id"]}) '
+                    f'for <topic>. Call search_internal_knowledge with connector_ids: [\"{c["connector_id"]}\"].", '
+                    f'"domains": ["retrieval"], "depends_on": []}}'
+                    for c in indexed_connectors
+                )
+                knowledge_lines.append(
+                    f"\n⚠️ **ONE RETRIEVAL TASK PER CONNECTOR**: You MUST create {len(indexed_connectors)} separate "
+                    f"retrieval tasks (one per connector), all running in parallel. Each task's description "
+                    f"MUST specify the connector_id so the sub-agent uses the correct filter.\n\n"
+                    f"Example task decomposition for this agent's {len(indexed_connectors)} connectors:\n"
+                    f"```json\n"
+                    f"[\n{task_examples}\n]\n"
+                    f"```\n"
+                    f"Do NOT combine multiple connector_ids in one task — separate tasks ensure each "
+                    f"connector contributes results fairly to the final merged answer."
+                )
+
+        knowledge_lines.append(
+            "\n**Write descriptive retrieval task descriptions**: The task description IS the instruction "
+            "for the retrieval sub-agent. Specify what to search for, the connector_id to filter by, "
+            "key topics to cover, and what aspects matter. Example: instead of just \"Search KB for X\", write "
+            "\"Search the knowledge base for X using connector_id: <id>. Cover aspects like features, pricing, "
+            "integrations, and differences between editions. Use multiple search queries with different phrasings.\"\n\n"
             "**Hybrid strategy**: When the question involves services that have BOTH indexed content "
             "AND API tools (e.g., Confluence pages may be indexed AND accessible via the Confluence API), "
             "create BOTH a retrieval task and an API task in parallel. Retrieval finds indexed content "
             "quickly, while the API fetches the latest live version."
         )
+
+        parts.append("\n".join(knowledge_lines))
     else:
         parts.append(
             "## No Knowledge Base\n"
