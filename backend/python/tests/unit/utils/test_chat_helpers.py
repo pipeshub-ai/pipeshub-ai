@@ -388,6 +388,14 @@ class TestGenerateTextFragmentUrl:
         encoded = quote("hello world", safe="")
         assert encoded in result
 
+    def test_preserves_existing_text_fragment_url(self):
+        """Connector-set #:~:text= (e.g. Zoom meeting topic) must not be replaced by chunk text."""
+        url = "https://zoom.us/recording/meeting/transcript#:~:text=python%20basics%20overview"
+        result = generate_text_fragment_url(
+            url, "Transcript noise from chunk would break link"
+        )
+        assert result == url
+
 
 # ===================================================================
 # _find_first_block_index_recursive
