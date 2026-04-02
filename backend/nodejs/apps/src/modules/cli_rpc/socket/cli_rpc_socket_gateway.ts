@@ -3,7 +3,7 @@ import { DefaultEventsMap, Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
-import { folderSyncWatcherRegistry } from './folder_sync_watcher_registry';
+import { localFsWatcherRegistry } from './local_fs_watcher_registry';
 import {
   DEFAULT_CLI_RPC_ALLOWED_REST_PREFIXES,
   normalizeAndAssertCliRpcProxyPath,
@@ -97,7 +97,7 @@ export class CliRpcSocketGateway {
 
     this.namespace.on('connection', (socket: CliRpcSocket) => {
       socket.on(
-        'foldersync:registerWatcher',
+        'localfs:registerWatcher',
         (
           payload: { connectorId?: string } | undefined,
           ack?: (res: RpcResponse | {
@@ -109,13 +109,13 @@ export class CliRpcSocketGateway {
             if (!connectorId) {
               throw new BadRequestError('connectorId is required');
             }
-            folderSyncWatcherRegistry.register(socket, connectorId);
+            localFsWatcherRegistry.register(socket, connectorId);
             ack?.({ ok: true });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             ack?.({
               type: 'response',
-              id: 'foldersync:registerWatcher',
+              id: 'localfs:registerWatcher',
               ok: false,
               error: {
                 code: 'WATCHER_REGISTRATION_FAILED',
@@ -138,7 +138,7 @@ export class CliRpcSocketGateway {
         },
       );
       socket.on('disconnect', () => {
-        folderSyncWatcherRegistry.unregister(socket);
+        localFsWatcherRegistry.unregister(socket);
       });
     });
 

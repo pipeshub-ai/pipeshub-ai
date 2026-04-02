@@ -29,7 +29,7 @@ type RpcResponse =
 const DEFAULT_TIMEOUT_MS = 90_000;
 const SOCKET_PATH = "/socket.io-cli-rpc";
 
-type FolderSyncRegisterAck =
+type LocalFsRegisterAck =
   | { ok: true }
   | {
       type: "response";
@@ -38,13 +38,13 @@ type FolderSyncRegisterAck =
       error: { code: string; message: string; status?: number };
     };
 
-export type FolderSyncResyncRequest = {
+export type LocalFsResyncRequest = {
   connectorId: string;
   fullSync?: boolean;
   origin?: string;
 };
 
-type FolderSyncResyncAck =
+type LocalFsResyncAck =
   | {
       ok: true;
       replayedBatches?: number;
@@ -61,8 +61,8 @@ export class SocketIoRpcClient {
   private connectPromise: Promise<void> | null = null;
   private nextId = 1;
   private watcherConnectorId: string | null = null;
-  private folderSyncResyncListener:
-    | ((request: FolderSyncResyncRequest) => Promise<{
+  private localFsResyncListener:
+    | ((request: LocalFsResyncRequest) => Promise<{
         replayedBatches?: number;
         replayedEvents?: number;
         skippedBatches?: number;
@@ -102,28 +102,28 @@ export class SocketIoRpcClient {
     });
   }
 
-  async registerFolderSyncWatcher(connectorId: string): Promise<void> {
+  async registerLocalFsWatcher(connectorId: string): Promise<void> {
     await this.ensureConnected();
     const normalizedConnectorId = connectorId.trim();
     this.watcherConnectorId = normalizedConnectorId;
     await this.emitWatcherRegistration(normalizedConnectorId);
   }
 
-  async onFolderSyncResync(
-    handler: (request: FolderSyncResyncRequest) => Promise<{
+  async onLocalFsResync(
+    handler: (request: LocalFsResyncRequest) => Promise<{
       replayedBatches?: number;
       replayedEvents?: number;
       skippedBatches?: number;
     }>
   ): Promise<void> {
     await this.ensureConnected();
-    this.folderSyncResyncListener = handler;
-    this.socket!.off("foldersync:resync");
+    this.localFsResyncListener = handler;
+    this.socket!.off("localfs:resync");
     this.socket!.on(
-      "foldersync:resync",
+      "localfs:resync",
       async (
-        request: FolderSyncResyncRequest,
-        ack?: (response: FolderSyncResyncAck) => void
+        request: LocalFsResyncRequest,
+        ack?: (response: LocalFsResyncAck) => void
       ) => {
         try {
           const result = await handler(request);
@@ -187,8 +187,8 @@ export class SocketIoRpcClient {
     if (!this.socket || !this.socket.connected) {
       return;
     }
-    if (this.folderSyncResyncListener) {
-      await this.onFolderSyncResync(this.folderSyncResyncListener);
+    if (this.localFsResyncListener) {
+      await this.onLocalFsResync(this.localFsResyncListener);
     }
     if (this.watcherConnectorId) {
       await this.emitWatcherRegistration(this.watcherConnectorId);
@@ -199,9 +199,9 @@ export class SocketIoRpcClient {
     await this.ensureConnected();
     return new Promise<void>((resolve, reject) => {
       this.socket!.emit(
-        "foldersync:registerWatcher",
+        "localfs:registerWatcher",
         { connectorId },
-        (response: FolderSyncRegisterAck) => {
+        (response: LocalFsRegisterAck) => {
           if (response && "ok" in response && response.ok === true) {
             resolve();
             return;
@@ -212,7 +212,7 @@ export class SocketIoRpcClient {
           reject(
             new Error(
               `${failure?.code ?? "WATCHER_REGISTRATION_FAILED"}${status}: ${
-                failure?.message ?? "Folder Sync watcher registration failed"
+                failure?.message ?? "Local FS watcher registration failed"
               }`
             )
           );

@@ -10,9 +10,9 @@ import {
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
 import {
-  folderSyncResyncDispatcher,
-  isFolderSyncConnector,
-} from '../../../knowledge_base/services/folder_sync_resync_dispatcher';
+  localFsResyncDispatcher,
+  isLocalFsConnector,
+} from '../../../knowledge_base/services/local_fs_resync_dispatcher';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -51,15 +51,15 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
         connectorId,
       });
 
-      if (isFolderSyncConnector(connector)) {
-        await folderSyncResyncDispatcher.dispatch({
+      if (isLocalFsConnector(connector)) {
+        await localFsResyncDispatcher.dispatch({
           orgId,
           connectorId,
           connectorName: connector,
           origin: 'CONNECTOR',
           fullSync: false,
         });
-        this.logger.info('Folder Sync scheduled resync dispatched to watcher', {
+        this.logger.info('Local FS scheduled resync dispatched to watcher', {
           orgId,
           connector,
           connectorId,
