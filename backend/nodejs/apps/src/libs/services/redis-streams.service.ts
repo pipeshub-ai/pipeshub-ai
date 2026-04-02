@@ -335,16 +335,6 @@ export abstract class BaseRedisStreamsConsumerConnection
         }
       }
     }
-    // Remove stale consumer entry from a previous run so its PEL
-    // doesn't accumulate indefinitely.
-    for (const topic of topics) {
-      try {
-        await this.redis.xgroup('DELCONSUMER', topic, this.groupId, this.consumerId);
-      } catch {
-        // consumer may not exist yet
-      }
-    }
-
     this.subscribedTopics = [...new Set([...this.subscribedTopics, ...topics])];
     this.logger.info('Successfully subscribed to Redis streams', {
       topics: this.subscribedTopics,
@@ -362,78 +352,87 @@ export abstract class BaseRedisStreamsConsumerConnection
 
   /**
    * Drain messages left in the Pending Entries List (PEL) from a previous
-   * crash.  Reading with id "0" returns only already-delivered-but-unacked
-   * messages.  Once every topic returns an empty batch the PEL is clear.
+   * crash.  Uses XAUTOCLAIM to steal idle messages from any consumer in the
+   * group (including crashed ones), then processes and acks them.
    */
   private async drainPending<T>(
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     this.logger.info('Draining pending messages from PEL');
-    while (this.running) {
-      const streams = this.subscribedTopics.flatMap((topic) => [topic, '0']);
 
-      const xreadResult = await this.redis.xreadgroup(
-        'GROUP',
-        this.groupId,
-        this.consumerId,
-        'COUNT',
-        '10',
-        'STREAMS',
-        ...streams,
-      );
+    for (const topic of this.subscribedTopics) {
+      let startId = '0-0';
+      while (this.running) {
+        try {
+          const result = await this.redis.xautoclaim(
+            topic,
+            this.groupId,
+            this.consumerId,
+            0, // min-idle-time: claim all pending
+            startId,
+            'COUNT',
+            '10',
+          );
 
-      if (!isRedisXReadGroupResult(xreadResult)) break;
+          // ioredis returns [nextStartId, [[id, fields], ...], deletedIds]
+          const nextId = result[0] as string;
+          const claimed = result[1] as RedisStreamEntry[];
 
-      const hasMessages = xreadResult.some(([, entries]) => entries.length > 0);
-      if (!hasMessages) {
-        this.logger.info('PEL drained, switching to new messages');
-        break;
-      }
+          if (!claimed || claimed.length === 0) break;
 
-      for (const result of xreadResult) {
-        const streamName = result[0];
-        const entries = result[1];
-        for (const entry of entries) {
-          const entryId = entry[0];
-          const fields = entry[1];
-          try {
-            const fieldMap: Record<string, string> = {};
-            for (let i = 0; i < fields.length; i += 2) {
-              const key = fields[i];
-              const value = fields[i + 1];
-              if (key !== undefined && value !== undefined) {
-                fieldMap[key] = value;
+          for (const entry of claimed) {
+            const entryId = entry[0];
+            const fields = entry[1];
+            try {
+              const fieldMap: Record<string, string> = {};
+              for (let i = 0; i < fields.length; i += 2) {
+                const key = fields[i];
+                const value = fields[i + 1];
+                if (key !== undefined && value !== undefined) {
+                  fieldMap[key] = value;
+                }
               }
+
+              const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
+              if (rawValue === undefined) {
+                await this.ackRedis.xack(topic, this.groupId, entryId);
+                continue;
+              }
+
+              const parsedMessage: StreamMessage<T> = {
+                key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
+                value: JSON.parse(rawValue) as T,
+              };
+
+              const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
+              if (rawHeaders !== undefined) {
+                parsedMessage.headers = JSON.parse(rawHeaders) as Record<string, string>;
+              }
+
+              await handler(parsedMessage);
+              await this.ackRedis.xack(topic, this.groupId, entryId);
+              this.logger.info('Recovered pending message', { stream: topic, id: entryId });
+            } catch (error) {
+              this.logger.error('Error recovering pending message', {
+                entryId,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              });
             }
-
-            const rawValue = fieldMap[REDIS_STREAM_FIELDS.value];
-            if (rawValue === undefined) {
-              await this.ackRedis.xack(streamName, this.groupId, entryId);
-              continue;
-            }
-
-            const parsedMessage: StreamMessage<T> = {
-              key: fieldMap[REDIS_STREAM_FIELDS.key] ?? '',
-              value: JSON.parse(rawValue) as T,
-            };
-
-            const rawHeaders = fieldMap[REDIS_STREAM_FIELDS.headers];
-            if (rawHeaders !== undefined) {
-              parsedMessage.headers = JSON.parse(rawHeaders) as Record<string, string>;
-            }
-
-            await handler(parsedMessage);
-            await this.ackRedis.xack(streamName, this.groupId, entryId);
-            this.logger.info('Recovered pending message', { stream: streamName, id: entryId });
-          } catch (error) {
-            this.logger.error('Error recovering pending message', {
-              entryId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            });
           }
+
+          startId = nextId;
+          if (nextId === '0-0') break;
+        } catch (error) {
+          this.logger.error('Error during XAUTOCLAIM', {
+            topic,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+          break;
         }
       }
     }
+
+    this.logger.info('PEL drained, switching to new messages');
   }
 
   private async consumeLoop<T>(

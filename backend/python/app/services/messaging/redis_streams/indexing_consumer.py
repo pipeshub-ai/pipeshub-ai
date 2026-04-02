@@ -87,14 +87,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     else:
                         raise
 
-            for topic in self.config.topics:
-                try:
-                    await self.redis.xgroup_delconsumer(  # type: ignore
-                        topic, self.config.group_id, self.config.client_id
-                    )
-                except Exception:
-                    pass
-
             self.logger.info(
                 "Successfully initialized Redis Streams consumer for indexing"
             )
@@ -224,38 +216,52 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return len(self._active_futures)
 
     async def _drain_pending(self) -> None:
-        """Re-process messages left in the Pending Entries List (PEL) from a previous crash."""
+        """Re-process messages left in the Pending Entries List (PEL).
+
+        Uses XAUTOCLAIM to steal idle messages from any consumer in the group
+        (including crashed ones), then processes them through the worker thread.
+        """
         self.logger.info("Draining pending messages from PEL")
-        while self.running:
-            streams = dict.fromkeys(self.config.topics, "0")
-            results = await self.redis.xreadgroup(  # type: ignore
-                groupname=self.config.group_id,
-                consumername=self.config.client_id,
-                streams=streams,
-                count=10,
-            )
-            if not results or all(len(msgs) == 0 for _, msgs in results):
-                self.logger.info("PEL drained, switching to new messages")
-                break
-            for stream_name, messages in results:
-                for message_id, fields in messages:
-                    if not self.running:
-                        return
-                    try:
-                        self.logger.info(
-                            "Recovering pending message: stream=%s, id=%s",
-                            stream_name,
-                            message_id,
-                        )
-                        await self._start_processing_task(
-                            stream_name, message_id, fields
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "Error recovering pending message %s: %s",
-                            message_id,
-                            e,
-                        )
+
+        for topic in self.config.topics:
+            start_id = "0-0"
+            while self.running:
+                try:
+                    result = await self.redis.xautoclaim(  # type: ignore
+                        topic,
+                        self.config.group_id,
+                        self.config.client_id,
+                        min_idle_time=0,
+                        start_id=start_id,
+                        count=10,
+                    )
+                    next_id, claimed, _deleted = result
+                    if not claimed:
+                        break
+                    for message_id, fields in claimed:
+                        if not self.running:
+                            return
+                        try:
+                            self.logger.info(
+                                "Recovering pending message: stream=%s, id=%s",
+                                topic, message_id,
+                            )
+                            await self._start_processing_task(
+                                topic, message_id, fields
+                            )
+                        except Exception as e:
+                            self.logger.error(
+                                "Error recovering pending message %s: %s",
+                                message_id, e,
+                            )
+                    start_id = next_id
+                    if next_id == b"0-0" or next_id == "0-0":
+                        break
+                except Exception as e:
+                    self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
+                    break
+
+        self.logger.info("PEL drained, switching to new messages")
 
     async def _consume_loop(self) -> None:
         try:
