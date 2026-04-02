@@ -41,6 +41,8 @@ group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
+TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+
 collection_map = {
                     RecordType.TICKET.value: "tickets",
                     RecordType.PROJECT.value: "projects",
@@ -1636,7 +1638,7 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
 
-    Format: url#:~:text=start_text,end_text
+    Format: base URL, then ``#:~:text=`` plus encoded start (and optional ``,end``).
 
     Args:
         base_url: The base URL of the page
@@ -1655,7 +1657,7 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
 
         # If the URL already carries a #:~:text= fragment (set deliberately by a
         # connector, e.g. Zoom transcript listing page), preserve it as-is.
-        if '#:~:text=' in base_url:
+        if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
             return base_url
 
         start_text, end_text = extract_start_end_text(snippet)
