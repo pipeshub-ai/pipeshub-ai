@@ -1599,6 +1599,9 @@ components:
     Address:
       type: object
       properties:
+        _id:
+          type: string
+          description: Optional subdocument id when returned from MongoDB
         addressLine1:
           type: string
           description: Address line 1
@@ -1617,6 +1620,9 @@ components:
 
     Organization:
       type: object
+      description: |
+        Serialized org document returned by GET/POST /org and nested under `data` for PUT/DELETE /org responses.
+        Validated responses currently use `accountType: business` only.
       properties:
         _id:
           type: string
@@ -1640,8 +1646,8 @@ components:
           description: Contact email address
         accountType:
           type: string
-          enum: [individual, business]
-          description: Type of account
+          enum: [business]
+          description: Account type as returned by the API (creation accepts business only)
         permanentAddress:
           $ref: '#/components/schemas/Address'
         onBoardingStatus:
@@ -1667,6 +1673,59 @@ components:
         - domain
         - contactEmail
         - accountType
+
+    OrgHealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy]
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the health check was generated
+
+    OrgLogoUploadResponse:
+      type: object
+      required:
+        - message
+        - mimeType
+      properties:
+        message:
+          type: string
+          example: Logo updated successfully
+        mimeType:
+          type: string
+          enum: [image/jpeg, image/svg+xml]
+          description: Stored MIME type after processing (raster logos are normalized to JPEG)
+
+    OrgLogoDocumentAfterDelete:
+      type: object
+      description: org-logos row after clearing logo fields (DELETE /org/logo)
+      required:
+        - logo
+        - mimeType
+        - _id
+        - orgId
+        - __v
+      properties:
+        logo:
+          nullable: true
+          description: Always null after successful delete
+        mimeType:
+          nullable: true
+          description: Always null after successful delete
+        _id:
+          type: string
+          format: ObjectId
+        orgId:
+          type: string
+          format: ObjectId
+        __v:
+          type: integer
 
     Team:
       type: object
@@ -8839,8 +8898,7 @@ paths:
         </ul>
         <b>Account Types:</b><br>
         <ul>
-        <li><code>individual</code>: Single-user account, limited team features</li>
-        <li><code>business</code>: Multi-user organization with full features</li>
+        <li><code>business</code> is the only accepted value for <code>accountType</code>; <code>registeredName</code> is required when <code>accountType</code> is <code>business</code>.</li>
         </ul>
         <b>Security:</b><br>
         <ul>
@@ -8860,8 +8918,8 @@ paths:
               properties:
                 accountType:
                   type: string
-                  enum: [individual, business]
-                  description: Type of organization account
+                  enum: [business]
+                  description: Type of organization account (API accepts business only)
                   example: "business"
                 shortName:
                   type: string
@@ -8869,7 +8927,7 @@ paths:
                   example: "Acme"
                 registeredName:
                   type: string
-                  description: Official registered name (for business accounts)
+                  description: Official registered name (required for business accounts)
                   example: "Acme Corporation Inc."
                 contactEmail:
                   type: string
@@ -8886,35 +8944,23 @@ paths:
                   minLength: 8
                   description: Password for the admin account (min 8 chars)
                   example: "SecurePassword123!"
+                sendEmail:
+                  type: boolean
+                  description: Optional flag for welcome email behavior
+                permanentAddress:
+                  $ref: '#/components/schemas/Address'
               required:
                 - accountType
                 - contactEmail
                 - adminFullName
                 - password
       responses:
-        '201':
-          description: Organization created successfully
+        '200':
+          description: Organization created successfully (response body is the org document)
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Organization created successfully"
-                  data:
-                    type: object
-                    properties:
-                      organization:
-                        $ref: '#/components/schemas/Organization'
-                      adminUser:
-                        $ref: '#/components/schemas/User'
-                      accessToken:
-                        type: string
-                        description: JWT token for immediate login
+                $ref: '#/components/schemas/Organization'
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -8923,9 +8969,8 @@ paths:
             <li>Invalid email format</li>
             <li>Password too weak</li>
             <li>Missing required fields</li>
+            <li>Registered name required for business accounts</li>
             </ul>
-        '409':
-          description: Conflict - Organization already exists in the system
 
     get:
       tags:
@@ -8976,30 +9021,23 @@ paths:
         Update organization profile and settings information.<br><br>
         <b>Overview:</b><br>
         This endpoint allows administrators to update the organization's profile information, contact details, and address. Used in the organization settings section of the admin panel.<br><br>
-        <b>Updatable Fields:</b><br>
+        <b>Updatable Fields (partial update — include only fields to change):</b><br>
         <ul>
         <li><code>registeredName</code>: Official registered/legal name of the organization</li>
         <li><code>shortName</code>: Short display name used in UI</li>
-        <li><code>phoneNumber</code>: Primary contact phone number</li>
-        <li><code>permanentAddress</code>: Full address object with street, city, state, country, postal code</li>
+        <li><code>contactEmail</code>: Primary contact email</li>
+        <li><code>permanentAddress</code>: Address object (street, city, state, country, postal code)</li>
+        <li><code>dataCollectionConsent</code>: Consent flag</li>
         </ul>
         <b>Restrictions:</b><br>
         <ul>
         <li>Only organization admins can perform updates</li>
-        <li>Contact email cannot be changed through this endpoint</li>
-        <li>Account type cannot be changed after creation</li>
+        <li>Account type cannot be changed through this endpoint</li>
         </ul>
         <b>Side Effects:</b><br>
         <ul>
         <li>Organization update event is published</li>
-        <li>Cached organization data is invalidated</li>
-        <li>Changes are reflected immediately across all services</li>
-        </ul>
-        <b>Validation:</b><br>
-        <ul>
-        <li>Phone number must be valid international format</li>
-        <li>Address fields have maximum length constraints</li>
-        <li>Names cannot be empty if provided</li>
+        <li>Changes are reflected in subsequent GET /org responses</li>
         </ul>
       operationId: updateOrganization
       security:
@@ -9007,7 +9045,7 @@ paths:
         - oauth2: [org:write]
       requestBody:
         required: true
-        description: "Request payload"
+        description: "Partial update payload (all properties optional)"
         content:
           application/json:
             schema:
@@ -9023,13 +9061,16 @@ paths:
                   maxLength: 50
                   description: Short display name for UI
                   example: "Acme Corp"
-                phoneNumber:
+                contactEmail:
                   type: string
-                  pattern: '^\+?[0-9]{10,15}$'
-                  description: Contact phone number (international format)
-                  example: "+15551234567"
+                  format: email
+                  description: Primary contact email
+                  example: "admin@acme.com"
                 permanentAddress:
                   $ref: '#/components/schemas/Address'
+                dataCollectionConsent:
+                  type: boolean
+                  description: Data collection consent flag
       responses:
         '200':
           description: Organization updated successfully
@@ -9037,6 +9078,9 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
+                  - data
                 properties:
                   message:
                     type: string
@@ -9045,12 +9089,7 @@ paths:
                     $ref: '#/components/schemas/Organization'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid phone number format</li>
-            <li>Field exceeds maximum length</li>
-            <li>Invalid address structure</li>
-            </ul>
+            Invalid request (e.g. invalid email format or validation errors)
         '401':
           description: Unauthorized - Valid bearer token required
         '403':
@@ -9059,60 +9098,44 @@ paths:
     delete:
       tags:
         - Organizations
-      summary: Delete organization
+      summary: Soft-delete organization
       description: |
-        Permanently delete an organization and all associated data.<br><br>
-        <b>WARNING:</b> This action is <b>irreversible</b>.<br><br>
-        <b>Data Deleted:</b><br>
+        Marks the organization as deleted (<code>isDeleted: true</code>). No query confirmation parameter is required.<br><br>
+        <b>Behavior:</b><br>
         <ul>
-        <li>All user accounts in the organization</li>
-        <li>All teams and user groups</li>
-        <li>All documents and storage data</li>
-        <li>All configuration and settings</li>
+        <li>Soft delete: the org document is updated in place</li>
+        <li>An event is published for downstream consumers</li>
         </ul>
         <b>Requirements:</b><br>
         <ul>
-        <li>Must be the organization owner (super admin)</li>
-        <li>Must provide confirmation parameter</li>
-        <li>All active subscriptions must be cancelled first</li>
+        <li>Caller must have <code>org:admin</code> scope and pass admin checks</li>
         </ul>
       operationId: deleteOrganization
       security:
         - bearerAuth: []
         - oauth2: [org:admin]
-      parameters:
-        - name: confirm
-          in: query
-          required: true
-          description: Must be "DELETE" to confirm deletion
-          schema:
-            type: string
-            enum: [DELETE]
       responses:
         '200':
-          description: Organization deleted successfully
+          description: Organization marked as deleted successfully
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
+                  - data
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Organization and all associated data have been permanently deleted"
-        '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Missing or incorrect confirmation parameter</li>
-            <li>Active subscriptions exist</li>
-            </ul>
+                    example: "Organization marked as deleted successfully"
+                  data:
+                    $ref: '#/components/schemas/Organization'
         '401':
           description: Unauthorized - Valid authentication required
         '403':
-          description: Forbidden - Only organization owner can delete
+          description: Forbidden - Admin privileges required
+        '404':
+          description: Organization not found
 
   /org/logo:
     put:
@@ -9130,14 +9153,14 @@ paths:
         </ul>
         <b>Requirements:</b><br>
         <ul>
-        <li>Maximum file size: 5MB</li>
-        <li>Recommended dimensions: 256x256 pixels or higher</li>
-        <li>Square aspect ratio recommended</li>
+        <li>Maximum file size: 1MB (server-enforced)</li>
+        <li>Multipart field name: <code>file</code></li>
+        <li>Supported MIME types include PNG, JPEG, WebP, GIF, SVG</li>
         </ul>
         <b>Side Effects:</b><br>
         <ul>
-        <li>Previous logo is replaced</li>
-        <li>Multiple sizes may be generated for different use cases</li>
+        <li>Raster uploads are normalized to JPEG; SVG is stored as validated SVG</li>
+        <li>Logo is stored as base64 on the org-logos document</li>
         </ul>
       operationId: uploadOrganizationLogo
       security:
@@ -9145,34 +9168,25 @@ paths:
         - oauth2: [org:write]
       requestBody:
         required: true
-        description: "Request payload"
+        description: "Multipart upload (field name must be `file`)"
         content:
           multipart/form-data:
             schema:
               type: object
               properties:
-                logo:
+                file:
                   type: string
                   format: binary
                   description: Logo image file
               required:
-                - logo
+                - file
       responses:
-        '200':
-          description: Logo uploaded successfully
+        '201':
+          description: Logo stored successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  logoUrl:
-                    type: string
-                    format: uri
-                    description: URL to access the uploaded logo
-                    example: "https://storage.pipeshub.com/org/507f1f77bcf86cd799439011/logo.png"
+                $ref: '#/components/schemas/OrgLogoUploadResponse'
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -9191,17 +9205,11 @@ paths:
         - Organizations
       summary: Get organization logo
       description: |
-        Retrieve the organization's logo image or URL.<br><br>
-        <b>Response Formats:</b><br>
+        Returns the raw logo image bytes when a logo exists, or <code>204 No Content</code> when none.<br><br>
+        <b>Success:</b><br>
         <ul>
-        <li>Returns a signed URL to access the logo</li>
-        <li>URL is valid for a limited time (typically 1 hour)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Displaying logo in navigation/header</li>
-        <li>Email templates</li>
-        <li>White-label branding</li>
+        <li><code>200</code>: binary body; <code>Content-Type</code> reflects stored MIME type when available</li>
+        <li><code>204</code>: no body when no logo is configured</li>
         </ul>
       operationId: getOrganizationLogo
       security:
@@ -9209,66 +9217,56 @@ paths:
         - oauth2: [org:read]
       responses:
         '200':
-          description: Logo URL retrieved successfully
+          description: Logo image bytes
           content:
-            application/json:
+            image/png:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  hasLogo:
-                    type: boolean
-                    description: Whether organization has a custom logo
-                    example: true
-                  logoUrl:
-                    type: string
-                    format: uri
-                    description: Signed URL to access the logo (null if no logo)
-                    example: "https://storage.pipeshub.com/org/507f1f77bcf86cd799439011/logo.png?token=..."
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+            image/svg+xml:
+              schema:
+                type: string
+                format: binary
         '204':
-          description: No logo configured
+          description: No logo configured (empty body)
         '401':
           description: Unauthorized - Valid authentication required
-        '404':
-          description: Organization not found
 
     delete:
       tags:
         - Organizations
       summary: Delete organization logo
       description: |
-        Remove the organization's custom logo.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Logo file is permanently deleted from storage</li>
-        <li>Organization reverts to default/placeholder logo</li>
-        </ul>
+        Clears stored logo data on the org-logos document (<code>logo</code> and <code>mimeType</code> set to null).<br><br>
       operationId: deleteOrganizationLogo
       security:
         - bearerAuth: []
-        - oauth2: [org:admin]
+        - oauth2: [org:write]
       responses:
         '200':
-          description: Logo deleted successfully
+          description: Logo cleared; response body is the updated org-logo document
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Organization logo deleted successfully"
+                $ref: '#/components/schemas/OrgLogoDocumentAfterDelete'
         '401':
           description: Unauthorized - Valid authentication required
         '403':
           description: Forbidden - Admin privileges required
         '404':
-          description: No logo exists to delete
+          description: No org-logo document found for this organization
 
   /org/onboarding-status:
     get:
@@ -9276,24 +9274,11 @@ paths:
         - Organizations
       summary: Get onboarding status
       description: |
-        Retrieve the organization's onboarding progress and status.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Current onboarding step</li>
-        <li>Completion status of each step</li>
-        <li>Overall completion percentage</li>
-        </ul>
-        <b>Onboarding Steps:</b><br>
-        <ul>
-        <li>Organization profile setup</li>
-        <li>Admin account configuration</li>
-        <li>Invite team members</li>
-        <li>Connect integrations</li>
-        <li>Configure settings</li>
-        </ul>
+        Returns the organization's <code>onBoardingStatus</code> field from the org document.
       operationId: getOnboardingStatus
       security:
         - bearerAuth: []
+        - oauth2: [org:read]
       responses:
         '200':
           description: Onboarding status retrieved successfully
@@ -9301,6 +9286,8 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - status
                 properties:
                   status:
                     type: string
@@ -9308,27 +9295,19 @@ paths:
                     description: Current onboarding status
         '401':
           description: Unauthorized - Valid authentication required
+        '404':
+          description: Organization not found
 
     put:
       tags:
         - Organizations
       summary: Update onboarding status
       description: |
-        Update the organization's onboarding progress.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Mark a step as completed</li>
-        <li>Skip optional steps</li>
-        <li>Complete entire onboarding</li>
-        </ul>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Steps must be completed in order (unless skippable)</li>
-        <li>Completing all required steps marks onboarding as complete</li>
-        </ul>
+        Sets the organization's onboarding status. Requires org admin privileges.
       operationId: updateOnboardingStatus
       security:
         - bearerAuth: []
+        - oauth2: [org:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -9336,19 +9315,13 @@ paths:
           application/json:
             schema:
               type: object
-              properties:
-                stepId:
-                  type: string
-                  description: ID of the step to update
-                  example: "invite_team"
-                action:
-                  type: string
-                  enum: [complete, skip]
-                  description: Action to perform on the step
-                  example: "complete"
               required:
-                - stepId
-                - action
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [configured, notConfigured, skipped]
+                  description: New onboarding status
       responses:
         '200':
           description: Onboarding status updated successfully
@@ -9356,31 +9329,41 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - message
+                  - status
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Step 'invite_team' marked as complete"
-                  isOnboardingComplete:
-                    type: boolean
-                    description: Whether all onboarding is now complete
-                    example: false
-                  nextStep:
+                    example: Onboarding status updated successfully
+                  status:
                     type: string
-                    description: Next step to complete (null if done)
-                    example: "connect_integrations"
+                    enum: [configured, notConfigured, skipped]
         '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid step ID</li>
-            <li>Step cannot be skipped (required)</li>
-            <li>Previous required steps not completed</li>
-            </ul>
+          description: Invalid status value or validation error
         '401':
           description: Unauthorized - Valid authentication required
+        '403':
+          description: Forbidden - Admin privileges required
+        '404':
+          description: Organization not found
+
+  /org/health:
+    get:
+      tags:
+        - Organizations
+      summary: Organization service health
+      description: |
+        Lightweight health check for the org user-management route module. Returns a fixed status and current timestamp.
+      operationId: getOrgServiceHealth
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgHealthResponse'
 
   # ==================== USER GROUPS ENDPOINTS ====================
   /userGroups:

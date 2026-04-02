@@ -485,17 +485,17 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
   })
 
-  describe('passthrough', () => {
-    it('should passthrough unknown keys on the body', () => {
+  describe('unknown keys', () => {
+    it('should strip unknown keys from the body (strict known fields only)', () => {
       const result = OrgUpdateBody.safeParse({
         ...validUpdateBody,
-        futureField: 'kept',
+        futureField: 'stripped',
       })
       expect(result.success).to.be.true
       if (result.success) {
-        expect((result.data as { futureField?: string }).futureField).to.equal(
-          'kept',
-        )
+        expect(
+          (result.data as { futureField?: string }).futureField,
+        ).to.be.undefined
       }
     })
   })
@@ -783,13 +783,31 @@ describe('UpdateOrgLogoResponseSchema', () => {
 })
 
 describe('RemoveOrgLogoResponseSchema', () => {
-  it('should accept cleared logo fields with extra mongoose keys', () => {
+  it('should accept cleared logo document (string ids)', () => {
     const result = RemoveOrgLogoResponseSchema.safeParse({
       _id: '507f1f77bcf86cd799439011',
+      orgId: '507f1f77bcf86cd799439012',
       logo: null,
       mimeType: null,
+      __v: 0,
     })
     expect(result.success).to.be.true
+  })
+
+  it('should accept Mongoose ObjectId instances from toJSON()', () => {
+    const oid = new mongoose.Types.ObjectId()
+    const result = RemoveOrgLogoResponseSchema.safeParse({
+      _id: oid,
+      orgId: oid,
+      logo: null,
+      mimeType: null,
+      __v: 0,
+    })
+    expect(result.success).to.be.true
+    if (result.success) {
+      expect(result.data._id).to.be.a('string')
+      expect(result.data.orgId).to.be.a('string')
+    }
   })
 
   it('should reject when logo not null', () => {

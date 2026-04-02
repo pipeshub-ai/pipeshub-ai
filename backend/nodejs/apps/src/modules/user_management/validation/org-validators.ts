@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+const OrgUpdatePermanentAddressBody = z.object({
+  addressLine1: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  country: z.string().optional(),
+  postCode: z.string().optional(),
+});
 
 export const OrgCreationBody = z
   .object({
@@ -10,15 +17,7 @@ export const OrgCreationBody = z
     adminFullName: z.string().min(1, 'Admin full name required'),
     password: z.string().min(8, 'Minimum 8 characters password required'),
     sendEmail: z.boolean().optional(),
-    permanentAddress: z
-      .object({
-        addressLine1: z.string().optional(),
-        city: z.string().optional(),
-        state: z.string().optional(),
-        country: z.string().optional(),
-        postCode: z.string().optional(),
-      })
-      .optional(),
+    permanentAddress: OrgUpdatePermanentAddressBody.optional(),
   })
   .refine(
     (data) => {
@@ -33,30 +32,23 @@ export const OrgCreationBody = z
 
 const OnboardingStatusUpdateBody = z.object({
     status: z.enum(['configured', 'notConfigured', 'skipped']),
-  });
+});
   
 export const OnboardingStatusUpdateValidationSchema = z.object({
-body: OnboardingStatusUpdateBody,
-query: z.object({}),
-params: z.object({}),
-headers: z.object({}),
+  body: OnboardingStatusUpdateBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
 });
 
 export const OrgCreationValidationSchema = z.object({
-body: OrgCreationBody,
-query: z.object({}),
-params: z.object({}),
-headers: z.object({}),
+  body: OrgCreationBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
 });
 
-const OrgUpdatePermanentAddressBody = z.object({
-  addressLine1: z.string().optional(),
-  city: z.string().optional(),
-  state: z.string().optional(),
-  country: z.string().optional(),
-  postCode: z.string().optional(),
-});
-
+// fields are optional to allow partial updates
 export const OrgUpdateBody = z
   .object({
     registeredName: z.string().optional(),
@@ -65,7 +57,6 @@ export const OrgUpdateBody = z
     permanentAddress: OrgUpdatePermanentAddressBody.optional(),
     dataCollectionConsent: z.boolean().optional(),
   })
-  .passthrough();
 
 export const OrgUpdateValidationSchema = z.object({
   body: OrgUpdateBody,
@@ -74,16 +65,11 @@ export const OrgUpdateValidationSchema = z.object({
   headers: z.object({}),
 });
 
-const OrgUpdateResponsePermanentAddress = z
-  .object({
-    addressLine1: z.string().optional(),
-    city: z.string().optional(),
-    state: z.string().optional(),
-    postCode: z.string().optional(),
-    country: z.string().optional(),
+/** Same shape as request `permanentAddress`, plus subdocument `_id` from Mongo. */
+const OrgUpdateResponsePermanentAddress =
+  OrgUpdatePermanentAddressBody.extend({
     _id: z.coerce.string().optional(),
-  })
-  .passthrough();
+  });
 
 /**
  * Serialized org document (GET /org, POST /org create success body, and
@@ -105,7 +91,6 @@ export const OrgDocumentResponseSchema = z
     slug: z.string(),
     __v: z.number(),
   })
-  .passthrough();
 
 /** Validates JSON for GET /org/exists (checkOrgExistence). */
 export const CheckOrgExistenceResponseSchema = z.object({
@@ -179,9 +164,9 @@ export const OrgLogoPutValidationSchema = z.object({
 
 /** GET/DELETE /org/logo — no meaningful body/query/params. */
 export const OrgLogoReadDeleteValidationSchema = z.object({
-  body: z.object({}).passthrough(),
-  query: z.object({}).passthrough(),
-  params: z.object({}).passthrough(),
+  body: z.object({}),
+  query: z.object({}),
+  params: z.object({}),
   headers: z.object({}),
 });
 
@@ -199,5 +184,8 @@ export const RemoveOrgLogoResponseSchema = z
   .object({
     logo: z.null(),
     mimeType: z.null(),
+    /** Mongoose `toJSON()` may leave ObjectIds as instances until JSON.stringify. */
+    _id: z.coerce.string(),
+    orgId: z.coerce.string(),
+    __v: z.number(),
   })
-  .passthrough();

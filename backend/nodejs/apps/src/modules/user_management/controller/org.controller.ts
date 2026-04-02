@@ -622,10 +622,7 @@ export class OrgController {
 
       await orgLogo.save();
 
-      const payload =
-        typeof orgLogo.toJSON === 'function'
-          ? orgLogo.toJSON()
-          : JSON.parse(JSON.stringify(orgLogo));
+      const payload = orgLogo.toJSON();
 
       sendValidatedJson(
         res,

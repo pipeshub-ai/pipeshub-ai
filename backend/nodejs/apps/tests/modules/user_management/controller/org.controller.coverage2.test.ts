@@ -287,6 +287,15 @@ describe('OrgController - additional coverage 2', () => {
         logo: 'some-base64',
         mimeType: 'image/png',
         save: sinon.stub().resolves(),
+        toJSON() {
+          return {
+            logo: this.logo,
+            mimeType: this.mimeType,
+            _id: '507f1f77bcf86cd799439011',
+            orgId: '507f1f77bcf86cd799439012',
+            __v: 0,
+          }
+        },
       }
       sinon.stub(OrgLogos, 'findOne').returns({
         exec: sinon.stub().resolves(mockOrgLogo),
