@@ -2,6 +2,7 @@
 import json
 import logging
 import uuid
+from urllib.parse import urlparse
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7378,7 +7379,7 @@ class TestPrepareToolsetAuthConfigFullCoverage:
         result = await _prepare_toolset_auth_config(
             {"type": "OAUTH"}, "jira", registry, cs
         )
-        assert "app.example.com" in result["redirectUri"]
+        assert urlparse(result["redirectUri"]).hostname == "app.example.com"
 class TestGetAuthenticatedToolsets:
     """Tests for get_authenticated_toolsets helper method."""
 
