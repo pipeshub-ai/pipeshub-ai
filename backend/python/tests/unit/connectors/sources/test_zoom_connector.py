@@ -1,5 +1,6 @@
 """Unit tests for app.connectors.sources.zoom.connector."""
 
+import asyncio
 from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,7 +37,7 @@ def _make_connector() -> ZoomConnector:
 
 
 class TestZoomConnectorRecordBuilders:
-    def test_build_meeting_record_uses_join_url_and_unique_name(self) -> None:
+    def test_build_meeting_record_uses_share_url_when_provided(self) -> None:
         connector = _make_connector()
         meeting_obj = ZoomMeetingReport(
             id=82768386593,
@@ -57,15 +58,18 @@ class TestZoomConnectorRecordBuilders:
             meeting_detail=detail,
             host_email="host@example.com",
             record_group_id="group-1",
+            share_url="https://us02web.zoom.us/rec/share/token123",
         )
 
         assert rec.record_name == "python basics overview (2026-03-30T18:00:00Z)"
         assert rec.external_revision_id == (
             "2026-03-30T18:00:00Z|2026-03-30T19:00:00Z|python basics overview"
         )
-        assert rec.weburl == "https://us06web.zoom.us/j/82768386593?pwd=abc"
+        # share_url is priority 1 — join_url is ignored
+        assert rec.weburl == "https://us02web.zoom.us/rec/share/token123"
 
-    def test_build_meeting_record_weburl_fallback(self) -> None:
+    def test_build_meeting_record_falls_back_to_transcript_page(self) -> None:
+        """When no share_url is available, weburl is the transcript listing page."""
         connector = _make_connector()
         meeting_obj = ZoomMeetingReport(
             id=111222333,
@@ -86,7 +90,8 @@ class TestZoomConnectorRecordBuilders:
         )
 
         assert rec.record_name == "Fallback URL"
-        assert rec.weburl == "https://zoom.us/j/111222333"
+        assert rec.weburl == "https://zoom.us/recording/meeting/transcript"
+
 
 
 class TestZoomConnectorPermissions:
@@ -340,6 +345,84 @@ class TestZoomConnectorSyncFlow:
         # Second meeting still recorded
         connector.data_entities_processor.on_new_records.assert_awaited_once()
         connector._update_user_meeting_sync_point.assert_awaited_once()
+
+
+# ============================================================================
+# _process_one_meeting
+# ============================================================================
+
+class TestProcessOneMeeting:
+    @pytest.mark.asyncio
+    async def test_recording_fetch_failure_falls_back_to_transcript_page(self) -> None:
+        """When recording_get raises, sync continues and weburl is transcript listing page."""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.recording_get = AsyncMock(side_effect=Exception("403 Forbidden"))
+        ds.report_meeting_participants = AsyncMock(return_value=MagicMock(
+            success=True, data={"participants": [], "next_page_token": None}
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        sem = asyncio.Semaphore(1)
+        result = await connector._process_one_meeting(
+            sem,
+            ZoomMeetingReport(id=123, uuid="some-uuid"),
+            "host@example.com",
+            "rg-1",
+        )
+
+        assert result is not None
+        rec, _ = result
+        assert rec.weburl == "https://zoom.us/recording/meeting/transcript"
+
+    @pytest.mark.asyncio
+    async def test_recording_share_url_is_used_when_available(self) -> None:
+        """When recording_get succeeds, share_url is used as weburl."""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.recording_get = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"share_url": "https://us02web.zoom.us/rec/share/abc123"},
+        ))
+        ds.report_meeting_participants = AsyncMock(return_value=MagicMock(
+            success=True, data={"participants": [], "next_page_token": None}
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        sem = asyncio.Semaphore(1)
+        result = await connector._process_one_meeting(
+            sem,
+            ZoomMeetingReport(id=123, uuid="some-uuid"),
+            "host@example.com",
+            "rg-1",
+        )
+
+        assert result is not None
+        rec, _ = result
+        assert rec.weburl == "https://us02web.zoom.us/rec/share/abc123"
+
+    @pytest.mark.asyncio
+    async def test_empty_uuid_skipped_before_recording_fetch(self) -> None:
+        """Meetings with empty uuid return None without touching the recording API."""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.recording_get = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        sem = asyncio.Semaphore(1)
+        result = await connector._process_one_meeting(
+            sem,
+            ZoomMeetingReport(id=123, uuid=""),
+            "host@example.com",
+            "rg-1",
+        )
+
+        assert result is None
+        ds.recording_get.assert_not_awaited()
 
 
 # ============================================================================

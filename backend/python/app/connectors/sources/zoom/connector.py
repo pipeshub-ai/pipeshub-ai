@@ -160,6 +160,14 @@ class ZoomParticipant(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class ZoomRecordingDetail(BaseModel):
+    """Top-level response from GET /v2/meetings/{meetingId}/recordings."""
+
+    share_url: str = ""
+
+    model_config = {"extra": "ignore"}
+
+
 # ---------------------------------------------------------------------------
 # ConnectorBuilder
 # ---------------------------------------------------------------------------
@@ -184,6 +192,7 @@ class ZoomParticipant(BaseModel):
                     "report:read:list_meeting_participants:admin",
                     "meeting:read:meeting:admin",
                     "cloud_recording:read:meeting_transcript:admin",
+                    "cloud_recording:read:list_recording_files:admin",
                 ],
                 agent=[],
             ),
@@ -711,12 +720,29 @@ class ZoomConnector(BaseConnector):
                 meeting_detail = (
                     await self._get_meeting_detail(meeting_id) if meeting_id else None
                 )
+
+                # Fetch cloud recording share URL for this meeting.
+                # Falls through silently on any error (scope not granted, no recording, etc.)
+                share_url = ""
+                if meeting_id:
+                    try:
+                        ds = await self._get_fresh_datasource()
+                        rec_resp = await ds.recording_get(meeting_id)
+                        if rec_resp.success and rec_resp.data:
+                            recording = ZoomRecordingDetail.model_validate(rec_resp.data)
+                            share_url = recording.share_url
+                    except Exception as rec_exc:
+                        self.logger.warning(
+                            "Zoom: recording fetch failed for %s: %s", meeting_id, rec_exc
+                        )
+
                 rec = self._build_meeting_record(
                     meeting_obj=meeting_obj,
                     meeting_uuid=meeting_uuid,
                     meeting_detail=meeting_detail,
                     host_email=host_email,
                     record_group_id=record_group_id,
+                    share_url=share_url,
                 )
                 encoded_uuid = self._encode_uuid(meeting_uuid)
                 perms = await self._build_meeting_permissions(
@@ -824,8 +850,8 @@ class ZoomConnector(BaseConnector):
         meeting_detail: Optional[ZoomMeetingDetail],
         host_email: str,
         record_group_id: Optional[str],
+        share_url: str = "",
     ) -> MeetingRecord:
-        meeting_id = str(meeting_obj.id) if meeting_obj.id is not None else ""
         topic = meeting_obj.topic
         host_id = meeting_obj.host_id
         start_time = meeting_obj.start_time
@@ -845,11 +871,10 @@ class ZoomConnector(BaseConnector):
 
         display_name = f"{topic} ({start_time})" if start_time else topic
 
-        # Primary: join_url from Zoom API — the pre-signed join link, may include a passcode.
-        # Fallback: synthesised from the numeric meeting ID when detail fetch failed or had no URL.
-        weburl = (meeting_detail.join_url if meeting_detail else "") or (
-            f"https://zoom.us/j/{meeting_id}" if meeting_id else ""
-        )
+        # 1. Cloud recording share page (direct link to recording player).
+        # 2. Transcript listing page — more useful than a dead join link for past meetings;
+        #    user can search by the indexed meeting topic or ID.
+        weburl = share_url or "https://zoom.us/recording/meeting/transcript"
 
         now_ms = get_epoch_timestamp_in_ms()
         record = MeetingRecord(
