@@ -63,6 +63,9 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.sources.folder_sync.connector import FolderSyncConnector
+from app.connectors.sources.folder_sync.models import (
+    FolderSyncFileEventBatchRequest,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
@@ -81,21 +84,6 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
-
-
-class FolderSyncFileEvent(BaseModel):
-    type: str
-    path: str
-    oldPath: str | None = None
-    timestamp: int
-    size: int | None = None
-    isDirectory: bool
-
-
-class FolderSyncFileEventBatchRequest(BaseModel):
-    batchId: str
-    events: list[FolderSyncFileEvent]
-    timestamp: int
 
 
 def _unwrap_folder_sync_file_event_payload(raw_payload: Any) -> Any:
@@ -3005,14 +2993,12 @@ async def submit_connector_file_events(
                 detail="Initialized connector is not a Folder Sync connector",
             )
 
-        stats = await connector.apply_file_event_batch(
-            [event.model_dump() for event in payload.events]
-        )
+        stats = await connector.apply_file_event_batch(payload.events)
         return {
             "success": True,
             "connectorId": connector_id,
             "batchId": payload.batchId,
-            "stats": stats,
+            "stats": stats.model_dump(),
         }
     finally:
         with contextlib.suppress(Exception):
