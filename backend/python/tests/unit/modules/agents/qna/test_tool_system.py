@@ -1194,7 +1194,7 @@ class TestGetAgentToolsWithSchemasCoverage:
         )
 
         with patch(
-            "app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool"
+            "app.utils.fetch_full_record.create_fetch_full_record_tool"
         ) as mock_create_fetch:
             mock_fetch_tool = MagicMock()
             mock_create_fetch.return_value = mock_fetch_tool

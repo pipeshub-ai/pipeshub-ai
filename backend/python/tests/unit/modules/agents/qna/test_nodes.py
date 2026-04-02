@@ -9072,7 +9072,7 @@ class TestRespondNodeSuccessPath:
 
         captured_user_data = {}
 
-        def mock_get_msg_content(final_results, vr_map, user_data, query, log, mode):
+        def mock_get_msg_content(final_results, vr_map, user_data, query, mode="json"):
             captured_user_data["value"] = user_data
             return "formatted content"
 
@@ -9110,7 +9110,7 @@ class TestRespondNodeSuccessPath:
 
         captured_user_data = {}
 
-        def mock_get_msg_content(final_results, vr_map, user_data, query, log, mode):
+        def mock_get_msg_content(final_results, vr_map, user_data, query, mode="json"):
             captured_user_data["value"] = user_data
             return "formatted content"
 
@@ -9443,9 +9443,7 @@ class TestGenerateFastApiResponse:
 class TestGenerateDirectResponse:
     """Tests for _generate_direct_response() covering lines 6700-6809."""
 
-    # NOTE: _generate_direct_response does a local `from app.utils.streaming import stream_llm_response`
-    # so we must patch at the source module to intercept the re-import.
-    _STREAM_PATCH = "app.utils.streaming.stream_llm_response"
+    _STREAM_PATCH = "app.modules.agents.qna.nodes.stream_llm_response"
 
     @pytest.mark.asyncio
     async def test_direct_response_basic(self):

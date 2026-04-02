@@ -2390,7 +2390,7 @@ class TestDeepRespondImplExtended:
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()):
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=MagicMock()):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
 
         assert result["response"] == "Based on R1..."
@@ -2572,7 +2572,7 @@ class TestDeepRespondImplUserDataBranches:
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()):
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=MagicMock()):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
             # Verify the user_data passed to get_message_content
             call_args = mock_gmc.call_args
@@ -3120,7 +3120,7 @@ class TestDeepRespondImplCitationEnrichment:
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()), \
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=MagicMock()), \
              patch("app.utils.citations.normalize_citations_and_chunks_for_agent",
                    return_value=("Based on R1...", enriched_citations)):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)

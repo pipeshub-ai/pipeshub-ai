@@ -758,7 +758,7 @@ class TestGetAgentTools:
             "logger": logging.getLogger("test"),
         }
 
-        with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool") as mock_create:
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock(name="fetch_tool")
             result = get_agent_tools(state)
             assert len(result) == 2  # original + fetch tool
@@ -773,27 +773,27 @@ class TestGetAgentTools:
             "logger": logging.getLogger("test"),
         }
 
-        with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool",
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool",
                     side_effect=Exception("import error")):
             result = get_agent_tools(state)
             assert len(result) == 1  # only original tools
 
     @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
-    def test_fetch_tool_with_label_map(self, mock_load):
-        """Passes label_to_virtual_record_id when record_label_to_uuid_map is non-empty."""
+    def test_fetch_tool_with_org_and_graph(self, mock_load):
+        """Passes org_id and graph_provider when creating fetch tool."""
         mock_load.return_value = []
         state = {
             "virtual_record_id_to_result": {"vr1": {}},
-            "record_label_to_uuid_map": {"label1": "uuid1"},
+            "org_id": "org-123",
+            "graph_provider": MagicMock(),
             "logger": logging.getLogger("test"),
         }
 
-        with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool") as mock_create:
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
             get_agent_tools(state)
-            # Should pass label_to_virtual_record_id
             call_kwargs = mock_create.call_args
-            assert call_kwargs[1]["label_to_virtual_record_id"] == {"label1": "uuid1"}
+            assert call_kwargs[1]["org_id"] == "org-123"
 
     @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
     def test_no_fetch_tool_when_empty_map(self, mock_load):
@@ -808,7 +808,7 @@ class TestGetAgentTools:
         """Fetch tool works without logger."""
         mock_load.return_value = []
         state = {"virtual_record_id_to_result": {"vr1": {}}}
-        with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool") as mock_create:
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
             result = get_agent_tools(state)
             assert len(result) == 1
@@ -1067,7 +1067,7 @@ class TestGetAgentToolsWithSchemas:
 
         with patch("langchain_core.tools.StructuredTool") as MockST:
             MockST.from_function.return_value = MagicMock()
-            with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool") as mock_create:
+            with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
                 mock_create.return_value = MagicMock()
                 result = get_agent_tools_with_schemas(state)
                 mock_create.assert_called_once()
@@ -1089,7 +1089,7 @@ class TestGetAgentToolsWithSchemas:
 
         with patch("langchain_core.tools.StructuredTool") as MockST:
             MockST.from_function.return_value = MagicMock()
-            with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool",
+            with patch("app.utils.fetch_full_record.create_fetch_full_record_tool",
                         side_effect=Exception("fail")):
                 result = get_agent_tools_with_schemas(state)
                 assert len(result) == 1  # Only the test.tool, no fetch tool
@@ -1132,20 +1132,21 @@ class TestGetAgentToolsWithSchemas:
             assert "." not in call_kwargs["name"]
 
     @patch("app.modules.agents.qna.tool_system.get_agent_tools")
-    def test_virtual_record_map_with_label_map(self, mock_get_tools):
-        """Passes label_to_virtual_record_id when non-empty in schema tools."""
+    def test_virtual_record_map_with_org_id(self, mock_get_tools):
+        """Passes org_id and graph_provider when creating fetch tool in schema tools."""
         mock_get_tools.return_value = []
         state = {
             "virtual_record_id_to_result": {"vr1": {}},
-            "record_label_to_uuid_map": {"lab": "id"},
+            "org_id": "org-456",
+            "graph_provider": MagicMock(),
             "logger": logging.getLogger("test"),
         }
 
-        with patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool") as mock_create:
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
             result = get_agent_tools_with_schemas(state)
             call_kwargs = mock_create.call_args
-            assert call_kwargs[1]["label_to_virtual_record_id"] == {"lab": "id"}
+            assert call_kwargs[1]["org_id"] == "org-456"
 
 
 # ============================================================================
