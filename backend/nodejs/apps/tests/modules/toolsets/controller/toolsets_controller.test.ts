@@ -1193,4 +1193,412 @@ describe('Toolsets Controller', () => {
       expect(next.calledOnce).to.be.true
     })
   })
+
+  // -------------------------------------------------------------------------
+  // Agent-scoped toolset controller handlers
+  // -------------------------------------------------------------------------
+
+  describe('getAgentToolsets', () => {
+    let getAgentToolsets: any
+
+    before(async () => {
+      ;({ getAgentToolsets } = await import(
+        '../../../../src/modules/toolsets/controller/toolsets_controller'
+      ))
+    })
+
+    it('should return a handler function', () => {
+      const handler = getAgentToolsets(createMockAppConfig())
+      expect(handler).to.be.a('function')
+    })
+
+    it('should call executeConnectorCommand with correct URL for agentKey', async () => {
+      executeStub.resolves({ statusCode: 200, data: { toolsets: [] } })
+      const handler = getAgentToolsets(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1' }, query: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(executeStub.calledOnce).to.be.true
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('/toolsets/agents/agent-1')
+      expect(handleResponseStub.calledOnce).to.be.true
+    })
+
+    it('should append search, page, limit, and includeRegistry query params', async () => {
+      executeStub.resolves({ statusCode: 200, data: {} })
+      const handler = getAgentToolsets(createMockAppConfig())
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        query: { search: 'jira', page: '2', limit: '10', includeRegistry: 'true' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('search=jira')
+      expect(url).to.include('page=2')
+      expect(url).to.include('limit=10')
+      expect(url).to.include('includeRegistry=true')
+    })
+
+    it('should call next with BadRequestError when agentKey is missing', async () => {
+      const handler = getAgentToolsets(createMockAppConfig())
+      const req = createMockRequest({ params: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next when executeConnectorCommand throws', async () => {
+      executeStub.rejects(new Error('network error'))
+      const handler = getAgentToolsets(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1' }, query: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('authenticateAgentToolset', () => {
+    let authenticateAgentToolset: any
+
+    before(async () => {
+      ;({ authenticateAgentToolset } = await import(
+        '../../../../src/modules/toolsets/controller/toolsets_controller'
+      ))
+    })
+
+    it('should return a handler function', () => {
+      const handler = authenticateAgentToolset(createMockAppConfig())
+      expect(handler).to.be.a('function')
+    })
+
+    it('should call next with BadRequestError when agentKey is missing', async () => {
+      const handler = authenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next with BadRequestError when instanceId is missing', async () => {
+      const handler = authenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call executeConnectorCommand with correct URL and body', async () => {
+      executeStub.resolves({ statusCode: 200, data: { isAuthenticated: true } })
+      const handler = authenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', instanceId: 'inst-1' },
+        body: { auth: { apiToken: 'tok' } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(executeStub.calledOnce).to.be.true
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('/toolsets/agents/agent-1/instances/inst-1/authenticate')
+      expect(executeStub.firstCall.args[1]).to.equal('POST')
+      expect(handleResponseStub.calledOnce).to.be.true
+    })
+
+    it('should call next when connector throws', async () => {
+      executeStub.rejects(new Error('fail'))
+      const handler = authenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('updateAgentToolsetCredentials', () => {
+    let updateAgentToolsetCredentials: any
+
+    before(async () => {
+      ;({ updateAgentToolsetCredentials } = await import(
+        '../../../../src/modules/toolsets/controller/toolsets_controller'
+      ))
+    })
+
+    it('should return a handler function', () => {
+      const handler = updateAgentToolsetCredentials(createMockAppConfig())
+      expect(handler).to.be.a('function')
+    })
+
+    it('should call next with BadRequestError when agentKey is missing', async () => {
+      const handler = updateAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({ params: { instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next with BadRequestError when instanceId is missing', async () => {
+      const handler = updateAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call PUT on the credentials URL', async () => {
+      executeStub.resolves({ statusCode: 200, data: { status: 'success' } })
+      const handler = updateAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', instanceId: 'inst-1' },
+        body: { auth: { apiToken: 'new-tok' } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('/toolsets/agents/agent-1/instances/inst-1/credentials')
+      expect(executeStub.firstCall.args[1]).to.equal('PUT')
+    })
+
+    it('should call next when connector throws', async () => {
+      executeStub.rejects(new Error('fail'))
+      const handler = updateAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('removeAgentToolsetCredentials', () => {
+    let removeAgentToolsetCredentials: any
+
+    before(async () => {
+      ;({ removeAgentToolsetCredentials } = await import(
+        '../../../../src/modules/toolsets/controller/toolsets_controller'
+      ))
+    })
+
+    it('should return a handler function', () => {
+      const handler = removeAgentToolsetCredentials(createMockAppConfig())
+      expect(handler).to.be.a('function')
+    })
+
+    it('should call next with BadRequestError when agentKey is missing', async () => {
+      const handler = removeAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({ params: { instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call DELETE on the credentials URL', async () => {
+      executeStub.resolves({ statusCode: 200, data: { status: 'success' } })
+      const handler = removeAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('/toolsets/agents/agent-1/instances/inst-1/credentials')
+      expect(executeStub.firstCall.args[1]).to.equal('DELETE')
+      expect(handleResponseStub.calledOnce).to.be.true
+    })
+
+    it('should call next when connector throws', async () => {
+      executeStub.rejects(new Error('fail'))
+      const handler = removeAgentToolsetCredentials(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('reauthenticateAgentToolset', () => {
+    let reauthenticateAgentToolset: any
+
+    before(async () => {
+      ;({ reauthenticateAgentToolset } = await import(
+        '../../../../src/modules/toolsets/controller/toolsets_controller'
+      ))
+    })
+
+    it('should return a handler function', () => {
+      const handler = reauthenticateAgentToolset(createMockAppConfig())
+      expect(handler).to.be.a('function')
+    })
+
+    it('should call next with BadRequestError when agentKey is missing', async () => {
+      const handler = reauthenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next with BadRequestError when instanceId is missing', async () => {
+      const handler = reauthenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call POST on the reauthenticate URL', async () => {
+      executeStub.resolves({ statusCode: 200, data: { status: 'success' } })
+      const handler = reauthenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('/toolsets/agents/agent-1/instances/inst-1/reauthenticate')
+      expect(executeStub.firstCall.args[1]).to.equal('POST')
+    })
+
+    it('should call next when connector throws', async () => {
+      executeStub.rejects(new Error('fail'))
+      const handler = reauthenticateAgentToolset(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('getAgentToolsetOAuthUrl', () => {
+    let getAgentToolsetOAuthUrl: any
+
+    before(async () => {
+      ;({ getAgentToolsetOAuthUrl } = await import(
+        '../../../../src/modules/toolsets/controller/toolsets_controller'
+      ))
+    })
+
+    it('should return a handler function', () => {
+      const handler = getAgentToolsetOAuthUrl(createMockAppConfig())
+      expect(handler).to.be.a('function')
+    })
+
+    it('should call next with BadRequestError when agentKey is missing', async () => {
+      const handler = getAgentToolsetOAuthUrl(createMockAppConfig())
+      const req = createMockRequest({ params: { instanceId: 'inst-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call next with BadRequestError when instanceId is missing', async () => {
+      const handler = getAgentToolsetOAuthUrl(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should call GET on the oauth/authorize URL', async () => {
+      executeStub.resolves({ statusCode: 200, data: { authorizationUrl: 'https://oauth.example.com' } })
+      const handler = getAgentToolsetOAuthUrl(createMockAppConfig())
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', instanceId: 'inst-1' },
+        query: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('/toolsets/agents/agent-1/instances/inst-1/oauth/authorize')
+      expect(executeStub.firstCall.args[1]).to.equal('GET')
+    })
+
+    it('should forward base_url query param to connector', async () => {
+      executeStub.resolves({ statusCode: 200, data: {} })
+      const handler = getAgentToolsetOAuthUrl(createMockAppConfig())
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1', instanceId: 'inst-1' },
+        query: { base_url: 'https://app.example.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('base_url=')
+    })
+
+    it('should call next when connector throws', async () => {
+      executeStub.rejects(new Error('oauth-fail'))
+      const handler = getAgentToolsetOAuthUrl(createMockAppConfig())
+      const req = createMockRequest({ params: { agentKey: 'agent-1', instanceId: 'inst-1' }, query: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
 })

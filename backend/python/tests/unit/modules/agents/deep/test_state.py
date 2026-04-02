@@ -306,6 +306,7 @@ class TestDeepDefaults:
             "deep_max_iterations",
             "domain_summaries",
             "sub_agent_analyses",
+            "_deep_retrieval_buffer",
         }
         assert expected_keys == set(_DEEP_DEFAULTS.keys())
 
@@ -326,6 +327,7 @@ class TestDeepDefaults:
         assert _DEEP_DEFAULTS["evaluation"] is None
         assert _DEEP_DEFAULTS["deep_iteration_count"] == 0
         assert _DEEP_DEFAULTS["deep_max_iterations"] == 3
+        assert _DEEP_DEFAULTS["_deep_retrieval_buffer"] is None
 
     def test_collection_defaults_values(self):
         """Collection default values are correct (empty lists/dicts)."""

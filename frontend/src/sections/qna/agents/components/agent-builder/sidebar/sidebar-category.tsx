@@ -28,6 +28,12 @@ interface SidebarCategoryProps {
   configureTooltip?: React.ReactNode;
   configureIcon?: any;
   configureIconColor?: string;
+  /**
+   * Small inline action rendered INSIDE the header row, to the right of the
+   * count badge (and before the configure icon). Use for compact chips/buttons
+   * that must stay on the same line as the category label.
+   */
+  headerAction?: React.ReactNode;
   children?: React.ReactNode;
 }
 
@@ -47,6 +53,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   configureTooltip,
   configureIcon,
   configureIconColor,
+  headerAction,
   children,
 }) => {
   const theme = useTheme();
@@ -184,7 +191,15 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
             </Tooltip>
           )}
           
-          {/* Configure Icon */}
+          {/* Inline header action (e.g. small "Credentials" chip for service-account toolsets) */}
+          {headerAction && (
+            // Stop click from toggling the category expand/collapse
+            <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'flex', alignItems: 'center' }}>
+              {headerAction}
+            </Box>
+          )}
+
+          {/* Configure / alert icon */}
           {showConfigureIcon && onConfigureClick && (
             <Tooltip title={configureTooltip || 'Configure toolset'} placement="right">
               <IconButton

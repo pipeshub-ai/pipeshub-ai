@@ -2058,6 +2058,31 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_all_virtual_record_ids_for_knowledge(
+        self,
+        org_id: str,
+        connector_ids: list[str] | None = None,
+        kb_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """
+        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
+        WITHOUT applying per-user permission filtering.
+
+        This is used exclusively for service account agents where the agent has "super entity"
+        access to its configured knowledge sources, regardless of which user is querying.
+
+        Args:
+            org_id: Organization ID to scope the query
+            connector_ids: List of connector/app IDs to include (non-KB connectors)
+            kb_ids: List of KB record group IDs to include
+
+        Returns:
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
+            Returns empty dict if both connector_ids and kb_ids are empty/None.
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
@@ -3768,5 +3793,59 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple[List[Dict], int]: (List of users, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_agent(
+        self, agent_id: str, org_id: str | None = None, transaction: str | None = None
+    ) -> dict | None:
+        """
+        Fetch the complete agent document with linked graph data.
+
+        Does NOT perform any permission check — callers must invoke
+        ``check_agent_permission`` separately before calling this method.
+
+        Args:
+            agent_id:    The agent key / ID.
+            org_id:      The organisation key (optional).  When provided,
+                         ``shareWithOrg`` is resolved against that specific
+                         org's permission edge.  When omitted, ``shareWithOrg``
+                         is ``True`` if *any* ORG permission edge exists on the
+                         agent, ensuring the flag is never incorrectly ``False``
+                         when the caller does not carry an org scope token.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Dict containing the agent document merged with ``toolsets``,
+            ``knowledge``, and ``shareWithOrg``, or ``None`` if the agent does
+            not exist or is deleted.
+        """
+        pass
+
+    @abstractmethod
+    async def check_agent_permission(
+        self, agent_id: str, user_id: str, org_id: str
+    ) -> dict | None:
+        """
+        Lightweight permission check: returns the caller's access rights on an
+        agent without fetching toolsets or knowledge.
+
+        This method skips the expensive toolset/knowledge joins and is suitable
+        for endpoints that only need to verify access (e.g. middleware guards,
+        pre-flight checks).
+
+        Returns None if the agent does not exist, is deleted, or the user has
+        no access (individual, team, or org).
+
+        Args:
+            agent_id: The agent key / ID.
+            user_id:  The internal user key (_key in ArangoDB, id in Neo4j).
+            org_id:   The organisation key.
+
+        Returns:
+            Dict with keys ``{user_role, can_edit, can_delete, can_share,
+            can_view, access_type}`` on success, or ``None`` if the user has
+            no access.
         """
         pass

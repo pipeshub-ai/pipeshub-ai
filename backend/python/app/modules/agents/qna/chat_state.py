@@ -125,6 +125,10 @@ class ChatState(TypedDict):
     tool_configs: dict[str, Any] | None  # Tool configurations (Slack tokens, etc.)
     registry_tool_instances: dict[str, Any] | None  # Cached tool instances
 
+    # Service account flag: when True, knowledge retrieval bypasses per-user permissions
+    # and uses all records for the configured connectors/KBs
+    is_service_account: bool
+
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
@@ -472,6 +476,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "tool_to_toolset_map": tool_to_toolset_map,
         "toolset_configs": toolset_configs,
         "agent_toolsets": toolsets,
+
+        # Service account flag
+        "is_service_account": bool(chat_query.get("is_service_account", False)),
 
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},

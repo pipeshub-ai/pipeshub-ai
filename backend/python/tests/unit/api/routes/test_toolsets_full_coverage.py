@@ -138,7 +138,7 @@ class TestLoadToolsetInstances:
     async def test_success(self):
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value=[{"_id": "i1"}])
+        cs.get_config = AsyncMock(return_value=[{"_id": "i1", "orgId": "org1"}])
         result = await _load_toolset_instances("org1", cs)
         assert len(result) == 1
 

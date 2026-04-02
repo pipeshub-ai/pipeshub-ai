@@ -644,6 +644,7 @@ agent_schema = {
                 "default": [],
             },
             "isActive": {"type": "boolean", "default": True},
+            "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},

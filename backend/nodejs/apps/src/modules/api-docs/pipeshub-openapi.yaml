@@ -16646,6 +16646,231 @@ paths:
         '401':
           description: Unauthorized
 
+  /toolsets/agents/{agentKey}:
+    get:
+      tags:
+        - Toolset Instances
+      summary: List toolsets for an agent with auth status
+      description: Returns organization toolset instances merged with the specified agent's authentication status.
+      operationId: getAgentToolsets
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: includeRegistry
+          in: query
+          required: false
+          description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          required: false
+          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent toolsets retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Agent not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/authenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Authenticate agent toolset instance
+      operationId: authenticateAgentToolset
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Agent toolset authenticated successfully
+        '400':
+          description: Invalid auth payload
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Agent or instance not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update agent toolset credentials
+      operationId: updateAgentToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+      responses:
+        '200':
+          description: Agent credentials updated successfully
+        '400':
+          description: Invalid credentials payload
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Agent or instance not found
+    delete:
+      tags:
+        - Toolset Instances
+      summary: Remove agent toolset credentials
+      operationId: removeAgentToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent credentials removed successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Agent or instance not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/reauthenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Mark agent instance for reauthentication
+      operationId: reauthenticateAgentToolset
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent reauthentication required
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Agent or instance not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/oauth/authorize:
+    get:
+      tags:
+        - Toolset OAuth
+      summary: Get OAuth authorization URL for agent instance
+      operationId: getAgentToolsetOAuthUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: base_url
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authorization URL generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Agent or instance not found
+
   /toolsets/instances:
     get:
       tags:

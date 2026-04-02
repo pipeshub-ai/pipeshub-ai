@@ -8272,7 +8272,7 @@ class TestUpdateAgent:
     @pytest.mark.asyncio
     async def test_no_permission(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.update_agent(
@@ -8283,7 +8283,7 @@ class TestUpdateAgent:
     @pytest.mark.asyncio
     async def test_no_edit_permission(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"can_edit": False}
         ):
             result = await connected_provider.update_agent(
@@ -8363,7 +8363,7 @@ class TestUpdateAgent:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
             result = await connected_provider.update_agent(
@@ -8394,7 +8394,7 @@ class TestDeleteAgent:
             connected_provider, "get_document",
             new_callable=AsyncMock, return_value={"_key": "agent1"}
         ), patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"can_delete": False}
         ):
             result = await connected_provider.delete_agent("agent1", "u1", "org1")
@@ -8406,7 +8406,7 @@ class TestDeleteAgent:
             connected_provider, "get_document",
             new_callable=AsyncMock, return_value={"_key": "agent1"}
         ), patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.delete_agent("agent1", "u1", "org1")
@@ -8505,7 +8505,7 @@ class TestUnshareAgent:
     @pytest.mark.asyncio
     async def test_success_with_users(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"can_share": True}
         ), patch.object(
             connected_provider, "execute_query",
@@ -8519,7 +8519,7 @@ class TestUnshareAgent:
     @pytest.mark.asyncio
     async def test_no_permission(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.unshare_agent(
@@ -8530,7 +8530,7 @@ class TestUnshareAgent:
     @pytest.mark.asyncio
     async def test_no_users_or_teams(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"can_share": True}
         ):
             result = await connected_provider.unshare_agent(
@@ -8541,7 +8541,7 @@ class TestUnshareAgent:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
             result = await connected_provider.unshare_agent(
@@ -8560,7 +8560,7 @@ class TestUpdateAgentPermission:
     @pytest.mark.asyncio
     async def test_not_owner(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"user_role": "READER"}
         ):
             result = await connected_provider.update_agent_permission(
@@ -8571,7 +8571,7 @@ class TestUpdateAgentPermission:
     @pytest.mark.asyncio
     async def test_no_permission(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.update_agent_permission(
@@ -8582,7 +8582,7 @@ class TestUpdateAgentPermission:
     @pytest.mark.asyncio
     async def test_no_users_or_teams(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"user_role": "OWNER"}
         ):
             result = await connected_provider.update_agent_permission(
@@ -8593,7 +8593,7 @@ class TestUpdateAgentPermission:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
             result = await connected_provider.update_agent_permission(
@@ -8611,7 +8611,7 @@ class TestGetAgentPermissions:
     @pytest.mark.asyncio
     async def test_owner_gets_permissions(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"user_role": "OWNER"}
         ), patch.object(
             connected_provider, "execute_query",
@@ -8626,7 +8626,7 @@ class TestGetAgentPermissions:
     @pytest.mark.asyncio
     async def test_not_owner_returns_none(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"user_role": "READER"}
         ):
             result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
@@ -8635,7 +8635,7 @@ class TestGetAgentPermissions:
     @pytest.mark.asyncio
     async def test_no_permission_returns_none(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value=None
         ):
             result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
@@ -8644,7 +8644,7 @@ class TestGetAgentPermissions:
     @pytest.mark.asyncio
     async def test_empty_result(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"user_role": "OWNER"}
         ), patch.object(
             connected_provider, "execute_query",
@@ -8656,7 +8656,7 @@ class TestGetAgentPermissions:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
             result = await connected_provider.get_agent_permissions("agent1", "u1", "org1")
@@ -15799,14 +15799,14 @@ class TestShareAgentExtended:
 class TestUnshareAgentExtended:
     @pytest.mark.asyncio
     async def test_no_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
+        connected_provider.check_agent_permission = AsyncMock(return_value=None)
         result = await connected_provider.unshare_agent("a1", "u1", "org1", ["u2"], [])
         assert result is not None
         assert result.get("success") is False
 
     @pytest.mark.asyncio
     async def test_cannot_share(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"can_share": False})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"can_share": False})
         result = await connected_provider.unshare_agent("a1", "u1", "org1", ["u2"], [])
         assert result is not None
         assert result.get("success") is False
@@ -16397,13 +16397,13 @@ class TestDeleteConnectorInstanceFull:
 class TestUpdateAgentExtended:
     @pytest.mark.asyncio
     async def test_no_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
+        connected_provider.check_agent_permission = AsyncMock(return_value=None)
         result = await connected_provider.update_agent("a1", {"name": "X"}, "u1", "org1")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_no_edit_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"can_edit": False})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"can_edit": False})
         result = await connected_provider.update_agent("a1", {"name": "X"}, "u1", "org1")
         assert result is False
 
@@ -16411,13 +16411,15 @@ class TestUpdateAgentExtended:
 class TestDeleteAgentExtended:
     @pytest.mark.asyncio
     async def test_no_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
+        connected_provider.get_document = AsyncMock(return_value={"_key": "a1"})
+        connected_provider.check_agent_permission = AsyncMock(return_value=None)
         result = await connected_provider.delete_agent("a1", "u1", "org1")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_no_delete_permission(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"can_delete": False})
+        connected_provider.get_document = AsyncMock(return_value={"_key": "a1"})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"can_delete": False})
         result = await connected_provider.delete_agent("a1", "u1", "org1")
         assert result is False
 
@@ -17489,7 +17491,7 @@ class TestShareAgent:
 class TestUpdateAgentPermission:
     @pytest.mark.asyncio
     async def test_success_with_users_and_teams(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "user_role": "OWNER"})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"_key": "a1", "user_role": "OWNER"})
         connected_provider.execute_query = AsyncMock(return_value=[
             {"_key": "p1", "_from": "users/u2", "type": "USER", "role": "READER"},
             {"_key": "p2", "_from": "teams/t1", "type": "TEAM", "role": "READER"},
@@ -17504,7 +17506,7 @@ class TestUpdateAgentPermission:
 
     @pytest.mark.asyncio
     async def test_no_permissions_found(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "user_role": "OWNER"})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"_key": "a1", "user_role": "OWNER"})
         connected_provider.execute_query = AsyncMock(return_value=[])
 
         result = await connected_provider.update_agent_permission(
@@ -17514,7 +17516,7 @@ class TestUpdateAgentPermission:
 
     @pytest.mark.asyncio
     async def test_not_owner(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "user_role": "READER"})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"_key": "a1", "user_role": "READER"})
 
         result = await connected_provider.update_agent_permission(
             "a1", "u1", "org1", user_ids=["u2"], team_ids=None, role="WRITER"
@@ -17523,7 +17525,7 @@ class TestUpdateAgentPermission:
 
     @pytest.mark.asyncio
     async def test_no_agent(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value=None)
+        connected_provider.check_agent_permission = AsyncMock(return_value=None)
 
         result = await connected_provider.update_agent_permission(
             "a1", "u1", "org1", user_ids=["u2"], team_ids=None, role="WRITER"
@@ -17532,7 +17534,7 @@ class TestUpdateAgentPermission:
 
     @pytest.mark.asyncio
     async def test_no_users_or_teams(self, connected_provider):
-        connected_provider.get_agent = AsyncMock(return_value={"_key": "a1", "user_role": "OWNER"})
+        connected_provider.check_agent_permission = AsyncMock(return_value={"_key": "a1", "user_role": "OWNER"})
 
         result = await connected_provider.update_agent_permission(
             "a1", "u1", "org1", user_ids=None, team_ids=None, role="WRITER"
