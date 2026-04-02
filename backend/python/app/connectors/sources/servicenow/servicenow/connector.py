@@ -305,7 +305,7 @@ class ServiceNowConnector(BaseConnector):
             self.client_id = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
             self.client_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
             self.instance_url = oauth_config_data.get("instanceUrl")
-            self.redirect_uri = oauth_config.get("redirectUri")
+            self.redirect_uri = oauth_config_data.get("redirectUri")
             self.logger.info("Using shared OAuth config for ServiceNow connector")
 
             # OAuth tokens (stored after authorization flow completes)
