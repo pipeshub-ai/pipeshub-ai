@@ -43,7 +43,7 @@ Authenticate with your OAuth2 client ID and client secret (from your Pipeshub ap
 pipeshub login
 ```
 
-- If `PIPESHUB_BACKEND_URL` is not set, you will be prompted for the backend base URL (default: `http://localhost:3000`).
+- Set **`PIPESHUB_BACKEND_URL`** for a non-local server (for example `https://your-host`). If unset, the CLI uses `http://localhost:3000`.
 - The client secret prompt hides input — paste and press **Enter**.
 - Credentials and tokens are stored in the **OS keychain** when available, otherwise in `auth.enc` under your config directory (see [Environment](#environment)).
 
@@ -98,7 +98,7 @@ The CLI refreshes `include_subfolders` from the server config (or falls back to 
 
 | Command | Description |
 | --- | --- |
-| `pipeshub login` | Prompt for API URL (if needed), client ID, and client secret; store tokens. |
+| `pipeshub login` | Prompt for client ID and client secret; API URL from `PIPESHUB_BACKEND_URL` (default localhost). |
 | `pipeshub logout` | Remove stored credentials. |
 | `pipeshub verify` | Print `OK.` when the access token is valid. |
 | `pipeshub setup [path]` | Interactive Folder Sync setup — link a connector and set folder path. |
@@ -123,7 +123,7 @@ Set these in a `.env` file in the project directory or next to the CLI package (
 
 | Variable | Description |
 | --- | --- |
-| `PIPESHUB_BACKEND_URL` | Backend base URL. If unset at login, you will be prompted. |
+| `PIPESHUB_BACKEND_URL` | Backend base URL. If unset, defaults to `http://localhost:3000`. |
 | `PIPESHUB_WS_URL` | Socket.IO base URL override (defaults to value derived from `PIPESHUB_BACKEND_URL`). |
 | `PIPESHUB_CONFIG_DIR` | Override directory for `auth.enc`, `daemon.json`, and related files. |
 
@@ -131,8 +131,9 @@ Set these in a `.env` file in the project directory or next to the CLI package (
 
 ## Authentication and Tokens
 
-- **OAuth2 client credentials** are collected at login and used with the refresh token when the access token expires.
-- **Storage:** Access token, refresh token, client ID, and client secret are stored in the **OS keychain** (`com.pipeshub.cli` / `oauth-tokens`). Falls back to `auth.enc` (Fernet-encrypted, machine/user-bound key).
+- **OAuth2 client credentials** (`client_credentials` grant) are collected at login and used with the refresh token when the access token expires. The backend also supports **authorization code + PKCE** for public clients; this CLI does not implement that flow yet.
+- **Storage:** Access token, refresh token, client ID, and client secret are stored in the **OS keychain** (`com.pipeshub.cli` / `oauth-tokens`). Falls back to `auth.enc` (Fernet with a fixed KDF — **obfuscation**, not strong encryption against other processes on the same machine). If `keytar` fails to build, you are on the weaker path; fix native build tools when possible.
+- **Risk:** A compromised keychain or readable `auth.enc` can expose the **client secret**, allowing token minting until the OAuth client is rotated or revoked.
 - **Refresh:** When the JWT passes its `exp` time, the CLI automatically refreshes from secure storage. If refresh fails, run `pipeshub login` again.
 
 ## OAuth Scopes

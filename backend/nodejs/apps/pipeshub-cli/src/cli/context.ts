@@ -1,13 +1,9 @@
 import { AuthManager } from "../auth/auth_manager";
 import { BackendClient } from "../api/backend_client";
+import { getBackendBaseUrl } from "../auth/backend_url";
 
-export async function backendBase(manager: AuthManager): Promise<string> {
-  const stored = await manager.getStoredBaseUrl();
-  if (stored) return stored.replace(/\/$/, "");
-  return (process.env.PIPESHUB_BACKEND_URL || "http://localhost:3000").replace(
-    /\/$/,
-    ""
-  );
+export function backendBase(): string {
+  return getBackendBaseUrl();
 }
 
 export async function createBackendClient(manager: AuthManager): Promise<{
@@ -15,6 +11,6 @@ export async function createBackendClient(manager: AuthManager): Promise<{
   base: string;
 }> {
   const token = await manager.getValidAccessToken();
-  const base = await backendBase(manager);
+  const base = getBackendBaseUrl();
   return { api: new BackendClient(base, token), base };
 }

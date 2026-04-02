@@ -33,8 +33,10 @@ export class BatchDispatcher {
   private readonly dispatch: DispatchFn;
   private readonly onError: (err: unknown) => void;
 
-  private buffer: FileEvent[] = [];
-  private batchSource: "live" | "reconcile" = "live";
+  private buffer: Array<{
+    events: FileEvent[];
+    source: "live" | "reconcile";
+  }> = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private flushing = false;
   private paused = false;
@@ -52,15 +54,17 @@ export class BatchDispatcher {
     opts?: { source?: "live" | "reconcile" }
   ): void {
     if (events.length === 0) return;
-    if (opts?.source) {
-      this.batchSource = opts.source;
-    }
-    this.buffer.push(...events);
-    if (this.buffer.length >= this.maxBatch) {
+    const source = opts?.source ?? "live";
+    this.buffer.push({ events: [...events], source });
+    if (this.bufferedEventCount() >= this.maxBatch) {
       void this.flush();
     } else {
       this.scheduleFlush();
     }
+  }
+
+  private bufferedEventCount(): number {
+    return this.buffer.reduce((n, c) => n + c.events.length, 0);
   }
 
   pause(): void {
@@ -69,7 +73,7 @@ export class BatchDispatcher {
 
   resume(): void {
     this.paused = false;
-    if (this.buffer.length > 0) {
+    if (this.bufferedEventCount() > 0) {
       this.scheduleFlush();
     }
   }
@@ -91,23 +95,18 @@ export class BatchDispatcher {
     if (this.buffer.length === 0 || this.flushing || this.paused) return;
 
     this.flushing = true;
-    const batch = this.deduplicate(this.buffer.splice(0));
-    if (batch.length === 0) {
-      this.flushing = false;
-      return;
-    }
-
-    const source = this.batchSource;
-    this.batchSource = "live";
-    const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
+    const chunks = this.buffer.splice(0);
     try {
-      await this.dispatch(batch, { batchId, source });
+      for (const chunk of chunks) {
+        const batch = this.deduplicate(chunk.events);
+        if (batch.length === 0) continue;
+        const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        await this.dispatch(batch, { batchId, source: chunk.source });
+      }
     } catch (err) {
       this.onError(err);
     } finally {
       this.flushing = false;
-      // If more events accumulated during dispatch, schedule another flush
       if (this.buffer.length > 0 && !this.paused) {
         this.scheduleFlush();
       }
@@ -186,6 +185,6 @@ export class BatchDispatcher {
   }
 
   get pending(): number {
-    return this.buffer.length;
+    return this.bufferedEventCount();
   }
 }

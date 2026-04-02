@@ -164,6 +164,8 @@ function emptyState(
 
 export type ScanSyncRootOptions = {
   includeSubfolders?: boolean;
+  /** Reuse quickHash when size and mtime are unchanged vs this snapshot. */
+  previousByRelPath?: Map<string, FileEntry>;
 };
 
 /**
@@ -175,6 +177,7 @@ export async function scanSyncRoot(
   options?: ScanSyncRootOptions
 ): Promise<Map<string, FileEntry>> {
   const includeSubfolders = options?.includeSubfolders !== false;
+  const previousByRelPath = options?.previousByRelPath;
   const root = path.resolve(syncRootAbs);
   const out = new Map<string, FileEntry>();
 
@@ -203,7 +206,18 @@ export async function scanSyncRoot(
       const mtimeMs = st.mtimeMs;
       let quickHash: string | undefined;
       if (st.isFile()) {
-        quickHash = await computeQuickHash(abs, size);
+        const old = previousByRelPath?.get(relKey);
+        if (
+          old &&
+          !old.isDirectory &&
+          old.size === size &&
+          old.mtimeMs === mtimeMs &&
+          old.quickHash
+        ) {
+          quickHash = old.quickHash;
+        } else {
+          quickHash = await computeQuickHash(abs, size);
+        }
       }
 
       out.set(relKey, {

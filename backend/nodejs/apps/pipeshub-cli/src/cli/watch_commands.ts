@@ -268,13 +268,68 @@ function clearStaleWatcherPidIfDead(cid: string): void {
   }
 }
 
-function throwIfWatcherAlreadyRunning(cid: string): void {
+const STALE_SPAWN_LOCK_MS = 120_000;
+
+/** Serialize background watcher spawn per connector (O_EXCL lock + stale cleanup). */
+function withWatcherSpawnLock<T>(cid: string, fn: () => T): T {
+  const dir = pipeshubConfigDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const lockPath = path.join(dir, `watcher.${cid}.spawn.lock`);
   clearStaleWatcherPidIfDead(cid);
-  if (!fs.existsSync(watcherPidPath(cid))) return;
-  const pid = Number(fs.readFileSync(watcherPidPath(cid), "utf8").trim());
-  throw new Error(
-    `Background watcher already running (PID ${pid}). Stop with: pipeshub watch-stop`
-  );
+
+  let fd: number;
+  try {
+    fd = fs.openSync(lockPath, "wx", 0o600);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "EEXIST") {
+      let stale = false;
+      try {
+        const st = fs.statSync(lockPath);
+        stale = Date.now() - st.mtimeMs > STALE_SPAWN_LOCK_MS;
+      } catch {
+        stale = true;
+      }
+      if (stale) {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          /* ignore */
+        }
+        fd = fs.openSync(lockPath, "wx", 0o600);
+      } else {
+        const pp = watcherPidPath(cid);
+        if (fs.existsSync(pp)) {
+          const pid = Number(fs.readFileSync(pp, "utf8").trim());
+          if (Number.isFinite(pid) && pid > 0 && isProcessRunning(pid)) {
+            throw new Error(
+              `Background watcher already running (PID ${pid}). Stop with: pipeshub watch-stop`
+            );
+          }
+        }
+        throw new Error(
+          "Another watcher is starting for this connector. Wait a moment and try again."
+        );
+      }
+    } else {
+      throw e;
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function pathToCliScript(): string {
@@ -282,27 +337,29 @@ function pathToCliScript(): string {
 }
 
 function spawnWatchWorker(config: WatchSpawnConfig): number {
-  fs.mkdirSync(pipeshubConfigDir(), { recursive: true });
-  const configPath = watcherSpawnConfigPath(config.connectorInstanceId);
-  fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
-  const child = spawn(
-    process.execPath,
-    [pathToCliScript(), "watch-worker", "--config", configPath, "--quiet"],
-    { detached: true, stdio: "ignore" }
-  );
-  child.unref();
-  if (child.pid === undefined) {
-    try {
-      fs.unlinkSync(configPath);
-    } catch {
-      /* ignore */
+  return withWatcherSpawnLock(config.connectorInstanceId, () => {
+    fs.mkdirSync(pipeshubConfigDir(), { recursive: true });
+    const configPath = watcherSpawnConfigPath(config.connectorInstanceId);
+    fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+    const child = spawn(
+      process.execPath,
+      [pathToCliScript(), "watch-worker", "--config", configPath, "--quiet"],
+      { detached: true, stdio: "ignore" }
+    );
+    child.unref();
+    if (child.pid === undefined) {
+      try {
+        fs.unlinkSync(configPath);
+      } catch {
+        /* ignore */
+      }
+      throw new Error("Failed to spawn background watcher process.");
     }
-    throw new Error("Failed to spawn background watcher process.");
-  }
-  fs.writeFileSync(watcherPidPath(config.connectorInstanceId), String(child.pid), {
-    mode: 0o600,
+    fs.writeFileSync(watcherPidPath(config.connectorInstanceId), String(child.pid), {
+      mode: 0o600,
+    });
+    return child.pid;
   });
-  return child.pid;
 }
 
 function printWatcherStartedBackground(cid: string, pid: number): void {
@@ -476,7 +533,6 @@ export async function runSyncAsync(
     }
 
     if (!foreground) {
-      throwIfWatcherAlreadyRunning(cid);
       const pid = spawnWatchWorker({
         connectorInstanceId: cid,
         syncRoot: rootPath,
@@ -568,7 +624,6 @@ export async function runSyncAsync(
   );
 
   if (!foreground) {
-    throwIfWatcherAlreadyRunning(cid);
     const pid = spawnWatchWorker({
       connectorInstanceId: cid,
       syncRoot: rootPath,

@@ -6,7 +6,7 @@ import { CliRpcSocketGateway } from '../socket/cli_rpc_socket_gateway';
 export class CliRpcContainer {
   private static container: Container | null = null;
 
-  static initialize(appConfig: AppConfig): Container {
+  static async initialize(appConfig: AppConfig): Promise<Container> {
     const container = new Container();
     const authTokenService = new AuthTokenService(
       appConfig.jwtSecret,

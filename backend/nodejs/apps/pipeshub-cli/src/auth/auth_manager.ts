@@ -1,12 +1,6 @@
 import { CredentialStore } from "./credential_store";
 import { OAuthClient, type TokenResponse } from "./oauth_client";
-
-function defaultBaseUrl(): string {
-  return (process.env.PIPESHUB_BACKEND_URL || "http://localhost:3000").replace(
-    /\/$/,
-    ""
-  );
-}
+import { getBackendBaseUrl } from "./backend_url";
 
 function accessTokenExpUnix(accessToken: string): number | null {
   try {
@@ -42,7 +36,7 @@ export class AuthManager {
 
   constructor(credentialStore?: CredentialStore, baseUrl?: string) {
     this.store = credentialStore ?? new CredentialStore();
-    this.baseUrl = (baseUrl ?? defaultBaseUrl()).replace(/\/$/, "");
+    this.baseUrl = (baseUrl ?? getBackendBaseUrl()).replace(/\/$/, "");
   }
 
   async getStorageDescription(): Promise<string> {
@@ -56,17 +50,13 @@ export class AuthManager {
     );
   }
 
-  async getStoredBaseUrl(): Promise<string | null> {
-    const e = process.env.PIPESHUB_BACKEND_URL?.trim();
-    return e || null;
+  /** Resolved API base URL from environment (see `getBackendBaseUrl`). */
+  getBackendBaseUrl(): string {
+    return getBackendBaseUrl();
   }
 
-  async login(
-    clientId: string,
-    clientSecret: string,
-    baseUrl?: string
-  ): Promise<void> {
-    const url = (baseUrl ?? this.baseUrl).replace(/\/$/, "");
+  async login(clientId: string, clientSecret: string): Promise<void> {
+    const url = getBackendBaseUrl().replace(/\/$/, "");
     const client = new OAuthClient(url, clientId, clientSecret);
     const token = await client.requestToken();
     await this.store.save(
@@ -138,7 +128,7 @@ export class AuthManager {
   private async resolveOAuthParamsFromStore(): Promise<
     [string, string, string]
   > {
-    const base = defaultBaseUrl();
+    const base = getBackendBaseUrl();
     const stored = await this.store.load();
     const sid = String(stored?.client_id || "").trim();
     const ssec = String(stored?.client_secret || "").trim();
