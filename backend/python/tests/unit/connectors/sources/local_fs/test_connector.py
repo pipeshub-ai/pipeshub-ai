@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -203,6 +204,27 @@ class TestLocalFsConnectorHelpers:
         app_u = folder_connector._to_app_user(u)
         assert app_u.email == "u@x.com"
         assert app_u.connector_id == "connector-instance-1"
+
+    def test_reindex_records_empty_noop(self, folder_connector: LocalFsConnector):
+        async def _run() -> None:
+            folder_connector.data_entities_processor.reindex_existing_records = AsyncMock()
+            await folder_connector.reindex_records([])
+            folder_connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+        asyncio.run(_run())
+
+    def test_reindex_records_delegates_to_processor(
+        self, folder_connector: LocalFsConnector
+    ):
+        async def _run() -> None:
+            folder_connector.data_entities_processor.reindex_existing_records = AsyncMock()
+            rec = MagicMock()
+            await folder_connector.reindex_records([rec])
+            folder_connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+                [rec]
+            )
+
+        asyncio.run(_run())
 
 
 @pytest.mark.asyncio
