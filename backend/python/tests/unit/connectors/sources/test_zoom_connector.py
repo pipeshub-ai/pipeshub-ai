@@ -5,7 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.zoom.connector import ZoomConnector
+from app.connectors.sources.zoom.connector import (
+    ZoomConnector,
+    ZoomMeetingDetail,
+    ZoomMeetingReport,
+    ZoomParticipant,
+    ZoomUser,
+)
 from app.models.permission import PermissionType
 
 
@@ -32,16 +38,18 @@ def _make_connector() -> ZoomConnector:
 class TestZoomConnectorRecordBuilders:
     def test_build_meeting_record_uses_join_url_and_unique_name(self) -> None:
         connector = _make_connector()
-        meeting_obj = {
-            "id": 82768386593,
-            "topic": "python basics overview",
-            "host_id": "host-1",
-            "start_time": "2026-03-30T18:00:00Z",
-            "end_time": "2026-03-30T19:00:00Z",
-            "duration": 60,
-            "type": 2,
-        }
-        detail = {"join_url": "https://us06web.zoom.us/j/82768386593?pwd=abc"}
+        meeting_obj = ZoomMeetingReport(
+            id=82768386593,
+            topic="python basics overview",
+            host_id="host-1",
+            start_time="2026-03-30T18:00:00Z",
+            end_time="2026-03-30T19:00:00Z",
+            duration=60,
+            type=2,
+        )
+        detail = ZoomMeetingDetail.model_validate(
+            {"join_url": "https://us06web.zoom.us/j/82768386593?pwd=abc"}
+        )
 
         rec = connector._build_meeting_record(
             meeting_obj=meeting_obj,
@@ -59,15 +67,15 @@ class TestZoomConnectorRecordBuilders:
 
     def test_build_meeting_record_weburl_fallback(self) -> None:
         connector = _make_connector()
-        meeting_obj = {
-            "id": 111222333,
-            "topic": "Fallback URL",
-            "host_id": "host-1",
-            "start_time": "",
-            "end_time": "",
-            "duration": 30,
-            "type": 2,
-        }
+        meeting_obj = ZoomMeetingReport(
+            id=111222333,
+            topic="Fallback URL",
+            host_id="host-1",
+            start_time="",
+            end_time="",
+            duration=30,
+            type=2,
+        )
 
         rec = connector._build_meeting_record(
             meeting_obj=meeting_obj,
@@ -87,13 +95,13 @@ class TestZoomConnectorPermissions:
         connector = _make_connector()
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
             return_value=[
-                {"user_email": "p1@example.com"},
-                {"user_email": "Host@Example.com"},  # duplicate with host
-                {"user_email": "jchill@example.com"},  # duplicate with alt host
+                ZoomParticipant(user_email="p1@example.com"),
+                ZoomParticipant(user_email="Host@Example.com"),  # duplicate with host
+                ZoomParticipant(user_email="jchill@example.com"),  # duplicate with alt host
             ]
         )
 
-        meeting_detail = {
+        meeting_detail = ZoomMeetingDetail.model_validate({
             "settings": {
                 "alternative_hosts": "jchill@example.com;thill@example.com",
                 "meeting_invitees": [
@@ -101,7 +109,7 @@ class TestZoomConnectorPermissions:
                     {"email": "p1@example.com", "internal_user": False},  # duplicate
                 ],
             }
-        }
+        })
 
         perms = await connector._build_meeting_permissions(
             meeting_detail=meeting_detail,
@@ -128,7 +136,7 @@ class TestZoomConnectorPermissions:
     async def test_permissions_still_work_when_meeting_detail_missing(self) -> None:
         connector = _make_connector()
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
-            return_value=[{"user_email": "participant@example.com"}]
+            return_value=[ZoomParticipant(user_email="participant@example.com")]
         )
 
         perms = await connector._build_meeting_permissions(
@@ -145,12 +153,12 @@ class TestZoomConnectorPermissions:
         connector._list_meeting_participants = AsyncMock(  # type: ignore[method-assign]
             side_effect=Exception("participants api failed")
         )
-        meeting_detail = {
+        meeting_detail = ZoomMeetingDetail.model_validate({
             "settings": {
                 "alternative_hosts": "alt@example.com",
                 "meeting_invitees": [{"email": "invitee@example.com"}],
             }
-        }
+        })
 
         perms = await connector._build_meeting_permissions(
             meeting_detail=meeting_detail,
@@ -216,7 +224,7 @@ class TestZoomConnectorSyncFlow:
         connector._load_filters = AsyncMock()  # type: ignore[method-assign]
         connector._today = MagicMock(return_value=date(2026, 3, 31))  # type: ignore[method-assign]
         connector._list_users = AsyncMock(  # type: ignore[method-assign]
-            return_value=[{"id": "u1", "email": "u1@example.com"}, {"id": "u2", "email": "u2@example.com"}]
+            return_value=[ZoomUser(id="u1", email="u1@example.com"), ZoomUser(id="u2", email="u2@example.com")]
         )
         connector._build_app_users = MagicMock(return_value=[])  # type: ignore[method-assign]
         connector._sync_meetings_for_user = AsyncMock(  # type: ignore[method-assign]
@@ -253,7 +261,7 @@ class TestZoomConnectorSyncFlow:
         """When calculate_sync_chunks returns [] the sync-point is still bumped."""
         connector = _make_connector()
         today = date(2026, 3, 31)
-        zoom_user = {"id": "u1", "email": "u1@example.com", "created_at": None}
+        zoom_user = ZoomUser(id="u1", email="u1@example.com", created_at=None)
 
         # last_sync = tomorrow → start = today >= today → empty chunks
         connector._get_user_meeting_sync_point = AsyncMock(  # type: ignore[method-assign]
@@ -277,7 +285,7 @@ class TestZoomConnectorSyncFlow:
         """Meetings with empty uuid are skipped; sync point still updated."""
         connector = _make_connector()
         today = date(2026, 3, 31)
-        zoom_user = {"id": "u1", "email": "u1@example.com"}
+        zoom_user = ZoomUser(id="u1", email="u1@example.com")
 
         connector._get_user_meeting_sync_point = AsyncMock(return_value=None)  # type: ignore[method-assign]
         connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
@@ -285,7 +293,7 @@ class TestZoomConnectorSyncFlow:
             return_value=(MagicMock(id="rg-1"), [])
         )
         connector._list_report_meetings = AsyncMock(  # type: ignore[method-assign]
-            return_value=[{"id": "111", "uuid": ""}]          # empty uuid
+            return_value=[ZoomMeetingReport(id=111, uuid="")]  # empty uuid
         )
 
         await connector._sync_meetings_for_user(zoom_user, today)
@@ -298,7 +306,7 @@ class TestZoomConnectorSyncFlow:
         """One bad meeting should not abort others in the same chunk."""
         connector = _make_connector()
         today = date(2026, 3, 31)
-        zoom_user = {"id": "u1", "email": "host@example.com"}
+        zoom_user = ZoomUser(id="u1", email="host@example.com")
 
         # Use incremental mode to produce a single chunk and keep flush count deterministic.
         connector._get_user_meeting_sync_point = AsyncMock(return_value=today)  # type: ignore[method-assign]
@@ -308,8 +316,8 @@ class TestZoomConnectorSyncFlow:
         )
         connector._list_report_meetings = AsyncMock(  # type: ignore[method-assign]
             return_value=[
-                {"id": "111", "uuid": "bad-uuid"},
-                {"id": "222", "uuid": "good-uuid"},
+                ZoomMeetingReport(id=111, uuid="bad-uuid"),
+                ZoomMeetingReport(id=222, uuid="good-uuid"),
             ]
         )
         connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
@@ -514,7 +522,7 @@ class TestZoomApiWrappers:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
 
         meetings = await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
-        assert [m["uuid"] for m in meetings] == ["m1", "m2", "m3"]
+        assert [m.uuid for m in meetings] == ["m1", "m2", "m3"]
 
     @pytest.mark.asyncio
     async def test_list_report_meetings_breaks_on_failure_with_code(self) -> None:
@@ -680,14 +688,14 @@ class TestBuildAppUsers:
     def test_maps_users_with_display_name(self) -> None:
         connector = _make_connector()
         users = [
-            {
-                "id": "u1",
-                "email": "User@Example.com",
-                "display_name": "Display Name",
-                "first_name": "First",
-                "last_name": "Last",
-                "created_at": "2026-01-01T00:00:00Z",
-            }
+            ZoomUser(
+                id="u1",
+                email="User@Example.com",
+                display_name="Display Name",
+                first_name="First",
+                last_name="Last",
+                created_at="2026-01-01T00:00:00Z",
+            )
         ]
         result = connector._build_app_users(users)
         assert len(result) == 1
@@ -696,27 +704,27 @@ class TestBuildAppUsers:
 
     def test_falls_back_to_first_last_name(self) -> None:
         connector = _make_connector()
-        users = [{"id": "u1", "email": "a@b.com", "first_name": "Joe", "last_name": "Smith"}]
+        users = [ZoomUser(id="u1", email="a@b.com", first_name="Joe", last_name="Smith")]
         result = connector._build_app_users(users)
         assert result[0].full_name == "Joe Smith"
 
     def test_skips_users_without_email(self) -> None:
         connector = _make_connector()
-        users = [{"id": "u1", "email": ""}]
+        users = [ZoomUser(id="u1", email="")]
         result = connector._build_app_users(users)
         assert result == []
 
     def test_skips_users_without_id(self) -> None:
         connector = _make_connector()
-        users = [{"id": "", "email": "a@b.com"}]
+        users = [ZoomUser(id="", email="a@b.com")]
         result = connector._build_app_users(users)
         assert result == []
 
     def test_multiple_users_all_mapped(self) -> None:
         connector = _make_connector()
         users = [
-            {"id": "u1", "email": "a@b.com", "first_name": "A", "last_name": "B"},
-            {"id": "u2", "email": "c@d.com", "first_name": "C", "last_name": "D"},
+            ZoomUser(id="u1", email="a@b.com", first_name="A", last_name="B"),
+            ZoomUser(id="u2", email="c@d.com", first_name="C", last_name="D"),
         ]
         result = connector._build_app_users(users)
         assert len(result) == 2
