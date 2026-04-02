@@ -255,15 +255,7 @@ export class BackendClient {
     }
   }
 
-  private headers(): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    };
-  }
-
-  /** Low-level fetch: headers, timeout, clear error if the gateway is down. */
+  /** Low-level fetch: routes via Socket.IO RPC (same auth as handshake). */
   private async fetchOnce(url: string, init: RequestInit = {}): Promise<Response> {
     try {
       const parsed = new URL(url);
@@ -388,7 +380,6 @@ export class BackendClient {
         typeof pag?.nextPage === "number" && pag.nextPage > page
           ? pag.nextPage
           : page + 1;
-      await sleep(200);
     }
 
     return all;

@@ -160,13 +160,46 @@ function eventsFingerprint(events: FileEvent[]): string {
   );
 }
 
+const JOURNAL_MAX_BYTES = 10 * 1024 * 1024;
+const JOURNAL_ROTATIONS_TO_KEEP = 5;
+
+/** Rotate oversized JSONL journal to `.jsonl.1`, … before append. */
+function rotateJournalIfOversized(jpath: string): void {
+  if (!fs.existsSync(jpath)) return;
+  const st = fs.statSync(jpath);
+  if (st.size <= JOURNAL_MAX_BYTES) return;
+  const last = `${jpath}.${JOURNAL_ROTATIONS_TO_KEEP}`;
+  try {
+    if (fs.existsSync(last)) {
+      fs.unlinkSync(last);
+    }
+  } catch {
+    /* ignore */
+  }
+  for (let i = JOURNAL_ROTATIONS_TO_KEEP - 1; i >= 1; i--) {
+    const from = `${jpath}.${i}`;
+    const to = `${jpath}.${i + 1}`;
+    if (!fs.existsSync(from)) continue;
+    try {
+      fs.renameSync(from, to);
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    fs.renameSync(jpath, `${jpath}.1`);
+  } catch {
+    /* ignore */
+  }
+}
+
 function readLastJournalLine(jpath: string): WatchJournalLineV1 | null {
   if (!fs.existsSync(jpath)) return null;
   try {
     const stat = fs.statSync(jpath);
     const size = stat.size;
     if (size === 0) return null;
-    const tailSize = Math.min(64 * 1024, size);
+    const tailSize = Math.min(256 * 1024, size);
     const buf = Buffer.alloc(tailSize);
     const fd = fs.openSync(jpath, "r");
     try {
@@ -313,6 +346,7 @@ export function recordWatchBatch(
   }
   fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
   const jpath = watcherEventsJournalPath(authDir, args.connectorInstanceId);
+  rotateJournalIfOversized(jpath);
 
   const cur = readCursor(authDir, args.connectorInstanceId, args.syncRoot);
   if (cur.lastRecordedBatchId === args.batchId) {
