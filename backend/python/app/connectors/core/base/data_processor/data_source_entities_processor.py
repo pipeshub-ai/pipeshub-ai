@@ -817,6 +817,7 @@ class DataSourceEntitiesProcessor:
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            record.weburl = existing_record.weburl
             # pass
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:

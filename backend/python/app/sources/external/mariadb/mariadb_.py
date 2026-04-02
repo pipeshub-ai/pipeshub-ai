@@ -10,11 +10,13 @@ Provides async wrapper methods for MariaDB operations:
 """
 
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from app.sources.client.mariadb.mariadb import MariaDBClient, MariaDBResponse
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TABLE_ROW_FETCH_LIMIT = 1000
 
 
 class MariaDBDataSource:
@@ -469,6 +471,39 @@ class MariaDBDataSource:
                 error=str(e),
                 message="Query execution failed"
             )
+
+    async def fetch_table_rows(
+        self,
+        database_name: str,
+        table_name: str,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return up to ``limit`` rows from a table.
+
+        Args:
+            database_name: Database name
+            table_name: Table name
+            limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
+
+        Returns:
+            List of row dicts, or empty list on failure.
+        """
+        row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
+        safe_database = database_name.replace('`', '``')
+        safe_table = table_name.replace('`', '``')
+        query = f"SELECT * FROM `{safe_database}`.`{safe_table}` LIMIT {int(row_limit)}"
+        try:
+            response = await self.execute_query(query)
+            if response.success and response.data:
+                return response.data
+        except Exception as e:
+            logger.warning(
+                "🔧 [MariaDBDataSource] fetch_table_rows failed for %s.%s: %s",
+                database_name,
+                table_name,
+                e,
+            )
+        return []
 
     async def get_table_stats(
         self, databases: Optional[list[str]] = None

@@ -272,7 +272,6 @@ dependencies = [
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
     "psycopg2-binary==2.9.11",
-    "mariadb>=1.1.0",
 ]
 
 [tool.setuptools.packages.find]

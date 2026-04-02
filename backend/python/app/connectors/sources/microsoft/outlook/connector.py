@@ -1405,7 +1405,7 @@ class OutlookConnector(BaseConnector):
                             "from_collection": CollectionNames.RECORDS.value,
                             "to_id": record.id,
                             "to_collection": CollectionNames.RECORDS.value,
-                            "relationshipType": "SIBLING"
+                            "relationType": "SIBLING"
                         }
                         edges.append(edge)
                         processed_count += 1

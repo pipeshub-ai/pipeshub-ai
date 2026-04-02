@@ -336,13 +336,6 @@ class VectorStore(Transformer):
                         "type": "keyword",
                     },
                 )
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name="metadata.blockId",
-                    field_schema={
-                        "type": "keyword",
-                    },
-                )
             except Exception as e:
                 self.logger.error(
                     f"❌ Error creating collection {self.collection_name}: {str(e)}"
@@ -468,21 +461,12 @@ class VectorStore(Transformer):
             return
 
         try:
-            deleted_count = 0
-            for block_id in block_ids:
-                try:
-                    filter_dict = await self.vector_db_service.filter_collection(
-                        must={"blockId": block_id, "virtualRecordId": virtual_record_id}
-                    )
-                    self.vector_db_service.delete_points(self.collection_name, filter_dict)
-                    deleted_count += 1
-                except Exception as e:
-                    self.logger.warning(
-                        f"⚠️ Failed to delete block {block_id}: {str(e)}"
-                    )
-
+            filter_dict = await self.vector_db_service.filter_collection(
+                must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
+            )
+            self.vector_db_service.delete_points(self.collection_name, filter_dict)
             self.logger.info(
-                f"✅ Deleted {deleted_count}/{len(block_ids)} blocks from vector store "
+                f"✅ Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
             )
         except Exception as e:
@@ -1190,15 +1174,11 @@ class VectorStore(Transformer):
                         "orgId": org_id,
                         "isBlock": False,
                         "isBlockGroup": True,
-                        "fqn": fqn,
                     }
 
                     if sub_type == "sql_table":
                         ddl = block_data.get("ddl", "")
                         table_summary = block_data.get("table_summary", "")
-                        column_names = block_data.get("column_headers", [])
-                        primary_keys = block_data.get("primary_keys", [])
-                        foreign_keys = block_data.get("foreign_keys", [])
 
                         if ddl:
                             combined_content_parts = []
@@ -1211,11 +1191,6 @@ class VectorStore(Transformer):
                                 page_content=combined_content,
                                 metadata={
                                     **sql_base_metadata,
-                                    "sqlType": "TABLE",
-                                    "contentType": "ddl",
-                                    "columnNames": column_names,
-                                    "primaryKeys": primary_keys,
-                                    "hasForeignKeys": len(foreign_keys) > 0,
                                 },
                             ))
                             self.logger.info(f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}")
@@ -1250,10 +1225,6 @@ class VectorStore(Transformer):
                                 page_content=view_context,
                                 metadata={
                                     **sql_base_metadata,
-                                    "sqlType": "VIEW",
-                                    "contentType": "definition" if definition else "metadata",
-                                    "sourceTables": source_tables,
-                                    "isSecure": is_secure,
                                 },
                             ))
                             self.logger.info(
@@ -1280,12 +1251,8 @@ class VectorStore(Transformer):
                                 },
                             ))
 
-            # ── SQL row blocks ──
-            MAX_SQL_ROWS_TO_EMBED = 1000
             sql_rows_embedded = 0
             for block in sql_row_blocks:
-                if sql_rows_embedded >= MAX_SQL_ROWS_TO_EMBED:
-                    break
                 block_data = block.data or {}
                 row_text = block_data.get("row_natural_language_text", "")
                 if row_text:
@@ -1297,14 +1264,12 @@ class VectorStore(Transformer):
                             "orgId": org_id,
                             "isBlock": True,
                             "isBlockGroup": False,
-                            "sqlType": "TABLE_ROW",
-                            "contentType": "sample_data",
                         },
                     ))
                     sql_rows_embedded += 1
 
             if sql_rows_embedded > 0:
-                self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding (max {MAX_SQL_ROWS_TO_EMBED})")
+                self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
 
             # ── Regular table blocks ──
             for block in table_blocks:

@@ -10,6 +10,7 @@ from jinja2 import Template
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
+from app.modules.reconciliation.service import ReconciliationMetadata
 from app.models.entities import (
     Connectors,
     FileRecord,
@@ -490,20 +491,14 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         logger.warning(f"Failed to fetch frontend URL from config service: {str(e)}")
 
     await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url) for virtual_record_id in records_to_fetch])
-    #parallel prefetch for records and reconciliation metadata
-    vrids_needing_record: Dict[str, Dict[str, Any]] = {}  
+    # Prefetch reconciliation metadata in parallel (records were fully fetched above).
     vrids_needing_recon: set = set[Any]()
 
     for result in sorted_new_type_results:
         vrid = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
-        if vrid and vrid not in virtual_record_id_to_result and vrid not in vrids_needing_record:
-            vrids_needing_record[vrid] = meta
         if meta.get("blockIndex") is None and meta.get("blockId") and vrid and vrid not in virtual_record_id_to_recon_metadata:
             vrids_needing_recon.add(vrid)
-
-    async def _prefetch_record(vrid: str, meta: Dict[str, Any]):
-        await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
 
     async def _prefetch_recon(vrid: str):
         try:
@@ -513,59 +508,30 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             logger.warning("Failed to prefetch reconciliation metadata for %s: %s", vrid, str(e))
             virtual_record_id_to_recon_metadata[vrid] = None
 
-    prefetch_tasks = []
-    for vrid, first_meta in vrids_needing_record.items():
-        prefetch_tasks.append(_prefetch_record(vrid, first_meta))
-    for vrid in vrids_needing_recon:
-        prefetch_tasks.append(_prefetch_recon(vrid))
-
-    if prefetch_tasks:
-        await asyncio.gather(*prefetch_tasks)
-    # --- End prefetch ---
+    if vrids_needing_recon:
+        await asyncio.gather(*[_prefetch_recon(vrid) for vrid in vrids_needing_recon])
 
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
-
-        if virtual_record_id not in virtual_record_id_to_result:
-            # Fallback
-            await get_record(virtual_record_id, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
-
 
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
 
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
-        # Block groups from vectorstore use blockGroupIndex, not blockIndex (e.g. SQL/DDL tables)
-        # if index is None and is_block_group:
-        #     index = meta.get("blockGroupIndex")
 
-        # For reconciliation-enabled types (SQL_TABLE, SQL_VIEW), Qdrant stores blockId
-        # instead of blockIndex. Resolve blockId → index via reconciliation metadata.
         if index is None:
             block_id = meta.get("blockId")
             if block_id:
-                if virtual_record_id not in virtual_record_id_to_recon_metadata:
-                    # Fallback: fetch inline if missed by prefetch (should be rare)
-                    try:
-                        recon_metadata = await blob_store.get_reconciliation_metadata(virtual_record_id, org_id)
-                        virtual_record_id_to_recon_metadata[virtual_record_id] = recon_metadata
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to fetch reconciliation metadata for %s: %s",
-                            virtual_record_id, str(e)
-                        )
-                        virtual_record_id_to_recon_metadata[virtual_record_id] = None
-
                 recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
                 if recon_metadata:
                     block_id_to_index = recon_metadata.get("block_id_to_index", {})
-                    index_val = block_id_to_index.get(block_id)
+                    rm = ReconciliationMetadata.from_dict(recon_metadata)
+                    index_val = rm.block_id_to_index.get(block_id)
                     if index_val is not None:
-                        index = index_val if isinstance(index_val, int) else index_val.get("index")
-                        if index is not None:
-                            meta["blockIndex"] = index
+                        index = index_val
+                        meta["blockIndex"] = index
 
         # Skip if index is still None - cannot access blocks without a valid index
         if index is None:
@@ -605,11 +571,12 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         else:
             if index >= len(blocks):
                 qdrant_content = result.get("content", "")
-                sql_bg_index = 0
-                if sql_bg_index is not None and qdrant_content:
-                    rows_to_be_included[f"{virtual_record_id}_{sql_bg_index}"].append(
+                bg_index = 0
+                if record.get("record_type") == RecordType.SQL_TABLE.value and qdrant_content:
+                    rows_to_be_included[f"{virtual_record_id}_{bg_index}"].append(
                         (index, float(result.get("score", 0.0)), qdrant_content)
                     )
+                    logger.debug(f"Index Out of Bounds: Added row to rows_to_be_included for {qdrant_content}")
                 else:
                     logger.warning(
                         "Block index %d out of bounds (len=%d), vrid=%s",
@@ -789,7 +756,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     })
             elif qdrant_content:
                 # Block not in blob (SQL row limit) — use Qdrant page_content
-                logger.info(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
+                logger.debug(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
                 synthetic_block = {
                     "type": BlockType.TABLE_ROW.value,
                     "data": {"row_natural_language_text": qdrant_content},

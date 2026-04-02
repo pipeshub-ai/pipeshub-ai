@@ -44,6 +44,7 @@ from app.connectors.core.registry.filters import (
     FilterType,
     IndexingFilterKey,
     MultiselectOperator,
+    NumberOperator,
     OptionSourceType,
     load_connector_filters,
 )
@@ -71,7 +72,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-MARIADB_TABLE_ROW_LIMIT = 1000
+MAX_ROWS_PER_TABLE_LIMIT = 10000
 
 
 @dataclass
@@ -197,6 +198,15 @@ class SyncStats:
             category=FilterCategory.INDEXING,
             description="Enable indexing of tables",
             default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.MAX_ROWS_PER_TABLE.value,
+            display_name="Max Rows Per Table",
+            filter_type=FilterType.NUMBER,
+            category=FilterCategory.SYNC,
+            description="Maximum number of rows to index per table (Capped at 10000)",
+            default_value=1000,
+            default_operator=NumberOperator.LESS_THAN_OR_EQUAL.value
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
@@ -601,25 +611,6 @@ class MariaDBConnector(BaseConnector):
         
         self.logger.info(f"Completed syncing {len(tables)} updated tables in {database_name}")
  
-    async def _fetch_table_rows(
-        self, database_name: str, table_name: str, limit: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
-        if not self.data_source:
-            return []
-        
-        row_limit = limit if limit is not None else MARIADB_TABLE_ROW_LIMIT
-        safe_database = database_name.replace('`', '``')
-        safe_table = table_name.replace('`', '``')
-        query = f"SELECT * FROM `{safe_database}`.`{safe_table}` LIMIT {int(row_limit)}"
-        
-        try:
-            response = await self.data_source.execute_query(query)
-            if response.success and response.data:
-                return response.data
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch rows for {table_name}: {e}")
-        return []
-
     async def stream_record(
         self,
         record: Record,
@@ -654,7 +645,14 @@ class MariaDBConnector(BaseConnector):
                 if pks_response.success:
                     primary_keys = [pk.get("column_name", "") for pk in pks_response.data]
 
-                rows = await self._fetch_table_rows(database, table)
+                sync_filters, _ = await load_connector_filters(
+                    self.config_service, "mariadb", self.connector_id, self.logger
+                )
+                max_rows = min(
+                    int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
+                    MAX_ROWS_PER_TABLE_LIMIT,
+                )
+                rows = await self.data_source.fetch_table_rows(database, table, limit=max_rows)
                 
                 ddl_response = await self.data_source.get_table_ddl(table, database)
                 ddl = ""
