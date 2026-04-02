@@ -1,6 +1,6 @@
 # Pipeshub CLI
 
-Sync a local directory to Pipeshub using the personal **Folder Sync** connector.
+Sync a local directory to Pipeshub using the personal **Local FS** connector.
 
 Log in, run `setup` to link a connector and folder, then `run` to queue a sync on the backend. The Python connector service must be running and able to read the configured `sync_root_path`.
 
@@ -61,7 +61,7 @@ Prints `OK.` when the token is active.
 
 ### 3. Setup
 
-Interactively pick or create a **Folder Sync** connector instance and set the sync folder path:
+Interactively pick or create a **Local FS** connector instance and set the sync folder path:
 
 ```bash
 pipeshub setup
@@ -105,13 +105,13 @@ The CLI refreshes `include_subfolders` from the server config (or falls back to 
 | `pipeshub login` | Prompt for client ID and client secret; API URL from `PIPESHUB_BACKEND_URL` (default localhost). |
 | `pipeshub logout` | Remove stored credentials. |
 | `pipeshub verify` | Print `OK.` when the access token is valid. |
-| `pipeshub setup [path]` | Interactive Folder Sync setup — link a connector and set folder path. |
+| `pipeshub setup [path]` | Interactive Local FS setup — link a connector and set folder path. |
 | `pipeshub run [path]` / `sync [path]` | Confirm and queue a **full** sync; optional path override. |
 | `pipeshub indexing [subcommand]` | Knowledge base operations (see [Indexing](#indexing)). |
 
 ## Indexing
 
-Every indexing command first lists **all personal Folder Sync connectors** (name, ID, active status, sync root, subfolders). You pick which connector to operate on — nothing is highlighted as a default.
+Every indexing command first lists **all personal Local FS connectors** (name, ID, active status, sync root, subfolders). You pick which connector to operate on — nothing is highlighted as a default.
 
 | Subcommand | Description |
 | --- | --- |

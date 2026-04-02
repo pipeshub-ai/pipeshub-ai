@@ -15,7 +15,7 @@ export type CliRpcSocket = Socket<
   CliRpcSocketData
 >;
 
-export type FolderSyncResyncDispatchRequest = {
+export type LocalFsResyncDispatchRequest = {
   orgId: string;
   connectorId: string;
   connectorName?: string;
@@ -23,7 +23,7 @@ export type FolderSyncResyncDispatchRequest = {
   fullSync?: boolean;
 };
 
-type FolderSyncResyncAck =
+type LocalFsResyncAck =
   | {
       ok: true;
       replayedBatches?: number;
@@ -40,9 +40,9 @@ type FolderSyncResyncAck =
 
 const DEFAULT_RESYNC_TIMEOUT_MS = 90_000;
 
-export class FolderSyncWatcherRegistry {
+export class LocalFsWatcherRegistry {
   private readonly logger = Logger.getInstance({
-    service: 'FolderSyncWatcherRegistry',
+    service: 'LocalFsWatcherRegistry',
   });
 
   private readonly watchers = new Map<string, CliRpcSocket>();
@@ -58,13 +58,13 @@ export class FolderSyncWatcherRegistry {
     const existing = this.watchers.get(key);
     if (existing && existing.id !== socket.id) {
       throw new ConflictError(
-        'A Folder Sync watcher is already active for this connector. Stop the other `pipeshub run` first.',
+        'A Local FS watcher is already active for this connector. Stop the other `pipeshub run` first.',
       );
     }
 
     socket.data.watcherConnectorId = normalizedConnectorId;
     this.watchers.set(key, socket);
-    this.logger.info('Registered Folder Sync watcher control socket', {
+    this.logger.info('Registered Local FS watcher control socket', {
       orgId,
       connectorId: normalizedConnectorId,
       socketId: socket.id,
@@ -86,7 +86,7 @@ export class FolderSyncWatcherRegistry {
 
     this.watchers.delete(key);
     socket.data.watcherConnectorId = undefined;
-    this.logger.info('Unregistered Folder Sync watcher control socket', {
+    this.logger.info('Unregistered Local FS watcher control socket', {
       orgId,
       connectorId,
       socketId: socket.id,
@@ -94,7 +94,7 @@ export class FolderSyncWatcherRegistry {
   }
 
   async dispatch(
-    request: FolderSyncResyncDispatchRequest,
+    request: LocalFsResyncDispatchRequest,
     timeoutMs = DEFAULT_RESYNC_TIMEOUT_MS,
   ): Promise<{
     replayedBatches: number;
@@ -105,7 +105,7 @@ export class FolderSyncWatcherRegistry {
     const socket = this.watchers.get(key);
     if (!socket) {
       throw new ConflictError(
-        'No active Folder Sync watcher for this connector. Start `pipeshub run` first.',
+        'No active Local FS watcher for this connector. Start `pipeshub run` first.',
       );
     }
 
@@ -118,14 +118,14 @@ export class FolderSyncWatcherRegistry {
         settled = true;
         reject(
           new ConflictError(
-            'Folder Sync watcher did not respond in time. Start `pipeshub run` again and retry.',
+            'Local FS watcher did not respond in time. Start `pipeshub run` again and retry.',
           ),
         );
       }, timeoutMs);
 
       const finish = (
         err: Error | null,
-        ack?: FolderSyncResyncAck,
+        ack?: LocalFsResyncAck,
       ): void => {
         if (settled) {
           return;
@@ -141,7 +141,7 @@ export class FolderSyncWatcherRegistry {
           reject(
             new ConflictError(
               ack?.error?.message ||
-                'Folder Sync watcher rejected the resync request.',
+                'Local FS watcher rejected the resync request.',
             ),
           );
           return;
@@ -157,13 +157,13 @@ export class FolderSyncWatcherRegistry {
       socket
         .timeout(timeoutMs)
         .emit(
-          'foldersync:resync',
+          'localfs:resync',
           {
             connectorId: request.connectorId,
             fullSync: request.fullSync === true,
             origin: request.origin ?? 'CONNECTOR',
           },
-          (err: Error | null, ack?: FolderSyncResyncAck) => finish(err, ack),
+          (err: Error | null, ack?: LocalFsResyncAck) => finish(err, ack),
         );
     });
   }
@@ -177,4 +177,4 @@ export class FolderSyncWatcherRegistry {
   }
 }
 
-export const folderSyncWatcherRegistry = new FolderSyncWatcherRegistry();
+export const localFsWatcherRegistry = new LocalFsWatcherRegistry();

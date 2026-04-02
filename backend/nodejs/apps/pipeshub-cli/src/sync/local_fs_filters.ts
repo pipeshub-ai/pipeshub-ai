@@ -1,7 +1,7 @@
 import {
   BackendClient,
-  FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY,
-  FOLDER_SYNC_SYNC_ROOT_KEY,
+  LOCAL_FS_INCLUDE_SUBFOLDERS_KEY,
+  LOCAL_FS_SYNC_ROOT_KEY,
 } from "../api/backend_client";
 
 /** Top-level and `sync.values` folder paths / options (etcd). */
@@ -18,15 +18,15 @@ export function readSyncSettingsFromEtcd(
       out[k] = src[k];
     }
   };
-  pick(sync, FOLDER_SYNC_SYNC_ROOT_KEY);
-  pick(sync, FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY);
+  pick(sync, LOCAL_FS_SYNC_ROOT_KEY);
+  pick(sync, LOCAL_FS_INCLUDE_SUBFOLDERS_KEY);
   pick(sync, "selectedStrategy");
   pick(sync, "batchSize");
   pick(sync, "batch_size");
   const values = sync["values"] as Record<string, unknown> | undefined;
   if (values && typeof values === "object") {
-    pick(values, FOLDER_SYNC_SYNC_ROOT_KEY);
-    pick(values, FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY);
+    pick(values, LOCAL_FS_SYNC_ROOT_KEY);
+    pick(values, LOCAL_FS_INCLUDE_SUBFOLDERS_KEY);
   }
   return out;
 }
@@ -58,7 +58,7 @@ export function readIncludeSubfoldersFromEtcd(
   etcd: Record<string, unknown>
 ): boolean | undefined {
   const sync = readSyncSettingsFromEtcd(etcd);
-  return parseIncludeSubfoldersRaw(sync[FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]);
+  return parseIncludeSubfoldersRaw(sync[LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]);
 }
 
 export function syncFilterValuesFromEtcd(
@@ -85,8 +85,8 @@ export function indexingFilterValuesFromEtcd(
   return undefined;
 }
 
-/** Stored filter keys for Folder Sync indexing (matches Python IndexingFilterKey + enable_manual_sync). */
-export const FOLDER_SYNC_INDEXING_KEYS = [
+/** Stored filter keys for Local FS indexing (matches Python IndexingFilterKey + enable_manual_sync). */
+export const LOCAL_FS_INDEXING_KEYS = [
   "enable_manual_sync",
   "files",
   "documents",
@@ -95,7 +95,7 @@ export const FOLDER_SYNC_INDEXING_KEYS = [
   "attachments",
 ] as const;
 
-export type FolderSyncIndexingKey = (typeof FOLDER_SYNC_INDEXING_KEYS)[number];
+export type LocalFsIndexingKey = (typeof LOCAL_FS_INDEXING_KEYS)[number];
 
 export function boolFilterEntry(value: boolean): {
   operator: "is";
@@ -128,7 +128,7 @@ export function triFromMutEx(yes: boolean, no: boolean, label: string): TriBool 
   return undefined;
 }
 
-export type FolderSyncFilterCliState = {
+export type LocalFsFilterCliState = {
   manualIndexing: TriBool;
   indexFiles: TriBool;
   indexDocuments: TriBool;
@@ -142,7 +142,7 @@ export type FolderSyncFilterCliState = {
 };
 
 /** No filter mutations (sync path only). */
-export const emptyFolderSyncFilterCliState: FolderSyncFilterCliState = {
+export const emptyLocalFsFilterCliState: LocalFsFilterCliState = {
   manualIndexing: undefined,
   indexFiles: undefined,
   indexDocuments: undefined,
@@ -153,7 +153,7 @@ export const emptyFolderSyncFilterCliState: FolderSyncFilterCliState = {
 };
 
 export function indexingEntriesFromCliState(
-  s: FolderSyncFilterCliState
+  s: LocalFsFilterCliState
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (s.manualIndexing !== undefined) {
@@ -178,7 +178,7 @@ export function indexingEntriesFromCliState(
 }
 
 export function syncFilterEntriesFromCliState(
-  s: FolderSyncFilterCliState
+  s: LocalFsFilterCliState
 ): Record<string, unknown> {
   if (s.clearExtensions) {
     return { file_extensions: fileExtensionsFilterEntry([]) };
@@ -189,7 +189,7 @@ export function syncFilterEntriesFromCliState(
   return { file_extensions: fileExtensionsFilterEntry(s.extensions) };
 }
 
-export function hasAnyFilterChange(s: FolderSyncFilterCliState): boolean {
+export function hasAnyFilterChange(s: LocalFsFilterCliState): boolean {
   return (
     s.manualIndexing !== undefined ||
     s.indexFiles !== undefined ||
@@ -206,7 +206,7 @@ export function hasAnyFilterChange(s: FolderSyncFilterCliState): boolean {
  * Merge top-level sync keys + optional filter sections, preserving existing `filters.*.schema` in etcd.
  * Throws if connector is active and filter sections would be updated.
  */
-export async function applyFolderSyncFiltersSync(
+export async function applyLocalFsFiltersSync(
   api: BackendClient,
   connectorInstanceId: string,
   args: {
@@ -237,7 +237,7 @@ export async function applyFolderSyncFiltersSync(
   const { isActive, etcd } = await api.getConnectorConfig(connectorInstanceId);
   if (isActive) {
     throw new Error(
-      "Connector is active. Disable this Folder Sync connector in the app before changing indexing or sync filters, then run again."
+      "Connector is active. Disable this Local FS connector in the app before changing indexing or sync filters, then run again."
     );
   }
 
@@ -285,15 +285,15 @@ export async function applySetupSyncPathAndFilters(
   cid: string,
   rootPath: string,
   includeSubfolders: boolean,
-  filterState: FolderSyncFilterCliState
+  filterState: LocalFsFilterCliState
 ): Promise<void> {
   const syncTopLevel: Record<string, unknown> = {
-    [FOLDER_SYNC_SYNC_ROOT_KEY]: rootPath,
-    [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: includeSubfolders,
+    [LOCAL_FS_SYNC_ROOT_KEY]: rootPath,
+    [LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]: includeSubfolders,
   };
   const indexingEntries = indexingEntriesFromCliState(filterState);
   const syncFilterEntries = syncFilterEntriesFromCliState(filterState);
-  await applyFolderSyncFiltersSync(api, cid, {
+  await applyLocalFsFiltersSync(api, cid, {
     syncTopLevel,
     indexingEntries,
     syncFilterEntries,

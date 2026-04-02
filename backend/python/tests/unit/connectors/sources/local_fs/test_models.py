@@ -1,17 +1,17 @@
-"""Tests for Folder Sync Pydantic models."""
+"""Tests for Local FS Pydantic models."""
 
 import pytest
 from pydantic import ValidationError
 
-from app.connectors.sources.folder_sync.models import (
-    FolderSyncFileEvent,
-    FolderSyncFileEventBatchRequest,
+from app.connectors.sources.local_fs.models import (
+    LocalFsFileEvent,
+    LocalFsFileEventBatchRequest,
 )
 
 
-class TestFolderSyncFileEvent:
+class TestLocalFsFileEvent:
     def test_valid_minimal(self):
-        ev = FolderSyncFileEvent(
+        ev = LocalFsFileEvent(
             type="CREATED",
             path="a/b.txt",
             oldPath=None,
@@ -28,15 +28,15 @@ class TestFolderSyncFileEvent:
 
     def test_requires_fields(self):
         with pytest.raises(ValidationError):
-            FolderSyncFileEvent()  # type: ignore[call-arg]
+            LocalFsFileEvent()  # type: ignore[call-arg]
 
 
-class TestFolderSyncFileEventBatchRequest:
+class TestLocalFsFileEventBatchRequest:
     def test_valid_batch(self):
-        req = FolderSyncFileEventBatchRequest(
+        req = LocalFsFileEventBatchRequest(
             batchId="b1",
             events=[
-                FolderSyncFileEvent(
+                LocalFsFileEvent(
                     type="MODIFIED",
                     path="x",
                     oldPath=None,

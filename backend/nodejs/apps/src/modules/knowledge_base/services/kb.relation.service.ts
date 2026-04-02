@@ -23,9 +23,9 @@ import {
   BaseSyncEvent,
 } from './sync_events.service';
 import {
-  folderSyncResyncDispatcher,
-  isFolderSyncConnector,
-} from './folder_sync_resync_dispatcher';
+  localFsResyncDispatcher,
+  isLocalFsConnector,
+} from './local_fs_resync_dispatcher';
 import {
   IServiceFileRecord,
   IServiceRecord
@@ -328,15 +328,15 @@ export class RecordRelationService {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-      if (isFolderSyncConnector(resyncPayload.connector)) {
-        const dispatchResult = await folderSyncResyncDispatcher.dispatch({
+      if (isLocalFsConnector(resyncPayload.connector)) {
+        const dispatchResult = await localFsResyncDispatcher.dispatch({
           orgId: resyncPayload.orgId,
           connectorId: resyncPayload.connectorId,
           connectorName: resyncPayload.connector,
           origin: resyncPayload.origin,
           fullSync: resyncPayload.fullSync,
         });
-        logger.info('Dispatched Folder Sync resync to active watcher', {
+        logger.info('Dispatched Local FS resync to active watcher', {
           connectorId: resyncPayload.connectorId,
           orgId: resyncPayload.orgId,
           replayedBatches: dispatchResult.replayedBatches,

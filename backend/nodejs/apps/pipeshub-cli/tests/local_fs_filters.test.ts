@@ -2,12 +2,12 @@ import { expect } from "chai";
 import * as sinon from "sinon";
 import type { BackendClient } from "../src/api/backend_client";
 import {
-  FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY,
-  FOLDER_SYNC_SYNC_ROOT_KEY,
+  LOCAL_FS_INCLUDE_SUBFOLDERS_KEY,
+  LOCAL_FS_SYNC_ROOT_KEY,
 } from "../src/api/backend_client";
 import {
-  applyFolderSyncFiltersSync,
-  emptyFolderSyncFilterCliState,
+  applyLocalFsFiltersSync,
+  emptyLocalFsFilterCliState,
   fileExtensionsFilterEntry,
   hasAnyFilterChange,
   indexingEntriesFromCliState,
@@ -17,9 +17,9 @@ import {
   readSyncSettingsFromEtcd,
   syncFilterEntriesFromCliState,
   triFromMutEx,
-} from "../src/sync/folder_sync_filters";
+} from "../src/sync/local_fs_filters";
 
-describe("folder_sync_filters", () => {
+describe("local_fs_filters", () => {
   describe("readSyncSettingsFromEtcd", () => {
     it("returns empty when sync missing", () => {
       expect(readSyncSettingsFromEtcd({})).to.deep.equal({});
@@ -32,17 +32,17 @@ describe("folder_sync_filters", () => {
     it("picks top-level sync keys and nested values", () => {
       const etcd = {
         sync: {
-          [FOLDER_SYNC_SYNC_ROOT_KEY]: "/r",
-          [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: true,
+          [LOCAL_FS_SYNC_ROOT_KEY]: "/r",
+          [LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]: true,
           selectedStrategy: "s",
           values: {
-            [FOLDER_SYNC_SYNC_ROOT_KEY]: "/nested",
+            [LOCAL_FS_SYNC_ROOT_KEY]: "/nested",
           },
         },
       };
       const out = readSyncSettingsFromEtcd(etcd);
-      expect(out[FOLDER_SYNC_SYNC_ROOT_KEY]).to.equal("/nested");
-      expect(out[FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]).to.equal(true);
+      expect(out[LOCAL_FS_SYNC_ROOT_KEY]).to.equal("/nested");
+      expect(out[LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]).to.equal(true);
       expect(out.selectedStrategy).to.equal("s");
     });
   });
@@ -51,7 +51,7 @@ describe("folder_sync_filters", () => {
     it("reads boolean", () => {
       expect(
         readIncludeSubfoldersFromEtcd({
-          sync: { [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: true },
+          sync: { [LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]: true },
         })
       ).to.equal(true);
     });
@@ -59,7 +59,7 @@ describe("folder_sync_filters", () => {
     it("reads string truthy", () => {
       expect(
         readIncludeSubfoldersFromEtcd({
-          sync: { [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: " YES " },
+          sync: { [LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]: " YES " },
         })
       ).to.equal(true);
     });
@@ -68,7 +68,7 @@ describe("folder_sync_filters", () => {
       expect(
         readIncludeSubfoldersFromEtcd({
           sync: {
-            [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: { value: "1" },
+            [LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]: { value: "1" },
           },
         })
       ).to.equal(true);
@@ -113,7 +113,7 @@ describe("folder_sync_filters", () => {
   describe("indexingEntriesFromCliState", () => {
     it("maps set tri-bools to filter entries", () => {
       const out = indexingEntriesFromCliState({
-        ...emptyFolderSyncFilterCliState,
+        ...emptyLocalFsFilterCliState,
         manualIndexing: true,
         indexFiles: false,
       });
@@ -133,13 +133,13 @@ describe("folder_sync_filters", () => {
   describe("syncFilterEntriesFromCliState", () => {
     it("returns empty when no extensions", () => {
       expect(
-        syncFilterEntriesFromCliState(emptyFolderSyncFilterCliState)
+        syncFilterEntriesFromCliState(emptyLocalFsFilterCliState)
       ).to.deep.equal({});
     });
 
     it("writes file_extensions when extensions set", () => {
       const out = syncFilterEntriesFromCliState({
-        ...emptyFolderSyncFilterCliState,
+        ...emptyLocalFsFilterCliState,
         extensions: ["txt"],
       });
       expect(out.file_extensions).to.deep.equal(
@@ -149,7 +149,7 @@ describe("folder_sync_filters", () => {
 
     it("clearExtensions writes empty multiselect", () => {
       const out = syncFilterEntriesFromCliState({
-        ...emptyFolderSyncFilterCliState,
+        ...emptyLocalFsFilterCliState,
         clearExtensions: true,
       });
       expect(out.file_extensions).to.deep.equal(
@@ -160,25 +160,25 @@ describe("folder_sync_filters", () => {
 
   describe("hasAnyFilterChange", () => {
     it("is false for empty state", () => {
-      expect(hasAnyFilterChange(emptyFolderSyncFilterCliState)).to.equal(false);
+      expect(hasAnyFilterChange(emptyLocalFsFilterCliState)).to.equal(false);
     });
 
     it("detects any field", () => {
       expect(
         hasAnyFilterChange({
-          ...emptyFolderSyncFilterCliState,
+          ...emptyLocalFsFilterCliState,
           indexImages: true,
         })
       ).to.equal(true);
       expect(
         hasAnyFilterChange({
-          ...emptyFolderSyncFilterCliState,
+          ...emptyLocalFsFilterCliState,
           extensions: [],
         })
       ).to.equal(true);
       expect(
         hasAnyFilterChange({
-          ...emptyFolderSyncFilterCliState,
+          ...emptyLocalFsFilterCliState,
           clearExtensions: true,
         })
       ).to.equal(true);
@@ -246,7 +246,7 @@ describe("folder_sync_filters", () => {
     });
   });
 
-  describe("applyFolderSyncFiltersSync", () => {
+  describe("applyLocalFsFiltersSync", () => {
     const cid = "connector-1";
 
     it("no-ops when nothing to apply", async () => {
@@ -254,7 +254,7 @@ describe("folder_sync_filters", () => {
         getConnectorConfig: sinon.stub(),
         updateConnectorFiltersSync: sinon.stub(),
       };
-      await applyFolderSyncFiltersSync(api as unknown as BackendClient, cid, {});
+      await applyLocalFsFiltersSync(api as unknown as BackendClient, cid, {});
       expect(api.getConnectorConfig.called).to.equal(false);
       expect(api.updateConnectorFiltersSync.called).to.equal(false);
     });
@@ -265,8 +265,8 @@ describe("folder_sync_filters", () => {
         getConnectorConfig: sinon.stub(),
         updateConnectorFiltersSync,
       };
-      const syncTop = { [FOLDER_SYNC_SYNC_ROOT_KEY]: "/p" };
-      await applyFolderSyncFiltersSync(api as unknown as BackendClient, cid, {
+      const syncTop = { [LOCAL_FS_SYNC_ROOT_KEY]: "/p" };
+      await applyLocalFsFiltersSync(api as unknown as BackendClient, cid, {
         syncTopLevel: syncTop,
       });
       expect(api.getConnectorConfig.called).to.equal(false);
@@ -285,8 +285,8 @@ describe("folder_sync_filters", () => {
         updateConnectorFiltersSync: sinon.stub(),
       };
       try {
-        await applyFolderSyncFiltersSync(api as unknown as BackendClient, cid, {
-          syncTopLevel: { [FOLDER_SYNC_SYNC_ROOT_KEY]: "/p" },
+        await applyLocalFsFiltersSync(api as unknown as BackendClient, cid, {
+          syncTopLevel: { [LOCAL_FS_SYNC_ROOT_KEY]: "/p" },
           indexingEntries: { files: { operator: "is", value: true, type: "boolean" } },
         });
         expect.fail("expected throw");
@@ -317,8 +317,8 @@ describe("folder_sync_filters", () => {
         }),
         updateConnectorFiltersSync,
       };
-      await applyFolderSyncFiltersSync(api as unknown as BackendClient, cid, {
-        syncTopLevel: { [FOLDER_SYNC_SYNC_ROOT_KEY]: "/x" },
+      await applyLocalFsFiltersSync(api as unknown as BackendClient, cid, {
+        syncTopLevel: { [LOCAL_FS_SYNC_ROOT_KEY]: "/x" },
         indexingEntries: {
           enable_manual_sync: {
             operator: "is",
@@ -333,7 +333,7 @@ describe("folder_sync_filters", () => {
       expect(updateConnectorFiltersSync.calledOnce).to.equal(true);
       const body = updateConnectorFiltersSync.firstCall.args[1];
       expect(body.sync).to.deep.equal({
-        [FOLDER_SYNC_SYNC_ROOT_KEY]: "/x",
+        [LOCAL_FS_SYNC_ROOT_KEY]: "/x",
       });
       expect(body.filters.indexing.schema).to.deep.equal({ keep: true });
       expect(body.filters.indexing.values).to.deep.equal({

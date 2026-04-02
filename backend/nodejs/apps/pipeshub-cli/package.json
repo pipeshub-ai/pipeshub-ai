@@ -1,7 +1,7 @@
 {
   "name": "pipeshub-cli",
   "version": "0.1.0",
-  "description": "Pipeshub local sync CLI — authenticate and configure Folder Sync",
+  "description": "Pipeshub local sync CLI — authenticate and configure Local FS",
   "license": "MIT",
   "author": "Pipeshub",
   "keywords": [

@@ -8,9 +8,9 @@ import { CredentialStore } from "../auth/credential_store";
 import {
   BackendClient,
   BackendClientError,
-  FOLDER_SYNC_CONNECTOR_TYPE,
-  FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY,
-  FOLDER_SYNC_SYNC_ROOT_KEY,
+  LOCAL_FS_CONNECTOR_TYPE,
+  LOCAL_FS_INCLUDE_SUBFOLDERS_KEY,
+  LOCAL_FS_SYNC_ROOT_KEY,
 } from "../api/backend_client";
 import {
   daemonConfigComplete,
@@ -21,13 +21,13 @@ import {
   readAllowedFileExtensionsFromEtcd,
   readEnableManualSyncFromEtcd,
   readIncludeSubfoldersFromEtcd,
-} from "../sync/folder_sync_filters";
+} from "../sync/local_fs_filters";
 import { FileWatcher } from "../sync/file_watcher";
 import type { FileEvent } from "../sync/watcher_state";
 import { watcherEventsJournalPath } from "../sync/watcher_sync_journal";
 import { replayPendingWatchBatches } from "../sync/watcher_resync_replayer";
 import { createBackendClient } from "./context";
-import { pickFolderSyncConnectorForRun } from "./folder_sync_connector_picker";
+import { pickLocalFsConnectorForRun } from "./local_fs_connector_picker";
 import { validateSyncRoot } from "./setup_commands";
 
 const MIN_SCHEDULE_INTERVAL_MINUTES = 5;
@@ -54,8 +54,8 @@ function buildSyncPayloadForRun(args: {
       ? { ...(existingScheduled as Record<string, unknown>) }
       : {};
   const out: Record<string, unknown> = {
-    [FOLDER_SYNC_SYNC_ROOT_KEY]: args.rootPath,
-    [FOLDER_SYNC_INCLUDE_SUBFOLDERS_KEY]: args.includeSubfolders,
+    [LOCAL_FS_SYNC_ROOT_KEY]: args.rootPath,
+    [LOCAL_FS_INCLUDE_SUBFOLDERS_KEY]: args.includeSubfolders,
     selectedStrategy: args.strategy,
   };
   if (args.strategy === "SCHEDULED") {
@@ -138,8 +138,8 @@ async function promptInteractiveSyncStrategy(): Promise<{
   return { strategy, intervalMinutes };
 }
 
-/** Register or clear BullMQ repeat job so scheduled Folder Sync appears under crawling manager. */
-async function applyFolderSyncCrawlingManagerSchedule(
+/** Register or clear BullMQ repeat job so scheduled Local FS appears under crawling manager. */
+async function applyLocalFsCrawlingManagerSchedule(
   api: BackendClient,
   connectorId: string,
   strategy: SyncStrategyChoice,
@@ -159,13 +159,13 @@ async function applyFolderSyncCrawlingManagerSchedule(
 
   if (strategy === "SCHEDULED") {
     try {
-      await api.scheduleCrawlingManagerJob(FOLDER_SYNC_CONNECTOR_TYPE, connectorId, {
+      await api.scheduleCrawlingManagerJob(LOCAL_FS_CONNECTOR_TYPE, connectorId, {
         intervalMinutes,
         startTime,
         timezone,
       });
       console.log(
-        `Crawling manager: registered repeat sync every ${intervalMinutes} min (Folder Sync).`
+        `Crawling manager: registered repeat sync every ${intervalMinutes} min (Local FS).`
       );
     } catch (e) {
       if (e instanceof BackendClientError && (e.status === 401 || e.status === 403)) {
@@ -179,7 +179,7 @@ async function applyFolderSyncCrawlingManagerSchedule(
     }
   } else {
     try {
-      await api.removeCrawlingManagerJob(FOLDER_SYNC_CONNECTOR_TYPE, connectorId);
+      await api.removeCrawlingManagerJob(LOCAL_FS_CONNECTOR_TYPE, connectorId);
     } catch (e) {
       if (e instanceof BackendClientError && (e.status === 401 || e.status === 403)) {
         console.warn(
@@ -398,7 +398,7 @@ export async function runSyncAsync(
     const client = await createBackendClient(manager);
     api = client.api;
     base = client.base;
-    const picked = await pickFolderSyncConnectorForRun(api);
+    const picked = await pickLocalFsConnectorForRun(api);
     cid = picked.id.trim();
     if (opts.rootOverride?.trim()) {
       rootPath = validateSyncRoot(opts.rootOverride);
@@ -523,7 +523,7 @@ export async function runSyncAsync(
         }
         throw e;
       }
-      await applyFolderSyncCrawlingManagerSchedule(
+      await applyLocalFsCrawlingManagerSchedule(
         api,
         cid,
         strategy,
@@ -615,7 +615,7 @@ export async function runSyncAsync(
     console.log("Full sync has been queued on the server.");
   }
 
-  await applyFolderSyncCrawlingManagerSchedule(
+  await applyLocalFsCrawlingManagerSchedule(
     api,
     cid,
     strategy,
@@ -655,7 +655,7 @@ async function startFileWatcherAndWait(opts: {
   /** If set, POST file-events to the backend; otherwise local watch only. */
   manager?: AuthManager;
   backendBaseUrl?: string;
-  /** If set, keep a control socket registered for redirected Folder Sync resyncs. */
+  /** If set, keep a control socket registered for redirected Local FS resyncs. */
   controlManager?: AuthManager;
   controlBackendBaseUrl?: string;
   /** No [watcher] logs or footer (background worker). */
@@ -734,7 +734,7 @@ async function startFileWatcherAndWait(opts: {
         controlBackendBaseUrl,
         await controlManager.getValidAccessToken()
       );
-      await controlApi.onFolderSyncResync(async (request) =>
+      await controlApi.onLocalFsResync(async (request) =>
         replayPendingWatchBatches(
           authDir,
           cid,
@@ -750,7 +750,7 @@ async function startFileWatcherAndWait(opts: {
           }
         )
       );
-      await controlApi.registerFolderSyncWatcherControl(cid);
+      await controlApi.registerLocalFsWatcherControl(cid);
     } catch (error) {
       await watcher.stop();
       throw error;

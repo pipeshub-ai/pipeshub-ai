@@ -6,7 +6,7 @@ import { AuthManager } from "../auth/auth_manager";
 import {
   BackendClient,
   BackendClientError,
-  FOLDER_SYNC_SYNC_ROOT_KEY,
+  LOCAL_FS_SYNC_ROOT_KEY,
 } from "../api/backend_client";
 import {
   loadDaemonConfig,
@@ -15,10 +15,10 @@ import {
 } from "../config/daemon_config";
 import {
   applySetupSyncPathAndFilters,
-  emptyFolderSyncFilterCliState,
+  emptyLocalFsFilterCliState,
   readSyncSettingsFromEtcd,
-  type FolderSyncFilterCliState,
-} from "../sync/folder_sync_filters";
+  type LocalFsFilterCliState,
+} from "../sync/local_fs_filters";
 import { createBackendClient } from "./context";
 
 export function validateSyncRoot(raw: string): string {
@@ -52,7 +52,7 @@ export async function suggestedSyncRootForSetup(
   try {
     const { etcd } = await api.getConnectorConfig(cid);
     const sync = readSyncSettingsFromEtcd(etcd);
-    const raw = sync[FOLDER_SYNC_SYNC_ROOT_KEY];
+    const raw = sync[LOCAL_FS_SYNC_ROOT_KEY];
     const s =
       raw !== undefined && String(raw).trim() ? String(raw).trim() : "";
     if (s) return s;
@@ -66,12 +66,12 @@ export async function suggestedSyncRootForSetup(
   return "";
 }
 
-async function createFolderSyncInstanceOrThrow(
+async function createLocalFsInstanceOrThrow(
   client: BackendClient,
   name: string
 ): Promise<string> {
   try {
-    return await client.createFolderSyncInstance(name);
+    return await client.createLocalFsInstance(name);
   } catch (e) {
     if (e instanceof BackendClientError) {
       throw new Error(e.message);
@@ -88,18 +88,18 @@ export async function resolveConnectorInstanceId(
     return opts.connectorId.trim();
   }
 
-  console.log("Checking for personal Folder Sync connectors…");
+  console.log("Checking for personal Local FS connectors…");
 
   let instances: Record<string, unknown>[];
   try {
-    instances = await client.listFolderSyncInstances();
+    instances = await client.listLocalFsInstances();
   } catch (e) {
     if (e instanceof BackendClientError) {
       let hint = "";
       if (e.status === 401 || e.status === 403) {
         hint =
           " Your OAuth client may need CONNECTOR_READ / CONNECTOR_WRITE scopes, " +
-          "or create the connector in the app (Personal → Folder Sync).";
+          "or create the connector in the app (Personal → Local FS).";
       } else if (e.status === 429) {
         hint = " Wait and run setup again.";
       }
@@ -110,14 +110,14 @@ export async function resolveConnectorInstanceId(
 
   if (instances.length === 0) {
     console.log(
-      "No personal Folder Sync connector found.\n" +
-        "You can create one in the app: Personal → Connectors → Folder Sync, " +
+      "No personal Local FS connector found.\n" +
+        "You can create one in the app: Personal → Connectors → Local FS, " +
         "or create via this CLI."
     );
     const { ok } = await prompts({
       type: "confirm",
       name: "ok",
-      message: "Create a new Folder Sync connector now?",
+      message: "Create a new Local FS connector now?",
       initial: true,
     });
     if (ok === true) {
@@ -128,10 +128,10 @@ export async function resolveConnectorInstanceId(
         initial: "My computer",
       });
       const nm = String(name || "My computer").trim() || "My computer";
-      return createFolderSyncInstanceOrThrow(client, nm);
+      return createLocalFsInstanceOrThrow(client, nm);
     }
     throw new Error(
-      "Add a Folder Sync connector in the app, then run: pipeshub setup"
+      "Add a Local FS connector in the app, then run: pipeshub setup"
     );
   }
 
@@ -150,7 +150,7 @@ export async function resolveConnectorInstanceId(
     });
     if (ok === true) return cid;
 
-    console.log("Creating a new Folder Sync connector instead.");
+    console.log("Creating a new Local FS connector instead.");
     const { name } = await prompts({
       type: "text",
       name: "name",
@@ -158,11 +158,11 @@ export async function resolveConnectorInstanceId(
       initial: "My computer",
     });
     const nm = String(name || "My computer").trim() || "My computer";
-    return createFolderSyncInstanceOrThrow(client, nm);
+    return createLocalFsInstanceOrThrow(client, nm);
   }
 
   console.log(
-    "Personal Folder Sync connectors (pick one to link on this machine, or create new). " +
+    "Personal Local FS connectors (pick one to link on this machine, or create new). " +
       "Rename, disable, or delete connectors in the web app."
   );
   instances.forEach((inst, i) => {
@@ -171,7 +171,7 @@ export async function resolveConnectorInstanceId(
     console.log(`  ${i + 1}. ${label}  (${id})`);
   });
   const createNewNum = instances.length + 1;
-  console.log(`  ${createNewNum}. Create a new Folder Sync connector`);
+  console.log(`  ${createNewNum}. Create a new Local FS connector`);
   const { choice } = await prompts({
     type: "number",
     name: "choice",
@@ -184,7 +184,7 @@ export async function resolveConnectorInstanceId(
     throw new Error("Invalid choice");
   }
   if (n === createNewNum) {
-    console.log("Creating a new Folder Sync connector.");
+    console.log("Creating a new Local FS connector.");
     const { name } = await prompts({
       type: "text",
       name: "name",
@@ -192,7 +192,7 @@ export async function resolveConnectorInstanceId(
       initial: "My computer",
     });
     const nm = String(name || "My computer").trim() || "My computer";
-    return createFolderSyncInstanceOrThrow(client, nm);
+    return createLocalFsInstanceOrThrow(client, nm);
   }
   const picked = instances[n - 1]!;
   const cid = picked._key;
@@ -326,8 +326,8 @@ export async function setupAsync(
   };
   saveDaemonConfig(cfg);
 
-  let filterState: FolderSyncFilterCliState = {
-    ...emptyFolderSyncFilterCliState,
+  let filterState: LocalFsFilterCliState = {
+    ...emptyLocalFsFilterCliState,
   };
 
   if (!connectorActive) {

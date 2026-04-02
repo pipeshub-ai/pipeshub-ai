@@ -1,5 +1,5 @@
 """
-Folder Sync connector — personal scope, local folder on the connector host.
+Local FS connector — personal scope, local folder on the connector host.
 
 Primary flow: set the folder path and options in the web app, save, then run a
 manual sync. No CLI is required for that path.
@@ -71,11 +71,11 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import parse_timestamp
 
-from .models import FolderSyncFileEvent, FolderSyncFileEventBatchStats
+from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
 from .utils import parse_sync_bool
 
 # Canonical API / CLI connector type string (must match pipeshub-cli backend_client).
-FOLDER_SYNC_CONNECTOR_NAME = "Folder Sync"
+LOCAL_FS_CONNECTOR_NAME = "Local FS"
 
 # Sync config keys (flat under config["sync"] — same as RSS/Web custom fields).
 SYNC_ROOT_PATH_KEY = "sync_root_path"
@@ -104,7 +104,7 @@ def _bounds_ms_from_datetime_filter(fl: Filter) -> Tuple[Optional[int], Optional
     )
 
 
-def _folder_sync_passes_date_filters(
+def _local_fs_passes_date_filters(
     st: os.stat_result, sync_filters: FilterCollection
 ) -> bool:
     """Apply sync ``modified`` / ``created`` filters using local file times (epoch ms)."""
@@ -168,30 +168,30 @@ def _validate_host_path(root: str) -> Tuple[bool, str]:
     return True, str(p)
 
 
-class FolderSyncApp(App):
+class LocalFsApp(App):
     def __init__(self, connector_id: str) -> None:
-        super().__init__(Connectors.FOLDER_SYNC, AppGroups.LOCAL_STORAGE, connector_id)
+        super().__init__(Connectors.LOCAL_FS, AppGroups.LOCAL_STORAGE, connector_id)
 
 
 @(
-    ConnectorBuilder(FOLDER_SYNC_CONNECTOR_NAME)
+    ConnectorBuilder(LOCAL_FS_CONNECTOR_NAME)
     .in_group(AppGroups.LOCAL_STORAGE.value)
     .with_supported_auth_types("NONE")
     .with_description(
         "Index a folder on the machine that runs the connector service. "
         "Set the path below; if your app requires it, turn the connector off to save sync settings. "
         "Use manual sync (CLI or app) or scheduled sync at an interval. "
-        "Folder Sync does not crawl on “Active” alone without a sync run or schedule. "
+        "Local FS does not crawl on “Active” alone without a sync run or schedule. "
         "CLI is optional."
     )
     .with_categories(["Storage", "Local"])
     .with_scopes([ConnectorScope.PERSONAL.value])
     .configure(
-        lambda builder: builder.with_icon("/assets/icons/connectors/default.svg")
+        lambda builder: builder.with_icon("/assets/icons/connectors/local_fs.svg")
         .with_realtime_support(False)
         .add_documentation_link(
             DocumentationLink(
-                "Folder Sync",
+                "Local FS",
                 "https://docs.pipeshub.com/connectors/overview",
                 "setup",
             )
@@ -297,8 +297,8 @@ class FolderSyncApp(App):
     )
     .build_decorator()
 )
-class FolderSyncConnector(BaseConnector):
-    """Local folder sync: ingest runs on the connector host when the path is readable."""
+class LocalFsConnector(BaseConnector):
+    """Local FS: ingest runs on the connector host when the path is readable."""
 
     def __init__(
         self,
@@ -309,14 +309,14 @@ class FolderSyncConnector(BaseConnector):
         connector_id: str,
     ) -> None:
         super().__init__(
-            FolderSyncApp(connector_id),
+            LocalFsApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,
         )
-        self.connector_name = Connectors.FOLDER_SYNC
+        self.connector_name = Connectors.LOCAL_FS
         self.connector_id = connector_id
         self.sync_root_path: str = ""
         self.include_subfolders: bool = True
@@ -330,7 +330,7 @@ class FolderSyncConnector(BaseConnector):
             )
             if not config:
                 self.logger.warning(
-                    "Folder Sync: no connector config yet; set sync fields in the app or pipeshub setup."
+                    "Local FS: no connector config yet; set sync fields in the app or pipeshub setup."
                 )
                 return True
 
@@ -344,26 +344,26 @@ class FolderSyncConnector(BaseConnector):
 
             if not root:
                 self.logger.info(
-                    "Folder Sync: sync_root_path not configured; complete setup in the app or CLI."
+                    "Local FS: sync_root_path not configured; complete setup in the app or CLI."
                 )
             else:
                 ok, detail = _validate_host_path(root)
                 if not ok:
                     self.logger.warning(
-                        "Folder Sync: sync_root_path is not usable by this process (%s). "
+                        "Local FS: sync_root_path is not usable by this process (%s). "
                         "If the path exists on your laptop but the connector runs in Docker, "
                         "mount the folder into the container and use the in-container path.",
                         detail,
                     )
                 else:
                     self.logger.info(
-                        "Folder Sync: sync_root_path OK at %s (include_subfolders=%s)",
+                        "Local FS: sync_root_path OK at %s (include_subfolders=%s)",
                         detail,
                         self.include_subfolders,
                     )
             return True
         except Exception as e:
-            self.logger.error("Folder Sync init failed: %s", e, exc_info=True)
+            self.logger.error("Local FS init failed: %s", e, exc_info=True)
             return False
 
     async def test_connection_and_access(self) -> bool:
@@ -372,7 +372,7 @@ class FolderSyncConnector(BaseConnector):
         ok, _detail = _validate_host_path(self.sync_root_path)
         if not ok:
             self.logger.warning(
-                "Folder Sync: connection test failed — %s", _detail
+                "Local FS: connection test failed — %s", _detail
             )
         return ok
 
@@ -380,7 +380,7 @@ class FolderSyncConnector(BaseConnector):
         return None
 
     def _record_group_external_id(self) -> str:
-        return f"folder_sync:{self.connector_id}"
+        return f"local_fs:{self.connector_id}"
 
     def _external_record_id_for_rel_path(self, rel_path: str) -> str:
         normalized = rel_path.strip().replace("\\", "/")
@@ -429,16 +429,16 @@ class FolderSyncConnector(BaseConnector):
                 transaction=tx_store.txn,
             )
             if not app_doc:
-                self.logger.error("Folder Sync: connector app %s not found in graph", self.connector_id)
+                self.logger.error("Local FS: connector app %s not found in graph", self.connector_id)
                 return None
             created_by = app_doc.get("createdBy") or app_doc.get("created_by")
             if not created_by:
-                self.logger.error("Folder Sync: connector %s has no createdBy", self.connector_id)
+                self.logger.error("Local FS: connector %s has no createdBy", self.connector_id)
                 return None
             raw = await tx_store.get_user_by_user_id(str(created_by))
             user = self._coerce_user(raw)
             if not user:
-                self.logger.error("Folder Sync: user %s not found or could not be loaded", created_by)
+                self.logger.error("Local FS: user %s not found or could not be loaded", created_by)
             return user
 
     def _to_app_user(self, user: User) -> AppUser:
@@ -547,12 +547,12 @@ class FolderSyncConnector(BaseConnector):
         if not owner:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Folder Sync owner could not be resolved",
+                detail="Local FS owner could not be resolved",
             )
         self._owner_user_for_permissions = owner
 
         sync_filters, indexing_filters = await load_connector_filters(
-            self.config_service, "foldersync", self.connector_id, self.logger
+            self.config_service, "localfs", self.connector_id, self.logger
         )
 
         await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
@@ -560,7 +560,7 @@ class FolderSyncConnector(BaseConnector):
         rg_external = self._record_group_external_id()
         record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
-            name=f"Folder sync — {root.name}",
+            name=f"Local FS — {root.name}",
             external_group_id=rg_external,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -606,7 +606,7 @@ class FolderSyncConnector(BaseConnector):
         if not self._extension_allowed(abs_path, sync_filters):
             return False
         st = abs_path.stat()
-        if not _folder_sync_passes_date_filters(st, sync_filters):
+        if not _local_fs_passes_date_filters(st, sync_filters):
             return False
         await self.data_entities_processor.on_new_records(
             [self._build_file_record(abs_path, root, rg_external, indexing_filters, st=st)]
@@ -615,21 +615,21 @@ class FolderSyncConnector(BaseConnector):
 
     async def apply_file_event_batch(
         self,
-        events: List[FolderSyncFileEvent],
-    ) -> FolderSyncFileEventBatchStats:
+        events: List[LocalFsFileEvent],
+    ) -> LocalFsFileEventBatchStats:
         await self._reload_sync_settings()
         root_raw = self.sync_root_path.strip()
         if not root_raw:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Folder Sync sync_root_path is not configured",
+                detail="Local FS sync_root_path is not configured",
             )
 
         ok_path, detail = _validate_host_path(root_raw)
         if not ok_path:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Folder Sync cannot use sync_root_path: {detail}",
+                detail=f"Local FS cannot use sync_root_path: {detail}",
             )
 
         root = Path(detail)
@@ -691,10 +691,10 @@ class FolderSyncConnector(BaseConnector):
 
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Unsupported Folder Sync file event type: {event_type}",
+                    detail=f"Unsupported Local FS file event type: {event_type}",
                 )
 
-            return FolderSyncFileEventBatchStats(processed=processed, deleted=deleted)
+            return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
         finally:
             self._owner_user_for_permissions = None
 
@@ -707,7 +707,7 @@ class FolderSyncConnector(BaseConnector):
         if not isinstance(record, FileRecord) or not record.path:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Not a folder-sync file record or path missing",
+                detail="Not a Local FS file record or path missing",
             )
         p = Path(record.path)
         if not p.is_file():
@@ -739,14 +739,14 @@ class FolderSyncConnector(BaseConnector):
         root_raw = self.sync_root_path.strip()
         if not root_raw:
             self.logger.warning(
-                "Folder Sync: sync_root_path is empty; set Local folder path in the app or run pipeshub setup."
+                "Local FS: sync_root_path is empty; set Local folder path in the app or run pipeshub setup."
             )
             return
 
         ok_path, detail = _validate_host_path(root_raw)
         if not ok_path:
             self.logger.warning(
-                "Folder Sync: cannot use sync_root_path (%s). "
+                "Local FS: cannot use sync_root_path (%s). "
                 "Ensure the path exists inside the connector process (volume mount in Docker).",
                 detail,
             )
@@ -760,13 +760,13 @@ class FolderSyncConnector(BaseConnector):
                 return
 
             sync_filters, indexing_filters = await load_connector_filters(
-                self.config_service, "foldersync", self.connector_id, self.logger
+                self.config_service, "localfs", self.connector_id, self.logger
             )
 
             await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
 
             rg_external = self._record_group_external_id()
-            rg_name = f"Folder sync — {root.name}"
+            rg_name = f"Local FS — {root.name}"
             record_group = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
                 name=rg_name,
@@ -804,7 +804,7 @@ class FolderSyncConnector(BaseConnector):
                     if not self._extension_allowed(abs_path, sync_filters):
                         continue
                     st = abs_path.stat()
-                    if not _folder_sync_passes_date_filters(st, sync_filters):
+                    if not _local_fs_passes_date_filters(st, sync_filters):
                         continue
                     batch.append(
                         self._build_file_record(
@@ -817,19 +817,19 @@ class FolderSyncConnector(BaseConnector):
                         batch = []
                         await asyncio.sleep(0)
                 except Exception as e:
-                    self.logger.warning("Folder Sync: skip %s: %s", abs_path, e)
+                    self.logger.warning("Local FS: skip %s: %s", abs_path, e)
                     continue
 
             if batch:
                 await self.data_entities_processor.on_new_records(batch)
 
             self.logger.info(
-                "Folder Sync: finished sync from %s (%d file(s) processed)",
+                "Local FS: finished sync from %s (%d file(s) processed)",
                 root,
                 processed,
             )
         except Exception as e:
-            self.logger.error("Folder Sync run_sync failed: %s", e, exc_info=True)
+            self.logger.error("Local FS run_sync failed: %s", e, exc_info=True)
             raise
         finally:
             self._owner_user_for_permissions = None
@@ -838,14 +838,14 @@ class FolderSyncConnector(BaseConnector):
         await self.run_sync()
 
     def handle_webhook_notification(self, notification: Dict) -> None:
-        self.logger.debug("Folder Sync does not use webhooks")
+        self.logger.debug("Local FS does not use webhooks")
 
     async def cleanup(self) -> None:
-        self.logger.info("Folder Sync connector cleanup completed")
+        self.logger.info("Local FS connector cleanup completed")
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         self.logger.info(
-            "Folder Sync reindex requested for %d records (no-op on server)",
+            "Local FS reindex requested for %d records (no-op on server)",
             len(record_results),
         )
 
@@ -856,11 +856,11 @@ class FolderSyncConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
-    ) -> "FolderSyncConnector":
+    ) -> "LocalFsConnector":
         data_entities_processor = await create_initialized_data_source_entities_processor(
             logger, data_store_provider, config_service
         )
-        return FolderSyncConnector(
+        return LocalFsConnector(
             logger,
             data_entities_processor,
             data_store_provider,

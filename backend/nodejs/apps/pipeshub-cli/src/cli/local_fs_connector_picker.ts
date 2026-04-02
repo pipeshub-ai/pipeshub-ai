@@ -2,14 +2,14 @@ import prompts from "prompts";
 import {
   BackendClient,
   BackendClientError,
-  FOLDER_SYNC_SYNC_ROOT_KEY,
+  LOCAL_FS_SYNC_ROOT_KEY,
 } from "../api/backend_client";
 import {
   readIncludeSubfoldersFromEtcd,
   readSyncSettingsFromEtcd,
-} from "../sync/folder_sync_filters";
+} from "../sync/local_fs_filters";
 
-export type FolderSyncConnectorRow = {
+export type LocalFsConnectorRow = {
   id: string;
   name: string;
   active: string;
@@ -17,19 +17,19 @@ export type FolderSyncConnectorRow = {
   subfolders: string;
 };
 
-export function rowHasSyncRootConfigured(row: FolderSyncConnectorRow): boolean {
+export function rowHasSyncRootConfigured(row: LocalFsConnectorRow): boolean {
   const s = row.syncRoot.trim();
   if (!s || s === "—") return false;
   if (s === "(not set)" || s === "(config unavailable)") return false;
   return true;
 }
 
-export async function fetchFolderSyncConnectorRows(
+export async function fetchLocalFsConnectorRows(
   api: BackendClient
-): Promise<FolderSyncConnectorRow[]> {
+): Promise<LocalFsConnectorRow[]> {
   let instances: Record<string, unknown>[];
   try {
-    instances = await api.listFolderSyncInstances();
+    instances = await api.listLocalFsInstances();
   } catch (e) {
     if (e instanceof BackendClientError) {
       throw new Error(
@@ -56,7 +56,7 @@ export async function fetchFolderSyncConnectorRows(
         try {
           const { etcd } = await api.getConnectorConfig(id);
           const sync = readSyncSettingsFromEtcd(etcd);
-          const rawRoot = sync[FOLDER_SYNC_SYNC_ROOT_KEY];
+          const rawRoot = sync[LOCAL_FS_SYNC_ROOT_KEY];
           syncRoot =
             rawRoot !== undefined && String(rawRoot).trim()
               ? String(rawRoot).trim()
@@ -79,8 +79,8 @@ export async function fetchFolderSyncConnectorRows(
   );
 }
 
-export async function promptPickFolderSyncConnector(
-  rows: FolderSyncConnectorRow[],
+export async function promptPickLocalFsConnector(
+  rows: LocalFsConnectorRow[],
   intro: string
 ): Promise<string> {
   if (rows.length === 0) {
@@ -110,34 +110,34 @@ export async function promptPickFolderSyncConnector(
   return rows[n - 1]!.id;
 }
 
-export async function pickFolderSyncConnectorForIndexing(
+export async function pickLocalFsConnectorForIndexing(
   api: BackendClient
 ): Promise<string> {
-  const rows = await fetchFolderSyncConnectorRows(api);
+  const rows = await fetchLocalFsConnectorRows(api);
   if (rows.length === 0) {
     throw new Error(
-      "No personal Folder Sync connectors found. Add one in the app or run: pipeshub setup"
+      "No personal Local FS connectors found. Add one in the app or run: pipeshub setup"
     );
   }
-  return promptPickFolderSyncConnector(
+  return promptPickLocalFsConnector(
     rows,
-    "\nPersonal Folder Sync connectors (pick one for this command; manage instances in the web app):\n"
+    "\nPersonal Local FS connectors (pick one for this command; manage instances in the web app):\n"
   );
 }
 
-export async function pickFolderSyncConnectorForRun(
+export async function pickLocalFsConnectorForRun(
   api: BackendClient
-): Promise<FolderSyncConnectorRow> {
-  const allRows = await fetchFolderSyncConnectorRows(api);
+): Promise<LocalFsConnectorRow> {
+  const allRows = await fetchLocalFsConnectorRows(api);
   const rows = allRows.filter(rowHasSyncRootConfigured);
   if (rows.length === 0) {
     throw new Error(
-      "No Folder Sync connectors with a sync folder path set. Run: pipeshub setup or set Local folder path in the app."
+      "No Local FS connectors with a sync folder path set. Run: pipeshub setup or set Local folder path in the app."
     );
   }
-  const cid = await promptPickFolderSyncConnector(
+  const cid = await promptPickLocalFsConnector(
     rows,
-    "\nFolder Sync connectors with a path configured (pick one to run):\n"
+    "\nLocal FS connectors with a path configured (pick one to run):\n"
   );
   const picked = rows.find((r) => r.id === cid);
   if (!picked) {
