@@ -157,14 +157,14 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
         elif record_type == RecordType.MEETING.value and graph_doc:
             specific_args = {
                 "record_type": RecordType.MEETING,
-                "host_email": graph_doc.get("hostEmail", ""),
-                "host_id": graph_doc.get("hostId", ""),
-                "meeting_type": graph_doc.get("meetingType", ""),
-                "duration_minutes": graph_doc.get("durationMinutes", ""),
-                "start_time": graph_doc.get("startTime", ""),
-                "end_time": graph_doc.get("endTime", ""),
-                "timezone": graph_doc.get("timezone", ""),
-                "recording_url": graph_doc.get("recordingUrl", ""),
+                "host_email": graph_doc.get("hostEmail"),
+                "host_id": graph_doc.get("hostId"),
+                "meeting_type": graph_doc.get("meetingType"),
+                "duration_minutes": graph_doc.get("durationMinutes"),
+                "start_time": graph_doc.get("startTime"),
+                "end_time": graph_doc.get("endTime"),
+                "timezone": graph_doc.get("timezone"),
+                "recording_url": graph_doc.get("recordingUrl"),
             }
             return MeetingRecord(**base_args, **specific_args)
         else:
