@@ -844,10 +844,20 @@ class LocalFsConnector(BaseConnector):
         self.logger.info("Local FS connector cleanup completed")
 
     async def reindex_records(self, record_results: List[Record]) -> None:
+        """
+        Queue indexing for existing records (e.g. manual sync / AUTO_INDEX_OFF).
+
+        Sync already created graph rows without publishing index jobs; this path
+        publishes ``reindexRecord`` events like other connectors.
+        """
+        if not record_results:
+            self.logger.info("Local FS: reindex called with no records")
+            return
         self.logger.info(
-            "Local FS reindex requested for %d records (no-op on server)",
+            "Local FS: publishing reindex for %d record(s)",
             len(record_results),
         )
+        await self.data_entities_processor.reindex_existing_records(record_results)
 
     @classmethod
     async def create_connector(
