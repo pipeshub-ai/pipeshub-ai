@@ -433,6 +433,24 @@ project_record_schema = {
     },
 }
 
+meeting_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "hostEmail": {"type": ["string", "null"]},
+            "hostId": {"type": ["string", "null"]},
+            "meetingType": {"type": ["integer", "number", "null"]},
+            "durationMinutes": {"type": ["integer", "number", "null"]},
+            "startTime": {"type": ["string", "null"]},
+            "endTime": {"type": ["string", "null"]},
+            "timezone": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the meeting record schema.",
+}
+
 
 pull_request_record_schema = {
     "rule": {

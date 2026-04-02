@@ -291,3 +291,35 @@ class TestS3Client:
             await S3Client._get_connector_config(
                 logger, mock_config_service, "inst-1"
             )
+
+    @pytest.mark.asyncio
+    async def test_get_connector_config_exception(self, logger, mock_config_service):
+        """Cover the exception path in _get_connector_config."""
+        mock_config_service.get_config = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(ValueError, match="Failed to get S3 connector configuration"):
+            await S3Client._get_connector_config(
+                logger, mock_config_service, "inst-1"
+            )
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    async def test_get_s3_client_via_wrapper(self, mock_session_cls, rest_client):
+        """Cover S3Client.get_s3_client (line 137)."""
+        mock_session = MagicMock()
+        mock_session.client.return_value = MagicMock()
+        mock_session_cls.return_value = mock_session
+        client = S3Client(rest_client)
+        result = await client.get_s3_client()
+        mock_session.client.assert_called_once_with("s3")
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_none_config_via_patched(self, logger, mock_config_service):
+        """Cover the `not config` branch at line 190 by patching to return None."""
+        with patch.object(
+            S3Client, "_get_connector_config", new_callable=AsyncMock,
+            return_value=None
+        ):
+            with pytest.raises(ValueError, match="Failed to get S3 connector configuration"):
+                await S3Client.build_from_services(
+                    logger, mock_config_service, "inst-1"
+                )

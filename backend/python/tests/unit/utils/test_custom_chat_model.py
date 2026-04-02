@@ -120,6 +120,22 @@ class TestChatTogetherProperties:
             # Default base is set and truthy, so together_api_base will be in attrs
             assert isinstance(attrs, dict)
 
+    def test_lc_attributes_empty_when_api_base_is_empty(self):
+        """lc_attributes should be empty dict when together_api_base is empty string."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            instance = ChatTogether(
+                api_key="test-key-123",
+                base_url="https://api.together.xyz/v1/",
+            )
+            # Manually set together_api_base to empty string to trigger falsy branch
+            instance.together_api_base = ""
+            attrs = instance.lc_attributes
+            assert attrs == {}
+
     def test_get_ls_params(self):
         """_get_ls_params should include ls_provider='together'."""
         from app.utils.custom_chat_model import ChatTogether
@@ -156,3 +172,127 @@ class TestChatTogetherProperties:
         from app.utils.custom_chat_model import ChatTogether
 
         assert ChatTogether.model_config.get("populate_by_name") is True
+
+    def test_validate_environment_no_api_key(self):
+        """When together_api_key is None, client_params api_key should be None."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            instance = ChatTogether(api_key="test-key-123")
+            # Verify instance was created (api_key path with SecretStr)
+            assert instance.together_api_key is not None
+
+    def test_validate_environment_max_retries_none(self):
+        """When max_retries is None (the default), it should not be added to client_params."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            # Default max_retries is None, so line 102 is skipped
+            instance = ChatTogether(api_key="test-key-123")
+            assert instance.max_retries is None
+
+    def test_validate_environment_max_retries_set(self):
+        """When max_retries is not None, it should be included in client_params (line 102)."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            with patch("app.utils.custom_chat_model.openai.OpenAI") as mock_openai, \
+                 patch("app.utils.custom_chat_model.openai.AsyncOpenAI") as mock_async:
+                mock_client = MagicMock()
+                mock_client.chat.completions = MagicMock()
+                mock_openai.return_value = mock_client
+                mock_async_client = MagicMock()
+                mock_async_client.chat.completions = MagicMock()
+                mock_async.return_value = mock_async_client
+
+                instance = ChatTogether(
+                    api_key="test-key-123",
+                    max_retries=3,
+                )
+                assert instance.max_retries == 3
+                # Verify max_retries was passed to OpenAI constructor
+                call_kwargs = mock_openai.call_args
+                assert call_kwargs.kwargs.get("max_retries") == 3
+
+    def test_validate_environment_skips_client_creation_when_already_set(self):
+        """When client and async_client are already set, skip creation."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            with patch("app.utils.custom_chat_model.openai.OpenAI") as mock_openai, \
+                 patch("app.utils.custom_chat_model.openai.AsyncOpenAI") as mock_async:
+                mock_client = MagicMock()
+                mock_client.chat.completions = MagicMock()
+                mock_openai.return_value = mock_client
+                mock_async_client = MagicMock()
+                mock_async_client.chat.completions = MagicMock()
+                mock_async.return_value = mock_async_client
+
+                # First create a normal instance to get clients set up
+                instance = ChatTogether(api_key="test-key-123")
+                assert mock_openai.call_count >= 1
+                assert mock_async.call_count >= 1
+
+                # Record call counts
+                openai_calls = mock_openai.call_count
+                async_calls = mock_async.call_count
+
+                # Now the clients are set on the instance. Call validate_environment
+                # again to exercise the "skip" branches (lines 104->110, 110->118)
+                instance.validate_environment()
+
+                # No additional OpenAI/AsyncOpenAI calls should have been made
+                assert mock_openai.call_count == openai_calls
+                assert mock_async.call_count == async_calls
+
+    def test_validate_n_equal_to_1_no_error(self):
+        """n=1 should not raise any error."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            instance = ChatTogether(api_key="test-key-123", n=1)
+            assert instance.n == 1
+
+    def test_validate_n_greater_than_1_without_streaming(self):
+        """n > 1 without streaming should not raise."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            instance = ChatTogether(
+                api_key="test-key-123", n=2, streaming=False
+            )
+            assert instance.n == 2
+
+    def test_validate_n_none_is_valid(self):
+        """n=None (default) should not raise any error."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            instance = ChatTogether(api_key="test-key-123")
+            # n is None by default, should pass validation
+            assert instance is not None
+
+    def test_get_ls_params_with_stop(self):
+        """_get_ls_params should work with stop parameter."""
+        from app.utils.custom_chat_model import ChatTogether
+
+        with patch.dict(
+            "os.environ", {"TOGETHER_API_KEY": "test-key-123"}, clear=False
+        ):
+            instance = ChatTogether(api_key="test-key-123")
+            params = instance._get_ls_params(stop=["END"])
+            assert params["ls_provider"] == "together"

@@ -47,6 +47,7 @@ from app.models.entities import (
     FileRecord,
     LinkRecord,
     MailRecord,
+    MeetingRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -2040,6 +2041,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -5537,9 +5540,9 @@ class Neo4jProvider(IGraphDBProvider):
         query = """
         MATCH (record:Record {connectorId: $connector_id})-[:IS_OF_TYPE]->(typeNode)
         WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
-        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project'])
+        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project', 'Meeting'])
         RETURN {
-          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project']]),
+          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project', 'Meeting']]),
           key: typeNode.id,
           full_id: typeNode.id
         } AS target
@@ -5824,6 +5827,7 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
@@ -16034,7 +16038,7 @@ class Neo4jProvider(IGraphDBProvider):
                 agent_data = dict(individual_result[0]["agent"])
                 user_role = individual_result[0]["role"]
                 access_type = "INDIVIDUAL"
-            
+
             # Check org permissions (only if no individual access)
             if not agent_data and org_key:
                 org_query = f"""
@@ -16055,7 +16059,7 @@ class Neo4jProvider(IGraphDBProvider):
                     agent_data = dict(org_result[0]["agent"])
                     user_role = org_result[0]["role"]
                     access_type = "ORG"
-            
+
             # Check team permissions (only if no individual or org access)
             if not agent_data and user_team_ids:
                 team_query = f"""

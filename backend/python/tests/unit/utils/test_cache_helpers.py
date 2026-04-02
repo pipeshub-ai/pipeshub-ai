@@ -344,6 +344,71 @@ class TestClearUserInfoCache:
 # Constants
 # ============================================================================
 
+class TestGetCachedUserInfoGatherFailure:
+    """Cover the outer except Exception block (lines 84-86)."""
+
+    @pytest.mark.asyncio
+    async def test_gather_itself_raises_returns_none(self):
+        """When asyncio.gather itself raises (not individual coroutines),
+        the outer except block returns (None, None)."""
+        gp = AsyncMock()
+        # Make get_user_by_user_id return a coroutine that we can control
+        # but make asyncio.gather raise by patching it
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "u1"})
+        gp.get_document = AsyncMock(return_value={"_key": "o1"})
+
+        with patch("app.utils.cache_helpers.asyncio.gather", side_effect=RuntimeError("gather exploded")):
+            result_user, result_org = await get_cached_user_info(gp, "u_fail", "o_fail")
+
+        assert result_user is None
+        assert result_org is None
+
+    @pytest.mark.asyncio
+    async def test_gather_failure_does_not_cache(self):
+        """When the outer except is triggered, nothing should be cached."""
+        gp = AsyncMock()
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "u1"})
+        gp.get_document = AsyncMock(return_value={"_key": "o1"})
+
+        with patch("app.utils.cache_helpers.asyncio.gather", side_effect=RuntimeError("boom")):
+            await get_cached_user_info(gp, "u_no_cache", "o_no_cache")
+
+        assert "u_no_cache:o_no_cache" not in cache_module._user_info_cache
+
+
+class TestGetCachedUserInfoCacheMissExplicit:
+    """Explicitly test the cache miss branch where cached is None (line 43->56)."""
+
+    @pytest.mark.asyncio
+    async def test_completely_empty_cache_miss(self):
+        """Cache is completely empty, so .get() returns None, hitting false branch."""
+        assert len(cache_module._user_info_cache) == 0
+        gp = _make_graph_provider(
+            user_info={"_key": "fresh"},
+            org_info={"_key": "org_fresh"},
+        )
+        result_user, result_org = await get_cached_user_info(gp, "fresh", "org_fresh")
+        assert result_user == {"_key": "fresh"}
+        assert result_org == {"_key": "org_fresh"}
+        gp.get_user_by_user_id.assert_awaited_once_with("fresh")
+
+    @pytest.mark.asyncio
+    async def test_different_key_is_cache_miss(self):
+        """When cache has key A but we request key B, it's a miss."""
+        cache_module._user_info_cache["u1:o1"] = {
+            "user_info": {"_key": "u1"},
+            "org_info": {"_key": "o1"},
+            "timestamp": datetime.now(),
+        }
+        gp = _make_graph_provider(
+            user_info={"_key": "u2"},
+            org_info={"_key": "o2"},
+        )
+        result_user, result_org = await get_cached_user_info(gp, "u2", "o2")
+        assert result_user == {"_key": "u2"}
+        gp.get_user_by_user_id.assert_awaited_once()
+
+
 class TestCacheConstants:
     def test_ttl_value(self):
         assert USER_INFO_CACHE_TTL == 600

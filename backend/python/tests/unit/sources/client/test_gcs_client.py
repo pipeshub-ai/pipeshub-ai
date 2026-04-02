@@ -301,3 +301,56 @@ class TestGCSClient:
             await GCSClient._get_connector_config(
                 logger, mock_config_service, "inst-1"
             )
+
+    @pytest.mark.asyncio
+    async def test_get_connector_config_exception(self, logger, mock_config_service):
+        """Cover the exception path in _get_connector_config."""
+        mock_config_service.get_config = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(ValueError, match="Failed to get GCS connector configuration"):
+            await GCSClient._get_connector_config(
+                logger, mock_config_service, "inst-1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_none_config_via_patched(self, logger, mock_config_service):
+        """Cover the `not config` branch at line 195 by patching to return None."""
+        with patch.object(
+            GCSClient, "_get_connector_config", new_callable=AsyncMock,
+            return_value=None
+        ):
+            with pytest.raises(ValueError, match="Failed to get GCS connector configuration"):
+                await GCSClient.build_from_services(
+                    logger, mock_config_service, "inst-1"
+                )
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_project_id_from_auth(self, logger, mock_config_service, sample_sa_info):
+        """Cover projectId override from auth_config (line 231 projectId branch)."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "serviceAccountJson": sample_sa_info,
+                    "projectId": "override-project",
+                    "bucket": "my-bucket",
+                }
+            }
+        )
+        client = await GCSClient.build_from_services(
+            logger, mock_config_service, "inst-1"
+        )
+        assert client.get_project_id() == "override-project"
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_project_id_fallback_to_sa(self, logger, mock_config_service, sample_sa_info):
+        """Cover projectId fallback to service_account_info when auth has no projectId."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {
+                    "serviceAccountJson": sample_sa_info,
+                }
+            }
+        )
+        client = await GCSClient.build_from_services(
+            logger, mock_config_service, "inst-1"
+        )
+        assert client.get_project_id() == "test-project"

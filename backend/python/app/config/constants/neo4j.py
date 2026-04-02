@@ -6,7 +6,6 @@ translating ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labe
 """
 
 from enum import Enum
-from typing import Dict
 
 from app.config.constants.arangodb import CollectionNames
 
@@ -26,6 +25,7 @@ class Neo4jLabel(Enum):
     TICKETS = "Ticket"
     LINKS = "Link"
     PROJECTS = "Project"
+    MEETINGS = "Meeting"
 
     # Users and groups
     USERS = "User"
@@ -92,7 +92,7 @@ class Neo4jRelationshipType(Enum):
 
 
 # Mapping from ArangoDB CollectionNames to Neo4j Labels
-COLLECTION_TO_LABEL: Dict[str, str] = {
+COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.RECORDS.value: Neo4jLabel.RECORDS.value,
     CollectionNames.RECORD_GROUPS.value: Neo4jLabel.RECORD_GROUPS.value,
     CollectionNames.SYNC_POINTS.value: Neo4jLabel.SYNC_POINTS.value,
@@ -101,6 +101,7 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     CollectionNames.WEBPAGES.value: Neo4jLabel.WEBPAGES.value,
     CollectionNames.COMMENTS.value: Neo4jLabel.COMMENTS.value,
     CollectionNames.TICKETS.value: Neo4jLabel.TICKETS.value,
+    CollectionNames.MEETINGS.value: Neo4jLabel.MEETINGS.value,
     CollectionNames.LINKS.value: Neo4jLabel.LINKS.value,
     CollectionNames.PROJECTS.value: Neo4jLabel.PROJECTS.value,
     CollectionNames.USERS.value: Neo4jLabel.USERS.value,
@@ -135,7 +136,7 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types
-EDGE_COLLECTION_TO_RELATIONSHIP: Dict[str, str] = {
+EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.RECORD_RELATIONS.value: Neo4jRelationshipType.RECORD_RELATIONS.value,
     CollectionNames.BELONGS_TO.value: Neo4jRelationshipType.BELONGS_TO.value,
     CollectionNames.IS_OF_TYPE.value: Neo4jRelationshipType.IS_OF_TYPE.value,

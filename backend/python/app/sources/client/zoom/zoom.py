@@ -199,6 +199,15 @@ class ZoomRESTClientViaOAuth(HTTPClient):
         """Get the base URL."""
         return self.base_url
 
+    def get_token(self) -> str:
+        """Return the current access token."""
+        return self.access_token
+
+    def set_token(self, token: str) -> None:
+        """Update the access token and Authorization header atomically."""
+        self.access_token = token
+        self.headers["Authorization"] = f"Bearer {token}"
+
 
 class ZoomRESTClientViaToken(HTTPClient):
     """Zoom REST client via pre-generated Bearer token.

@@ -486,3 +486,235 @@ class TestAzureFilesClient:
             await AzureFilesClient._get_connector_config(
                 mock_config_service, "inst-1"
             )
+
+    def test_get_credentials_info_conn_str(self, conn_str_config):
+        """AzureFilesClient.get_credentials_info delegates to REST client."""
+        rest_client = AzureFilesRESTClient(conn_str_config)
+        client = AzureFilesClient(rest_client)
+        info = client.get_credentials_info()
+        assert info["authentication_method"] == "connection_string"
+
+    @pytest.mark.asyncio
+    async def test_ensure_share_exists_delegates(self, acct_key_config):
+        """AzureFilesClient.ensure_share_exists delegates to REST client."""
+        rest_client = AzureFilesRESTClient(acct_key_config)
+        client = AzureFilesClient(rest_client)
+        mock_share = MagicMock()
+        mock_share.exists = AsyncMock(return_value=True)
+        mock_async_client = MagicMock()
+        mock_async_client.get_share_client.return_value = mock_share
+
+        with patch.object(rest_client, "get_async_share_service_client",
+                          new_callable=AsyncMock, return_value=mock_async_client):
+            result = await client.ensure_share_exists("myshare")
+            assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_get_async_share_service_client_delegates(self, acct_key_config):
+        """AzureFilesClient.get_async_share_service_client delegates."""
+        rest_client = AzureFilesRESTClient(acct_key_config)
+        client = AzureFilesClient(rest_client)
+        mock_async_client = MagicMock()
+
+        with patch.object(rest_client, "get_async_share_service_client",
+                          new_callable=AsyncMock, return_value=mock_async_client):
+            result = await client.get_async_share_service_client()
+            assert result is mock_async_client
+
+    @pytest.mark.asyncio
+    async def test_close_async_client_delegates(self, acct_key_config):
+        """AzureFilesClient.close_async_client delegates."""
+        rest_client = AzureFilesRESTClient(acct_key_config)
+        client = AzureFilesClient(rest_client)
+        mock_async = AsyncMock()
+        rest_client._async_share_service_client = mock_async
+        await client.close_async_client()
+        mock_async.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage tests for missing statements and branches
+# ---------------------------------------------------------------------------
+
+
+class TestConnectionStringConfigIndexError:
+    """Cover the IndexError handler in get_account_name (lines 117-118).
+
+    Note: Lines 17-18 (ImportError for azure-storage-file-share) and
+    lines 117-118 (IndexError in get_account_name) are defensive code
+    that is effectively unreachable in normal operation.
+    - Lines 17-18 only trigger if azure-storage-file-share is not installed.
+    - Lines 117-118 only trigger if str.split raises IndexError, which
+      cannot happen with normal Python strings.
+    """
+
+    def test_get_account_name_normal(self):
+        """Normal operation returns account name."""
+        cfg = AzureFilesConnectionStringConfig(connectionString="AccountName=test")
+        assert cfg.get_account_name() == "test"
+
+    def test_get_account_name_no_match(self):
+        """Connection string without AccountName returns None."""
+        cfg = AzureFilesConnectionStringConfig(connectionString="OtherKey=value;AnotherKey=value2")
+        assert cfg.get_account_name() is None
+
+
+class TestAzureFilesRESTClientAdditional:
+    """Cover missing REST client methods."""
+
+    def test_get_share_service_client_caches(self, conn_str_config):
+        """get_share_service_client creates and caches the client."""
+        client = AzureFilesRESTClient(conn_str_config)
+        mock_ssc = MagicMock()
+        with patch.object(conn_str_config, "create_share_service_client", return_value=mock_ssc):
+            result1 = client.get_share_service_client()
+            result2 = client.get_share_service_client()  # cached
+            assert result1 is mock_ssc
+            assert result2 is mock_ssc
+            conn_str_config.create_share_service_client.assert_called_once()
+
+    def test_get_share_service_client_failure(self, conn_str_config):
+        """get_share_service_client raises on failure."""
+        client = AzureFilesRESTClient(conn_str_config)
+        with patch.object(conn_str_config, "create_share_service_client",
+                          side_effect=RuntimeError("fail")):
+            with pytest.raises(AzureFilesConfigurationError, match="Failed to create ShareServiceClient"):
+                client.get_share_service_client()
+
+    @pytest.mark.asyncio
+    async def test_get_async_share_service_client_caches(self, conn_str_config):
+        """get_async_share_service_client creates and caches."""
+        client = AzureFilesRESTClient(conn_str_config)
+        mock_assc = MagicMock()
+        with patch.object(conn_str_config, "create_async_share_service_client",
+                          new_callable=AsyncMock, return_value=mock_assc):
+            result1 = await client.get_async_share_service_client()
+            result2 = await client.get_async_share_service_client()  # cached
+            assert result1 is mock_assc
+            assert result2 is mock_assc
+
+    @pytest.mark.asyncio
+    async def test_get_async_share_service_client_failure(self, conn_str_config):
+        """get_async_share_service_client raises on failure."""
+        client = AzureFilesRESTClient(conn_str_config)
+        with patch.object(conn_str_config, "create_async_share_service_client",
+                          new_callable=AsyncMock,
+                          side_effect=RuntimeError("async fail")):
+            with pytest.raises(AzureFilesConfigurationError, match="Failed to create AsyncShareServiceClient"):
+                await client.get_async_share_service_client()
+
+    def test_get_account_url_conn_str_no_name(self):
+        """get_account_url with connection string and no account name raises (line 297->299)."""
+        config = AzureFilesConnectionStringConfig(connectionString="SomeKey=value")
+        client = AzureFilesRESTClient(config)
+        with pytest.raises(AzureFilesConfigurationError, match="Could not determine account URL"):
+            client.get_account_url()
+
+    def test_get_account_url_unknown_config_type(self):
+        """get_account_url with config that is not AccountKeyConfig or ConnectionStringConfig
+        (covers elif False branch 295->299)."""
+        # Create a client with a config that has no get_account_url and
+        # is not an instance of AzureFilesConnectionStringConfig
+        mock_config = MagicMock(spec=["get_authentication_method", "shareName", "get_account_name"])
+        # Ensure get_account_url attribute does not exist
+        if hasattr(mock_config, "get_account_url"):
+            del mock_config.get_account_url
+
+        client = AzureFilesRESTClient.__new__(AzureFilesRESTClient)
+        client.config = mock_config
+        client._share_service_client = None
+        client._async_share_service_client = None
+
+        with pytest.raises(AzureFilesConfigurationError, match="Could not determine account URL"):
+            client.get_account_url()
+
+    @pytest.mark.asyncio
+    async def test_ensure_share_exists_azure_error(self, conn_str_config):
+        """ensure_share_exists raises AzureFilesShareError on AzureError (lines 356-361)."""
+        client = AzureFilesRESTClient(conn_str_config)
+        mock_share = MagicMock()
+
+        # Import AzureError for the test
+        from azure.core.exceptions import AzureError
+        mock_share.exists = AsyncMock(side_effect=AzureError("azure failure"))
+        mock_async_client = MagicMock()
+        mock_async_client.get_share_client.return_value = mock_share
+
+        with patch.object(client, "get_async_share_service_client",
+                          new_callable=AsyncMock, return_value=mock_async_client):
+            with pytest.raises(AzureFilesShareError, match="Azure error"):
+                await client.ensure_share_exists("test-share")
+
+    @pytest.mark.asyncio
+    async def test_ensure_share_exists_generic_exception(self, conn_str_config):
+        """ensure_share_exists raises AzureFilesShareError on generic exception (lines 362-367)."""
+        client = AzureFilesRESTClient(conn_str_config)
+        mock_share = MagicMock()
+        mock_share.exists = AsyncMock(side_effect=RuntimeError("unexpected"))
+        mock_async_client = MagicMock()
+        mock_async_client.get_share_client.return_value = mock_share
+
+        with patch.object(client, "get_async_share_service_client",
+                          new_callable=AsyncMock, return_value=mock_async_client):
+            with pytest.raises(AzureFilesShareError, match="Unexpected error"):
+                await client.ensure_share_exists("test-share")
+
+    @pytest.mark.asyncio
+    async def test_ensure_share_exists_reraises_share_error(self, conn_str_config):
+        """ensure_share_exists re-raises AzureFilesShareError (line 354-355)."""
+        client = AzureFilesRESTClient(conn_str_config)
+
+        with patch.object(client, "get_async_share_service_client",
+                          new_callable=AsyncMock,
+                          side_effect=AzureFilesShareError("custom share error")):
+            with pytest.raises(AzureFilesShareError, match="custom share error"):
+                await client.ensure_share_exists("test-share")
+
+
+class TestAzureFilesClientBuildErrors:
+    """Cover error paths in build_with_*_config methods."""
+
+    def test_build_with_connection_string_config_non_config_error(self):
+        """Non-AzureFilesConfigurationError exception is wrapped (line 427-429)."""
+        # We need AzureFilesRESTClient constructor to raise a non-config error
+        with patch("app.sources.client.azure.azure_files.AzureFilesRESTClient",
+                   side_effect=RuntimeError("unexpected init error")):
+            with pytest.raises(AzureFilesConfigurationError,
+                               match="Failed to build client with connection string config"):
+                config = AzureFilesConnectionStringConfig(
+                    connectionString="DefaultEndpointsProtocol=https;AccountName=test;AccountKey=key;EndpointSuffix=core.windows.net"
+                )
+                AzureFilesClient.build_with_connection_string_config(config)
+
+    def test_build_with_account_key_config_non_config_error(self):
+        """Non-AzureFilesConfigurationError exception is wrapped (line 442-444)."""
+        with patch("app.sources.client.azure.azure_files.AzureFilesRESTClient",
+                   side_effect=RuntimeError("unexpected init error")):
+            with pytest.raises(AzureFilesConfigurationError,
+                               match="Failed to build client with account key config"):
+                config = AzureFilesAccountKeyConfig(
+                    accountName="teststorage",
+                    accountKey="dGVzdGtleQ==",
+                )
+                AzureFilesClient.build_with_account_key_config(config)
+
+    def test_build_with_connection_string_config_reraises_config_error(self):
+        """AzureFilesConfigurationError is re-raised (line 426-427)."""
+        with patch("app.sources.client.azure.azure_files.AzureFilesRESTClient",
+                   side_effect=AzureFilesConfigurationError("config error")):
+            with pytest.raises(AzureFilesConfigurationError, match="config error"):
+                config = AzureFilesConnectionStringConfig(
+                    connectionString="DefaultEndpointsProtocol=https;AccountName=test;AccountKey=key;EndpointSuffix=core.windows.net"
+                )
+                AzureFilesClient.build_with_connection_string_config(config)
+
+    def test_build_with_account_key_config_reraises_config_error(self):
+        """AzureFilesConfigurationError is re-raised (line 441-442)."""
+        with patch("app.sources.client.azure.azure_files.AzureFilesRESTClient",
+                   side_effect=AzureFilesConfigurationError("config error")):
+            with pytest.raises(AzureFilesConfigurationError, match="config error"):
+                config = AzureFilesAccountKeyConfig(
+                    accountName="teststorage",
+                    accountKey="dGVzdGtleQ==",
+                )
+                AzureFilesClient.build_with_account_key_config(config)

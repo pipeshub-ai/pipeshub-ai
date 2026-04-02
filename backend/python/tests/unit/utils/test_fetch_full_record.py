@@ -142,6 +142,45 @@ class TestCreateFetchFullRecordTool:
         result = await tool.ainvoke({"record_ids": ["missing"], "reason": "test"})
         assert result["ok"] is False
 
+    @pytest.mark.asyncio
+    async def test_tool_invocation_exception_returns_error_dict(self):
+        """When _fetch_multiple_records_impl raises, the tool catches and returns error dict."""
+        from unittest.mock import patch as _patch
+
+        from app.utils.fetch_full_record import create_fetch_full_record_tool
+
+        records_map = {"vr1": {"id": "r1", "content": "data"}}
+        tool = create_fetch_full_record_tool(records_map)
+
+        with _patch(
+            "app.utils.fetch_full_record._fetch_multiple_records_impl",
+            side_effect=RuntimeError("unexpected failure"),
+        ):
+            result = await tool.ainvoke({"record_ids": ["r1"], "reason": "test"})
+
+        assert result["ok"] is False
+        assert "Failed to fetch records" in result["error"]
+        assert "unexpected failure" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_tool_invocation_generic_exception(self):
+        """Cover the except branch with a different exception type."""
+        from unittest.mock import patch as _patch
+
+        from app.utils.fetch_full_record import create_fetch_full_record_tool
+
+        records_map = {}
+        tool = create_fetch_full_record_tool(records_map)
+
+        with _patch(
+            "app.utils.fetch_full_record._fetch_multiple_records_impl",
+            side_effect=ValueError("bad value"),
+        ):
+            result = await tool.ainvoke({"record_ids": ["x"], "reason": "test"})
+
+        assert result["ok"] is False
+        assert "bad value" in result["error"]
+
 
 class TestCreateRecordForFetchBlockGroup:
     def test_creates_record(self):
