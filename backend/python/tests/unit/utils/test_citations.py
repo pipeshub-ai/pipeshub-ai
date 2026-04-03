@@ -220,8 +220,8 @@ class TestRenumberCitationLinks:
         text = f"See [1]({url}) here."
         matches = self._make_matches(text)
         result = _renumber_citation_links(text, matches, {})
-        # Original text unchanged since url not in mapping
-        assert result == text
+        # Citation link is removed when url not in mapping
+        assert result == "See  here."
 
     def test_multiple_citations_renumbered_in_order(self):
         url1 = _url(REC1, 0)
@@ -249,7 +249,8 @@ class TestRenumberCitationLinks:
         text = f"[1]({url})"
         matches = self._make_matches(text)
         result = _renumber_citation_links(text, matches, {})
-        assert result == text
+        # Citation link is removed when mapping is empty
+        assert result == ""
 
     def test_no_matches(self):
         text = "No citations here."

@@ -235,7 +235,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": ["jira.search"]}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
         assert "retrieval" in result.lower()
 
     def test_without_knowledge_with_tools(self):
@@ -261,7 +261,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
 
 
 # ============================================================================
@@ -1133,11 +1133,11 @@ class TestBuildKnowledgeContextExtra:
         assert "No Knowledge Base" in result
 
     def test_knowledge_true_tools_empty(self):
-        """has_knowledge True + no tools -> Knowledge Base Available."""
+        """has_knowledge True + no tools -> Knowledge Sources Available."""
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
 
 
 # ============================================================================
