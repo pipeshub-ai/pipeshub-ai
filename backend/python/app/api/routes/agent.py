@@ -219,7 +219,7 @@ async def _select_agent_graph_for_query(
 
     # Default: "auto" → LLM router decides
     logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
-    return agent_graph
+    return modern_agent_graph #change to be reverted to agent_graph
 
 
 async def _auto_select_graph(
@@ -254,11 +254,13 @@ async def _auto_select_graph(
         "final action — retrieving, displaying, or acting on something where the "
         "goal is the retrieval or action itself, not further processing of what "
         "comes back.\n\n"
-        "CRITICAL: For a request to be 'quick', ALL required parameters for the "
-        "final action must be directly available from the query text, conversation "
-        "context, or system constants. If ANY required parameter must be obtained "
-        "by calling a tool first (e.g., resolving an ID, key, or identifier), "
-        "then it is NOT quick — it requires a prior step and should be 'react'.\n\n"
+        "CRITICAL: For a request to be 'quick', ALL of the following must be true:\n"
+        "1. ALL required parameters for the final action are directly available "
+        "from the query text, conversation context, or system constants — NO tool "
+        "calls needed to obtain any parameter (IDs, keys, identifiers, etc.).\n"
+        "2. The query contains exactly ONE distinct action or question. If the query "
+        "asks about two or more separate topics, tasks, or actions (e.g., 'How do I "
+        "do X and also Y?', 'What is A? Also, how do I set up B?'), it is NOT quick.\n\n"
 
         "## react\n"
         "A fixed, predictable sequence of dependent steps where the chain length "
@@ -290,6 +292,10 @@ async def _auto_select_graph(
         "→ react\n\n"
         "Q3: Does the request imply acting on every item in a collection whose "
         "size is only known at runtime, or combining independent sources? → deep\n\n"
+        "Q4: Does the query contain multiple distinct sub-questions, topics, or "
+        "actions — even if they are knowledge/retrieval questions (e.g., 'How to "
+        "deploy X and set up Y?', 'Explain A and also describe B')? → NOT quick; "
+        "use react (if topics are related/sequential) or deep (if fully independent).\n\n"
         "Default → react\n\n"
 
         "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', 'proceed') "
@@ -300,7 +306,7 @@ async def _auto_select_graph(
     )
 
     route_map = {
-        "quick": agent_graph,
+        "quick": modern_agent_graph, #change to be reverted to agent_graph
         "react": modern_agent_graph,
         "deep": deep_agent_graph,
     }
