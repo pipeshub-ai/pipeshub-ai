@@ -231,7 +231,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         topic,
                         self.config.group_id,
                         self.config.client_id,
-                        min_idle_time=0,
+                        min_idle_time=30000,
                         start_id=start_id,
                         count=10,
                     )

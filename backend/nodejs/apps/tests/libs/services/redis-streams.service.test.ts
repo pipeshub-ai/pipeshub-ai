@@ -17,8 +17,10 @@ class MockRedisClient extends EventEmitter {
   xreadgroup = sinon.stub().resolves(null);
   xack = sinon.stub().resolves(1);
   xgroup = sinon.stub().resolves();
+  xautoclaim = sinon.stub().resolves(['0-0', [], []]);
   ping = sinon.stub().resolves('PONG');
   exists = sinon.stub().resolves(0);
+  scan = sinon.stub().resolves(['0', []]);
   keys = sinon.stub().resolves([]);
   type = sinon.stub().resolves('string');
   pipeline = sinon.stub();
@@ -80,6 +82,90 @@ describe('Redis Streams Service', () => {
 
   afterEach(() => {
     sinon.restore();
+  });
+
+  // ================================================================
+  // buildRedisOptions — retryStrategy (lines 54-57)
+  // ================================================================
+  describe('buildRedisOptions retryStrategy', () => {
+    it('should cap delay at maxRetryTime (default 30000)', () => {
+      let capturedOptions: any;
+      const ioredisPath = require.resolve('ioredis');
+      const original = require.cache[ioredisPath];
+
+      const CapturingRedis = function (this: any, options: any) {
+        capturedOptions = options;
+        const client = new MockRedisClient();
+        Object.assign(this, client);
+        this.on = client.on.bind(client);
+        this.emit = client.emit.bind(client);
+        return client;
+      } as any;
+      CapturingRedis.prototype = new MockRedisClient();
+
+      require.cache[ioredisPath] = {
+        ...original!,
+        exports: { Redis: CapturingRedis, default: CapturingRedis, RedisOptions: {} },
+      } as any;
+
+      const svcPath = require.resolve(
+        '../../../src/libs/services/redis-streams.service',
+      );
+      delete require.cache[svcPath];
+      const mod = require('../../../src/libs/services/redis-streams.service');
+
+      class TestP extends mod.BaseRedisStreamsProducerConnection {
+        constructor(cfg: any, lgr: any) { super(cfg, lgr); }
+      }
+      new TestP(defaultConfig, mockLogger);
+
+      expect(capturedOptions.retryStrategy).to.be.a('function');
+      // times=1 → min(200, 30000) = 200
+      expect(capturedOptions.retryStrategy(1)).to.equal(200);
+      // times=200 → min(40000, 30000) = 30000 (capped)
+      expect(capturedOptions.retryStrategy(200)).to.equal(30000);
+
+      if (original) require.cache[ioredisPath] = original;
+      delete require.cache[svcPath];
+    });
+
+    it('should use custom maxRetryTime from config', () => {
+      let capturedOptions: any;
+      const ioredisPath = require.resolve('ioredis');
+      const original = require.cache[ioredisPath];
+
+      const CapturingRedis = function (this: any, options: any) {
+        capturedOptions = options;
+        const client = new MockRedisClient();
+        Object.assign(this, client);
+        this.on = client.on.bind(client);
+        this.emit = client.emit.bind(client);
+        return client;
+      } as any;
+      CapturingRedis.prototype = new MockRedisClient();
+
+      require.cache[ioredisPath] = {
+        ...original!,
+        exports: { Redis: CapturingRedis, default: CapturingRedis, RedisOptions: {} },
+      } as any;
+
+      const svcPath = require.resolve(
+        '../../../src/libs/services/redis-streams.service',
+      );
+      delete require.cache[svcPath];
+      const mod = require('../../../src/libs/services/redis-streams.service');
+
+      class TestP extends mod.BaseRedisStreamsProducerConnection {
+        constructor(cfg: any, lgr: any) { super(cfg, lgr); }
+      }
+      new TestP({ ...defaultConfig, maxRetryTime: 5000 }, mockLogger);
+
+      // times=50 → min(10000, 5000) = 5000 (capped at custom value)
+      expect(capturedOptions.retryStrategy(50)).to.equal(5000);
+
+      if (original) require.cache[ioredisPath] = original;
+      delete require.cache[svcPath];
+    });
   });
 
   // ================================================================
@@ -241,6 +327,17 @@ describe('Redis Streams Service', () => {
           expect((error as Error).message).to.include('Error publishing to Redis stream fail-topic');
         }
       });
+
+    });
+
+    describe('ensureConnection (producer)', () => {
+      it('should auto-connect via ensureConnection if not connected', async () => {
+        // Do NOT call producer.connect() first — no nested beforeEach here
+        const msg: StreamMessage<string> = { key: 'k', value: 'v' };
+        await producer.publish('topic', msg);
+        expect(mockRedis.connect.called).to.be.true;
+        expect(mockRedis.xadd.calledOnce).to.be.true;
+      });
     });
 
     describe('publishBatch', () => {
@@ -282,6 +379,25 @@ describe('Redis Streams Service', () => {
           expect.fail('Should have thrown');
         } catch (error) {
           expect(error).to.be.instanceOf(MessageBrokerError);
+        }
+      });
+
+      it('should throw MessageBrokerError when some pipeline entries fail', async () => {
+        // Simulate partial failure: one success, one error
+        const pipelineError = new Error('XADD failed for entry');
+        mockPipeline.exec.resolves([
+          [null, '1-0'],       // success
+          [pipelineError, null], // failure
+        ]);
+        try {
+          await producer.publishBatch('topic', [
+            { key: 'k1', value: 'v1' },
+            { key: 'k2', value: 'v2' },
+          ]);
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect(error).to.be.instanceOf(MessageBrokerError);
+          expect((error as Error).message).to.include('1/2 failed in batch publish');
         }
       });
     });
@@ -462,6 +578,403 @@ describe('Redis Streams Service', () => {
       });
     });
 
+    describe('ensureConnection', () => {
+      it('should auto-connect when not connected', async () => {
+        // Not connected yet (initialized=false, status=ready)
+        expect(consumer.isConnected()).to.be.false;
+        // ensureConnection is protected; invoke indirectly via subscribe
+        await consumer.subscribe(['topic-a']);
+        expect(mockRedis.connect.called).to.be.true;
+        expect(consumer.isConnected()).to.be.true;
+      });
+    });
+
+    describe('disconnect with active consume loop', () => {
+      it('should wait for consume loop to finish before disconnecting', async () => {
+        await consumer.connect();
+        await consumer.subscribe(['topic-a']);
+
+        // xreadgroup: return null immediately, then stop loop
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount >= 2) consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+
+        // Let the loop iterate briefly
+        await new Promise((r) => setTimeout(r, 50));
+
+        await consumer.disconnect();
+        expect(consumer.consumeLoopPromise).to.be.null;
+        expect(consumer.isConnected()).to.be.false;
+      });
+    });
+
+    describe('drainPending', () => {
+      beforeEach(async () => {
+        await consumer.connect();
+        await consumer.subscribe(['test-stream']);
+      });
+
+      it('should recover pending messages via XAUTOCLAIM', async () => {
+        // First call returns a pending entry, second returns empty
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves([
+            '0-0',
+            [
+              [
+                '1-0',
+                [
+                  'key',
+                  'pending-key',
+                  'value',
+                  JSON.stringify({ recovered: true }),
+                ],
+              ],
+            ],
+            [],
+          ])
+          .onSecondCall()
+          .resolves(['0-0', [], []]);
+
+        // Stop consumeLoop after drainPending
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.calledOnce).to.be.true;
+        expect(handler.firstCall.args[0].key).to.equal('pending-key');
+        expect(handler.firstCall.args[0].value).to.deep.equal({
+          recovered: true,
+        });
+        expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('should recover pending messages with headers', async () => {
+        const headers = { 'x-trace': 'abc' };
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves([
+            '0-0',
+            [
+              [
+                '1-0',
+                [
+                  'key',
+                  'k',
+                  'value',
+                  JSON.stringify('v'),
+                  'headers',
+                  JSON.stringify(headers),
+                ],
+              ],
+            ],
+            [],
+          ])
+          .onSecondCall()
+          .resolves(['0-0', [], []]);
+
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.firstCall.args[0].headers).to.deep.equal(headers);
+      });
+
+      it('should ack and skip entries without value field', async () => {
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves([
+            '0-0',
+            [['1-0', ['key', 'k']]],  // no value field
+            [],
+          ])
+          .onSecondCall()
+          .resolves(['0-0', [], []]);
+
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.called).to.be.false;
+        expect(mockRedis.xack.calledOnce).to.be.true;
+      });
+
+      it('should log error when entry processing fails and continue', async () => {
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves([
+            '0-0',
+            [['1-0', ['key', 'k', 'value', 'not-json{{']]],
+            [],
+          ])
+          .onSecondCall()
+          .resolves(['0-0', [], []]);
+
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(mockLogger.error.calledWithMatch('Error recovering pending message')).to.be.true;
+      });
+
+      it('should handle XAUTOCLAIM errors and break', async () => {
+        mockRedis.xautoclaim.rejects(new Error('XAUTOCLAIM failed'));
+
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(mockLogger.error.calledWithMatch('Error during XAUTOCLAIM')).to.be.true;
+      });
+
+      it('should follow nextId pagination until 0-0', async () => {
+        // First page: returns entries with nextId != '0-0'
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves([
+            '2-0',
+            [['1-0', ['key', 'k1', 'value', JSON.stringify('v1')]]],
+            [],
+          ])
+          // Second page: returns entries with nextId == '0-0'
+          .onSecondCall()
+          .resolves([
+            '0-0',
+            [['2-0', ['key', 'k2', 'value', JSON.stringify('v2')]]],
+            [],
+          ])
+          .onThirdCall()
+          .resolves(['0-0', [], []]);
+
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.callCount).to.equal(2);
+      });
+    });
+
+    describe('consumeLoop', () => {
+      beforeEach(async () => {
+        await consumer.connect();
+        await consumer.subscribe(['test-stream']);
+      });
+
+      it('should process messages from xreadgroup', async () => {
+        const xreadResult = [
+          [
+            'test-stream',
+            [
+              [
+                '1-0',
+                [
+                  'key',
+                  'msg-key',
+                  'value',
+                  JSON.stringify({ data: 'hello' }),
+                ],
+              ],
+            ],
+          ],
+        ];
+
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) return xreadResult;
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.calledOnce).to.be.true;
+        expect(handler.firstCall.args[0].key).to.equal('msg-key');
+        expect(handler.firstCall.args[0].value).to.deep.equal({
+          data: 'hello',
+        });
+        expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('should include headers when present in stream entry', async () => {
+        const headers = { 'x-request-id': '123' };
+        const xreadResult = [
+          [
+            'test-stream',
+            [
+              [
+                '1-0',
+                [
+                  'key',
+                  'k',
+                  'value',
+                  JSON.stringify('v'),
+                  'headers',
+                  JSON.stringify(headers),
+                ],
+              ],
+            ],
+          ],
+        ];
+
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) return xreadResult;
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.firstCall.args[0].headers).to.deep.equal(headers);
+      });
+
+      it('should skip messages without value field and ack them', async () => {
+        const xreadResult = [
+          [
+            'test-stream',
+            [['1-0', ['key', 'k']]],  // no value field
+          ],
+        ];
+
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) return xreadResult;
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(handler.called).to.be.false;
+        expect(mockRedis.xack.called).to.be.true;
+        expect(mockLogger.debug.calledWithMatch('Skipping message without value field')).to.be.true;
+      });
+
+      it('should log error when handler throws and continue', async () => {
+        const xreadResult = [
+          [
+            'test-stream',
+            [['1-0', ['key', 'k', 'value', JSON.stringify('v')]]],
+          ],
+        ];
+
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) return xreadResult;
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().rejects(new Error('handler error'));
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(mockLogger.error.calledWithMatch('Error processing Redis stream message')).to.be.true;
+      });
+
+      it('should warn and continue on unexpected xreadgroup result shape', async () => {
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) return 'bad-shape';
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(mockLogger.warn.calledWithMatch('Unexpected Redis xreadgroup payload shape')).to.be.true;
+        expect(handler.called).to.be.false;
+      });
+
+      it('should handle xreadgroup errors with backoff', async () => {
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) throw new Error('xreadgroup failed');
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        expect(mockLogger.error.calledWithMatch('Error in Redis Streams consume loop')).to.be.true;
+      });
+
+      it('should sleep when no topics are subscribed', async () => {
+        // Clear subscribed topics
+        consumer.subscribedTopics = [];
+
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+
+        // Let the sleep+loop run briefly
+        await new Promise((r) => setTimeout(r, 200));
+        consumer.running = false;
+        await consumer.consumeLoopPromise;
+
+        // xreadgroup should not have been called (loop slept and exited)
+        expect(handler.called).to.be.false;
+      });
+    });
+
     describe('healthCheck', () => {
       it('should return true when ping succeeds', async () => {
         await consumer.connect();
@@ -545,10 +1058,11 @@ describe('Redis Streams Service', () => {
 
     describe('listTopics', () => {
       it('should return only stream-type keys', async () => {
-        mockRedis.keys.resolves(['stream-1', 'hash-key', 'stream-2']);
-        mockRedis.type.onFirstCall().resolves('stream');
-        mockRedis.type.onSecondCall().resolves('hash');
-        mockRedis.type.onThirdCall().resolves('stream');
+        mockRedis.scan.resolves(['0', ['stream-1', 'hash-key', 'stream-2']]);
+        mockRedis.type
+          .onFirstCall().resolves('stream')
+          .onSecondCall().resolves('hash')
+          .onThirdCall().resolves('stream');
 
         const result = await admin.listTopics();
         expect(result).to.deep.equal(['stream-1', 'stream-2']);
@@ -557,9 +1071,20 @@ describe('Redis Streams Service', () => {
       });
 
       it('should return empty array when no streams exist', async () => {
-        mockRedis.keys.resolves([]);
+        mockRedis.scan.resolves(['0', []]);
         const result = await admin.listTopics();
         expect(result).to.deep.equal([]);
+      });
+
+      it('should handle multiple scan iterations', async () => {
+        mockRedis.scan
+          .onFirstCall().resolves(['42', ['stream-a']])
+          .onSecondCall().resolves(['0', ['stream-b']]);
+        mockRedis.type.resolves('stream');
+
+        const result = await admin.listTopics();
+        expect(result).to.deep.equal(['stream-a', 'stream-b']);
+        expect(mockRedis.scan.callCount).to.equal(2);
       });
     });
   });

@@ -39,7 +39,7 @@ export abstract class BaseKafkaConnection implements IKafkaConnection {
     } catch (error) {
       throw new KafkaError('Failed to initialize Kafka', {
         clientId: this.config.clientId,
-        details: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as Error).message,
       });
     }
   }
@@ -84,7 +84,7 @@ export abstract class BaseKafkaProducerConnection
     } catch (error) {
       this.isInitialized = false;
       throw new KafkaError('Failed to connect Kafka producer', {
-        details: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as Error).message,
       });
     }
   }
@@ -98,7 +98,7 @@ export abstract class BaseKafkaProducerConnection
       }
     } catch (error) {
       this.logger.error('Error disconnecting Kafka producer', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: (error as Error).message,
       });
     }
   }
@@ -132,7 +132,7 @@ export abstract class BaseKafkaProducerConnection
       return true;
     } catch (error) {
       this.logger.error('Kafka producer health check failed', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: (error as Error).message,
       });
       return false;
     }
@@ -164,7 +164,7 @@ export abstract class BaseKafkaProducerConnection
       throw new KafkaError(`Error publishing to Kafka topic ${topic}`, {
         topic,
         messageCount: messages.length,
-        details: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as Error).message,
       });
     }
   }
@@ -200,7 +200,7 @@ export abstract class BaseKafkaConsumerConnection
     } catch (error) {
       this.isInitialized = false;
       throw new KafkaError('Failed to connect Kafka consumer', {
-        details: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as Error).message,
       });
     }
   }
@@ -214,7 +214,7 @@ export abstract class BaseKafkaConsumerConnection
       }
     } catch (error) {
       this.logger.error('Error disconnecting Kafka consumer', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: (error as Error).message,
       });
     }
   }
@@ -231,7 +231,7 @@ export abstract class BaseKafkaConsumerConnection
     } catch (error) {
       throw new KafkaError('Failed to subscribe to topics', {
         topics,
-        details: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as Error).message,
       });
     }
   }
@@ -259,14 +259,14 @@ export abstract class BaseKafkaConsumerConnection
               topic,
               partition,
               messageKey: message.key?.toString(),
-              error: error instanceof Error ? error.message : 'Unknown error',
+              error: (error as Error).message,
             });
           }
         },
       });
     } catch (error) {
       throw new KafkaError('Failed to start message consumption', {
-        details: error instanceof Error ? error.message : 'Unknown error',
+        details: (error as Error).message,
       });
     }
   }
@@ -291,7 +291,7 @@ export abstract class BaseKafkaConsumerConnection
       return true;
     } catch (error) {
       this.logger.error('Kafka consumer health check failed', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: (error as Error).message,
       });
       return false;
     }

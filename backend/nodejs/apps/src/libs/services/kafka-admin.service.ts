@@ -81,7 +81,7 @@ export class KafkaAdminService implements IMessageAdmin {
       }
 
       this.logger.error('Failed to ensure Kafka topics exist', {
-        error: error.message ?? error,
+        error: (error as Error).message,
       });
       throw error;
     } finally {
