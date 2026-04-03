@@ -1034,6 +1034,8 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             if start is not None and end is not None:
                 for block_index in range(start, end + 1):
                     if 0 <= block_index < len(blocks):
+                        if blocks[block_index].get("type") == BlockType.IMAGE.value:
+                            continue
                         result_blocks.append(blocks[block_index])
         return result_blocks
 
@@ -1184,7 +1186,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json") -> list[dict[str, Any]]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False) -> list[dict[str, Any]]:
     content = []
     if mode == "no_tools":
         chunks = []
@@ -1250,7 +1252,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     "text": rendered_form
                 })
 
-        message_content_array = build_message_content_array(flattened_results, virtual_record_id_to_result)
+        message_content_array = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm)
         message_content_array = [item for sublist in message_content_array for item in sublist]
 
         content.extend(message_content_array)
@@ -1264,7 +1266,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         })
         return content
 
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any]) -> list[list[dict[str, Any]]]:
+def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False) -> list[list[dict[str, Any]]]:
     all_contents = []
     content = []
     seen_virtual_record_ids = set()
@@ -1306,7 +1308,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
             result["block_web_url"] = block_web_url
             if block_type == BlockType.IMAGE.value:
-                if result.get("content").startswith("data:image/"):
+                if result.get("content").startswith("data:image/") and is_multimodal_llm:
                     content.append({
                         "type": "text",
                         "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content:"

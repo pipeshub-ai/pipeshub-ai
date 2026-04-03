@@ -6425,7 +6425,7 @@ async def respond_node(
                 )
 
         qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json"
+            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False)
         )
         state["qna_message_content"] = qna_content
         log.debug("✅ Built qna_message_content via get_message_content() (chatbot-identical format)")

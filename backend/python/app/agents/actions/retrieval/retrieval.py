@@ -320,7 +320,7 @@ class Retrieval:
                 key=lambda x: (x.get("virtual_record_id", ""), x.get("block_index", 0))
             )
             message_content_array = build_message_content_array(
-                sorted_results, virtual_record_id_to_result
+                sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm
             )
 
             formatted_records = []

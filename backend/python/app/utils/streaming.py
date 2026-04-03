@@ -676,7 +676,7 @@ async def execute_tool_calls(
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
-                message_contents = build_message_content_array(final_tool_results, virtual_record_id_to_result)
+                message_contents = build_message_content_array(final_tool_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm)
 
                 logger.debug(
                     "execute_tool_calls: prepared message_contents=%d",

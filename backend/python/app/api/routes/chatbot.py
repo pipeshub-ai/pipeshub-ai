@@ -138,6 +138,7 @@ def _build_chat_llm_messages(
     virtual_record_id_to_result: dict[str, Any],
     user_data: str,
     logger: Any,
+    is_multimodal_llm: bool=False,
 ) -> list[dict[str, Any]]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     mode_config = get_model_config_for_mode(query_info.chatMode)
@@ -155,7 +156,7 @@ def _build_chat_llm_messages(
             messages.append({"role": "assistant", "content": conversation.get("content")})
 
     content = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode
+        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm
     )
     messages.append({"role": "user", "content": content})
     return messages
@@ -395,6 +396,7 @@ async def askAIStream(
                     virtual_record_id_to_result,
                     user_data,
                     logger,
+                    is_multimodal_llm=is_multimodal_llm,
                 )
 
                 # Prepare tools
