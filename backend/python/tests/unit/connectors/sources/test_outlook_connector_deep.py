@@ -11,7 +11,7 @@ Covers additional methods not exercised by existing test suites:
 - handle_webhook_notification
 - cleanup (with/without client, errors)
 - run_incremental_sync
-- get_filter_options (raises NotImplementedError)
+- get_filter_options (unsupported keys raise ValueError)
 - reindex_records (user/group mailbox records)
 - _reindex_user_mailbox_records / _reindex_single_user_records
 - _reindex_group_mailbox_records
@@ -420,9 +420,9 @@ class TestRunIncrementalSync:
 class TestGetFilterOptions:
 
     @pytest.mark.asyncio
-    async def test_raises_not_implemented(self):
+    async def test_unsupported_filter_key_raises_value_error(self):
         c, *_ = _make_connector()
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await c.get_filter_options("any_key")
 
 

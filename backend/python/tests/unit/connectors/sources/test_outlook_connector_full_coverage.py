@@ -1297,9 +1297,9 @@ class TestRunIncrementalSync:
 class TestGetFilterOptions:
 
     @pytest.mark.asyncio
-    async def test_raises_not_implemented(self):
+    async def test_unsupported_filter_key_raises_value_error(self):
         connector = _make_connector()
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("some_key")
 
 

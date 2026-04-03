@@ -1,7 +1,6 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
-from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -46,6 +45,9 @@ from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
+from app.connectors.sources.microsoft.outlook_individual.connector import (
+    OutlookIndividualConnector,
+)
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
@@ -68,6 +70,7 @@ class ConnectorFactory:
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
         "outlook": OutlookConnector,
+        "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "box": BoxConnector,
@@ -134,7 +137,7 @@ class ConnectorFactory:
         return cls._beta_connector_definitions.copy()
 
     @classmethod
-    def get_connector_class(cls, name: str) -> Optional[type[BaseConnector]]:
+    def get_connector_class(cls, name: str) -> type[BaseConnector] | None:
         """Get connector class by name"""
         return cls._connector_registry.get(name.lower())
 
@@ -154,7 +157,7 @@ class ConnectorFactory:
         scope: str,
         created_by: str,
         **kwargs
-    ) -> Optional[BaseConnector]:
+    ) -> BaseConnector | None:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
@@ -188,7 +191,7 @@ class ConnectorFactory:
         scope: str,
         created_by: str,
         **kwargs
-    ) -> Optional[BaseConnector]:
+    ) -> BaseConnector | None:
         """Create and initialize a connector"""
         connector = await cls.create_connector(
             name=name,
@@ -226,7 +229,7 @@ class ConnectorFactory:
         scope: str,
         created_by: str,
         **kwargs
-    ) -> Optional[BaseConnector]:
+    ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
         connector = await cls.initialize_connector(
             name=name,

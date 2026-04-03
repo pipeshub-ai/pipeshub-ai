@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import NoReturn
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -43,8 +42,11 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
+    FilterOption,
+    FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
+    MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
@@ -182,6 +184,15 @@ class OutlookCredentials:
             category=FilterCategory.SYNC,
         ))
         .add_filter_field(FilterField(
+            name=SyncFilterKey.USERS.value,
+            display_name="Users",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Select specific users to sync. Leave empty to sync all users.",
+            option_source_type=OptionSourceType.DYNAMIC,
+            default_operator=MultiselectOperator.IN.value
+        ))
+        .add_filter_field(FilterField(
             name=SyncFilterKey.RECEIVED_DATE.value,
             display_name="Received Date",
             description="Filter emails by received date. Defaults to last 60 days.",
@@ -295,11 +306,6 @@ class OutlookConnector(BaseConnector):
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
             self.external_users_client = UsersGroupsDataSource(self.external_client)
 
-            # Load filters from config service
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "outlook", connector_id, self.logger
-            )
-
             # Test connection
             if not await self.test_connection_and_access():
                 self.logger.error("Outlook connector connection test failed")
@@ -408,6 +414,11 @@ class OutlookConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             self.logger.info("Starting Outlook sync...")
 
+            # Load filters from config service
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "outlook", self.connector_id, self.logger
+            )
+
             # Ensure external clients are initialized
             if not self.external_outlook_client or not self.external_users_client:
                 raise Exception("External API clients not initialized. Call init() first.")
@@ -455,6 +466,24 @@ class OutlookConnector(BaseConnector):
                 if user.email and user.email.lower() in email_to_source_id:
                     user.source_user_id = email_to_source_id[user.email.lower()]
                     users_to_sync.append(user)
+
+            # Apply user filter if specified
+            users_filter = self.sync_filters.get(SyncFilterKey.USERS)
+            if users_filter and not users_filter.is_empty():
+                selected_emails = users_filter.get_value()
+                if selected_emails and isinstance(selected_emails, list):
+                    # Normalize to lowercase for comparison
+                    selected_emails_lower = [email.lower() for email in selected_emails]
+                    # Filter to only selected users
+                    filtered_users = [
+                        user for user in users_to_sync
+                        if user.email and user.email.lower() in selected_emails_lower
+                    ]
+                    self.logger.info(
+                        f"User filter applied: {len(filtered_users)} selected users "
+                        f"out of {len(users_to_sync)} active users"
+                    )
+                    users_to_sync = filtered_users
 
             # Populate user cache for performance
             await self._populate_user_cache()
@@ -1584,19 +1613,45 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            # Get top-level folders with API-level filtering
-            response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
-                user_id=user_id,
-                folder_names=folder_names,
-                folder_filter_mode=folder_filter_mode,
-            )
+            # Paginate through all top-level folders using cursor-based pagination
+            top_level_folders = []
+            next_url = None
+            page_num = 1
+            page_size = 50
 
-            if not response.success:
-                self.logger.error(f"Failed to get folders: {response.error}")
-                return []
+            while True:
+                # Get folders page with API-level filtering
+                if next_url:
+                    response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
+                        user_id=user_id,
+                        next_url=next_url
+                    )
+                else:
+                    response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
+                        user_id=user_id,
+                        folder_names=folder_names,
+                        folder_filter_mode=folder_filter_mode,
+                        top=page_size
+                    )
 
-            data = response.data or {}
-            top_level_folders = data.get('value', [])
+                if not response.success:
+                    self.logger.error(f"Failed to get folders page {page_num}: {response.error}")
+                    break
+
+                data = response.data or {}
+                raw_folders = data.get('value', [])
+
+                # Accumulate folders from this page
+                top_level_folders.extend(raw_folders)
+
+                # Check for next page
+                next_url = self._safe_get_attr(data, '@odata.nextLink') or self._safe_get_attr(data, 'odata_next_link')
+                if not next_url:
+                    break
+
+                page_num += 1
+
+            self.logger.info(f"Retrieved {len(top_level_folders)} top-level folders across {page_num} page(s)")
 
             # Always include nested folders (no filter needed, it's always enabled)
             # Mark top-level folders so we can skip storing parent_external_group_id for them
@@ -1613,11 +1668,11 @@ class OutlookConnector(BaseConnector):
             total_nested = len(all_folders) - len(top_level_folders)
             if total_nested > 0:
                 self.logger.info(
-                    f"Retrieved {len(top_level_folders)} top-level folders + "
-                    f"{total_nested} nested folders = {len(all_folders)} total folders"
+                    f"Total: {len(top_level_folders)} top-level + "
+                    f"{total_nested} nested = {len(all_folders)} total folders"
                 )
             else:
-                self.logger.info(f"Retrieved {len(top_level_folders)} folders (no nested folders found)")
+                self.logger.info(f"Total: {len(all_folders)} folders (no nested folders found)")
 
             return all_folders
 
@@ -2630,9 +2685,138 @@ class OutlookConnector(BaseConnector):
         limit: int = 20,
         search: str | None = None,
         cursor: str | None = None
-    ) -> NoReturn:
-        """Outlook connector does not support dynamic filter options."""
-        raise NotImplementedError("Outlook connector does not support dynamic filter options")
+    ) -> FilterOptionsResponse:
+        """Get dynamic filter options for the users filter."""
+        if filter_key == SyncFilterKey.USERS.value:
+            return await self._get_user_options(page, limit, search, cursor)
+        raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    def _graph_user_to_filter_option(self, user: object) -> FilterOption | None:
+        """Build a FilterOption from a Microsoft Graph user object (SDK or dict)."""
+        email = self._safe_get_attr(user, "mail") or self._safe_get_attr(user, "user_principal_name")
+        if not email:
+            return None
+        display_name = self._safe_get_attr(user, "display_name") or ""
+        given_name = self._safe_get_attr(user, "given_name") or ""
+        surname = self._safe_get_attr(user, "surname") or ""
+        full_name = display_name if display_name else f"{given_name} {surname}".strip()
+        if not full_name:
+            full_name = email
+        display_label = f"{full_name} ({email})" if full_name else email
+        return FilterOption(id=email, label=display_label)
+
+    async def _get_user_options(
+        self,
+        page: int,
+        limit: int,
+        search: str | None,
+        cursor: str | None = None,
+    ) -> FilterOptionsResponse:
+        """List users for the filter UI with one Graph request per call.
+
+        Without a search term: uses ``$top`` / ``$skip`` for offset pagination.
+        With a search term: uses ``$search`` with OR clauses on displayName, mail, and
+        userPrincipalName (``$count=true`` + ConsistencyLevel are set by the client).
+        Pagination uses ``@odata.nextLink`` only.
+        """
+        try:
+            if not self.external_users_client:
+                return FilterOptionsResponse(
+                    success=False,
+                    options=[],
+                    page=page,
+                    limit=limit,
+                    has_more=False,
+                    message="Outlook connector is not initialized",
+                )
+
+            cap = max(1, min(limit, 100))
+            search_term = search.strip() if search else None
+
+            select_fields = [
+                "id",
+                "mail",
+                "userPrincipalName",
+                "displayName",
+                "givenName",
+                "surname",
+            ]
+
+            if search_term:
+                if page > 1 and not cursor:
+                    return FilterOptionsResponse(
+                        success=True,
+                        options=[],
+                        page=page,
+                        limit=cap,
+                        has_more=False,
+                        message="Paginated search requires the cursor from the previous response.",
+                    )
+                if cursor:
+                    response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                        next_url=cursor,
+                    )
+                else:
+                    esc = search_term.replace("\\", "\\\\").replace('"', '\\"')
+                    graph_search = (f'"displayName:{esc}" OR "mail:{esc}" OR "userPrincipalName:{esc}"')
+                    response = await self.external_users_client.users_user_list_user(
+                        top=cap,
+                        search=graph_search,
+                        select=select_fields,
+                        headers={"ConsistencyLevel": "eventual"},
+                    )
+            else:
+                skip = (page - 1) * cap
+                response = await self.external_users_client.users_user_list_user(
+                    top=cap,
+                    skip=skip,
+                    select=select_fields,
+                    orderby="displayName",
+                )
+
+            if not response.success or not response.data:
+                return FilterOptionsResponse(
+                    success=False,
+                    options=[],
+                    page=page,
+                    limit=cap,
+                    has_more=False,
+                    message=response.error or "Failed to fetch users",
+                )
+
+            user_data = self._safe_get_attr(response.data, "value", []) or []
+            user_options: list[FilterOption] = []
+            for user in user_data:
+                opt = self._graph_user_to_filter_option(user)
+                if opt:
+                    user_options.append(opt)
+
+            next_url = self._safe_get_attr(response.data, "odata_next_link")
+            if not next_url and isinstance(response.data, dict):
+                next_url = response.data.get("@odata.nextLink")
+
+            has_more = bool(next_url)
+            out_cursor = str(next_url) if next_url else None
+
+            return FilterOptionsResponse(
+                success=True,
+                options=user_options,
+                page=page,
+                limit=cap,
+                has_more=has_more,
+                cursor=out_cursor,
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to get user options: {e}")
+            return FilterOptionsResponse(
+                success=False,
+                options=[],
+                page=page,
+                limit=limit,
+                has_more=False,
+                message=f"Error fetching users: {str(e)}",
+            )
 
     async def _reindex_user_mailbox_records(
         self, records: list[Record]

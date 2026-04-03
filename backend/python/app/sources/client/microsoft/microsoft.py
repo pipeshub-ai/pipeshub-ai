@@ -1,14 +1,22 @@
+import base64
 import json
 import logging
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 
 try:
-    from azure.identity import ClientSecretCredential as SyncClientSecretCredential  # type: ignore
+    from azure.identity import (
+        ClientSecretCredential as SyncClientSecretCredential,  # type: ignore
+    )
     from azure.identity.aio import ClientSecretCredential  #type: ignore
+    from kiota_abstractions.authentication import (
+        AccessTokenProvider,
+        AllowedHostsValidator,
+        BaseBearerTokenAuthenticationProvider,
+    )
     from kiota_authentication_azure.azure_identity_authentication_provider import (  #type: ignore
         AzureIdentityAuthenticationProvider,
     )
@@ -28,8 +36,8 @@ class GraphMode(str, Enum):
 class MSGraphResponse:
     """Standardized response wrapper for Microsoft Graph operations."""
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
+    data: Any | None = None
+    error: str | None = None
 
     def __post_init__(self) -> None:
         """Validate response state."""
@@ -73,12 +81,14 @@ class MSGraphClientWithClientIdSecret:
         client_id: str,
         client_secret: str,
         tenant_id: str,
-        scopes: List[str] = ["https://graph.microsoft.com/.default"],
+        scopes: list[str] = None,
         mode: GraphMode = GraphMode.APP
     ) -> None:
+        if scopes is None:
+            scopes = ["https://graph.microsoft.com/.default"]
         self.mode = mode
         # Store credential as instance variable to prevent HTTP transport from being closed prematurely
-        self.credential: Optional[Any] = None
+        self.credential: Any | None = None
 
         if mode == GraphMode.APP:
             # App-only (client credentials) auth for enterprise/service scenarios
@@ -101,6 +111,94 @@ class MSGraphClientWithClientIdSecret:
         if self.credential and hasattr(self.credential, 'close'):
             await self.credential.close()
             self.credential = None
+
+
+class MSGraphClientWithDelegatedAuth:
+    """Microsoft Graph client with delegated user authentication (OAuth).
+
+    Uses bearer token from user OAuth consent flow.
+    Token refresh is handled by TokenRefreshService background process.
+    """
+
+    def __init__(
+        self,
+        access_token: str,
+        tenant_id: str,
+        logger: logging.Logger
+    ) -> None:
+        self.mode = GraphMode.DELEGATED
+        self.logger = logger
+        self._user_oid: str | None = None
+
+        # Create bearer token authentication
+        token_provider = self._StaticTokenProvider(access_token)
+        auth_provider = BaseBearerTokenAuthenticationProvider(token_provider)
+        adapter = HttpxRequestAdapter(authentication_provider=auth_provider)
+        self.client = GraphServiceClient(request_adapter=adapter)
+
+        # Extract user OID from JWT for /me endpoint resolution
+        try:
+            jwt_parts = access_token.split(".")
+            if len(jwt_parts) == 3:
+                payload_b64 = jwt_parts[1]
+                payload_b64 += "=" * (4 - len(payload_b64) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+                self._user_oid = claims.get("oid", "me")
+            else:
+                self._user_oid = "me"
+        except Exception:
+            self._user_oid = "me"
+
+        # Set user ID in path_parameters for URL template resolution
+        if hasattr(self.client, "path_parameters"):
+            self.client.path_parameters["user%2Did"] = self._user_oid
+
+    class _StaticTokenProvider(AccessTokenProvider):
+        """Simple token provider that returns the current access token."""
+
+        def __init__(self, token: str) -> None:
+            self._token = token
+
+        async def get_authorization_token(
+            self,
+            uri: str,
+            additional_authentication_context: dict[str, Any] | None = None,
+        ) -> str:
+            return self._token
+
+        def get_allowed_hosts_validator(self) -> AllowedHostsValidator:
+            return AllowedHostsValidator([
+                "graph.microsoft.com",
+                "graph.microsoft.us",
+                "dod-graph.microsoft.us",
+                "microsoftgraph.chinacloudapi.cn",
+                "canary.graph.microsoft.com",
+            ])
+
+    def get_ms_graph_service_client(self) -> GraphServiceClient:
+        """Return Graph client with /me endpoint redirected to /users/{oid}."""
+        return self._MeRedirectingGraphClient(self.client, self._user_oid)
+
+    def get_mode(self) -> GraphMode:
+        return self.mode
+
+    async def close(self) -> None:
+        """Close the client and release resources."""
+        pass
+
+    class _MeRedirectingGraphClient:
+        """Proxy that redirects .me to .users.by_user_id(oid) for delegated auth."""
+
+        def __init__(self, real_client: GraphServiceClient, user_oid: str) -> None:
+            self._real_client = real_client
+            self._user_oid = user_oid
+
+        @property
+        def me(self):
+            return self._real_client.users.by_user_id(self._user_oid)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real_client, name)
 
 @dataclass
 class MSGraphUsernamePasswordConfig:
@@ -160,18 +258,38 @@ class MSGraphClientWithCertificatePathConfig:
         """Convert the configuration to a dictionary"""
         return asdict(self)
 
+
+@dataclass
+class MSGraphClientWithDelegatedAuthConfig:
+    """Configuration for Microsoft Graph client with delegated user authentication.
+
+    Args:
+        access_token: Current access token from OAuth flow
+        tenant_id: The tenant ID for logging
+    """
+    access_token: str
+    tenant_id: str
+
+    def create_client(self, logger: logging.Logger) -> MSGraphClientWithDelegatedAuth:
+        return MSGraphClientWithDelegatedAuth(self.access_token, self.tenant_id, logger)
+
+    def to_dict(self) -> dict:
+        """Convert the configuration to a dictionary"""
+        return asdict(self)
+
+
 class MSGraphClient(IClient):
     """Builder class for Microsoft Graph clients with different construction methods"""
 
     def __init__(
         self,
-        client: MSGraphClientViaUsernamePassword | MSGraphClientWithClientIdSecret | MSGraphClientWithCertificatePath,
+        client: MSGraphClientViaUsernamePassword | MSGraphClientWithClientIdSecret | MSGraphClientWithCertificatePath | MSGraphClientWithDelegatedAuth,
         mode: GraphMode = GraphMode.APP) -> None:
         """Initialize with a Microsoft Graph client object"""
         self.client = client
         self.mode = mode
 
-    def get_client(self) -> MSGraphClientViaUsernamePassword | MSGraphClientWithClientIdSecret | MSGraphClientWithCertificatePath:
+    def get_client(self) -> MSGraphClientViaUsernamePassword | MSGraphClientWithClientIdSecret | MSGraphClientWithCertificatePath | MSGraphClientWithDelegatedAuth:
         """Return the Microsoft Graph client object"""
         return self.client
 
@@ -196,7 +314,7 @@ class MSGraphClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         mode: GraphMode = GraphMode.APP,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> 'MSGraphClient':
         """
         Build MSGraphClient using configuration service
@@ -232,13 +350,21 @@ class MSGraphClient(IClient):
                     raise ValueError("Username and password required for username_password auth type")
                 client = MSGraphClientViaUsernamePassword(username, password, client_id, tenant_id, mode)
 
-            # to be implemented
-            # elif auth_type == "OAUTH":
-            #     access_token = config.get("credentials",{}).get("accessToken", "")
-            #     certificate_path = config.get("credentials",{}).get("certificatePath", "")
-            #     if not certificate_path:
-            #         raise ValueError("Certificate path required for certificate auth type")
-            #     client = MSGraphClientWithCertificatePath(certificate_path, tenant_id, client_id, mode)
+            elif auth_type == "OAUTH":
+                # Delegated OAuth flow (user authentication)
+                # Token refresh is handled by TokenRefreshService
+                credentials = config.get("credentials", {})
+                access_token = credentials.get("access_token")
+
+                if not access_token:
+                    raise ValueError("Access token not found. Please complete the OAuth flow first.")
+
+                client = MSGraphClientWithDelegatedAuth(
+                    access_token=access_token,
+                    tenant_id=tenant_id,
+                    logger=logger
+                )
+                return cls(client, GraphMode.DELEGATED)
 
             elif auth_type == "OAUTH_ADMIN_CONSENT":  # Default to client_secret auth
                 client_secret = auth_config.get("clientSecret", "")
@@ -257,7 +383,7 @@ class MSGraphClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
+    async def _get_connector_config(service_name: str, logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: str | None = None) -> dict[str, Any]:
         """Fetch connector config from etcd for Microsoft Graph."""
         try:
             config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
@@ -275,10 +401,10 @@ class MSGraphClient(IClient):
     @classmethod
     async def build_from_toolset(
         cls,
-        toolset_config: Dict[str, Any],
+        toolset_config: dict[str, Any],
         service_name: str,
         logger: logging.Logger,
-        config_service: Optional[ConfigurationService] = None,
+        config_service: ConfigurationService | None = None,
     ) -> 'MSGraphClient':
         """
         Build MSGraphClient from toolset configuration stored in etcd.
@@ -427,8 +553,9 @@ class MSGraphClient(IClient):
         # Use MSAL ConfidentialClientApplication for token management
         # -----------------------------------------------------------------
         try:
-            import msal  # type: ignore
             import time as _time
+
+            import msal  # type: ignore
 
             # Scopes the token was originally granted for
             stored_scope = credentials_config.get("scope", "")
@@ -492,8 +619,8 @@ class MSGraphClient(IClient):
                             )
                         else:
                             logger.error(
-                                f"❌ MSAL token refresh returned invalid placeholder token. "
-                                f"Falling back to stored access token."
+                                "❌ MSAL token refresh returned invalid placeholder token. "
+                                "Falling back to stored access token."
                             )
                     else:
                         error = result.get("error", "unknown")
@@ -507,7 +634,7 @@ class MSGraphClient(IClient):
                         f"⚠️ MSAL refresh call failed: {msal_err}. "
                         f"Falling back to stored access token."
                     )
-            
+
             # Final validation of the token we'll actually use
             final_token_str = str(final_access_token).strip()
             if not final_token_str or final_token_str.lower() in [
@@ -526,7 +653,7 @@ class MSGraphClient(IClient):
                     f"The token (stored or refreshed) appears to be a placeholder value: '{final_token_str[:50]}...'. "
                     f"Please re-authenticate the toolset by going to Settings > Toolsets and completing the OAuth flow again."
                 )
-            
+
             # Log token info for debugging (first/last few chars only for security)
             token_preview = f"{final_token_str[:10]}...{final_token_str[-10:]}" if len(final_token_str) > 20 else "***"
             logger.debug(
@@ -573,10 +700,10 @@ class MSGraphClient(IClient):
                     self,
                     msal_application: msal.ConfidentialClientApplication,
                     current_access_token: str,
-                    current_refresh_token: Optional[str],
-                    token_scopes: List[str],
+                    current_refresh_token: str | None,
+                    token_scopes: list[str],
                     svc_logger: logging.Logger,
-                    initial_expires_at: Optional[float] = None,
+                    initial_expires_at: float | None = None,
                 ) -> None:
                     self._msal_app = msal_application
                     self._access_token = current_access_token
@@ -584,7 +711,7 @@ class MSGraphClient(IClient):
                     self._scopes = token_scopes
                     self._logger = svc_logger
                     self._expires_at = initial_expires_at
-                    self._refresh_lock: Optional[Any] = None  # lazy asyncio.Lock
+                    self._refresh_lock: Any | None = None  # lazy asyncio.Lock
 
                 def _is_token_expiring(self) -> bool:
                     if self._expires_at is None:
@@ -636,7 +763,7 @@ class MSGraphClient(IClient):
                 async def get_authorization_token(
                     self,
                     uri: str,
-                    additional_authentication_context: Optional[Dict[str, Any]] = None,
+                    additional_authentication_context: dict[str, Any] | None = None,
                 ) -> str:
                     if self._is_token_expiring():
                         lock = await self._ensure_lock()
@@ -658,7 +785,7 @@ class MSGraphClient(IClient):
             raw_expires = credentials_config.get("expires_at") or credentials_config.get("expiry_date")
             if raw_expires:
                 try:
-                    stored_expires_at: Optional[float] = float(raw_expires)
+                    stored_expires_at: float | None = float(raw_expires)
                     if stored_expires_at and stored_expires_at > 1e12:
                         stored_expires_at /= 1000.0
                 except (TypeError, ValueError):
@@ -730,34 +857,16 @@ class MSGraphClient(IClient):
                     oid = claims.get("oid")
                     if oid:
                         user_id_for_graph = oid
-                        logger.info(
-                            f"Extracted user OID from JWT for Graph API: {oid}"
-                        )
             except Exception as jwt_err:
                 logger.warning(
-                    f"Could not decode JWT for user OID, falling back to 'me': {jwt_err}"
+                    "Could not decode JWT for user OID, falling back to 'me': %s",
+                    jwt_err,
                 )
 
             # Set the user ID in path_parameters so all /me/* URL templates
             # resolve to /users/{oid}/* instead of /users/me-token-to-replace/*
             if hasattr(graph_client, "path_parameters"):
                 graph_client.path_parameters["user%2Did"] = user_id_for_graph
-                logger.debug(
-                    f"Set graph_client path_parameters['user%2Did'] = {user_id_for_graph}"
-                )
-            else:
-                logger.warning(
-                    "GraphServiceClient has no path_parameters attribute — "
-                    "/me resolution may fail"
-                )
-
-            # -----------------------------------------------------------------
-            # DEBUG: Log the actual base_url that the adapter will use
-            # -----------------------------------------------------------------
-            actual_base_url = getattr(adapter, 'base_url', 'UNKNOWN')
-            logger.debug(
-                f"HttpxRequestAdapter base_url = {actual_base_url}"
-            )
 
             # -----------------------------------------------------------------
             # Wrap in a shim that implements the same interface as other clients.
@@ -776,7 +885,7 @@ class MSGraphClient(IClient):
             # -----------------------------------------------------------------
             class _MeRedirectingGraphClient:
                 """Proxy around GraphServiceClient that fixes /me resolution.
-                
+
                 The msgraph SDK's .me property internally uses a placeholder
                 'me-token-to-replace' that doesn't get replaced in delegated
                 auth scenarios. This proxy intercepts .me access and redirects
