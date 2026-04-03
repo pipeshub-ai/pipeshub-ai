@@ -8,8 +8,6 @@ results as markdown.
 from __future__ import annotations
 
 import asyncio
-import csv
-import io
 import time
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
@@ -39,9 +37,14 @@ class ExecuteQueryArgs(BaseModel):
         ...,
         description="Name of the data source to query (e.g., 'PostgreSQL', 'Snowflake', 'MariaDB'). Case-insensitive."
     )
-    connector_id: Optional[str] = Field(
-        default=None,
-        description="Optional connector instance ID to force query execution on a specific connector. If omitted, the tool falls back to default connector resolution by source type."
+    connector_id: str = Field(
+        ...,
+        description=(
+            "The connector instance ID identifying which database connector to execute against. "
+            "REQUIRED: Extract this from the 'Connector Id' field shown in the record context. "
+            "Multiple connectors of the same type (e.g. two PostgreSQL instances) may exist, "
+            "so always use the connector_id associated with the tables you are querying."
+        ),
     )
     reason: str = Field(
         default="Executing SQL query to retrieve data",
@@ -178,19 +181,6 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
             return False, "Blocked: Dynamic SQL execution is not allowed"
 
     return True, ""
-
-def _source_type_to_connector_type(source_type: str) -> Optional[str]:
-    """Map normalized source type to ArangoDB connector type.
-    
-    NOTE: Must match the 'type' field stored in ArangoDB apps collection.
-    """
-    mapping = {
-        "postgres": "PostgreSQL",  # Matches app.type in ArangoDB
-        "snowflake": "Snowflake",  # Matches app.type in ArangoDB
-        "mariadb": "MariaDB",  # Matches app.type in ArangoDB
-    }
-    return mapping.get(source_type)
-
 
 
 
@@ -471,9 +461,7 @@ async def _execute_query_impl(
     query: str,
     source_name: str,
     config_service: "ConfigurationService",
-    graph_provider: Optional["IGraphDBProvider"] = None,
     connector_instance_id: Optional[str] = None,
-    org_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Main implementation for executing SQL queries.
     
@@ -481,9 +469,9 @@ async def _execute_query_impl(
         query: SQL query to execute
         source_name: Name of the data source
         config_service: Configuration service
-        graph_provider: Optional GraphDB service for looking up connector details
-        connector_instance_id: Optional connector instance ID
-        org_id: Optional organization ID for looking up connector
+        connector_instance_id: Connector instance ID (should be provided by the agent
+            from the record context; required when multiple connectors of the same
+            type exist)
         
     Returns:
         Dict with 'ok', 'markdown_result' or 'error'
@@ -503,30 +491,13 @@ async def _execute_query_impl(
             "error": f"Unknown data source type: '{source_name}'. Supported types: PostgreSQL, Snowflake, MariaDB."
         }
     
-    # Normalize connector id input and look up fallback if not provided
     connector_instance_id = (connector_instance_id or "").strip() or None
-    logger.debug(
-        f"Connector lookup check: connector_instance_id={connector_instance_id}, "
-        f"graph_provider={'present' if graph_provider else 'None'}, org_id={org_id}"
-    )
-    if not connector_instance_id and graph_provider and org_id:
-        connector_type = _source_type_to_connector_type(source_type)
-        logger.debug(f"Looking up connector: source_type={source_type}, connector_type={connector_type}, org_id={org_id}")
-        if connector_type:
-            try:
-                connector_instance_id = await graph_provider.get_connector_id_by_type(
-                    org_id, connector_type
-                )
-                if connector_instance_id:
-                    logger.info(f"Resolved connector_instance_id={connector_instance_id} for type={connector_type}")
-                else:
-                    logger.warning(f"No active {connector_type} connector found for org {org_id}")
-            except Exception as e:
-                logger.warning(f"Failed to lookup connector ID: {e}")
-    elif not connector_instance_id:
+    if not connector_instance_id:
         logger.warning(
-            f"Skipping connector lookup: graph_provider={'present' if graph_provider else 'MISSING'}, "
-            f"org_id={'present' if org_id else 'MISSING'}"
+            "No connector_instance_id provided for source_type=%s. "
+            "The underlying client will attempt default config resolution, "
+            "which may fail or target the wrong instance when multiple connectors exist.",
+            source_type,
         )
     
     logger.info(f"Executing {source_type} query: {query[:100]}...")
@@ -588,7 +559,6 @@ async def _execute_query_impl(
 def create_execute_query_tool(
     config_service: "ConfigurationService",
     graph_provider: Optional["IGraphDBProvider"] = None,
-    connector_instance_id: Optional[str] = None,
     org_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
@@ -597,9 +567,8 @@ def create_execute_query_tool(
     
     Args:
         config_service: Configuration service for retrieving connection details
-        graph_provider: Optional GraphDB service for connector lookups
-        connector_instance_id: Optional connector instance ID
-        org_id: Optional organization ID for looking up connector by type
+        graph_provider: Optional GraphDB service (used for BlobStorage fallback)
+        org_id: Optional organization ID for background CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
         
@@ -611,25 +580,28 @@ def create_execute_query_tool(
     async def execute_sql_query_tool(
         query: str,
         source_name: str,
-        connector_id: Optional[str] = None,
+        connector_id: str = "",
         reason: str = "Executing SQL query to retrieve data",
     ) -> Dict[str, Any]:
-        """Execute a SQL query against an external data source (PostgreSQL, Snowflake, MariaDB, etc.).
-        
-        Use this tool when you need to:
-        - Query a database directly to retrieve specific data
-        - Execute SQL queries provided in the context or generated based on table schemas
-        - Get live data from connected data sources
+        """Execute a read-only SQL query against an external data source.
 
-        Important orchestration rule:
-        - This tool executes against one connector/database context per call.
-        - If required tables are from different connectors/databases, make separate tool calls and aggregate results in the model.
-        - Do not attempt cross-connector or cross-database joins in a single SQL statement.
+        Supported sources: PostgreSQL, Snowflake, MariaDB.
+
+        IMPORTANT — connector_id is required:
+        - Each table in the context includes a 'Connector Id' field.
+        - You MUST pass the connector_id associated with the tables you are querying.
+        - Multiple connectors of the same database type may exist; the connector_id
+          ensures the query runs against the correct instance.
+
+        Orchestration rules:
+        - One connector per call. If tables live in different connectors, make
+          separate calls and merge results yourself.
+        - Only SELECT / read-only queries are allowed.
         
         Args:
             query: The SQL query to execute (SELECT queries only for safety)
             source_name: Name of the data source (e.g., 'PostgreSQL', 'Snowflake', 'MariaDB')
-            connector_id: Optional connector instance ID to target a specific connector
+            connector_id: Connector instance ID from the record context (required)
             reason: Explanation of why this query is needed
             
         Returns:
@@ -650,15 +622,11 @@ def create_execute_query_tool(
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
         
         try:
-            requested_connector_id = (connector_id or "").strip() or None
-            effective_connector_id = requested_connector_id or connector_instance_id
             result = await _execute_query_impl(
                 query=query,
                 source_name=source_name,
                 config_service=config_service,
-                graph_provider=graph_provider,
-                connector_instance_id=effective_connector_id,
-                org_id=org_id,
+                connector_instance_id=(connector_id or "").strip() or None,
             )
             
             logger.info(f"🔍 [execute_sql_query_tool] Got result: ok={result.get('ok')}, row_count={result.get('row_count')}, column_count={result.get('column_count')}")

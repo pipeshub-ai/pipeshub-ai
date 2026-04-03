@@ -61,9 +61,6 @@ class Neo4jLabel(Enum):
     LANGUAGES = "Languages"
     TOPICS = "Topics"
 
-    # Storage mappings
-    VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "VirtualRecordToDocIdMapping"
-
     # Teams
     TEAMS = "Teams"
 
@@ -131,8 +128,6 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     CollectionNames.SUBCATEGORIES3.value: Neo4jLabel.SUBCATEGORIES3.value,
     CollectionNames.LANGUAGES.value: Neo4jLabel.LANGUAGES.value,
     CollectionNames.TOPICS.value: Neo4jLabel.TOPICS.value,
-    # Storage mappings
-    CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value: Neo4jLabel.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
     # Teams
     CollectionNames.TEAMS.value: Neo4jLabel.TEAMS.value,
     # Agent Builder collections

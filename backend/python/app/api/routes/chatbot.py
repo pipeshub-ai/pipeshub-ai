@@ -527,7 +527,7 @@ async def askAIStream(
             logger.info("Processing query...")
             # Send initial status immediately upon connection
             yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
-            logger.info("Processing query2...")
+
             # Process query inline with real-time status updates
             try:
                 # Get LLM based on user selection or fallback to default

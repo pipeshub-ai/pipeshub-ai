@@ -267,9 +267,6 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_relations = record_id_to_fk_relations[record_id]
             result["fk_parent_relations"] = fk_relations["parents"]
             result["fk_child_relations"] = fk_relations["children"]
-            if result.get("metadata"):
-                result["metadata"]["fk_parent_relations"] = fk_relations["parents"]
-                result["metadata"]["fk_child_relations"] = fk_relations["children"]
     
     if not related_record_ids:
         return
@@ -304,15 +301,20 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     )
                     if graph_rec and isinstance(graph_rec, dict):
                         rec["id"] = record_id
-                        rec["record_name"] = graph_rec.get("recordName") or rec.get("record_name", "")
-                        rec["record_type"] = graph_rec.get("recordType") or rec.get("record_type", "")
-                        rec["origin"] = graph_rec.get("origin") or rec.get("origin", "")
-                        rec["connector_name"] = graph_rec.get("connectorName") or rec.get("connector_name", "")
-                        rec["connector_id"] = graph_rec.get("connectorId") or rec.get("connector_id", "")
-                        rec["mime_type"] = graph_rec.get("mimeType") or rec.get("mime_type", "")
-                        rec["weburl"] = graph_rec.get("webUrl") or rec.get("weburl", "")
+                        rec["org_id"] = graph_rec.get("orgId")
+                        rec["record_name"] = graph_rec.get("recordName") 
+                        rec["record_type"] = graph_rec.get("recordType")
+                        rec["version"] = graph_rec.get("version")
+                        rec["origin"] = graph_rec.get("origin")
+                        rec["connector_name"] = graph_rec.get("connectorName")
+                        rec["connector_id"] = graph_rec.get("connectorId")
+                        rec["preview_renderable"] = graph_rec.get("previewRenderable", True)
+                        rec["mime_type"] = graph_rec.get("mimeType")
+                        rec["weburl"] = graph_rec.get("webUrl")
                         rec["hide_weburl"] = graph_rec.get("hideWeburl", False)
-                        rec["org_id"] = graph_rec.get("orgId") or rec.get("org_id", "")
+                        rec["source_created_at"] = graph_rec.get("sourceCreatedAtTimestamp")
+                        rec["source_updated_at"] = graph_rec.get("sourceLastModifiedTimestamp")
+
                 except Exception as graph_e:
                     logger.debug("FK enrichment: could not fetch graph metadata for record_id=%s: %s", record_id, graph_e)
                 virtual_record_id_to_result[vrid] = rec
@@ -408,8 +410,6 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         "recordName": rec_name,
                         "recordType": rec.get("record_type", ""),
                         "source": "FK_ENRICHMENT",
-                        "fk_parent_relations": fk_parent_relations,
-                        "fk_child_relations": fk_child_relations,
                         "origin": rec.get("origin", ""),
                         "recordId": record_id,
                         "mimeType": rec.get("mime_type", ""),
