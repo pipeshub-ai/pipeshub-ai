@@ -572,9 +572,10 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[s
             web_url = meta.get("webUrl") or record.get("weburl", "")
             origin = meta.get("origin") or record.get("origin", "")
             recordId = meta.get("recordId") or record.get("id", "")
+            record_type = record.get("record_type", "")
             if hide_weburl and recordId:
                 web_url = f"/record/{recordId}"
-            elif web_url and origin != "UPLOAD":
+            elif web_url and origin != "UPLOAD" and record_type != RecordType.MAIL.value:
                 web_url = generate_text_fragment_url(web_url, block_text)
 
             enhanced_metadata = {
@@ -582,7 +583,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[s
                         "recordId": recordId,
                         "virtualRecordId": virtual_record_id,
                         "recordName": meta.get("recordName") or record.get("record_name", ""),
-                        "recordType": record.get("record_type", ""),
+                        "recordType": record_type,
                         "recordVersion": record.get("version", ""),
                         "origin": origin,
                         "connector": meta.get("connector") or record.get("connector_name", ""),
@@ -1567,6 +1568,10 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
         return base_url
 
     try:
+
+        if "#:~:text=" in base_url:
+            return base_url
+
         snippet = text_snippet.strip()
         if not snippet:
             return base_url

@@ -1485,8 +1485,8 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     seenRecordIds.add(recordId);
 
     const recordName = citation.citationData.metadata.recordName || "Source";
-    // Strip block-level anchor fragment to get a record-level URL
-    const recordUrl = webUrl.replace(/#.*$/, '');
+    // Strip text fragment directive (#:~:text=...) but preserve other fragments
+    const recordUrl = webUrl.replace(/#:~:text=[^#]*/, '');
     uniqueRecords.push({ name: recordName, url: recordUrl });
   }
 
