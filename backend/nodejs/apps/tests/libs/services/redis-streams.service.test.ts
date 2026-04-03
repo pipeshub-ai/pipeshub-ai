@@ -397,7 +397,7 @@ describe('Redis Streams Service', () => {
           expect.fail('Should have thrown');
         } catch (error) {
           expect(error).to.be.instanceOf(MessageBrokerError);
-          expect((error as Error).message).to.include('1/2 failed in batch publish');
+          expect((error as Error).message).to.include('Error publishing batch to Redis stream');
         }
       });
     });
@@ -458,15 +458,18 @@ describe('Redis Streams Service', () => {
     describe('connect', () => {
       it('should connect the consumer and set initialized to true', async () => {
         await consumer.connect();
-        expect(mockRedis.connect.calledOnce).to.be.true;
+        // connect called twice: once for redis, once for ackRedis (same mock)
+        expect(mockRedis.connect.called).to.be.true;
         expect(consumer.isConnected()).to.be.true;
         expect(mockLogger.info.calledWithMatch('Successfully connected Redis Streams consumer')).to.be.true;
       });
 
       it('should not reconnect if already connected', async () => {
+        const countBefore = mockRedis.connect.callCount;
         await consumer.connect();
         await consumer.connect();
-        expect(mockRedis.connect.calledOnce).to.be.true;
+        // Only one connect() call (the first) should add new calls
+        expect(mockRedis.connect.callCount).to.equal(countBefore + 2);
       });
 
       it('should throw MessageBrokerError on connection failure', async () => {
@@ -486,7 +489,8 @@ describe('Redis Streams Service', () => {
       it('should disconnect and set initialized to false', async () => {
         await consumer.connect();
         await consumer.disconnect();
-        expect(mockRedis.quit.calledOnce).to.be.true;
+        // quit called twice: once for redis, once for ackRedis (same mock)
+        expect(mockRedis.quit.called).to.be.true;
         expect(consumer.isConnected()).to.be.false;
         expect(mockLogger.info.calledWithMatch('Successfully disconnected Redis Streams consumer')).to.be.true;
       });
@@ -1018,6 +1022,7 @@ describe('Redis Streams Service', () => {
         mockRedis.exists.resolves(0);
         await admin.ensureTopicsExist(topics);
         expect(mockRedis.connect.calledOnce).to.be.true;
+        // Each topic triggers xgroup CREATE + xgroup DESTROY = 2 calls per topic
         expect(mockRedis.xgroup.callCount).to.equal(4);
         expect(mockRedis.quit.calledOnce).to.be.true;
       });
@@ -1029,11 +1034,16 @@ describe('Redis Streams Service', () => {
         expect(mockRedis.xgroup.called).to.be.false;
       });
 
-      it('should handle per-topic errors gracefully', async () => {
+      it('should collect per-topic errors and throw', async () => {
         const topics = [{ topic: 'bad-stream' }];
         mockRedis.exists.rejects(new Error('Redis error'));
-        await admin.ensureTopicsExist(topics);
-        expect(mockLogger.warn.called).to.be.true;
+        try {
+          await admin.ensureTopicsExist(topics);
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect((error as Error).message).to.include('Failed to ensure 1 Redis stream(s)');
+        }
+        expect(mockLogger.error.called).to.be.true;
       });
 
       it('should disconnect even on connection error', async () => {

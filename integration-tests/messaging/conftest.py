@@ -26,7 +26,7 @@ logger = logging.getLogger("messaging-integration")
 # ---------------------------------------------------------------------------
 
 def _kafka_brokers() -> str:
-    return os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    return os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
 
 
 def _redis_host() -> str:

@@ -3,12 +3,27 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { UserManagerContainer } from '../../../../src/modules/user_management/container/userManager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
 describe('UserManagerContainer - coverage', () => {
   let originalInstance: any
 
   beforeEach(() => {
     originalInstance = (UserManagerContainer as any).instance
+
+    // Stub message broker factory to prevent real Kafka/Redis connections
+    sinon.stub(messageBrokerFactory, 'resolveMessageBrokerConfig').returns({
+      type: 'kafka',
+      kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+    } as any)
+    sinon.stub(messageBrokerFactory, 'createMessageProducer').returns({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    } as any)
   })
 
   afterEach(() => {

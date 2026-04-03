@@ -27,15 +27,18 @@ describe('RedisService', () => {
   let service: any;
   let capturedRedisOptions: any;
 
+  // Saved require.cache entries for exception-safe restoration in afterEach
+  const ioredisPath = require.resolve('ioredis');
+  const rsPath = require.resolve('../../../src/libs/services/redis.service');
+  let savedIoredis: NodeModule | undefined;
+
   beforeEach(() => {
     mockClient = new MockRedisClient();
     mockLogger = createMockLogger();
     capturedRedisOptions = null;
 
-    // Intercept the ioredis Redis constructor BEFORE importing RedisService
-    // This prevents any real Redis connection from being made
-    const ioredisPath = require.resolve('ioredis');
-    const originalIoredis = require.cache[ioredisPath];
+    // Save original cache entries BEFORE mutation
+    savedIoredis = require.cache[ioredisPath];
 
     // Create a fake ioredis module that returns our mock client.
     // Invoke retryStrategy inside the constructor so c8 attributes
@@ -57,12 +60,11 @@ describe('RedisService', () => {
 
     // Replace ioredis in require cache
     require.cache[ioredisPath] = {
-      ...originalIoredis!,
+      ...savedIoredis!,
       exports: { Redis: FakeRedis, default: FakeRedis },
     } as any;
 
     // Clear RedisService from cache so it picks up our fake ioredis
-    const rsPath = require.resolve('../../../src/libs/services/redis.service');
     delete require.cache[rsPath];
 
     const config = {
@@ -79,21 +81,17 @@ describe('RedisService', () => {
 
     service = new RS(config, mockLogger);
 
-    // Also create a TLS-enabled service to cover lines 42-44 during init
-    new RS({ ...config, tls: true }, createMockLogger());
-
     // Ensure mock client is set (FakeRedis constructor returns mockClient)
     (service as any).client = mockClient;
     (service as any).connected = true;
-
-    // Restore original ioredis module
-    if (originalIoredis) {
-      require.cache[ioredisPath] = originalIoredis;
-    }
-    delete require.cache[rsPath];
   });
 
   afterEach(() => {
+    // Restore require.cache to original state (exception-safe — always runs)
+    if (savedIoredis) {
+      require.cache[ioredisPath] = savedIoredis;
+    }
+    delete require.cache[rsPath];
     sinon.restore();
   });
 

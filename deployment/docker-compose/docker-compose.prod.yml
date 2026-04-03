@@ -115,6 +115,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      kafka-1:
+        condition: service_healthy
       redis:
         condition: service_healthy
       mongodb:
@@ -209,7 +211,6 @@ services:
       retries: 5
 
   zookeeper:
-    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     container_name: zookeeper
     restart: always
@@ -220,7 +221,6 @@ services:
       - ZOOKEEPER_TICK_TIME=2000
 
   kafka-1:
-    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     container_name: kafka-1
     restart: always

@@ -5,6 +5,7 @@ import {
   randomKeyGenerator,
   ConfigService,
 } from '../../../../src/modules/tokens_manager/services/cm.service'
+import { envGuard } from '../../../helpers/env-guard'
 
 /**
  * Coverage tests for ConfigService - exercises all the get*Url methods
@@ -12,11 +13,13 @@ import {
  * and mocking the internal services.
  */
 describe('ConfigService - coverage', () => {
+  const env = envGuard()
   let service: ConfigService
   let mockKvStore: any
   let mockEncryption: any
 
   beforeEach(() => {
+    env.snapshot()
     mockKvStore = {
       get: sinon.stub(),
       set: sinon.stub().resolves(),
@@ -36,6 +39,7 @@ describe('ConfigService - coverage', () => {
   })
 
   afterEach(() => {
+    env.restore()
     sinon.restore()
   })
 
@@ -90,8 +94,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getKafkaConfig()
       expect(result).to.deep.equal(kafkaData)
-
-      delete process.env.KAFKA_BROKERS
     })
 
     it('should fall back to env vars when etcd has no config', async () => {
@@ -103,9 +105,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getKafkaConfig()
       expect(result.brokers).to.deep.equal(['broker1:9092', 'broker2:9092'])
-
-      delete process.env.KAFKA_BROKERS
-      delete process.env.KAFKA_SSL
     })
 
     it('should include SASL config when KAFKA_USERNAME is set', async () => {
@@ -120,12 +119,6 @@ describe('ConfigService - coverage', () => {
       expect(result.sasl).to.exist
       expect(result.sasl!.username).to.equal('user')
       expect(result.sasl!.mechanism).to.equal('plain')
-
-      delete process.env.KAFKA_BROKERS
-      delete process.env.KAFKA_SSL
-      delete process.env.KAFKA_USERNAME
-      delete process.env.KAFKA_PASSWORD
-      delete process.env.KAFKA_SASL_MECHANISM
     })
   })
 
@@ -145,10 +138,6 @@ describe('ConfigService - coverage', () => {
       const result = await service.getRedisConfig()
       expect(result).to.deep.equal(redisData)
       expect(mockKvStore.set.called).to.be.true
-
-      delete process.env.REDIS_HOST
-      delete process.env.REDIS_PORT
-      delete process.env.REDIS_DB
     })
   })
 
@@ -165,8 +154,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getMongoConfig()
       expect(result).to.deep.equal(mongoData)
-
-      delete process.env.MONGO_URI
     })
   })
 
@@ -183,8 +170,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getQdrantConfig()
       expect(result).to.deep.equal(qdrantData)
-
-      delete process.env.QDRANT_API_KEY
     })
   })
 
@@ -203,10 +188,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getArangoConfig()
       expect(result).to.deep.equal(arangoData)
-
-      delete process.env.ARANGO_URL
-      delete process.env.ARANGO_USERNAME
-      delete process.env.ARANGO_PASSWORD
     })
   })
 
@@ -223,10 +204,6 @@ describe('ConfigService - coverage', () => {
       expect(result.host).to.equal('localhost')
       expect(result.port).to.equal(2379)
       expect(result.dialTimeout).to.equal(5000)
-
-      delete process.env.ETCD_HOST
-      delete process.env.ETCD_PORT
-      delete process.env.ETCD_DIAL_TIMEOUT
     })
   })
 
@@ -245,7 +222,6 @@ describe('ConfigService - coverage', () => {
       process.env.PORT = '3001'
       const result = await service.getAuthBackendUrl()
       expect(result).to.equal('http://localhost:3001')
-      delete process.env.PORT
     })
 
     it('should strip trailing slash from endpoint', async () => {
@@ -333,9 +309,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getConnectorUrl()
       expect(result).to.equal('http://connector:8088')
-
-      delete process.env.CONNECTOR_BACKEND
-      delete process.env.CONNECTOR_PUBLIC_BACKEND
     })
 
     it('should fall back to stored endpoint', async () => {
@@ -363,8 +336,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getConnectorPublicUrl()
       expect(result).to.equal('http://env-pub:8088')
-
-      delete process.env.CONNECTOR_PUBLIC_BACKEND
     })
   })
 
@@ -375,8 +346,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getIndexingUrl()
       expect(result).to.equal('http://indexing:8091')
-
-      delete process.env.INDEXING_BACKEND
     })
   })
 
@@ -403,8 +372,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getFrontendUrl()
       expect(result).to.equal('http://frontend:3000')
-
-      delete process.env.FRONTEND_PUBLIC_URL
     })
 
     it('should fall back to stored value', async () => {
@@ -423,8 +390,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getAiBackendUrl()
       expect(result).to.equal('http://query:8000')
-
-      delete process.env.QUERY_BACKEND
     })
 
     it('should fall back to default localhost:8000', async () => {
@@ -566,8 +531,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getMcpScopes()
       expect(result).to.deep.equal(['scope1', 'scope2', 'scope3'])
-
-      delete process.env.MCP_SCOPES
     })
 
     it('should filter empty strings from scopes', async () => {
@@ -575,8 +538,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getMcpScopes()
       expect(result).to.not.include('')
-
-      delete process.env.MCP_SCOPES
     })
   })
 
@@ -589,8 +550,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getRsAvailable()
       expect(result).to.equal('true')
-
-      delete process.env.REPLICA_SET_AVAILABLE
     })
 
     it('should return false for localhost mongo URI', async () => {
@@ -604,8 +563,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getRsAvailable()
       expect(result).to.equal('false')
-
-      delete process.env.MONGO_URI
     })
 
     it('should return true for remote mongo URI', async () => {
@@ -618,8 +575,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getRsAvailable()
       expect(result).to.equal('true')
-
-      delete process.env.MONGO_URI
     })
 
     it('should return false for @mongodb:27017 URI', async () => {
@@ -632,8 +587,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getRsAvailable()
       expect(result).to.equal('false')
-
-      delete process.env.MONGO_URI
     })
   })
 
@@ -648,8 +601,6 @@ describe('ConfigService - coverage', () => {
 
       const result = await service.getKafkaConfig()
       expect(result.brokers).to.deep.equal(['localhost:9092'])
-
-      delete process.env.KAFKA_BROKERS
     })
   })
 

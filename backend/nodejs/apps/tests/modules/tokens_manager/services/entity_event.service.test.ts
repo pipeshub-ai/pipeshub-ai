@@ -10,7 +10,7 @@ import {
 describe('tokens_manager/services/entity_event.service', () => {
   let producer: EntitiesEventProducer
   let mockLogger: any
-  let mockMessageProducer: any
+  let mockProducer: any
 
   beforeEach(() => {
     mockLogger = {
@@ -19,14 +19,15 @@ describe('tokens_manager/services/entity_event.service', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    mockMessageProducer = {
+    mockProducer = {
       connect: sinon.stub().resolves(),
       disconnect: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(false),
-      healthCheck: sinon.stub().resolves(true),
       publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
     }
-    producer = new EntitiesEventProducer(mockMessageProducer, mockLogger)
+    producer = new EntitiesEventProducer(mockProducer, mockLogger)
   })
 
   afterEach(() => {
@@ -74,8 +75,8 @@ describe('tokens_manager/services/entity_event.service', () => {
 
       await producer.publishEvent(event)
 
-      expect(mockMessageProducer.publish.calledOnce).to.be.true
-      const [topic, message] = mockMessageProducer.publish.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('entity-events')
       expect(message.key).to.equal(EventType.AppEnabledEvent)
       expect(message.headers.eventType).to.equal(EventType.AppEnabledEvent)
@@ -83,7 +84,7 @@ describe('tokens_manager/services/entity_event.service', () => {
     })
 
     it('should log error if publish fails', async () => {
-      mockMessageProducer.publish.rejects(new Error('Kafka error'))
+      mockProducer.publish.rejects(new Error('Kafka error'))
 
       const event: any = {
         eventType: EventType.AppEnabledEvent,
@@ -99,17 +100,17 @@ describe('tokens_manager/services/entity_event.service', () => {
 
   describe('start', () => {
     it('should call connect if not connected', async () => {
-      mockMessageProducer.isConnected.returns(false)
+      mockProducer.isConnected.returns(false)
       await producer.start()
-      expect(mockMessageProducer.connect.calledOnce).to.be.true
+      expect(mockProducer.connect.calledOnce).to.be.true
     })
   })
 
   describe('stop', () => {
     it('should call disconnect if connected', async () => {
-      mockMessageProducer.isConnected.returns(true)
+      mockProducer.isConnected.returns(true)
       await producer.stop()
-      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
   })
 })
