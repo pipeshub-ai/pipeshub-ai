@@ -3,8 +3,7 @@ services:
     image: pipeshub-ai:latest
     restart: always
     build:
-      context: ../../../
-      dockerfile: deployment/docker-compose/hot-reload/Dockerfile.dev
+      dockerfile: Dockerfile.dev
       args:
         - BUILDKIT_INLINE_CACHE=1
       shm_size: 4gb
