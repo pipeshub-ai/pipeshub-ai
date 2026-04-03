@@ -65,7 +65,7 @@ services:
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
 
       # Message broker config
-      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config
@@ -136,6 +136,8 @@ services:
 
     depends_on:
       qdrant:
+        condition: service_healthy
+      kafka-1:
         condition: service_healthy
       redis:
         condition: service_healthy

@@ -64,7 +64,7 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       
       # Message broker config
-      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config

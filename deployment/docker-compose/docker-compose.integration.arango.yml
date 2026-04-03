@@ -130,6 +130,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      kafka-1:
+        condition: service_started
       redis:
         condition: service_started
       mongodb:
@@ -209,7 +211,6 @@ services:
       - etcd_data:/etcd-data
 
   zookeeper:
-    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -219,19 +220,19 @@ services:
       - ZOOKEEPER_TICK_TIME=2000
 
   kafka-1:
-    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
       - zookeeper
     ports:
       - "9092:9092"
+      - "29092:29092"
     environment:
       - KAFKA_BROKER_ID=1
       - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT
-      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092
-      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT,HOST:PLAINTEXT
+      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092,HOST://0.0.0.0:29092
+      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092,HOST://localhost:29092
       - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1

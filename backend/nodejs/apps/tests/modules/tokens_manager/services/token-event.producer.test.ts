@@ -6,7 +6,7 @@ import { TokenEventProducer } from '../../../../src/modules/tokens_manager/servi
 describe('tokens_manager/services/token-event.producer', () => {
   let producer: TokenEventProducer
   let mockLogger: any
-  let mockMessageProducer: any
+  let mockProducer: any
 
   beforeEach(() => {
     mockLogger = {
@@ -15,14 +15,15 @@ describe('tokens_manager/services/token-event.producer', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    mockMessageProducer = {
+    mockProducer = {
       connect: sinon.stub().resolves(),
       disconnect: sinon.stub().resolves(),
       isConnected: sinon.stub().returns(false),
-      healthCheck: sinon.stub().resolves(true),
       publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
     }
-    producer = new TokenEventProducer(mockMessageProducer, mockLogger)
+    producer = new TokenEventProducer(mockProducer, mockLogger)
   })
 
   afterEach(() => {
@@ -45,8 +46,8 @@ describe('tokens_manager/services/token-event.producer', () => {
 
       await producer.publishTokenEvent(event)
 
-      expect(mockMessageProducer.publish.calledOnce).to.be.true
-      const [topic, message] = mockMessageProducer.publish.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('token-events')
       expect(message.key).to.equal('ref-123-google')
       expect(message.value).to.deep.equal(event)
@@ -55,29 +56,29 @@ describe('tokens_manager/services/token-event.producer', () => {
 
   describe('start', () => {
     it('should call connect if not connected', async () => {
-      mockMessageProducer.isConnected.returns(false)
+      mockProducer.isConnected.returns(false)
 
       await producer.start()
 
-      expect(mockMessageProducer.connect.calledOnce).to.be.true
+      expect(mockProducer.connect.calledOnce).to.be.true
     })
   })
 
   describe('stop', () => {
     it('should call disconnect if connected', async () => {
-      mockMessageProducer.isConnected.returns(true)
+      mockProducer.isConnected.returns(true)
 
       await producer.stop()
 
-      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
 
     it('should not call disconnect if not connected', async () => {
-      mockMessageProducer.isConnected.returns(false)
+      mockProducer.isConnected.returns(false)
 
       await producer.stop()
 
-      expect(mockMessageProducer.disconnect.called).to.be.false
+      expect(mockProducer.disconnect.called).to.be.false
     })
   })
 })
