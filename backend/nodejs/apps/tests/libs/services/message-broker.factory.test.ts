@@ -58,7 +58,11 @@ import {
   createMessageAdminForBrokerType,
   buildRedisBrokerConfig,
   ensureMessageTopicsExist,
+  ensureMessageTopicsExistFromConfig,
   resolveMessageBrokerConfig,
+  createMessageProducer,
+  createMessageConsumer,
+  createMessageProducerFromConfig,
   REQUIRED_TOPICS,
 } from '../../../src/libs/services/message-broker.factory';
 
@@ -408,6 +412,149 @@ describe('MessageBrokerFactory', () => {
       } as any);
       expect(r.type).to.equal('redis');
       expect((r as any).redis.host).to.equal('localhost');
+    });
+
+    it('should throw when kafka brokers array is empty', () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      expect(() =>
+        resolveMessageBrokerConfig({
+          kafka: { brokers: [] },
+          redis: { host: 'localhost', port: 6379 },
+        } as any),
+      ).to.throw('Kafka brokers');
+    });
+
+    it('should throw when redis host is empty string', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+      expect(() =>
+        resolveMessageBrokerConfig({
+          kafka: { brokers: ['localhost:9092'] },
+          redis: { host: '', port: 6379 },
+        } as any),
+      ).to.throw('Redis host');
+    });
+  });
+
+  // ================================================================
+  // createMessageProducer (high-level, takes ResolvedMessageBrokerConfig)
+  // ================================================================
+  describe('createMessageProducer', () => {
+    it('should create a Kafka producer from resolved kafka config', () => {
+      const resolved = { type: 'kafka' as const, kafka: kafkaConfig };
+      const producer = createMessageProducer(resolved, mockLogger as any);
+      expect(producer).to.be.instanceOf(BaseKafkaProducerConnection);
+    });
+
+    it('should create a Redis producer from resolved redis config', () => {
+      const resolved = { type: 'redis' as const, redis: redisConfig };
+      const producer = createMessageProducer(resolved, mockLogger as any);
+      expect(producer).to.be.instanceOf(BaseRedisStreamsProducerConnection);
+    });
+  });
+
+  // ================================================================
+  // createMessageConsumer (high-level, takes ResolvedMessageBrokerConfig)
+  // ================================================================
+  describe('createMessageConsumer', () => {
+    it('should create a Kafka consumer from resolved kafka config', () => {
+      const resolved = { type: 'kafka' as const, kafka: kafkaConfig };
+      const consumer = createMessageConsumer(resolved, mockLogger as any);
+      expect(consumer).to.be.instanceOf(BaseKafkaConsumerConnection);
+    });
+
+    it('should create a Redis consumer from resolved redis config', () => {
+      const resolved = { type: 'redis' as const, redis: redisConfig };
+      const consumer = createMessageConsumer(resolved, mockLogger as any);
+      expect(consumer).to.be.instanceOf(BaseRedisStreamsConsumerConnection);
+    });
+  });
+
+  // ================================================================
+  // createMessageProducerFromConfig
+  // ================================================================
+  describe('createMessageProducerFromConfig', () => {
+    it('should create a kafka producer from AppConfig', () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      const appConfig = {
+        kafka: {
+          clientId: 'app',
+          brokers: ['localhost:9092'],
+          groupId: 'app-group',
+        },
+        redis: { host: 'localhost', port: 6379 },
+      } as any;
+      const producer = createMessageProducerFromConfig(
+        appConfig,
+        mockLogger as any,
+      );
+      expect(producer).to.be.instanceOf(BaseKafkaProducerConnection);
+    });
+
+    it('should create a redis producer from AppConfig', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+      const appConfig = {
+        kafka: { brokers: ['localhost:9092'] },
+        redis: { host: 'localhost', port: 6379 },
+      } as any;
+      const producer = createMessageProducerFromConfig(
+        appConfig,
+        mockLogger as any,
+      );
+      expect(producer).to.be.instanceOf(BaseRedisStreamsProducerConnection);
+    });
+  });
+
+  // ================================================================
+  // ensureMessageTopicsExistFromConfig
+  // ================================================================
+  describe('ensureMessageTopicsExistFromConfig', () => {
+    it('should ensure topics for kafka via AppConfig', async () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      const ensureStub = sinon
+        .stub(KafkaAdminService.prototype, 'ensureTopicsExist')
+        .resolves();
+      const appConfig = {
+        kafka: {
+          clientId: 'app',
+          brokers: ['localhost:9092'],
+          groupId: 'app-group',
+        },
+        redis: { host: 'localhost', port: 6379 },
+      } as any;
+      await ensureMessageTopicsExistFromConfig(appConfig, mockLogger as any);
+      expect(ensureStub.calledOnce).to.be.true;
+    });
+
+    it('should ensure topics for redis via AppConfig', async () => {
+      process.env.MESSAGE_BROKER = 'redis';
+      const ensureStub = sinon
+        .stub(RedisStreamsAdminService.prototype, 'ensureTopicsExist')
+        .resolves();
+      const appConfig = {
+        kafka: { brokers: ['localhost:9092'] },
+        redis: { host: 'localhost', port: 6379 },
+      } as any;
+      await ensureMessageTopicsExistFromConfig(appConfig, mockLogger as any);
+      expect(ensureStub.calledOnce).to.be.true;
+    });
+
+    it('should pass custom topics when provided', async () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      const ensureStub = sinon
+        .stub(KafkaAdminService.prototype, 'ensureTopicsExist')
+        .resolves();
+      const customTopics = [
+        { topic: 'custom', numPartitions: 1, replicationFactor: 1 },
+      ];
+      await ensureMessageTopicsExistFromConfig(
+        {
+          kafka: { clientId: 'a', brokers: ['b:9092'], groupId: 'g' },
+          redis: { host: 'localhost', port: 6379 },
+        } as any,
+        mockLogger as any,
+        customTopics,
+      );
+      expect(ensureStub.firstCall.args[0]).to.deep.equal(customTopics);
     });
   });
 });
