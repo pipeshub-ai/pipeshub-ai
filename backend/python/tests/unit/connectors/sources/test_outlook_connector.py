@@ -73,7 +73,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1")
+    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "user-1")
 
 
 def _make_graph_response(success=True, data=None, error=None):
@@ -2075,7 +2075,7 @@ def _make_mock_deps_fullcov():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps_fullcov()
-    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1")
+    return OutlookConnector(logger, dep, dsp, cs, "conn-outlook-1", "team", "test-user-id")
 
 
 def _make_graph_response(success=True, data=None, error=None):
@@ -4520,7 +4520,9 @@ class TestCreateConnector:
             dsp = MagicMock()
             cs = MagicMock()
 
-            connector = await OutlookConnector.create_connector(logger, dsp, cs, "conn-1")
+            connector = await OutlookConnector.create_connector(
+                logger, dsp, cs, "conn-1", "team", "test-user-id"
+            )
             assert isinstance(connector, OutlookConnector)
             instance.initialize.assert_awaited_once()
 

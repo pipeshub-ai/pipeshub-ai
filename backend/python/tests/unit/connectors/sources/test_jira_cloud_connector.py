@@ -100,7 +100,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov")
+    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
 
 
 def _make_mock_response(status=200, data=None):
@@ -2315,7 +2315,9 @@ class TestCreateConnector:
             mock_dep.initialize = AsyncMock()
             MockDep.return_value = mock_dep
 
-            connector = await JiraConnector.create_connector(logger, dsp, cs, "conn-id")
+            connector = await JiraConnector.create_connector(
+                logger, dsp, cs, "conn-id", "team", "test-user-id"
+            )
             assert isinstance(connector, JiraConnector)
             mock_dep.initialize.assert_awaited_once()
 

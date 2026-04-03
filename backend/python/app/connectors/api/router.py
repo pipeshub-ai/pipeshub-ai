@@ -2138,7 +2138,7 @@ async def _prepare_connector_config(
         "sync": config.get("sync", {}) if config else {},
         "filters": config.get("filters", {}) if config else {},
         "credentials": None,
-        "oauth": None
+        "oauth": None,
     }
 
     # ============================================================
@@ -5054,13 +5054,26 @@ async def _ensure_connector_initialized(
 
         connector_type = connector_type.replace(" ", "").lower()
 
+        # Fetch scope and createdBy from database App node
+        connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not connector_doc:
+            logger.error(f"Connector {connector_id} not found in database")
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Connector {connector_id} not found"
+            )
+        scope = connector_doc.get("scope", "personal")
+        created_by = connector_doc.get("createdBy", "")
+
         # Create connector using factory
         connector = await ConnectorFactory.create_connector(
             name=connector_type,
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
-            connector_id=connector_id
+            connector_id=connector_id,
+            scope=scope,
+            created_by=created_by
         )
 
         if not connector:

@@ -27,14 +27,40 @@ from app.models.entities import FileRecord, RecordType
 
 def _make_connector():
     """Build an RSSConnector with all dependencies mocked."""
+    from app.models.entities import AppMetadata
+    
     logger = MagicMock()
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    _creator = User(
+        email="user@test.com",
+        org_id="org-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
+    data_entities_processor.get_user_by_user_id = AsyncMock(return_value=_creator)
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="rss-conn-1",
+        name="RSS Feed",
+        type="rss",
+        app_group="RSS",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
+    
     data_store_provider = MagicMock()
+    mock_tx = MagicMock()
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    data_store_provider.transaction.return_value = mock_tx
+    
     config_service = AsyncMock()
     connector_id = "rss-conn-1"
     connector = RSSConnector(
@@ -43,6 +69,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="personal",
+        created_by="test-user-id",
     )
     return connector
 
@@ -508,6 +536,8 @@ class TestRSSConnectorFactory:
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id="rss-conn-1",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, RSSConnector)
             mock_proc.initialize.assert_awaited_once()
@@ -526,6 +556,13 @@ def _make_connector_cov():
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.get_all_active_users = AsyncMock(return_value=[])
+    _creator = User(
+        email="user@test.com",
+        org_id="org-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
+    dep.get_user_by_user_id = AsyncMock(return_value=_creator)
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
@@ -537,6 +574,8 @@ def _make_connector_cov():
         data_store_provider=ds_provider,
         config_service=config_service,
         connector_id="rss-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
 
 
@@ -1067,7 +1106,9 @@ class TestRunSync:
     async def test_sync_raises_on_general_error(self):
         conn = _make_connector_cov()
         conn.feed_urls = ["https://feed.com/rss"]
-        conn.data_entities_processor.get_all_active_users = AsyncMock(side_effect=Exception("db error"))
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("db error")
+        )
         with pytest.raises(Exception, match="db error"):
             await conn.run_sync()
 

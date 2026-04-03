@@ -1589,6 +1589,48 @@ class AppRole(BaseModel):
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
 
+
+class AppMetadata(BaseModel):
+    """Represents an App/Connector document from the database."""
+    connector_id: str = Field(description="Unique identifier for the connector (_key)")
+    name: str = Field(description="Name of the app")
+    type: str = Field(description="Type of the app")
+    app_group: str = Field(description="App group")
+    auth_type: str | None = Field(default=None, description="Authentication type")
+    scope: str = Field(description="Connector scope (personal/team)")
+    is_active: bool = Field(default=True, description="Whether the app is active")
+    is_agent_active: bool = Field(default=False, description="Whether the agent is active")
+    is_configured: bool = Field(default=False, description="Whether the app is configured")
+    is_authenticated: bool = Field(default=False, description="Whether the app is authenticated")
+    created_by: str | None = Field(default=None, description="User ID who created the app")
+    updated_by: str | None = Field(default=None, description="User ID who last updated the app")
+    created_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app creation")
+    updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
+    status: str | None = Field(default=None, description="Current sync status")
+    is_locked: bool | None = Field(default=None, description="Whether the app is locked")
+
+    @staticmethod
+    def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
+        """Convert database document to AppMetadata model."""
+        return AppMetadata(
+            connector_id=doc.get("_key", ""),
+            name=doc.get("name", ""),
+            type=doc.get("type", ""),
+            app_group=doc.get("appGroup", ""),
+            auth_type=doc.get("authType"),
+            scope=doc.get("scope", "personal"),
+            is_active=doc.get("isActive", True),
+            is_agent_active=doc.get("isAgentActive", False),
+            is_configured=doc.get("isConfigured", False),
+            is_authenticated=doc.get("isAuthenticated", False),
+            created_by=doc.get("createdBy"),
+            updated_by=doc.get("updatedBy"),
+            created_at_timestamp=doc.get("createdAtTimestamp", 0),
+            updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
+            status=doc.get("status"),
+            is_locked=doc.get("isLocked"),
+        )
+
 class MeetingRecord(Record):
     """Record model for a Zoom meeting synced via user past-meetings report APIs.
 

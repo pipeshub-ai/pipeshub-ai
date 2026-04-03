@@ -85,7 +85,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    c = OutlookConnector(logger, dep, dsp, cs, "conn-outlook-deep")
+    c = OutlookConnector(logger, dep, dsp, cs, "conn-outlook-deep", "team", "test-user-id")
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     return c, dep, dsp, cs, tx

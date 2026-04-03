@@ -165,6 +165,8 @@ class GithubConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             GithubApp(connector_id),
@@ -173,6 +175,8 @@ class GithubConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_name = Connectors.GITHUB.value
         self.connector_id = connector_id
@@ -1658,6 +1662,8 @@ class GithubConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         """
         Factory method to create a Github connector instance.
@@ -1681,4 +1687,6 @@ class GithubConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )

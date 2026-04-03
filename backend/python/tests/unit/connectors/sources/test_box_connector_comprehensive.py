@@ -75,6 +75,8 @@ def box_connector(mock_deps):
             data_store_provider=mock_deps["data_store_provider"],
             config_service=mock_deps["config_service"],
             connector_id="box-comp-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 

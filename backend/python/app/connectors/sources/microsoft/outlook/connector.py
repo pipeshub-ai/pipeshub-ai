@@ -226,7 +226,9 @@ class OutlookConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             OutlookApp(connector_id),
@@ -234,7 +236,9 @@ class OutlookConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
         self.rate_limiter = AsyncLimiter(50, 1)
         self.external_outlook_client: OutlookCalendarContactsDataSource | None = None
@@ -3226,9 +3230,25 @@ class OutlookConnector(BaseConnector):
             return None
 
     @classmethod
-    async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
+    async def create_connector(
+        cls,
+        logger: Logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
+    ) -> 'OutlookConnector':
         """Factory method to create and initialize OutlookConnector."""
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OutlookConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        return OutlookConnector(
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
+        )

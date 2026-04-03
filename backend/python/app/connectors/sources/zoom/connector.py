@@ -255,6 +255,8 @@ class ZoomConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             ZoomApp(connector_id),
@@ -263,6 +265,8 @@ class ZoomConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.ZOOM
@@ -1197,6 +1201,8 @@ class ZoomConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "ZoomConnector":
         """Factory method — creates the connector instance without calling init().
 
@@ -1214,4 +1220,6 @@ class ZoomConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )

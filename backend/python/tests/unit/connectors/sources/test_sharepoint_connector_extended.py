@@ -102,7 +102,7 @@ def _make_connector():
     cs = MagicMock()
     cs.get_config = AsyncMock()
 
-    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-ext")
+    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-ext", "team", "test-user-id")
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     return c

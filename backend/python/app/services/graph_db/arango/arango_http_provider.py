@@ -3563,13 +3563,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_apps(self, user_key: str) -> list[dict]:
         """Get all apps (connectors) associated with a user by user document key (_key)."""
         try:
+            user_from = f"{CollectionNames.USERS.value}/{user_key}"
             query = f"""
-            FOR app IN OUTBOUND CONCAT('{CollectionNames.USERS.value}/', @user_key) {CollectionNames.USER_APP_RELATION.value}
-                RETURN app
+            LET user_apps = (
+                FOR app IN OUTBOUND @user_from {CollectionNames.USER_APP_RELATION.value}
+                    RETURN app
+            )
+            LET team_apps = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == @user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                        RETURN app
+            )
+            LET combined = APPEND(user_apps, team_apps)
+            FOR app IN combined
+                COLLECT key = app._key INTO grouped KEEP app
+                RETURN grouped[0].app
             """
             results = await self.execute_query(
                 query,
-                bind_vars={"user_key": user_key},
+                bind_vars={"user_from": user_from},
             )
             return list(results) if results else []
         except Exception as e:
@@ -4846,6 +4861,229 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+            raise
+
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """
+        Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
+
+        Creates team node with id=all_{org_id} if missing, fetches all active users,
+        and adds PERMISSION edges for users not already in the team.
+
+        Idempotent, runs without transaction, safe to call multiple times.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_key, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_key,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Get all active users sorted by createdAtTimestamp ascending
+            users = await self.get_users(org_id, active=True)
+            if not users:
+                self.logger.debug(f"No active users found for org {org_id}")
+                return
+
+            users_sorted = sorted(users, key=lambda u: u.get("createdAtTimestamp", 0))
+            self.logger.info(f"📊 Found {len(users_sorted)} active users for org {org_id}")
+
+            # 3. Get current team members to determine if team is empty
+            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
+            existing_member_count = len((team_with_users or {}).get("members", []))
+            owner_assigned = existing_member_count > 0
+
+            self.logger.info(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
+            if team_with_users and team_with_users.get("members"):
+                self.logger.info(
+                    "📊 Existing members: %s",
+                    [
+                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
+                        for m in team_with_users.get("members", [])
+                    ],
+                )
+
+            # 4. Add each user without a PERMISSION edge
+            for user in users_sorted:
+                user_key = user.get("_key") or user.get("id")
+                if not user_key:
+                    continue
+
+                existing_edge = await self.get_edge(
+                    from_id=user_key,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=team_key,
+                    to_collection=CollectionNames.TEAMS.value,
+                    collection=CollectionNames.PERMISSION.value,
+                )
+                if existing_edge:
+                    continue
+
+                role = "OWNER" if not owner_assigned else "READER"
+                self.logger.info(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
+
+                if not owner_assigned:
+                    owner_assigned = True
+                    try:
+                        await self.update_node(
+                            team_key,
+                            CollectionNames.TEAMS.value,
+                            {"createdBy": user_key, "updatedAtTimestamp": ts},
+                        )
+                        self.logger.info(f"✅ Updated team createdBy to {user_key}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
+
+                permission_edge = {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_key,
+                    "to_collection": CollectionNames.TEAMS.value,
+                    "type": "USER",
+                    "role": role,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_create_edges(
+                    [permission_edge], CollectionNames.PERMISSION.value
+                )
+                self.logger.info(f"✅ Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
+            raise
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """
+        Add a specific user to the org's 'All' team with a PERMISSION edge.
+
+        Ensures All team exists, checks if user already has PERMISSION edge,
+        and adds it if missing. First user in team gets OWNER, subsequent get READER.
+
+        Idempotent, safe to call multiple times for same user.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_key, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_key,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Check if this user already has a PERMISSION edge
+            existing_edge = await self.get_edge(
+                from_id=user_key,
+                from_collection=CollectionNames.USERS.value,
+                to_id=team_key,
+                to_collection=CollectionNames.TEAMS.value,
+                collection=CollectionNames.PERMISSION.value,
+            )
+            if existing_edge:
+                self.logger.debug(f"User {user_key} already has PERMISSION edge to All team")
+                return
+
+            # 3. Check if team has any existing members to determine role
+            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
+            existing_member_count = len((team_with_users or {}).get("members", []))
+            role = "OWNER" if existing_member_count == 0 else "READER"
+
+            self.logger.info(f"Assigning role {role} to user {user_key} (existing members: {existing_member_count})")
+
+            # 4. If assigning first OWNER, update team.createdBy
+            if role == "OWNER":
+                try:
+                    await self.update_node(
+                        team_key,
+                        CollectionNames.TEAMS.value,
+                        {"createdBy": user_key, "updatedAtTimestamp": ts},
+                    )
+                    self.logger.info(f"Updated team createdBy to {user_key}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
+
+            # 5. Create PERMISSION edge
+            permission_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_key,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [permission_edge], CollectionNames.PERMISSION.value
+            )
+            self.logger.info(f"Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
+            raise
+
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates teams/all_{org_id} -> apps/{connector_id} if not present.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            existing = await self.get_edge(
+                from_id=team_key,
+                from_collection=CollectionNames.TEAMS.value,
+                to_id=connector_id,
+                to_collection=CollectionNames.APPS.value,
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=transaction
+            )
+            if existing:
+                return
+            ts = get_epoch_timestamp_in_ms()
+            edge = {
+                "_from": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "_to": f"{CollectionNames.APPS.value}/{connector_id}",
+                "sourceUserId": team_key,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": ts,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [edge],
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=transaction
+            )
+            self.logger.debug(f"Created team->app edge: teams/{team_key} -> apps/{connector_id}")
+        except Exception as e:
+            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
     async def batch_upsert_user_groups(
@@ -13407,14 +13645,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> list[str]:
-        """Get list of app IDs the user has access to."""
-        query = """
-        FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
-            FILTER app != null
-            RETURN app._key
-        """
-        result = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
-        return result if result else []
+        """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
+        try:
+            apps = await self.get_user_apps(user_key)
+            return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
+        except Exception as e:
+            self.logger.error("❌ Failed to get user app ids: %s", str(e))
+            return []
 
     async def get_knowledge_hub_context_permissions(
         self,
@@ -15711,6 +15948,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN rel
             )
 
+            // Check if user has path User->Team->App (user in team, team has userAppRelation to app)
+            LET team_app_rel = FIRST(
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == {user_var}._id
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR rel IN userAppRelation
+                        FILTER rel._from == perm._to AND rel._to == {node_var}._id
+                        LIMIT 1
+                        RETURN rel
+            )
+
             // Check if user is admin
             LET is_admin = ({user_var}.role == "ADMIN" OR {user_var}.orgRole == "ADMIN")
 
@@ -15721,8 +15970,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             // Determine role based on conditions
             RETURN CASE
-                // If no USER_APP_RELATION, no access
-                WHEN user_app_rel == null THEN null
+                // No direct user->app and no team->app: no access
+                WHEN user_app_rel == null AND team_app_rel == null THEN null
+                // Access via team (All)->app: READER; admin gets EDITOR for team apps
+                WHEN user_app_rel == null AND team_app_rel != null THEN (is_admin == true ? "EDITOR" : "READER")
                 // Admin users: Team apps get EDITOR, Personal apps get OWNER
                 WHEN is_admin == true AND app_scope == "team" THEN "EDITOR"
                 WHEN is_admin == true AND app_scope == "personal" THEN "OWNER"

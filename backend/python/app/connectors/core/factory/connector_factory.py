@@ -151,6 +151,8 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create a connector instance"""
@@ -165,6 +167,8 @@ class ConnectorFactory:
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id=connector_id,
+                scope=scope,
+                created_by=created_by,
                 **kwargs
             )
             logger.info(f"Created {name} {connector_id} connector successfully")
@@ -181,6 +185,8 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create and initialize a connector"""
@@ -190,6 +196,8 @@ class ConnectorFactory:
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             **kwargs
         )
 
@@ -215,6 +223,8 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create, initialize, and start sync for a connector"""
@@ -224,6 +234,8 @@ class ConnectorFactory:
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             **kwargs
         )
 

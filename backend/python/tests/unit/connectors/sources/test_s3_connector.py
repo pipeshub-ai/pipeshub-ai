@@ -21,7 +21,7 @@ from app.connectors.sources.s3.base_connector import (
     parse_parent_external_id,
 )
 from app.connectors.sources.s3.connector import S3Connector
-from app.models.entities import RecordType
+from app.models.entities import RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -34,12 +34,31 @@ def mock_logger():
 
 @pytest.fixture()
 def mock_data_entities_processor():
+    from app.models.entities import AppMetadata
+    
     proc = MagicMock()
     proc.org_id = "org-s3-1"
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
+    u = User(
+        email="user@test.com",
+        org_id="org-s3-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
+    proc.get_user_by_user_id = AsyncMock(return_value=u)
+    proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="s3-conn-1",
+        name="S3 Connector",
+        type="s3",
+        app_group="STORAGE",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
     return proc
 
 
@@ -49,7 +68,7 @@ def mock_data_store_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
     mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
@@ -80,6 +99,8 @@ def s3_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="s3-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -192,7 +213,7 @@ class TestS3ConnectorInit:
         result = await s3_connector.init()
         assert result is True
         assert s3_connector.bucket_name == "mybucket"
-        assert s3_connector.connector_scope == "PERSONAL"
+        assert s3_connector.scope == ConnectorScope.PERSONAL.value
 
 
 # ===========================================================================
@@ -319,18 +340,18 @@ class TestS3RecordGroups:
         await s3_connector._create_record_groups_for_buckets([])
 
     async def test_create_record_groups_team_scope(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.TEAM.value
+        s3_connector.scope = ConnectorScope.TEAM.value
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_personal_with_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_personal_no_creator(self, s3_connector):
-        s3_connector.connector_scope = ConnectorScope.PERSONAL.value
+        s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
         await s3_connector._create_record_groups_for_buckets(["bucket1"])
         s3_connector.data_entities_processor.on_new_record_groups.assert_awaited()

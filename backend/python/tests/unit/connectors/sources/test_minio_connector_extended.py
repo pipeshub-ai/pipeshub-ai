@@ -15,6 +15,8 @@ from app.connectors.sources.s3.base_connector import parse_parent_external_id
 
 @pytest.fixture()
 def minio_connector():
+    from app.models.entities import AppMetadata
+    
     with patch("app.connectors.sources.minio.connector.MinIOApp"):
         logger = logging.getLogger("test.minio")
         dep = MagicMock()
@@ -24,6 +26,16 @@ def minio_connector():
         dep.on_new_record_groups = AsyncMock()
         dep.on_new_records = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
+        dep.get_app_by_id = AsyncMock(return_value=AppMetadata(
+            connector_id="minio-conn-1",
+            name="MinIO Connector",
+            type="minio",
+            app_group="STORAGE",
+            scope="PERSONAL",
+            created_by="user-1",
+            created_at_timestamp=1234567890,
+            updated_at_timestamp=1234567890,
+        ))
         ds_provider = MagicMock()
         config_service = AsyncMock()
         connector = MinIOConnector(
@@ -32,6 +44,8 @@ def minio_connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="minio-conn-1",
+            scope="personal",
+            created_by="user-1",
             endpoint_url="http://localhost:9000",
         )
     return connector
@@ -192,6 +206,7 @@ class TestCreateConnector:
         connector = await MinIOConnector.create_connector(
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
+            scope="team", created_by="test-user-id",
         )
         assert connector is not None
 
@@ -212,6 +227,7 @@ class TestCreateConnector:
         connector = await MinIOConnector.create_connector(
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
+            scope="team", created_by="test-user-id",
         )
         assert connector.endpoint_url == "https://minio.prod.com:9000"
 
