@@ -1,5 +1,4 @@
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
@@ -39,12 +38,29 @@ import {
   BadRequestError,
   ForbiddenError,
   GoneError,
-  InternalServerError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
+import {
+  GetAuthMethodsResponseSchema,
+  UpdateAuthMethodResponseSchema,
+} from '../validation/orgAuth-validation';
+import {
+  AuthenticateMultiStepResponseSchema,
+  AuthenticateResponseSchema,
+  DataStringResponseSchema,
+  HasPasswordMethodResponseSchema,
+  InitAuthResponseSchema,
+  LoginOtpGenerateResponseSchema,
+  OAuthExchangeResponseSchema,
+  RefreshTokenResponseSchema,
+  ResetPasswordResponseSchema,
+  ValidateEmailChangeResponseSchema,
+} from '../validation/userAccount-validation';
 import { generateAuthToken } from '../utils/generateAuthToken';
 import {
   AZURE_AD_AUTH_CONFIG_PATH,
@@ -241,9 +257,12 @@ export class UserAccountController {
           },
         },
       }));
-      res.json({
-        isPasswordAuthEnabled,
-      });
+      sendValidatedJson(
+        res,
+        HasPasswordMethodResponseSchema,
+        { isPasswordAuthEnabled },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -338,15 +357,18 @@ export class UserAccountController {
 
       if (session?.token) res.setHeader('x-session-token', session.token);
 
-      res.json({
-        currentStep: 0,
-        allowedMethods: finalMethods,
-        message: 'Authentication initialized',
-        authProviders,
-        jitEnabled: jitEnabledMethods.length > 0,
-
-      });
-
+      sendValidatedJson(
+        res,
+        InitAuthResponseSchema,
+        {
+          currentStep: 0,
+          allowedMethods: finalMethods,
+          message: 'Authentication initialized',
+          authProviders,
+          jitEnabled: jitEnabledMethods.length > 0,
+        },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -494,7 +516,12 @@ export class UserAccountController {
       if (result.statusCode !== 200) {
         throw new BadRequestError(result.data!);
       }
-      res.status(200).send({ data: 'password reset mail sent' });
+      sendValidatedJson(
+        res,
+        DataStringResponseSchema,
+        { data: 'password reset mail sent' },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -506,7 +533,12 @@ export class UserAccountController {
       const count = await OrgAuthConfig.countDocuments({ isDeleted: false });
 
       if (count > 0) {
-        res.status(200).json({ message: 'Org config already done' });
+        sendValidatedJson(
+          res,
+          DataStringResponseSchema,
+          { data: 'Org config already done' },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
@@ -558,9 +590,12 @@ export class UserAccountController {
           await orgAuth.save();
         }
 
-        res
-          .status(201)
-          .json({ message: 'Org Auth Config created successfully' });
+        sendValidatedJson(
+          res,
+          DataStringResponseSchema,
+          { data: 'Org Auth Config created successfully' },
+          HTTP_STATUS.CREATED,
+        );
         return;
       } catch (saveError) {
         if (session) await session.abortTransaction();
@@ -610,7 +645,12 @@ export class UserAccountController {
       }
       const authMethod = orgAuthConfig.authSteps;
 
-      res.status(200).json({ authMethods: authMethod });
+      sendValidatedJson(
+        res,
+        GetAuthMethodsResponseSchema,
+        { authMethods: authMethod },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -651,7 +691,12 @@ export class UserAccountController {
       orgAuthConfig.authSteps = authMethod;
       await orgAuthConfig.save();
 
-      res.status(200).json({ message: 'Auth method updated', authMethod });
+      sendValidatedJson(
+        res,
+        UpdateAuthMethodResponseSchema,
+        { message: 'Auth method updated', authMethod },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -679,7 +724,12 @@ export class UserAccountController {
       }
       await this.updatePassword(userId, orgId, password, req.ip!);
 
-      res.status(200).send({ data: 'password reset' });
+      sendValidatedJson(
+        res,
+        DataStringResponseSchema,
+        { data: 'password reset' },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -756,10 +806,12 @@ export class UserAccountController {
       const user = userFindResult.data;
       const accessToken = await generateAuthToken(user, this.config.jwtSecret);
 
-      res.status(200).send({
-        data: 'password reset',
-        accessToken
-      });
+      sendValidatedJson(
+        res,
+        ResetPasswordResponseSchema,
+        { data: 'password reset', accessToken },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -873,7 +925,12 @@ export class UserAccountController {
       if (result.statusCode !== 200) {
         throw new BadRequestError(result.data);
       }
-      res.status(200).send(result.data);
+      sendValidatedJson(
+        res,
+        LoginOtpGenerateResponseSchema,
+        { message: 'OTP sent' },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       throw error;
     }
@@ -932,7 +989,12 @@ export class UserAccountController {
 
       const accessToken = await generateAuthToken(user, this.config.jwtSecret);
 
-      res.status(200).json({ user: user, accessToken: accessToken });
+      sendValidatedJson(
+        res,
+        RefreshTokenResponseSchema,
+        { user, accessToken },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -1440,12 +1502,17 @@ export class UserAccountController {
           authProviders.oauth = publicConfig;
         }
 
-        res.json({
-          status: 'success',
-          nextStep: sessionInfo.currentStep,
-          allowedMethods,
-          authProviders,
-        });
+        sendValidatedJson(
+          res,
+          AuthenticateMultiStepResponseSchema,
+          {
+            status: 'success' as const,
+            nextStep: sessionInfo.currentStep,
+            allowedMethods,
+            authProviders,
+          },
+          HTTP_STATUS.OK,
+        );
       } else {
         // 5. FINAL SUCCESS
         await this.sessionService.completeAuthentication(sessionInfo);
@@ -1455,64 +1522,25 @@ export class UserAccountController {
           await this.iamService.updateUser(user._id, { hasLoggedIn: true, email: user.email }, accessToken);
         }
 
-        res.status(200).json({
-          message: 'Fully authenticated',
-          accessToken,
-          refreshToken: refreshTokenJwtGenerator(user._id, user.orgId, this.config.scopedJwtSecret),
-        });
+        sendValidatedJson(
+          res,
+          AuthenticateResponseSchema,
+          {
+            message: 'Fully authenticated',
+            accessToken,
+            refreshToken: refreshTokenJwtGenerator(
+              user._id,
+              user.orgId,
+              this.config.scopedJwtSecret,
+            ),
+          },
+          HTTP_STATUS.OK,
+        );
       }
     } catch (error) {
       next(error);
     }
   }
-
-  userAccountSetup = async (
-    req: AuthSessionRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { fullName, password } = req.body;
-      const { email } = req.body;
-      if (!fullName) {
-        throw new BadRequestError('Full Name is required');
-      }
-      if (!password) {
-        throw new BadRequestError('Password is required');
-      }
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-
-      // Todo: check if password and user full name is already with token
-
-      await this.updatePassword(userId, orgId, password, req.ip || '');
-
-      const { firstName, lastName, designation } = req.body;
-      const updateUserResult = await this.iamService.updateUser(
-        userId,
-        {
-          email,
-          firstName,
-          lastName,
-          designation,
-          fullName,
-        },
-        jwt.sign({ userId, orgId }, this.config.jwtSecret, {
-          expiresIn: '24h',
-        }),
-      );
-
-      if (updateUserResult.statusCode !== 200) {
-        throw new InternalServerError('Error checking admin');
-      }
-      const updatedUser = updateUserResult.data;
-
-      res.status(200).json(updatedUser);
-      return;
-    } catch (error) {
-      next(error);
-    }
-  };
 
   async exchangeOAuthToken(
     req: Request,
@@ -1520,15 +1548,9 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { code, provider, redirectUri } = req.body;
+      const { code, redirectUri } = req.body;
 
-      // 1. Initial Validation
-      if (!code || !provider || !redirectUri) {
-        this.logger.warn('OAuth token exchange failed: missing required parameters');
-        throw new BadRequestError('Missing required OAuth parameters');
-      }
-
-      // 2. Get bootstrap config to perform the exchange
+      // 1. Get bootstrap config to perform the exchange
       // Using the first available org context to get the client credentials
       const initialOrg = await Org.findOne({ isDeleted: false }).lean().exec();;
       if (!initialOrg) throw new BadRequestError('Organization not found');
@@ -1544,7 +1566,7 @@ export class UserAccountController {
         throw new BadRequestError('OAuth is not properly configured');
       }
 
-      // 3. Exchange authorization code for tokens (Functionality strictly maintained)
+      // 2. Exchange authorization code for tokens (Functionality strictly maintained)
       const tokenResponse = await fetch(oauthConfig.tokenEndpoint, {
         method: 'POST',
         headers: {
@@ -1570,7 +1592,7 @@ export class UserAccountController {
 
       const tokens = await tokenResponse.json();
 
-      // 4. Use the access_token to get the user's email for JIT/Existence check
+      // 3. Use the access_token to get the user's email for JIT/Existence check
       const userInfoResponse = await fetch(oauthConfig.userInfoEndpoint, {
         headers: {
           'Authorization': `Bearer ${tokens.access_token}`,
@@ -1589,7 +1611,7 @@ export class UserAccountController {
         throw new BadRequestError('Email not found in OAuth provider response');
       }
 
-      // 5. Apply the "Google Flow" for user check and JIT
+      // 4. Apply the "Google Flow" for user check and JIT
       const authToken = iamJwtGenerator(providerEmail, this.config.scopedJwtSecret);
       const userResult = await this.iamService.getUserByEmail(providerEmail, authToken);
       let user = userResult.statusCode === 200 ? userResult.data : null;
@@ -1622,13 +1644,18 @@ export class UserAccountController {
       });
 
 
-      // 6. FINAL RESPONSE (Strictly maintained keys)
-      res.status(200).json({
-        access_token: tokens.access_token,
-        id_token: tokens.id_token,
-        token_type: tokens.token_type,
-        expires_in: tokens.expires_in,
-      });
+      // 5. FINAL RESPONSE (Strictly maintained keys)
+      sendValidatedJson(
+        res,
+        OAuthExchangeResponseSchema,
+        {
+          access_token: tokens.access_token,
+          id_token: tokens.id_token,
+          token_type: tokens.token_type,
+          expires_in: tokens.expires_in,
+        },
+        HTTP_STATUS.OK,
+      );
 
     } catch (error) {
       next(error);
@@ -1657,8 +1684,12 @@ export class UserAccountController {
         ipAddress: req.ip || '',
       });
 
-      res.status(200).json({ message: 'Email updated successfully' });
-
+      sendValidatedJson(
+        res,
+        ValidateEmailChangeResponseSchema,
+        { message: 'Email updated successfully' },
+        HTTP_STATUS.OK,
+      );
 
     } catch (err) {
 
