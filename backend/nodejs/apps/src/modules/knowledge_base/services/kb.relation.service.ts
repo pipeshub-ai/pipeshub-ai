@@ -23,6 +23,10 @@ import {
   BaseSyncEvent,
 } from './sync_events.service';
 import {
+  localFsResyncDispatcher,
+  isLocalFsConnector,
+} from './local_fs_resync_dispatcher';
+import {
   IServiceFileRecord,
   IServiceRecord
 } from '../types/service.records.response';
@@ -324,6 +328,26 @@ export class RecordRelationService {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
+      if (isLocalFsConnector(resyncPayload.connector)) {
+        const dispatchResult = await localFsResyncDispatcher.dispatch({
+          orgId: resyncPayload.orgId,
+          connectorId: resyncPayload.connectorId,
+          connectorName: resyncPayload.connector,
+          origin: resyncPayload.origin,
+          fullSync: resyncPayload.fullSync,
+        });
+        logger.info('Dispatched Local FS resync to active watcher', {
+          connectorId: resyncPayload.connectorId,
+          orgId: resyncPayload.orgId,
+          replayedBatches: dispatchResult.replayedBatches,
+          replayedEvents: dispatchResult.replayedEvents,
+        });
+        return {
+          success: true,
+          dispatch: 'watcher',
+          ...dispatchResult,
+        };
+      }
       const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
       const event: SyncEvent = {
         eventType: eventType,
@@ -341,6 +365,9 @@ export class RecordRelationService {
       logger.error('Failed to publish resync connector event', {
         error: eventError,
       });
+      if (eventError?.statusCode === 409) {
+        throw eventError;
+      }
       // Don't throw the error to avoid affecting the main operation
       return { success: false, error: eventError.message };
     }

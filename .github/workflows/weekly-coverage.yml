@@ -26,7 +26,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-          cache-dependency-path: backend/nodejs/apps/package-lock.json
+          cache-dependency-path: |
+            backend/nodejs/apps/package-lock.json
+            backend/nodejs/apps/pipeshub-cli/package-lock.json
 
       - name: Install dependencies
         run: |
@@ -38,6 +40,12 @@ jobs:
         run: |
           cd backend/nodejs/apps
           npm run test:coverage-check
+
+      - name: Pipeshub CLI — install and unit tests
+        run: |
+          cd backend/nodejs/apps/pipeshub-cli
+          npm ci
+          npm run test:ci
 
       - name: Collect coverage summary for email
         id: coverage-email

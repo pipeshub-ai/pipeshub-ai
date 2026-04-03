@@ -1,0 +1,51 @@
+{
+  "name": "pipeshub-cli",
+  "version": "0.1.0",
+  "description": "Pipeshub local sync CLI — authenticate and configure Local FS",
+  "license": "MIT",
+  "author": "Pipeshub",
+  "keywords": [
+    "pipeshub",
+    "cli",
+    "sync"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "pipeshub": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "TS_NODE_PROJECT=tsconfig.test.json c8 mocha --parallel --jobs 4",
+    "test:coverage": "TS_NODE_PROJECT=tsconfig.test.json c8 --reporter=text --reporter=lcov mocha --parallel --jobs 4",
+    "test:ci": "TS_NODE_PROJECT=tsconfig.test.json c8 mocha --parallel --jobs 4 --forbid-only",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "commander": "^13.1.0",
+    "dotenv": "^16.4.7",
+    "fernet": "^0.3.3",
+    "keytar": "^7.9.0",
+    "prompts": "^2.4.2",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.2",
+    "@types/prompts": "^2.4.9",
+    "@types/sinon": "^17.0.3",
+    "c8": "^11.0.0",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "sinon": "^19.0.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}

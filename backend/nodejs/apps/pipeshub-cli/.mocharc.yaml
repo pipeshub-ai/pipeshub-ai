@@ -1,0 +1,10 @@
+require:
+  - ts-node/register
+spec: tests/**/*.test.ts
+timeout: 10000
+recursive: true
+exit: true
+extension:
+  - ts
+parallel: true
+jobs: 4
