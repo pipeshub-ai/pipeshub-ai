@@ -149,6 +149,11 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
+    customFields: {
+      apiKey: {
+        validation: z.string().optional().or(z.literal(''))
+      }
+    }
   },
   {
     id: 'bedrock',
@@ -172,6 +177,12 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       customProvider: {
         placeholder: 'Only needed if you selected "Other" as provider',
       },
+      awsAccessKeyId: {
+        validation: z.string().optional().or(z.literal(''))
+      },
+      awsAccessSecretKey: {
+        validation: z.string().optional().or(z.literal(''))
+      }
     },
   },
   {
@@ -368,6 +379,12 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       customProvider: {
         placeholder: 'Only needed if you selected "Other" as provider',
       },
+      awsAccessKeyId: {
+        validation: z.string().optional().or(z.literal(''))
+      },
+      awsAccessSecretKey: {
+        validation: z.string().optional().or(z.literal(''))
+      }
     },
   },
   {
