@@ -72,16 +72,17 @@ jobs:
           sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout coverage
-          uv pip install --system -e .
+          uv venv
+          uv pip install -e ".[test]"
 
       - name: Run unit tests with coverage
         run: |
           cd backend/python
+          source .venv/bin/activate
           coverage run -m pytest tests/unit -v
           coverage report --fail-under=93

@@ -285,6 +285,7 @@ module = "app.indexing_main:run"
 
 [project.optional-dependencies]
 dev = ["ruff", "pyright"]
+test = ["pytest", "pytest-asyncio", "pytest-timeout", "coverage"]
 
 [tool.pyright]
 pythonVersion = "3.12"
