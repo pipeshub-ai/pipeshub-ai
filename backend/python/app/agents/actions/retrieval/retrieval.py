@@ -163,7 +163,11 @@ class Retrieval:
 
             agent_connector_ids_count = len(agent_apps) if agent_apps else 0
             agent_collection_ids_count = len(agent_kbs) if agent_kbs else 0
-            adjusted_limit = 50 // min(agent_connector_ids_count + agent_collection_ids_count, _MAX_RETRIEVAL_SOURCES_DIVISOR) if agent_connector_ids_count + agent_collection_ids_count > 0 else 50
+            total_sources = agent_connector_ids_count + agent_collection_ids_count
+            if total_sources <= 1:
+                adjusted_limit = 50
+            else:
+                adjusted_limit = 100 // min(total_sources, _MAX_RETRIEVAL_SOURCES_DIVISOR)
 
             # Start from agent scope (ensure it's a dict, not None)
             filter_groups = dict(agent_filters) if agent_filters else {}
