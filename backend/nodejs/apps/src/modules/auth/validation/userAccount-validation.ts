@@ -78,7 +78,6 @@ body: z.object({
 /** POST /oauth/exchange — authorization code exchange (see `exchangeOAuthToken`) */
 const oauthExchangeBody = z.object({
   code: z.string().min(1, 'Authorization code is required'),
-  provider: z.string().min(1, 'Provider is required'),
   redirectUri: z.string().min(1, 'Redirect URI is required'),
 });
 
