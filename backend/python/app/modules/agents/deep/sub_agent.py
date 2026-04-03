@@ -419,22 +419,7 @@ async def _execute_simple_sub_agent(
             "callbacks": callbacks,
         }
 
-        # Re-bind tool state references to the current node's state dict.
-        # Tools were created in the orchestrator node and hold a stale reference
-        # to that node's state snapshot. LangGraph creates a new state dict on
-        # each node transition, so retrieval writes (final_results,
-        # virtual_record_id_to_result) must land in the active state object
-        # that this node will return — otherwise downstream nodes see EMPTY.
-        for _t in tools:
-            _wrapper = getattr(_t, '_tool_wrapper', None)
-            if _wrapper is None:
-                continue
-            if getattr(_wrapper, 'instance_creator', None) is not None:
-                _wrapper.instance_creator.state = state
-            try:
-                _wrapper.chat_state = state
-            except Exception:
-                pass
+        _rebind_tool_state(tools, state)
 
         # Execute — no wall-clock timeout for deep agent; tool call budget
         # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_PER_AGENT calls.
@@ -626,18 +611,7 @@ async def _execute_complex_sub_agent(
         "callbacks": complex_callbacks,
     }
 
-    # Re-bind tool state references to the current node's state dict.
-    # See _execute_single_sub_agent for the full rationale.
-    for _t in tools:
-        _wrapper = getattr(_t, '_tool_wrapper', None)
-        if _wrapper is None:
-            continue
-        if getattr(_wrapper, 'instance_creator', None) is not None:
-            _wrapper.instance_creator.state = state
-        try:
-            _wrapper.chat_state = state
-        except Exception:
-            pass
+    _rebind_tool_state(tools, state)
 
     # Execute — no wall-clock timeout for deep agent; tool call budget
     # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_COMPLEX calls.
@@ -961,18 +935,7 @@ async def _execute_multi_step_sub_agent(
                 "callbacks": callbacks,
             }
 
-            # Re-bind tool state references to the current node's state dict.
-            # See _execute_single_sub_agent for the full rationale.
-            for _t in tools:
-                _wrapper = getattr(_t, '_tool_wrapper', None)
-                if _wrapper is None:
-                    continue
-                if getattr(_wrapper, 'instance_creator', None) is not None:
-                    _wrapper.instance_creator.state = state
-                try:
-                    _wrapper.chat_state = state
-                except Exception:
-                    pass
+            _rebind_tool_state(tools, state)
 
             # No wall-clock timeout — budget per step limits tool calls.
             # Keepalive prevents proxy timeout during each step's execution.
@@ -1164,6 +1127,27 @@ def _extract_tool_results(
         })
 
     return tool_results
+
+
+def _rebind_tool_state(tools: list, state: object) -> None:
+    """Re-bind tool state references to the current node's state dict.
+
+    Tools were created in the orchestrator node and hold a stale reference
+    to that node's state snapshot. LangGraph creates a new state dict on
+    each node transition, so retrieval writes (final_results,
+    virtual_record_id_to_result) must land in the active state object
+    that this node will return — otherwise downstream nodes see EMPTY.
+    """
+    for _t in tools:
+        _wrapper = getattr(_t, '_tool_wrapper', None)
+        if _wrapper is None:
+            continue
+        if getattr(_wrapper, 'instance_creator', None) is not None:
+            _wrapper.instance_creator.state = state
+        try:
+            _wrapper.chat_state = state
+        except Exception:
+            pass
 
 
 def _detect_status(result_content: object) -> str:
