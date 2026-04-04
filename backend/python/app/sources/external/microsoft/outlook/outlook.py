@@ -457,10 +457,10 @@ class OutlookCalendarContactsDataSource:
         self,
         user_id: str,
         mailFolder_id: str,
-        saved_delta_link: Optional[str] = None,
+        saved_delta_link: str | None = None,
         page_size: int = 200,
         **initial_params
-    ) -> tuple[List[Dict], Optional[str]]:
+    ) -> tuple[list[Message], str | None]:
         """Fetch all delta messages with automatic pagination.
 
         This method automatically handles pagination by following nextLink until
@@ -533,10 +533,10 @@ class OutlookCalendarContactsDataSource:
     async def fetch_all_messages_delta_me(
         self,
         mailFolder_id: str,
-        saved_delta_link: Optional[str] = None,
+        saved_delta_link: str | None = None,
         page_size: int = 200,
         **initial_params
-    ) -> tuple[List[Dict], Optional[str]]:
+    ) -> tuple[list[Message], str | None]:
         """Fetch all delta messages for authenticated user (/me) with automatic pagination.
 
         This method automatically handles pagination by following nextLink until

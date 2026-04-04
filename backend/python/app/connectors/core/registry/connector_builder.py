@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Any
 
 from app.config.constants.arangodb import ExtensionTypes
+from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     OAuthConfig,
@@ -592,7 +593,7 @@ class CommonFields:
     def client_id(provider: str = "OAuth Provider") -> AuthField:
         """Standard OAuth client ID field"""
         return AuthField(
-            name="clientId",
+            name=AuthFieldKeys.CLIENT_ID,
             display_name="Client ID",
             placeholder="Enter your Client ID",
             description=f"The OAuth2 client ID from {provider}"
@@ -602,7 +603,7 @@ class CommonFields:
     def client_secret(provider: str = "OAuth Provider") -> AuthField:
         """Standard OAuth client secret field"""
         return AuthField(
-            name="clientSecret",
+            name=AuthFieldKeys.CLIENT_SECRET,
             display_name="Client Secret",
             placeholder="Enter your Client Secret",
             description=f"The OAuth2 client secret from {provider}",
@@ -614,7 +615,7 @@ class CommonFields:
     def tenant_id(provider: str = "Azure AD") -> AuthField:
         """Standard tenant ID field for Microsoft/Azure OAuth"""
         return AuthField(
-            name="tenantId",
+            name=AuthFieldKeys.TENANT_ID,
             display_name="Tenant ID",
             placeholder="Enter your Tenant ID",
             description=f"The directory (tenant) ID from {provider}. Found in Azure Portal > Azure Active Directory > Overview"
