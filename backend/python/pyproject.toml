@@ -261,7 +261,6 @@ dependencies = [
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
     "requests==2.33.0",
-    "ruff==0.11.9",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
     "spacy==3.8.2",
@@ -284,7 +283,7 @@ build-backend = "setuptools.build_meta"
 module = "app.indexing_main:run"
 
 [project.optional-dependencies]
-dev = ["ruff", "pyright"]
+dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]
 
 [tool.pyright]
 pythonVersion = "3.12"
