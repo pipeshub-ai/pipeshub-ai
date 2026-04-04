@@ -260,14 +260,21 @@ cd backend/nodejs/apps
 # Run all unit tests (parallel, 4 workers)
 npm run test
 
+# Run all unit tests in windows (parallel, 4 workers)
+npm run test:windows
+
 # Run tests with detailed coverage report (text + lcov + html)
 npm run test:coverage
+
+# Run tests with detailed coverage report in windows (text + lcov + html)
+npm run test:coverage:windows
 
 # Run tests with coverage thresholds (90% lines/functions/statements, 80% branches)
 npm run test:coverage-check
 
 # Run a specific test file
 npx mocha --require ts-node/register tests/libs/utils/password.utils.test.ts
+
 ```
 
 ### Running Python Unit Tests
