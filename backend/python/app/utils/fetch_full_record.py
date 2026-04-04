@@ -74,12 +74,17 @@ async def _fetch_multiple_records_impl(
     )
 
     for record_id in record_ids:
-        found_record = next(
-            (r for r in virtual_record_id_to_result.values()
-             if r is not None and r.get("id") == record_id),
-            None,
-        )
+        virtual_record_id = None
+        found_record = None
+
+        for vrid, record in virtual_record_id_to_result.items():
+            if record is not None and record.get("id") == record_id:
+                virtual_record_id = vrid
+                found_record = record
+                break
+
         if found_record:
+            found_record["virtual_record_id"] = virtual_record_id
             found_records.append(found_record)
             continue
 
@@ -109,6 +114,7 @@ async def _fetch_multiple_records_impl(
                         await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
                         blob_record = virtual_record_id_to_result.get(vrid)
                         if blob_record:
+                            blob_record["virtual_record_id"] = vrid
                             found_records.append(blob_record)
                             continue
             except Exception:

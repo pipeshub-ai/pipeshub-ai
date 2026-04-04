@@ -837,12 +837,13 @@ async def stream_llm_response(
                 # Citation URL reflection: detect hallucinated URLs and ask LLM to fix
                 if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
                     hallucinated = detect_hallucinated_citation_urls(
-                        final_answer, records, final_results
+                        final_answer, records, final_results,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
                     )
                     if hallucinated:
                         logger.warning(
-                            "Citation reflection (agent JSON): %d hallucinated URLs detected (attempt %d). Triggering reflection.",
-                            len(hallucinated), citation_reflection_retry_count + 1,
+                            "Citation reflection (agent JSON): %d hallucinated URLs detected (attempt %d). Triggering reflection. URLs: %s",
+                            len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                         )
                         yield {"event": "restreaming", "data": {}}
                         yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
@@ -886,12 +887,13 @@ async def stream_llm_response(
                 fallback_answer = answer_buf
                 if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
                     hallucinated = detect_hallucinated_citation_urls(
-                        fallback_answer, records, final_results
+                        fallback_answer, records, final_results,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
                     )
                     if hallucinated:
                         logger.warning(
-                            "Citation reflection (agent JSON fallback): %d hallucinated URLs (attempt %d).",
-                            len(hallucinated), citation_reflection_retry_count + 1,
+                            "Citation reflection (agent JSON fallback): %d hallucinated URLs (attempt %d). URLs: %s",
+                            len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                         )
                         yield {"event": "restreaming", "data": {}}
                         yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
@@ -972,12 +974,13 @@ async def stream_llm_response(
             # Citation URL reflection before final normalization
             if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
                 hallucinated = detect_hallucinated_citation_urls(
-                    content_buf, records, final_results
+                    content_buf, records, final_results,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
                 )
                 if hallucinated:
                     logger.warning(
-                        "Citation reflection (agent simple): %d hallucinated URLs (attempt %d).",
-                        len(hallucinated), citation_reflection_retry_count + 1,
+                        "Citation reflection (agent simple): %d hallucinated URLs (attempt %d). URLs: %s",
+                        len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                     )
                     yield {"event": "restreaming", "data": {}}
                     yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
@@ -1070,7 +1073,8 @@ async def handle_json_mode(
     records: list[dict[str, Any]],
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
-    is_agent: bool = False,  # Use is_agent flag instead of schema
+    is_agent: bool = False,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Handle JSON mode streaming.
@@ -1154,7 +1158,8 @@ async def handle_json_mode(
             final_results,
             records,
             target_words_per_chunk,
-            is_agent=is_agent  # Pass is_agent flag
+            is_agent=is_agent,
+            virtual_record_id_to_result=virtual_record_id_to_result,
         ):
             yield token
     except Exception as exc:
@@ -1170,6 +1175,7 @@ async def handle_simple_mode(
     records: list[dict[str, Any]],
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
@@ -1218,7 +1224,10 @@ async def handle_simple_mode(
         except Exception as e:
             logger.debug("stream_llm_response_with_tools: simple mode fast-path failed: %s", str(e))
 
-        async for event in call_aiter_llm_stream_simple(llm, messages, final_results, records, target_words_per_chunk):
+        async for event in call_aiter_llm_stream_simple(
+            llm, messages, final_results, records, target_words_per_chunk,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+        ):
             yield event
 
 
@@ -1399,7 +1408,8 @@ async def stream_llm_response_with_tools(
                 records,
                 logger,
                 target_words_per_chunk,
-                is_agent=is_agent  # Pass is_agent flag
+                is_agent=is_agent,
+                virtual_record_id_to_result=virtual_record_id_to_result,
             ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
@@ -1407,7 +1417,10 @@ async def stream_llm_response_with_tools(
                     )
                 yield event
         else:
-            async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk):
+            async for event in handle_simple_mode(
+                llm, messages, final_results, records, logger, target_words_per_chunk,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+            ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
                         event["data"].get("answer", "") or "", task_results
@@ -1455,6 +1468,7 @@ async def call_aiter_llm_stream_simple(
     records=None,
     target_words_per_chunk: int = 1,
     citation_reflection_retry_count: int = 0,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response in simple (non-JSON) mode.
 
@@ -1532,12 +1546,13 @@ async def call_aiter_llm_stream_simple(
         # Citation URL reflection before final normalization
         if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
             hallucinated = detect_hallucinated_citation_urls(
-                clean_answer, records, final_results
+                clean_answer, records, final_results,
+                virtual_record_id_to_result=virtual_record_id_to_result,
             )
             if hallucinated:
                 logger.warning(
-                    "Citation reflection (chatbot simple): %d hallucinated URLs (attempt %d).",
-                    len(hallucinated), citation_reflection_retry_count + 1,
+                    "Citation reflection (chatbot simple): %d hallucinated URLs (attempt %d). URLs: %s",
+                    len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                 )
                 yield {"event": "restreaming", "data": {}}
                 yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
@@ -1549,6 +1564,7 @@ async def call_aiter_llm_stream_simple(
                     llm, updated_messages, final_results, records,
                     target_words_per_chunk,
                     citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
                 ):
                     yield event
                 return
@@ -1577,8 +1593,9 @@ async def call_aiter_llm_stream(
     reflection_retry_count=0,
     max_reflection_retries=MAX_REFLECTION_RETRIES_DEFAULT,
     original_llm=None,
-    is_agent: bool = False,  # Use is_agent flag instead of schema
+    is_agent: bool = False,
     citation_reflection_retry_count: int = 0,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
 
@@ -1780,8 +1797,9 @@ async def call_aiter_llm_stream(
                     reflection_retry_count + 1,
                     max_reflection_retries,
                     original_llm=original_llm,
-                    is_agent=is_agent,  # Pass is_agent flag through
+                    is_agent=is_agent,
                     citation_reflection_retry_count=citation_reflection_retry_count,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
                 ):
                     yield event
                 return
@@ -1795,12 +1813,13 @@ async def call_aiter_llm_stream(
                     # Citation reflection on fallback path
                     if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
                         hallucinated = detect_hallucinated_citation_urls(
-                            state.answer_buf, records, final_results
+                            state.answer_buf, records, final_results,
+                            virtual_record_id_to_result=virtual_record_id_to_result,
                         )
                         if hallucinated:
                             logger.warning(
-                                "Citation reflection (chatbot JSON fallback): %d hallucinated URLs (attempt %d).",
-                                len(hallucinated), citation_reflection_retry_count + 1,
+                                "Citation reflection (chatbot JSON fallback): %d hallucinated URLs (attempt %d). URLs: %s",
+                                len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                             )
                             yield {"event": "restreaming", "data": {}}
                             yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
@@ -1818,6 +1837,7 @@ async def call_aiter_llm_stream(
                                 target_words_per_chunk, 0, max_reflection_retries,
                                 original_llm=original_llm, is_agent=is_agent,
                                 citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                                virtual_record_id_to_result=virtual_record_id_to_result,
                             ):
                                 yield event
                             return
@@ -1847,12 +1867,13 @@ async def call_aiter_llm_stream(
         # Citation URL reflection: detect hallucinated URLs and ask LLM to fix
         if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
             hallucinated = detect_hallucinated_citation_urls(
-                final_answer, records, final_results
+                final_answer, records, final_results,
+                virtual_record_id_to_result=virtual_record_id_to_result,
             )
             if hallucinated:
                 logger.warning(
-                    "Citation reflection (chatbot JSON): %d hallucinated URLs detected (attempt %d). Triggering reflection.",
-                    len(hallucinated), citation_reflection_retry_count + 1,
+                    "Citation reflection (chatbot JSON): %d hallucinated URLs detected (attempt %d). Triggering reflection. URLs: %s",
+                    len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
                 )
                 yield {"event": "restreaming", "data": {}}
                 yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
@@ -1870,6 +1891,7 @@ async def call_aiter_llm_stream(
                     target_words_per_chunk, 0, max_reflection_retries,
                     original_llm=original_llm, is_agent=is_agent,
                     citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
                 ):
                     yield event
                 return

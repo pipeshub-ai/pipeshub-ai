@@ -36,9 +36,9 @@ block_group_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: {{label}}
 * Block Group Web URL: {{block_group_web_url}}
 * Block Group Content:{% for block in blocks %}
-  - Block Index: {{block.index}}
+  - Block Index: {{block.block_index}}
   - Block Web URL: {{block.block_web_url}}
-  - Block Content: {{block.data}}
+  - Block Content: {{block.content}}
 {% endfor %}
 """
 

@@ -36,7 +36,14 @@ from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
-group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
+valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+        GroupType.TEXT_SECTION.value,
+    ]
 
 def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
     """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
@@ -225,6 +232,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         virtual_record_id = result["metadata"].get("virtualRecordId")
         if not virtual_record_id:
             continue
+        result["virtual_record_id"] = virtual_record_id
+
         meta = result.get("metadata")
 
         if virtual_record_id not in adjacent_chunks:
@@ -362,11 +371,14 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 continue
         elif block.get("parent_index") is not None:
             parent_index = block.get("parent_index")
-            group_text_result = build_group_text(block_groups, blocks, parent_index, virtual_record_id, seen_chunks)
+            group_text_result = get_group_label_n_first_child(block_groups, parent_index)
             if group_text_result is None:
                 continue
-            label, first_child_block_index, content = group_text_result
-            result["content"] = content
+            group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,result)
+            if not group_blocks:
+                continue
+            label, first_child_block_index = group_text_result
+            result["content"] = ("",group_blocks)
             result["block_type"] = label
             result["virtual_record_id"] = virtual_record_id
             result["block_index"] = first_child_block_index
@@ -374,9 +386,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             flattened_results.append(result)
             continue
+        else:
+            continue
 
 
-        result["virtual_record_id"] = virtual_record_id
         if "block_index" not in result:
             result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
@@ -974,7 +987,7 @@ def _extract_text_content_recursive(
     return content
 
 
-def build_group_text(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> tuple[str, int, str] | None:
+def get_group_label_n_first_child(block_groups: list[dict[str, Any]], parent_index: int) -> tuple[str, int] | None:
     """Extract grouped text content and first child index for supported group types.
 
     Returns (label, first_child_block_index, content) or None if invalid or unsupported.
@@ -984,14 +997,7 @@ def build_group_text(block_groups: list[dict[str, Any]], blocks: list[dict[str, 
 
     parent_block = block_groups[parent_index]
     label = parent_block.get("type")
-    valid_group_labels = [
-        GroupType.LIST.value,
-        GroupType.ORDERED_LIST.value,
-        GroupType.FORM_AREA.value,
-        GroupType.INLINE.value,
-        GroupType.KEY_VALUE_AREA.value,
-        GroupType.TEXT_SECTION.value,
-    ]
+    
 
     if label not in valid_group_labels:
         return None
@@ -1003,18 +1009,15 @@ def build_group_text(block_groups: list[dict[str, Any]], blocks: list[dict[str, 
     first_child_block_index = _find_first_block_index_recursive(block_groups, children)
     if first_child_block_index is None:
         logger.warning(
-            "⚠️ build_group_text: first_child_block_index is None for parent_index=%s",
+            "⚠️ get_group_label_n_first_child: first_child_block_index is None for parent_index=%s",
             parent_index
         )
         return None
 
-    content = _extract_text_content_recursive(
-        block_groups, blocks, children, virtual_record_id, seen_chunks, 0
-    )
-    return label, first_child_block_index, content
+    return label, first_child_block_index
 
 
-def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int) -> list[dict[str, Any]]:
+def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None) -> list[dict[str, Any]]:
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
@@ -1037,16 +1040,28 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                         if blocks[block_index].get("type") == BlockType.IMAGE.value:
                             continue
                         result_blocks.append(blocks[block_index])
-        return result_blocks
-
     # Handle old format (list of BlockContainerIndex)
-    if isinstance(children, list):
+    elif isinstance(children, list):
         for child in children:
             block_index = child.get("block_index")
             if block_index is not None and 0 <= block_index < len(blocks):
+                if blocks[block_index].get("type") == BlockType.IMAGE.value:
+                    continue
                 result_blocks.append(blocks[block_index])
-
-    return result_blocks
+    
+    child_results = []
+    meta = result.get("metadata", {})
+    for block in result_blocks:
+        child_results.append({
+            "content": block.get("data", ""),
+            "block_type": block.get("type"),
+            "virtual_record_id": virtual_record_id,
+            "block_index": block.get("index"),
+            "metadata": get_enhanced_metadata(record, block, meta),
+            "score": float(result.get("score",0.0)),
+            "citationType": "vectordb|document",
+        })
+    return child_results
 
 
 def record_to_message_content(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1157,14 +1172,18 @@ Record blocks (sorted):\n\n"""
                 if parent_index >= len(block_groups):
                     continue
                 block_group = block_groups[parent_index]
-                group_blocks = build_group_blocks(block_groups, blocks, parent_index)
-
+                block_group_type = block_group.get("type")
+                if block_group_type not in valid_group_labels:
+                    continue
+                
+                virtual_record_id = record.get("virtual_record_id", "")
+                group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,{})
 
                 if not group_blocks:
                     continue
                 seen_block_groups.add(block_group_id)
                 for gb in group_blocks:
-                    gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("index", 0))
+                    gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("block_index", 0))
                 rendered_form = template.render(
                     block_group_index=parent_index,
                     block_group_web_url="",
@@ -1176,10 +1195,7 @@ Record blocks (sorted):\n\n"""
                     "text": f"{rendered_form}\n\n"
                 })
             else:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
-                })
+                continue
 
         return content
     except Exception as e:
@@ -1325,8 +1341,6 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             elif block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
                 block_group_index = result.get("block_group_index")
-                first_child_block_index = result.get("block_index")
-                first_child_block_web_url = build_block_web_url(current_frontend_url, current_record_id, first_child_block_index)
                 if child_results:
                     for child in child_results:
                         child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
@@ -1341,37 +1355,23 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": f"{rendered_form}\n\n"
                     })
-                else:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Group Index: {block_group_index}\n* Block Web URL: {first_child_block_web_url}\n* Block Group Type: table summary \n* Block Group Content: {table_summary}\n\n"
-                    })
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",
                     "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
-            elif block_type in group_types:
+            elif block_type in valid_group_labels:
                 block_group_index = result.get("block_group_index")
-                record = virtual_record_id_to_result.get(virtual_record_id)
-                if record is None:
-                    continue
-                block_containers = record.get("block_containers", {})
-                blocks_list = block_containers.get("blocks", [])
-                block_groups_list = block_containers.get("block_groups", [])
-                if block_group_index is None or block_group_index >= len(block_groups_list):
-                    continue
-                block_group = block_groups_list[block_group_index]
-                group_blocks = build_group_blocks(block_groups_list, blocks_list, block_group_index)
+                group_blocks = result.get("content")[1] if isinstance(result.get("content"), tuple) else []
                 if not group_blocks:
                     continue
                 for gb in group_blocks:
-                    gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("index", 0))
+                    gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("block_index", 0))
                 template = Template(block_group_prompt)
                 rendered_form = template.render(
                     block_group_index=block_group_index,
                     block_group_web_url="",
-                    label=block_group.get("type"),
+                    label=block_type,
                     blocks=group_blocks,
                 )
                 content.append({
@@ -1379,10 +1379,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     "text": f"{rendered_form}\n\n"
                 })
             else:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                })
+                continue
         else:
             continue
 

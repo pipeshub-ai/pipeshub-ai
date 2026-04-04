@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.blocks import BlockType, GroupType
-from app.utils.chat_helpers import get_enhanced_metadata
-
+from app.utils.chat_helpers import get_enhanced_metadata, valid_group_labels
+from app.utils.logger import create_logger
 # Initialize logger
-logger = logging.getLogger(__name__)
+logger = create_logger(__name__)
 
 
 @dataclass
@@ -104,8 +104,9 @@ def _is_url_resolvable_via_records(
     url: str,
     records: list[dict[str, Any]],
     flattened_final_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
-    """Check if a citation URL can be resolved via record_id+block_index lookup in records or virtual_record_id_to_result."""
+    """Check if a citation URL can be resolved via record_id+block_index lookup."""
     record_id = _extract_record_id_from_url(url)
     block_index = _extract_block_index_from_url(url)
     if record_id is None or block_index is None:
@@ -118,21 +119,65 @@ def _is_url_resolvable_via_records(
         if doc_record_id == record_id and doc_block_index == block_index:
             return True
 
+        # Table groups nest child rows inside content tuple — check those too
+        if (doc.get("block_type") == GroupType.TABLE.value or doc.get("block_type") in valid_group_labels) and doc_record_id == record_id:
+            content = doc.get("content")
+            if isinstance(content, tuple) and len(content) >= 2:
+                child_results = content[1]
+                if isinstance(child_results, list):
+                    for child in child_results:
+                        if child.get("block_index") == block_index:
+                            return True
+        # elif doc.get("block_type") in valid_group_labels and doc_record_id == record_id:
+        #     block_group_index = doc.get("block_group_index")
+        #     virtual_record_id = doc.get("virtual_record_id")
+        #     rec = None
+        #     if virtual_record_id and virtual_record_id_to_result:
+        #         rec = virtual_record_id_to_result.get(virtual_record_id)
+        #     if rec is None:
+        #         for r in records:
+        #             if r.get("id") == record_id:
+        #                 rec = r
+        #                 break
+        #     if rec is not None and block_group_index is not None:
+        #         block_groups = (rec.get("block_containers", {}) or {}).get("block_groups", []) or []
+        #         if 0 <= block_group_index < len(block_groups):
+        #             group = block_groups[block_group_index]
+        #             children = group.get("children", [])
+        #             if isinstance(children, dict) and "block_ranges" in children:
+        #                 for range_obj in children.get("block_ranges", []):
+        #                     start = range_obj.get("start")
+        #                     end = range_obj.get("end")
+        #                     if start is not None and end is not None and start <= block_index <= end:
+        #                         return True
+        #             elif isinstance(children, list):
+        #                 for child in children:
+        #                     if child.get("block_index") == block_index:
+        #                         return True
+
     for r in records:
         if r.get("id") == record_id:
             blocks = (r.get("block_containers", {}) or {}).get("blocks", []) or []
             if 0 <= block_index < len(blocks):
                 return True
+
+    if virtual_record_id_to_result:
+        for rec in virtual_record_id_to_result.values():
+            if rec and rec.get("id") == record_id:
+                blocks = (rec.get("block_containers", {}) or {}).get("blocks", []) or []
+                if 0 <= block_index < len(blocks):
+                    return True
+
     return False
 
 def detect_hallucinated_citation_urls(
     answer_text: str,
-    records: list[dict[str, Any]]|None = None,
-    flattened_final_results: list[dict[str, Any]]|None = None,
+    records: list[dict[str, Any]] | None = None,
+    flattened_final_results: list[dict[str, Any]] | None = None,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """
     Detect citation URLs in answer_text that don't match any known block_web_url.
-    Agent variant that also checks virtual_record_id_to_result.
 
     Returns:
             - hallucinated_urls: URLs found in answer that could not be resolved
@@ -147,9 +192,6 @@ def detect_hallucinated_citation_urls(
     if not md_matches:
         return []
 
-    # valid_url_set = _build_valid_url_set(final_results)
-    # valid_urls = sorted(valid_url_set)
-
     unique_urls = []
     seen = set()
     for match in md_matches:
@@ -160,9 +202,10 @@ def detect_hallucinated_citation_urls(
 
     hallucinated = []
     for url in unique_urls:
-        # if url in valid_url_set:
-            # continue
-        if _is_url_resolvable_via_records(url, records, flattened_final_results):
+        if _is_url_resolvable_via_records(
+            url, records, flattened_final_results,
+            virtual_record_id_to_result=virtual_record_id_to_result,
+        ):
             continue
         hallucinated.append(url)
 
@@ -207,23 +250,18 @@ def _normalize_markdown_link_citations(
 
     for doc in final_results:
         block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value:
+        if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
             _, child_results = doc.get("content", ("", []))
             if child_results:
                 for child in child_results:
-                    flattened_final_results.append(child)
                     child_url = child.get("block_web_url")
                     if child_url:
+                        flattened_final_results.append(child)
                         url_to_doc_index[child_url] = len(flattened_final_results) - 1
-            else:
-                flattened_final_results.append(doc)
-                doc_url = doc.get("block_web_url")
-                if doc_url:
-                    url_to_doc_index[doc_url] = len(flattened_final_results) - 1
         else:
-            flattened_final_results.append(doc)
             doc_url = doc.get("block_web_url")
             if doc_url:
+                flattened_final_results.append(doc)
                 url_to_doc_index[doc_url] = len(flattened_final_results) - 1
 
     unique_urls = []
@@ -247,6 +285,9 @@ def _normalize_markdown_link_citations(
                 content = content[0]
             elif not isinstance(content, str):
                 content = str(content)
+            
+            if not content:
+                continue
 
             new_citations.append({
                 "content": "Image" if content.startswith("data:image/") else content,
@@ -274,7 +315,8 @@ def _normalize_markdown_link_citations(
                                 data = data.get("row_natural_language_text", "")
                             elif block_type == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
-
+                            if not data:
+                                continue
                             new_citations.append({
                                 "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
                                 "chunkIndex": new_citation_num,
@@ -339,23 +381,18 @@ def _normalize_markdown_link_citations_for_agent(
     for doc in final_results:
         virtual_record_id = doc.get("virtual_record_id")
         block_type = doc.get("block_type")
-        if block_type == GroupType.TABLE.value:
+        if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
             _, child_results = doc.get("content", ("", []))
             if child_results:
                 for child in child_results:
-                    flattened_final_results.append(child)
                     child_url = child.get("block_web_url")
                     if child_url:
+                        flattened_final_results.append(child)
                         url_to_doc_index[child_url] = len(flattened_final_results) - 1
-            else:
-                flattened_final_results.append(doc)
-                doc_url = doc.get("block_web_url")
-                if doc_url:
-                    url_to_doc_index[doc_url] = len(flattened_final_results) - 1
         else:
-            flattened_final_results.append(doc)
             doc_url = doc.get("block_web_url")
             if doc_url:
+                flattened_final_results.append(doc)
                 url_to_doc_index[doc_url] = len(flattened_final_results) - 1
 
     unique_urls = []
@@ -402,6 +439,9 @@ def _normalize_markdown_link_citations_for_agent(
             elif not isinstance(content, str):
                 content = str(content)
 
+            if not content:
+                continue
+
             new_citations.append({
                 "content": "Image" if content.startswith("data:image/") else content,
                 "chunkIndex": new_citation_num,
@@ -433,6 +473,8 @@ def _normalize_markdown_link_citations_for_agent(
                                 data = data.get("row_natural_language_text", "")
                             elif bt == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
+                            if not data:
+                                continue
                             new_citations.append({
                                 "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
                                 "chunkIndex": new_citation_num,
@@ -463,6 +505,8 @@ def _normalize_markdown_link_citations_for_agent(
                                     data = data.get("row_natural_language_text", "")
                                 elif bt == BlockType.IMAGE.value:
                                     data = data.get("uri", "")
+                                if not data:
+                                    continue
                                 new_citations.append({
                                     "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
                                     "chunkIndex": new_citation_num,

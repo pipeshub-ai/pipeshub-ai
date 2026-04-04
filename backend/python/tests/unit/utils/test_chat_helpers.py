@@ -23,7 +23,7 @@ from app.utils.chat_helpers import (
     _find_first_block_index_recursive,
     build_block_web_url,
     build_group_blocks,
-    build_group_text,
+    get_group_label_n_first_child,
     count_tokens,
     count_tokens_in_messages,
     count_tokens_text,
@@ -1605,31 +1605,31 @@ class TestExtractTextContentRecursive:
 
 
 # ===================================================================
-# build_group_text
+# get_group_label_n_first_child
 # ===================================================================
 class TestBuildGroupText:
-    """Tests for the build_group_text function."""
+    """Tests for the get_group_label_n_first_child function."""
 
     def test_invalid_parent_index_none(self):
-        assert build_group_text([], [], None) is None
+        assert get_group_label_n_first_child([], [], None) is None
 
     def test_invalid_parent_index_negative(self):
-        assert build_group_text([], [], -1) is None
+        assert get_group_label_n_first_child([], [], -1) is None
 
     def test_invalid_parent_index_too_large(self):
-        assert build_group_text([{}], [], 5) is None
+        assert get_group_label_n_first_child([{}], [], 5) is None
 
     def test_unsupported_group_type(self):
         block_groups = [{"type": GroupType.TABLE.value, "children": []}]
-        assert build_group_text(block_groups, [], 0) is None
+        assert get_group_label_n_first_child(block_groups, [], 0) is None
 
     def test_no_children(self):
         block_groups = [{"type": GroupType.LIST.value, "children": []}]
-        assert build_group_text(block_groups, [], 0) is None
+        assert get_group_label_n_first_child(block_groups, [], 0) is None
 
     def test_children_none(self):
         block_groups = [{"type": GroupType.LIST.value, "children": None}]
-        assert build_group_text(block_groups, [], 0) is None
+        assert get_group_label_n_first_child(block_groups, [], 0) is None
 
     def test_valid_list_group(self):
         blocks = [
@@ -1642,7 +1642,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}, {"block_index": 1}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         label, first_index, content = result
         assert label == GroupType.LIST.value
@@ -1658,7 +1658,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.ORDERED_LIST.value
 
@@ -1670,7 +1670,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.FORM_AREA.value
 
@@ -1682,7 +1682,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.INLINE.value
 
@@ -1694,7 +1694,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.KEY_VALUE_AREA.value
 
@@ -1706,7 +1706,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.TEXT_SECTION.value
 
@@ -1718,7 +1718,7 @@ class TestBuildGroupText:
                 "children": [{"block_group_index": 99}],
             }
         ]
-        result = build_group_text(block_groups, [], 0)
+        result = get_group_label_n_first_child(block_groups, [], 0)
         assert result is None
 
     def test_seen_chunks_updated(self):
@@ -1730,7 +1730,7 @@ class TestBuildGroupText:
             }
         ]
         seen = set()
-        build_group_text(block_groups, blocks, 0, "vr-1", seen)
+        get_group_label_n_first_child(block_groups, blocks, 0, "vr-1", seen)
         assert "vr-1-0" in seen
 
     def test_range_based_children(self):
@@ -1743,7 +1743,7 @@ class TestBuildGroupText:
                 "children": {"block_ranges": [{"start": 0, "end": 0}]},
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert "RangeItem" in result[2]
 
@@ -3055,12 +3055,12 @@ class TestGetFlattenedResultsBranches:
 
     @pytest.mark.asyncio
     async def test_build_group_text_returns_none_skips(self):
-        """Line 350: When build_group_text returns None, block is skipped."""
+        """Line 350: When get_group_label_n_first_child returns None, block is skipped."""
         # Create a text block with parent_index pointing to an unsupported group type
         block = _make_text_block(index=0, data="Orphan", parent_index=0)
         group = {
             "index": 0,
-            "type": GroupType.TABLE.value,  # TABLE is not a valid group type for build_group_text
+            "type": GroupType.TABLE.value,  # TABLE is not a valid group type for get_group_label_n_first_child
             "data": {},
             "children": [{"block_index": 0}],
             "citation_metadata": None,
@@ -3082,7 +3082,7 @@ class TestGetFlattenedResultsBranches:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map
         )
-        # build_group_text returns None for TABLE group type, so the block should be skipped
+        # get_group_label_n_first_child returns None for TABLE group type, so the block should be skipped
         list_results = [r for r in results if r.get("block_type") == GroupType.LIST.value]
         assert len(list_results) == 0
 
