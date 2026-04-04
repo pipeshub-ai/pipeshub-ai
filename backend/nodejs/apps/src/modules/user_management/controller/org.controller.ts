@@ -50,6 +50,45 @@ import {
   UpdateOrganizationDetailsResponseSchema,
 } from '../validation/org-validators';
 
+const ORG_PERMANENT_ADDRESS_KEYS = [
+  'addressLine1',
+  'city',
+  'state',
+  'postCode',
+  'country',
+] as const;
+
+type OrgPermanentAddressPatch = Partial<
+  Record<(typeof ORG_PERMANENT_ADDRESS_KEYS)[number], string>
+>;
+
+/** Merges partial `permanentAddress` from the request onto the stored subdocument. */
+function mergeOrgPermanentAddress(
+  existingRaw: unknown,
+  incoming: OrgPermanentAddressPatch | undefined,
+): OrgPermanentAddressPatch | undefined {
+  if (incoming === undefined) {
+    return undefined;
+  }
+  const existing =
+    existingRaw && typeof existingRaw === 'object'
+      ? (existingRaw as Record<string, unknown>)
+      : {};
+  const merged: Record<string, string> = {};
+  for (const key of ORG_PERMANENT_ADDRESS_KEYS) {
+    const v = existing[key];
+    if (v !== undefined && v !== null) {
+      merged[key] = String(v);
+    }
+  }
+  for (const key of ORG_PERMANENT_ADDRESS_KEYS) {
+    if (incoming[key] !== undefined) {
+      merged[key] = incoming[key] as string;
+    }
+  }
+  return merged;
+}
+
 @injectable()
 export class OrgController {
   constructor(
@@ -390,13 +429,7 @@ export class OrgController {
         contactEmail?: string;
         registeredName?: string;
         shortName?: string;
-        permanentAddress?: {
-          addressLine1?: string;
-          city?: string;
-          state?: string;
-          postCode?: string;
-          country?: string;
-        };
+        permanentAddress?: OrgPermanentAddressPatch;
       };
 
     try {
@@ -408,24 +441,30 @@ export class OrgController {
         throw new NotFoundError('Organisation not found');
       }
 
-      // Update only the fields that are provided in the request body
+      // Update only fields present in the body; nested address is merged with existing.
       const updateData: Partial<{
         contactEmail: string;
         registeredName: string;
         shortName: string;
-        permanentAddress: {
-          addressLine1?: string;
-          city?: string;
-          state?: string;
-          postCode?: string;
-          country?: string;
-        };
+        permanentAddress: OrgPermanentAddressPatch;
       }> = {};
 
-      if (contactEmail) updateData.contactEmail = contactEmail;
-      if (registeredName) updateData.registeredName = registeredName;
-      if (shortName) updateData.shortName = shortName;
-      if (permanentAddress) updateData.permanentAddress = permanentAddress;
+      if (contactEmail !== undefined) {
+        updateData.contactEmail = contactEmail;
+      }
+      if (registeredName !== undefined) {
+        updateData.registeredName = registeredName;
+      }
+      if (shortName !== undefined) {
+        updateData.shortName = shortName;
+      }
+      const mergedAddress = mergeOrgPermanentAddress(
+        org.permanentAddress,
+        permanentAddress,
+      );
+      if (mergedAddress !== undefined) {
+        updateData.permanentAddress = mergedAddress;
+      }
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {

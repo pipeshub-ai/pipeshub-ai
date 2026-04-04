@@ -389,7 +389,7 @@ export class UserController {
       await this.eventService.stop();
       await newUser.save();
       this.logger.debug('user created');
-      const payload = JSON.parse(JSON.stringify(newUser)) as unknown;
+      const payload = newUser.toJSON() as unknown;
       sendValidatedJson(
         res,
         CreateUserResponseSchema,
@@ -726,14 +726,12 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      const payload = JSON.parse(
-        JSON.stringify({
-          ...user.toObject(),
-          meta: {
-            emailChangeMailStatus: emailChangeRequested,
-          },
-        }),
-      ) as unknown;
+      const payload = {
+        ...user.toJSON(),
+        meta: {
+          emailChangeMailStatus: emailChangeRequested,
+        },
+      } as unknown;
       sendValidatedJson(
         res,
         UpdateUserPutResponseSchema,
@@ -785,7 +783,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
         UpdateUserFullNameResponseSchema,
@@ -838,7 +836,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
         UpdateUserFirstNameResponseSchema,
@@ -891,7 +889,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
         UpdateUserLastNameResponseSchema,
@@ -944,7 +942,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
         UpdateUserDesignationResponseSchema,
@@ -997,7 +995,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
         UpdateUserEmailResponseSchema,
@@ -1202,7 +1200,7 @@ export class UserController {
 
       await userDp.save();
 
-      const removedPayload = JSON.parse(JSON.stringify(userDp.toObject())) as unknown;
+      const removedPayload = userDp.toJSON() as unknown;
       sendValidatedJson(
         res,
         RemoveUserDisplayPictureResponseSchema,

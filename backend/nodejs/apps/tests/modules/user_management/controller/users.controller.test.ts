@@ -546,15 +546,15 @@ describe('UserController', () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { fullName: 'Updated Name' };
 
+      const leanDoc = leanPatchUserResponse({ fullName: 'Updated Name' });
       const mockUser = {
         _id: '507f1f77bcf86cd799439011',
         orgId: new mongoose.Types.ObjectId(req.user.orgId),
         fullName: 'Old Name',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon
-          .stub()
-          .returns(leanPatchUserResponse({ fullName: 'Updated Name' })),
+        toObject: sinon.stub().returns(leanDoc),
+        toJSON: sinon.stub().returns(leanDoc),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -876,6 +876,14 @@ describe('UserController', () => {
 
   describe('removeUserDisplayPicture', () => {
     it('should remove user display picture', async () => {
+      const removedDpJson = {
+        _id: '507f1f77bcf86cd799439011',
+        userId: '507f1f77bcf86cd799439011',
+        orgId: req.user.orgId,
+        pic: null,
+        mimeType: null,
+        __v: 0,
+      };
       const mockDp = {
         _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
         userId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
@@ -884,14 +892,8 @@ describe('UserController', () => {
         mimeType: 'image/jpeg',
         __v: 0,
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: '507f1f77bcf86cd799439011',
-          userId: '507f1f77bcf86cd799439011',
-          orgId: req.user.orgId,
-          pic: null,
-          mimeType: null,
-          __v: 0,
-        }),
+        toObject: sinon.stub().returns(removedDpJson),
+        toJSON: sinon.stub().returns(removedDpJson),
       };
 
       sinon.stub(UserDisplayPicture, 'findOne').returns({
