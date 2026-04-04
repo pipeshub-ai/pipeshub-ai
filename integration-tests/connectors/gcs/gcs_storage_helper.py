@@ -19,26 +19,26 @@ def _iter_files(root: Path):
 class GCSStorageHelper:
     """Wrapper around google-cloud-storage with a test-friendly API."""
 
-    def __init__(self, service_account_json: str) -> None:
+    def __init__(self, service_account_json: str | None) -> None:
         raw_value = (service_account_json or "").strip()
-        is_json_payload = raw_value.startswith("{")
 
-        if not is_json_payload:
+        try:
             path = Path(raw_value).expanduser()
-            try:
-                is_file = path.exists()
-            except OSError:
-                is_file = False
-        else:
-            is_file = False
+            if path.is_file():
+                credentials = service_account.Credentials.from_service_account_file(str(path))
+                self._client = gcs_storage.Client(credentials=credentials)
+                return
+        except (TypeError, ValueError, OSError):
+            pass
 
-        if is_file:
-            credentials = service_account.Credentials.from_service_account_file(str(path))
-        else:
-            info = json.loads(service_account_json)
+        try:
+            info = json.loads(raw_value)
             credentials = service_account.Credentials.from_service_account_info(info)
-
-        self._client = gcs_storage.Client(credentials=credentials)
+            self._client = gcs_storage.Client(credentials=credentials)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "GCS_SERVICE_ACCOUNT_JSON must be a valid file path or a JSON string."
+            ) from e
 
     def create_bucket(self, bucket: str) -> None:
         self._client.create_bucket(bucket)

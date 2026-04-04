@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
+from azure.storage.blob import BlobServiceClient, ContentSettings  # type: ignore[import-not-found]
 
 
 def _iter_files(root: Path):
@@ -40,11 +40,9 @@ class AzureBlobStorageHelper:
         return count
 
     def upload_blob(self, container: str, key: str, data: bytes, content_type: str | None = None) -> None:
-        from azure.storage.blob import ContentSettings as BlobContentSettings  # type: ignore[import-not-found]
-
         container_client = self._service.get_container_client(container)
         blob_client = container_client.get_blob_client(key)
-        cs = BlobContentSettings(content_type=content_type) if content_type else None
+        cs = ContentSettings(content_type=content_type) if content_type else None
         blob_client.upload_blob(data, overwrite=True, content_settings=cs)
 
     def overwrite_blob(self, container: str, key: str, data: bytes, content_type: str | None = None) -> None:

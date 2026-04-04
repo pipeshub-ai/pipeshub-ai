@@ -35,6 +35,7 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     assert_min_records,
     assert_no_orphan_records,
     assert_record_groups_and_edges,
+    assert_record_not_exists,
     assert_record_paths_or_names_contain,
     count_permission_edges,
     count_records,
@@ -319,6 +320,7 @@ class TestAzureFilesConnector:
         )
 
         assert_record_paths_or_names_contain(neo4j_driver, connector_id, [new_name])
+        assert_record_not_exists(neo4j_driver, connector_id, old_name)
 
         # Rename uses server-side File Rename (see AzureFilesStorageHelper) so SMB file_id
         # is preserved and the connector can treat it as the same Record path update.
