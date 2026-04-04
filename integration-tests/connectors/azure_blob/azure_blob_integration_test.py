@@ -45,7 +45,9 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     record_paths_or_names_contain,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
-from storage_helpers import AzureBlobStorageHelper  # type: ignore[import-not-found]  # noqa: E402
+from connectors.azure_blob.azure_blob_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
+    AzureBlobStorageHelper,
+)
 
 logger = logging.getLogger("azure-blob-lifecycle-test")
 

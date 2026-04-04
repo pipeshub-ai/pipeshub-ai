@@ -45,7 +45,7 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     record_paths_or_names_contain,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
-from storage_helpers import S3StorageHelper  # type: ignore[import-not-found]  # noqa: E402
+from connectors.s3.s3_storage_helper import S3StorageHelper  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("s3-lifecycle-test")
 

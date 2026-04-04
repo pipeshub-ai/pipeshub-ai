@@ -7,16 +7,22 @@ import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import Generator, List
 
 import pytest
+from neo4j import Driver, GraphDatabase
 from dotenv import load_dotenv
 
 _THIS_DIR = Path(__file__).resolve().parent
 _HELPER_DIR = _THIS_DIR / "helper"
+_SAMPLE_DATA_DIR = _THIS_DIR / "sample-data"
 _REPORTS_DIR = _THIS_DIR / "reports"
 if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
+if str(_SAMPLE_DATA_DIR) not in sys.path:
+    sys.path.insert(0, str(_SAMPLE_DATA_DIR))
 
 
 def _load_env() -> None:
@@ -52,6 +58,7 @@ _init_global_test_env()
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
+from sample_data import ensure_sample_data_files_root  # noqa: E402
 
 # Module-level ref so pytest_runtest_logreport can append even when report.config is missing (e.g. some pytest versions)
 _integration_test_reports: List[TestReportEntry] = []
@@ -78,6 +85,37 @@ def local_oauth_credentials() -> None:
 def get_pipeshub_client() -> PipeshubClient:
     """Convenience helper for tests that prefer direct construction."""
     return PipeshubClient()
+
+
+@pytest.fixture(scope="session")
+def pipeshub_client() -> PipeshubClient:
+    """Session-scoped Pipeshub client (global for all integration tests)."""
+    return PipeshubClient()
+
+
+@pytest.fixture(scope="session")
+def neo4j_driver() -> Generator[Driver, None, None]:
+    """Session-scoped Neo4j driver."""
+    uri = os.getenv("TEST_NEO4J_URI")
+    user = os.getenv("TEST_NEO4J_USERNAME")
+    password = os.getenv("TEST_NEO4J_PASSWORD")
+
+    if not uri or not user or not password:
+        pytest.skip(
+            "TEST_NEO4J_URI / TEST_NEO4J_USERNAME / TEST_NEO4J_PASSWORD not set; skipping connector integration tests."
+        )
+
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    try:
+        yield driver
+    finally:
+        driver.close()
+
+
+@pytest.fixture(scope="session")
+def sample_data_root() -> Path:
+    """Session-scoped path to sample data files from GitHub."""
+    return ensure_sample_data_files_root()
 
 
 def pytest_sessionstart(session) -> None:  # type: ignore[override]
