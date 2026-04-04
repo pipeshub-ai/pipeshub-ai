@@ -190,22 +190,6 @@ async def _deep_respond_impl(
             log.warning("Fast-path failed, falling back to standard: %s", e)
             # Fall through to standard path
 
-    # ================================================================
-    # Merge and deduplicate retrieval results from parallel calls.
-    # Sort by (virtual_record_id, block_index) for consistent R-labels.
-    # ================================================================
-    if final_results:
-        from app.modules.agents.qna.nodes import merge_and_number_retrieval_results
-        final_results = merge_and_number_retrieval_results(final_results, log)
-        final_results = sorted(
-            final_results,
-            key=lambda x: (
-                x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
-                x.get("block_index", 0),
-            ),
-        )
-        state["final_results"] = final_results
-
     log.info("Citation data: %d results, %d records", len(final_results), len(virtual_record_map))
 
     # ================================================================
@@ -243,13 +227,6 @@ async def _deep_respond_impl(
         log.debug("Built qna_message_content via get_message_content()")
     else:
         state["qna_message_content"] = None
-
-    # Build R-label → virtual_record_id mapping (legacy fallback for fetch_full_record)
-    from app.modules.qna.response_prompt import build_record_label_mapping
-    record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
-    if record_label_map:
-        log.debug("Record label mapping: %s", record_label_map)
-    state["record_label_to_uuid_map"] = record_label_map
 
     # ================================================================
     # Build messages.
@@ -374,7 +351,8 @@ async def _deep_respond_impl(
         tools = [fetch_tool]
         log.debug(
             "Added agent fetch_full_record tool (%d records, %d labels)",
-            len(virtual_record_map), len(record_label_map),
+            len(virtual_record_map),
+            len(final_results),
         )
 
     # Initialize blob_store if missing
@@ -607,6 +585,17 @@ def _build_simple_retrieval_messages(
         "- When multiple sources cover the same topic, synthesize them into a coherent "
         "narrative rather than listing them separately.\n"
         "- Expand on each point with specific details found in the blocks and analysis.\n\n"
+        "CRITICAL SYNTHESIS RULES:\n"
+        "- The sub-agent analyses ARE your primary knowledge source. They were produced "
+        "by specialized agents that fetched and studied the full source documents. "
+        "If an analysis covers a topic, you HAVE that information — present it.\n"
+        "- NEVER say 'I don't have information about X' or 'there is no content for X' "
+        "if the sub-agent analyses discuss X. Extract and present what the analyses reveal.\n"
+        "- If a specific document (e.g. an ERD page, a schema doc) is mentioned in the "
+        "analyses but its full text is not in the context blocks, summarise what the "
+        "analyses say about it and cite the source appropriately.\n"
+        "- Answer EVERY part of the user's query. If one part is covered only in the "
+        "analyses and another only in the blocks, combine both into a unified answer.\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))

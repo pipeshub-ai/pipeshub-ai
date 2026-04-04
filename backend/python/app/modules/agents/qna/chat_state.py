@@ -66,6 +66,7 @@ class ChatState(TypedDict):
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB record group IDs to search in (extracted from knowledge array filters)
     agent_knowledge: list[dict[str, Any]] | None
+    connector_configs: dict[str, Any] | None  # Per-connector sync/indexing filter values from etcd (route pre-fetch)
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
@@ -436,6 +437,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
+        "connector_configs": chat_query.get("connector_configs") or {},
         "has_knowledge": has_knowledge,
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets

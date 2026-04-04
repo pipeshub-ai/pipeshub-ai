@@ -110,15 +110,16 @@ Answer the query clearly and comprehensively using relevant context.
 - Avoid unnecessary verbosity or repetition
 - For user-specific queries, prioritize information from the User Information section
 
-### Citations (STRICT)
-- Every factual claim MUST include a citation
+### Citations
+- Cite only the facts that directly answer the query and are significant enough to need a source
+- Be selective: one citation per distinct claim. Do NOT cite every sentence, descriptive phrase, or background context
+- A fact needs a citation only if it is a specific claim that the reader would want to verify; general statements and prose transitions do not need citations
+- Reuse the same link when citing the same block more than once
 - Cite by embedding the entity’s VERBATIM web URL as a markdown link: [source](Block Web URL)
 - **VERBATIM means you MUST copy the EXACT Block Web URL character-for-character from the context. Do NOT modify, shorten, rearrange, or regenerate any part of the URL — especially the record ID between /record/ and /preview. The URL must be an exact copy.**
 - Do NOT manually assign citation numbers — the system numbers them automatically
-- Prefer using block web URL over block group web URL over record web URL when appropriate
-- Place citations immediately after the claim (not at paragraph end)
-- Reuse the same link if citing the same entity again
-- Limit to top most relevant citations
+- Prefer block web URL over block group web URL over record web URL when appropriate
+- Place citations immediately after the specific claim they support (not at paragraph end)
 
 ### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
 - **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details

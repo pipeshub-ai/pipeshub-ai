@@ -89,9 +89,19 @@ You are responsible for:
 </answer_guidelines>
 
 <citation_rules>
-## Citation Guidelines (CRITICAL - MANDATORY)
+## Citation Guidelines
 
-**⚠️ Every factual claim from internal knowledge MUST be cited immediately after the claim.**
+Cite only the facts that directly answer the query and are significant enough to need a source. Use your judgment — the number of citations should match the complexity and length of the answer.
+
+### What to cite
+- Specific, verifiable claims that the reader would want to trace back to a source
+- Key figures, dates, names, statuses, and process steps drawn from a block
+- Do **NOT** cite every sentence, background prose, transitions, or general context
+
+### What NOT to cite
+- ❌ General descriptions or introductory sentences
+- ❌ The same fact twice with different links — reuse the same [source](Block Web URL)
+- ❌ Marginal supporting details when the primary claim is already cited
 
 ### Citation Format Rules:
 
@@ -105,22 +115,13 @@ You are responsible for:
 
 2. **Reuse Links**: If the same block is cited again later, reuse the same [source](Block Web URL) link.
 
-3. **Inline After Each Claim**: Put the citation link IMMEDIATELY after the specific fact it supports
-   - ✅ "Revenue grew 29% [source](/record/abc/preview#blockIndex=0). The company has 500 employees [source](/record/def/preview#blockIndex=3)."
-   - ❌ "Revenue grew 29%. The company has 500 employees. [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3)"
+3. **Inline After the Specific Claim**: Put the citation link immediately after the fact it supports, not at paragraph end.
 
 4. **One Citation Per Link**: Each citation is a separate markdown link
 
-5. **DIFFERENT Citations for DIFFERENT Facts**: Each block covers specific content.
-   Cite the SPECIFIC block that contains each fact.
+5. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
 
-6. **Top 4-5 Most Relevant**: Don't cite every block — use the most relevant ones
-
-7. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
-
-8. **MANDATORY**: Every fact from internal knowledge MUST have a citation. No exceptions.
-
-9. **DO NOT ALTER URLs**: The Block Web URL must be copied exactly as it appears in the context. Never change the record ID, block index, or any other part of the URL. If you cannot find the exact URL, re-read the context to locate it.
+6. **DO NOT ALTER URLs**: The Block Web URL must be copied exactly as it appears in the context. Never change the record ID, block index, or any other part of the URL. If you cannot find the exact URL, re-read the context to locate it.
 
 </citation_rules>
 
@@ -252,7 +253,7 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 <source_prioritization>
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
-2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [source](Block Web URL) inline
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite the most relevant facts with [source](Block Web URL) inline
 3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
 4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
    - Cite ALL relevant internal knowledge facts with inline [source](Block Web URL) citations
@@ -264,7 +265,7 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 **MOST CRITICAL RULES:**
 
 1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
-2. **CITE AFTER EACH CLAIM** — [source](Block Web URL) right after the fact it supports
+2. **CITE SELECTIVELY** — [source](Block Web URL) after each fact that directly answers the query. Prose, context, and repeated claims do not need citations
 3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
 4. **BE COMPREHENSIVE** — thorough, complete answers
 5. **Format Professionally** — clean markdown hierarchy
@@ -297,35 +298,6 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
             history_parts.append(f"Assistant (Turn {idx}): {abbreviated}")
     history_parts.append("\nUse this history to understand context and handle follow-up questions naturally.")
     return "\n".join(history_parts)
-
-
-
-def build_record_label_mapping(final_results: list[dict[str, Any]]) -> dict[str, str]:
-    """
-    Build a mapping from R-labels (e.g. "R1", "R2") to actual virtual_record_ids.
-
-    The numbering mirrors the logic in get_message_content() so labels are consistent
-    with what the LLM sees in the context blocks.
-
-    Returns:
-        {"R1": "uuid-for-first-record", "R2": "uuid-for-second-record", ...}
-    """
-    label_to_vid: dict[str, str] = {}
-    seen: set = set()
-    record_number = 1
-
-    for i, result in enumerate(final_results):
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
-
-        if virtual_record_id and virtual_record_id not in seen:
-            if i > 0:
-                record_number += 1
-            seen.add(virtual_record_id)
-            label_to_vid[f"R{record_number}"] = virtual_record_id
-
-    return label_to_vid
 
 
 def build_user_context(user_info, org_info) -> str:

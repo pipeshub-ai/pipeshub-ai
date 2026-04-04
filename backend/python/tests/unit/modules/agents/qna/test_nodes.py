@@ -1809,8 +1809,8 @@ class TestBuildKnowledgeContext:
         result = _build_knowledge_context(state, log)
         assert "DUAL-SOURCE" in result
 
-    def test_no_indexed_apps_shows_warning(self):
-        """When only KB sources exist (no indexed apps), a warning is shown."""
+    def test_no_indexed_apps_shows_routing_block(self):
+        """When only KB sources exist (no indexed apps), routing block is shown."""
         from app.modules.agents.qna.nodes import _build_knowledge_context
 
         state = {
@@ -1819,7 +1819,8 @@ class TestBuildKnowledgeContext:
         }
         log = _mock_log()
         result = _build_knowledge_context(state, log)
-        assert "NO app connectors are indexed" in result
+        assert "KB Only" in result
+        assert "Reason then Route" in result
 
     def test_non_dict_knowledge_items_skipped(self):
         """Non-dict items in agent_knowledge are skipped."""
@@ -6265,7 +6266,7 @@ class TestBuildKnowledgeContextEdgeCases:
         assert "retrieval" not in result.lower().split("live api")[0] if "LIVE API" in result else True
 
     def test_no_indexed_apps_message(self):
-        """When only KB sources exist (no app connectors), a warning is shown."""
+        """When only KB sources exist (no app connectors), routing block is shown."""
         state = {
             "agent_knowledge": [
                 {"displayName": "Company Docs", "type": "KB"}
@@ -6273,7 +6274,8 @@ class TestBuildKnowledgeContextEdgeCases:
             "agent_toolsets": [],
         }
         result = _build_knowledge_context(state, _mock_log())
-        assert "NO app connectors are indexed" in result
+        assert "Company Docs" in result
+        assert "Reason then Route" in result
 
     def test_knowledge_without_display_name(self):
         """Knowledge entry without displayName uses fallback."""
@@ -12071,3 +12073,248 @@ class TestExtractFinalResponseEdge:
         msgs = [ToolMessage(content="tool output", tool_call_id="tc1")]
         result = _extract_final_response(msgs, _log())
         assert isinstance(result, str)
+
+
+# ============================================================================
+# Planner _build_knowledge_context — connector routing case matrix
+# ============================================================================
+
+class TestPlannerKnowledgeContextRoutingMatrix:
+    """
+    Exhaustive case matrix for the QnA/React planner's knowledge context.
+
+    Config key:
+      KB   = Knowledge Base entry (no connector filter)
+      J    = Jira indexed connector
+      C    = Confluence indexed connector
+      S    = Slack indexed connector
+      API  = Live API toolset matching an indexed connector (dual-source)
+
+    Each case verifies WHAT the planner prompt tells the LLM to do.
+    """
+
+    _KB   = {"displayName": "Company Wiki",  "type": "KB"}
+    _KB2  = {"displayName": "HR Policies",   "type": "KB"}
+    _KBI  = {
+        "displayName": "Private Docs", "type": "KB",
+        "filters": {"recordGroups": ["rg-private-1"]},
+    }
+    _J    = {"displayName": "Jira Project",  "type": "jira",       "connectorId": "jira-cid-1"}
+    _C    = {"displayName": "Confluence",    "type": "confluence", "connectorId": "conf-cid-2"}
+    _S    = {"displayName": "Slack WS",      "type": "slack",      "connectorId": "slack-cid-3"}
+
+    _JIRA_TS   = {"name": "jira tools",   "tools": [{"fullName": "jira.search_issues"}, {"fullName": "jira.create_issue"}]}
+    _CONF_TS   = {"name": "confluence",   "tools": [{"fullName": "confluence.search_content"}]}
+    _GITHUB_TS = {"name": "github tools", "tools": [{"fullName": "github.search_repos"}]}
+
+    def _ctx(self, knowledge, toolsets=None):
+        from app.modules.agents.qna.nodes import _build_knowledge_context
+        return _build_knowledge_context(
+            {"agent_knowledge": knowledge, "agent_toolsets": toolsets or []},
+            _mock_log(),
+        )
+
+    # ── No knowledge ────────────────────────────────────────────────────────
+
+    def test_empty_knowledge_returns_empty_string(self):
+        assert self._ctx([]) == ""
+
+    def test_none_knowledge_returns_empty_string(self):
+        from app.modules.agents.qna.nodes import _build_knowledge_context
+        result = _build_knowledge_context({"agent_knowledge": None, "agent_toolsets": []}, _mock_log())
+        assert result == ""
+
+    # ── Case 1: KB-only (no connectors) ─────────────────────────────────────
+
+    def test_kb_only_lists_kb_name(self):
+        result = self._ctx([self._KB])
+        assert "Company Wiki" in result
+
+    def test_kb_only_routing_block_present(self):
+        """KB-only: routing block IS generated (Reason then Route)."""
+        result = self._ctx([self._KB])
+        assert "Reason then Route" in result
+
+    def test_kb_with_ids_shows_collection_ids(self):
+        """KB with collection_ids: collection_ids appear in the routing block."""
+        result = self._ctx([self._KBI])
+        assert "rg-private-1" in result
+        assert "collection_ids" in result
+
+    def test_kb_only_multiple_kbs_all_listed(self):
+        result = self._ctx([self._KB, self._KB2])
+        assert "Company Wiki" in result
+        assert "HR Policies" in result
+
+    def test_kb_only_parameter_rule_shows_collection_ids(self):
+        result = self._ctx([self._KB])
+        assert "collection_ids" in result
+
+    # ── Case 2: Single connector, no KB, no live API overlap ─────────────────
+
+    def test_single_connector_no_kb_routing_block_present(self):
+        result = self._ctx([self._J])
+        assert "Reason then Route" in result
+
+    def test_single_connector_id_in_identity_table(self):
+        result = self._ctx([self._J])
+        assert "jira-cid-1" in result
+
+    def test_single_connector_signals_present(self):
+        """Jira signal words (tickets, issues, bugs) must appear."""
+        result = self._ctx([self._J])
+        assert any(w in result for w in ["tickets", "issues", "bugs"])
+
+    def test_single_connector_no_all_vs_specific_split(self):
+        """With one connector there is only 'Call format', not two-example split."""
+        result = self._ctx([self._J])
+        assert "Call format" in result
+
+    def test_single_connector_connector_id_in_example_call(self):
+        """The connector_id must appear in the generated tool-call example."""
+        result = self._ctx([self._J])
+        assert '"connector_ids"' in result or "connector_ids" in result
+        assert "jira-cid-1" in result
+
+    # ── Case 3: Multiple connectors, no KB, no API overlap ───────────────────
+
+    def test_multi_connector_all_ids_present(self):
+        result = self._ctx([self._J, self._C])
+        assert "jira-cid-1" in result
+        assert "conf-cid-2" in result
+
+    def test_multi_connector_count_in_header(self):
+        result = self._ctx([self._J, self._C, self._S])
+        assert "3 connector" in result
+
+    def test_multi_connector_all_connectors_example_present(self):
+        """Ambiguous query → All sources example must appear."""
+        result = self._ctx([self._J, self._C])
+        assert "All sources" in result
+
+    def test_multi_connector_specific_connector_example_present(self):
+        """Clear signal → Specific source example must appear."""
+        result = self._ctx([self._J, self._C])
+        assert "Specific source" in result
+
+    def test_multi_connector_all_labels_in_identity(self):
+        result = self._ctx([self._J, self._C, self._S])
+        assert "Jira Project" in result
+        assert "Confluence" in result
+        assert "Slack WS" in result
+
+    def test_multi_connector_default_search_all_rule(self):
+        """When uncertain → guidance says search ALL."""
+        result = self._ctx([self._J, self._C])
+        assert "ALL" in result or "all" in result.lower()
+
+    # ── Case 4: KB + single connector ───────────────────────────────────────
+
+    def test_kb_and_single_connector_kb_listed(self):
+        result = self._ctx([self._KB, self._J])
+        assert "Company Wiki" in result
+
+    def test_kb_and_single_connector_routing_block_present(self):
+        result = self._ctx([self._KB, self._J])
+        assert "Reason then Route" in result
+
+    def test_kb_and_single_connector_connector_id_present(self):
+        result = self._ctx([self._KB, self._J])
+        assert "jira-cid-1" in result
+
+    def test_kb_and_single_connector_no_kb_only_note(self):
+        """KB + connector: 'NO app connectors' note must NOT appear."""
+        result = self._ctx([self._KB, self._J])
+        assert "NO app connectors are indexed" not in result
+
+    # ── Case 5: KB + multiple connectors ────────────────────────────────────
+
+    def test_kb_and_multi_connector_kb_and_connectors_both_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "Company Wiki" in result
+        assert "jira-cid-1" in result
+        assert "conf-cid-2" in result
+
+    def test_kb_and_multi_connector_routing_block_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "Reason then Route" in result
+
+    def test_kb_and_multi_connector_both_examples_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "All sources" in result
+        assert "Specific source" in result
+
+    # ── Case 6: Connector + matching live API toolset (dual-source) ──────────
+
+    def test_dual_source_jira_section_present(self):
+        """Jira indexed + Jira API → DUAL-SOURCE section."""
+        result = self._ctx([self._J], toolsets=[self._JIRA_TS])
+        assert "DUAL-SOURCE" in result
+
+    def test_dual_source_shows_both_retrieval_and_live_api_tools(self):
+        result = self._ctx([self._J], toolsets=[self._JIRA_TS])
+        assert "retrieval" in result.lower()
+        assert "jira.search_issues" in result or "search_issues" in result
+
+    def test_dual_source_intent_table_present(self):
+        """DUAL-SOURCE section should include the intent decision table."""
+        result = self._ctx([self._J], toolsets=[self._JIRA_TS])
+        assert "live API" in result or "Live API" in result
+
+    # ── Case 7: Retrieval + non-overlapping API with search tool ─────────────
+
+    def test_hybrid_search_section_present_when_retrieval_and_search_api(self):
+        """Retrieval + GitHub API (no overlap) → HYBRID SEARCH section."""
+        result = self._ctx([self._J], toolsets=[self._GITHUB_TS])
+        assert "HYBRID SEARCH" in result
+
+    def test_hybrid_search_example_uses_single_braces(self):
+        """JSON examples must use single { } not double {{ }}."""
+        result = self._ctx([self._J], toolsets=[self._GITHUB_TS])
+        # Find the hybrid search section and verify no double-brace artifacts
+        assert "{{" not in result, "Double braces found — plain-string escaping bug"
+
+    # ── Case 8: Tool selection summary always at the end ─────────────────────
+
+    def test_tool_selection_summary_always_shown(self):
+        for knowledge in [
+            [self._KB],
+            [self._J],
+            [self._KB, self._J],
+            [self._J, self._C],
+        ]:
+            result = self._ctx(knowledge)
+            assert "TOOL SELECTION SUMMARY" in result, \
+                f"TOOL SELECTION SUMMARY missing for config {knowledge}"
+
+    def test_retrieval_connector_rule_always_shown(self):
+        for knowledge in [
+            [self._KB],
+            [self._J],
+            [self._KB, self._J, self._C],
+        ]:
+            result = self._ctx(knowledge)
+            assert "RETRIEVAL CONNECTOR RULE" in result, \
+                f"RETRIEVAL CONNECTOR RULE missing for config {knowledge}"
+
+    # ── Case 9: Connector_ids instruction is per-call (not combined) ─────────
+
+    def test_one_call_per_connector_never_combine(self):
+        """Routing rules must say never combine connector_ids into one call."""
+        result = self._ctx([self._J, self._C])
+        assert "never combine" in result.lower() or "One call per connector" in result
+
+    # ── Case 10: Non-dict entries in knowledge are skipped cleanly ────────────
+
+    def test_non_dict_entries_skipped_no_crash(self):
+        result = self._ctx(["not-a-dict", self._J])
+        assert "jira-cid-1" in result  # valid entry still shows up
+
+    # ── Case 11: Live API section with multiple toolsets ─────────────────────
+
+    def test_live_api_section_shows_all_toolsets(self):
+        result = self._ctx([self._J], toolsets=[self._JIRA_TS, self._GITHUB_TS])
+        assert "LIVE API" in result
+        # Both toolset domains should appear
+        assert "Jira" in result or "jira" in result
+        assert "Github" in result or "github" in result

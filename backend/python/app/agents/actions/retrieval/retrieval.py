@@ -169,30 +169,51 @@ class Retrieval:
             else:
                 adjusted_limit = 100 // min(total_sources, _MAX_RETRIEVAL_SOURCES_DIVISOR)
 
-            # Start from agent scope (ensure it's a dict, not None)
-            filter_groups = dict(agent_filters) if agent_filters else {}
+            # Start from an empty filter dict — we build it precisely below.
+            filter_groups: dict[str, list[str]] = {}
 
-            # === RESOLVE CONNECTOR IDs ===
-            # Simple logic: if connector_id exists in agent scope, keep it; otherwise use all agent connectors
-            if connector_ids:
-                # Keep only connector IDs that exist in agent scope
+            # === TARGETED vs BROAD FILTER LOGIC ===
+            #
+            # Rule: if the caller explicitly provides EITHER connector_ids OR
+            # collection_ids, treat that as a targeted search and do NOT add the
+            # other side from the agent scope. Mixing both would create an
+            # unnecessary union that defeats the purpose of the explicit filter.
+            #
+            # Only when NEITHER is provided do we fall back to the full agent
+            # scope (both connectors and KB collections).
+            #
+            explicit_connectors = bool(connector_ids)
+            explicit_collections = bool(collection_ids)
+            broad_search = not explicit_connectors and not explicit_collections
+
+            # --- App connectors ---
+            if explicit_connectors:
+                # Scope to the intersection with the agent's allowed connectors.
                 resolved_apps = [cid for cid in connector_ids if cid in agent_apps]
-                # If nothing matched, fall back to full agent scope
-                filter_groups["apps"] = resolved_apps if resolved_apps else (list(agent_apps) if agent_apps else [])
-            else:
-                # No LLM input — use full agent scope
+                # If the LLM hallucinated an ID not in scope, ignore it and use
+                # the full agent connector set as a safe fallback.
+                filter_groups["apps"] = resolved_apps if resolved_apps else list(agent_apps)
+            elif broad_search:
+                # No explicit filter — include all agent connectors.
                 filter_groups["apps"] = list(agent_apps) if agent_apps else []
-
-            # === RESOLVE COLLECTION IDs (KB record groups) ===
-            # Simple logic: if collection_id exists in agent scope, keep it; otherwise use all agent collections
-            if collection_ids:
-                # Keep only collection IDs that exist in agent scope
-                resolved_kbs = [cid for cid in collection_ids if cid in agent_kbs]
-                # If nothing matched, fall back to full agent scope
-                filter_groups["kb"] = resolved_kbs if resolved_kbs else (list(agent_kbs) if agent_kbs else [])
             else:
-                # No LLM input — use full agent scope
+                # collection_ids were given but connector_ids were not:
+                # exclude connectors entirely so the search is KB-only.
+                filter_groups["apps"] = []
+
+            # --- KB collections ---
+            if explicit_collections:
+                # Scope to the intersection with the agent's allowed KB groups.
+                resolved_kbs = [cid for cid in collection_ids if cid in agent_kbs]
+                # Fallback to full KB scope if IDs don't match.
+                filter_groups["kb"] = resolved_kbs if resolved_kbs else list(agent_kbs)
+            elif broad_search:
+                # No explicit filter — include all agent KB collections.
                 filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
+            else:
+                # connector_ids were given but collection_ids were not:
+                # exclude KB collections so the search is connector-only.
+                filter_groups["kb"] = ['NO_KB_SELECTED']
 
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))
