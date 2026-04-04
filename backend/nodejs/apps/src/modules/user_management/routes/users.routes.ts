@@ -28,8 +28,9 @@ import { EntitiesEventProducer } from '../services/entity_events.service';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
+import { sendValidatedJson } from '../../../utils/response-validator';
 import { UserIdValidationSchema,
-  MultipleUserValidationSchema, 
   createUserValidationSchema, 
   updateUserFullNameValidationSchema, 
   updateUserFirstNameValidationSchema, 
@@ -39,6 +40,13 @@ import { UserIdValidationSchema,
   updateUserValidationSchema, 
   emailIdValidationSchema,
   UpdateUserDisplayPictureValidationSchema,
+  GetAllUsersValidationSchema,
+  GetUserEmailByUserIdValidationSchema,
+  UserAdminCheckResponseSchema,
+  UsersHealthResponseSchema,
+  InternalAdminUsersResponseSchema,
+  InternalLookupUserResponseSchema,
+  BulkInviteValidationSchema,
 } from '../validation/user-validators';
 
 export function createUserRouter(container: Container) {
@@ -54,6 +62,7 @@ export function createUserRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
+    ValidationMiddleware.validate(GetAllUsersValidationSchema),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -83,7 +92,7 @@ export function createUserRouter(container: Container) {
     '/:id/email',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(GetUserEmailByUserIdValidationSchema),
     metricsMiddleware(container),
     userAdminCheck,
     userExists,
@@ -118,6 +127,99 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  router.put(
+    '/dp',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    ...FileProcessorFactory.createBufferUploadProcessor({
+      fieldName: 'file',
+      allowedMimeTypes: [
+        'image/png',
+        'image/jpeg',
+        'image/jpg',
+        'image/webp',
+        'image/gif',
+      ],
+      maxFilesAllowed: 1,
+      isMultipleFilesAllowed: false,
+      processingType: FileProcessingType.BUFFER,
+      maxFileSize: 1024 * 1024,
+      strictFileUpload: true,
+    }).getMiddleware,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(UpdateUserDisplayPictureValidationSchema),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.updateUserDisplayPicture(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/dp',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    metricsMiddleware(container),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.removeUserDisplayPicture(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/dp',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
+    metricsMiddleware(container),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.getUserDisplayPicture(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Health check endpoint
+  router.get(
+    '/health',
+    (_req: Request, res: Response, next: NextFunction) => {
+      try {
+        sendValidatedJson(
+          res,
+          UsersHealthResponseSchema,
+          {
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+          },
+          HTTP_STATUS.OK,
+        );
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.get(
     '/:id',
     authMiddleware.authenticate,
@@ -133,25 +235,6 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.getUserById(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-  router.post(
-    '/by-ids',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(MultipleUserValidationSchema),
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUsersByIds(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -218,7 +301,12 @@ export function createUserRouter(container: Container) {
           ),
         ];
 
-        res.status(200).json({ adminUserIds });
+        sendValidatedJson(
+          res,
+          InternalAdminUsersResponseSchema,
+          { adminUserIds },
+          HTTP_STATUS.OK,
+        );
         return;
       } catch (error) {
         next(error);
@@ -252,7 +340,12 @@ export function createUserRouter(container: Container) {
             throw new NotFoundError('User not found');
           }
 
-          res.json(user);
+          sendValidatedJson(
+            res,
+            InternalLookupUserResponseSchema,
+            user,
+            HTTP_STATUS.OK,
+          );
         } catch (error) {
           next(error);
         }
@@ -343,79 +436,6 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.updateLastName(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.put(
-    '/dp',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_WRITE),
-    ...FileProcessorFactory.createBufferUploadProcessor({
-      fieldName: 'file',
-      allowedMimeTypes: [
-        'image/png',
-        'image/jpeg',
-        'image/jpg',
-        'image/webp',
-        'image/gif',
-      ],
-      maxFilesAllowed: 1,
-      isMultipleFilesAllowed: false,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024,
-      strictFileUpload: true,
-    }).getMiddleware,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(UpdateUserDisplayPictureValidationSchema),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.updateUserDisplayPicture(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.delete(
-    '/dp',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_WRITE),
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.removeUserDisplayPicture(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/dp',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUserDisplayPicture(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -523,8 +543,12 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        res.status(200).json({ message: 'User has admin access' });
-        return;
+        sendValidatedJson(
+          res,
+          UserAdminCheckResponseSchema,
+          { message: 'User has admin access' },
+          HTTP_STATUS.OK,
+        );
       } catch (error) {
         next(error);
       }
@@ -536,6 +560,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(BulkInviteValidationSchema),
     smtpConfigCheck(config.cmBackend),
     userAdminCheck,
     accountTypeCheck,
@@ -553,6 +578,7 @@ export function createUserRouter(container: Container) {
       }
     },
   );
+
   router.post(
     '/:id/resend-invite',
     authMiddleware.authenticate,
@@ -576,14 +602,6 @@ export function createUserRouter(container: Container) {
       }
     },
   );
-
-  // Health check endpoint
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
-  });
 
   router.post(
     '/updateAppConfig',
@@ -650,21 +668,6 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.listUsers(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/teams/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    metricsMiddleware(container),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUserTeams(req, res, next);
       } catch (error) {
         next(error);
       }

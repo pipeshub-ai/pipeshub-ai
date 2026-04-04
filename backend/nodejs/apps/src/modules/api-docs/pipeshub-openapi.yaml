@@ -6893,7 +6893,6 @@ paths:
         <ul>
         <li>Results are cached for improved performance</li>
         <li>For large organizations, consider using pagination</li>
-        <li>Use <code>/users/by-ids</code> for fetching specific users</li>
         </ul>
       operationId: getAllUsers
       security:
@@ -7936,46 +7935,6 @@ paths:
         '401':
           description: Unauthorized
 
-  /users/by-ids:
-    post:
-      tags:
-        - Users
-      summary: Get users by IDs
-      description: |
-        Retrieve multiple users by their IDs in a single request.
-      operationId: getUsersByIds
-      security:
-        - bearerAuth: []
-        - oauth2: [user:read]
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                ids:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '200':
-          description: Users retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
-        '401':
-          description: Unauthorized
-
   /users/{id}/fullname:
     patch:
       tags:
@@ -8178,34 +8137,6 @@ paths:
           description: User is not an admin
         '404':
           description: User not found
-
-  /users/teams/list:
-    get:
-      tags:
-        - Users
-      summary: Get user teams
-      description: |
-        Retrieve teams associated with the authenticated user.
-      operationId: getUserTeamsViaUsers
-      security:
-        - bearerAuth: []
-        - oauth2: [user:read]
-      responses:
-        '200':
-          description: User teams retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
-        '401':
-          description: Unauthorized
 
   # ==================== TEAMS ENDPOINTS ====================
   /teams:

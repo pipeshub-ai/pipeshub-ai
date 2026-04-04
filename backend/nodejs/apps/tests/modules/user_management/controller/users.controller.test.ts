@@ -10,6 +10,41 @@ import { UserCredentials } from '../../../../src/modules/auth/schema/userCredent
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { ValidationError } from '../../../../src/libs/errors/validation.error';
 
+/** Valid GET /users/graph/list body from connector (GraphListUsersResponseSchema). */
+function graphListUsersConnectorPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    status: 'success',
+    message: 'Users fetched successfully',
+    users: [] as unknown[],
+    pagination: {
+      page: 1,
+      limit: 100,
+      total: 0,
+      pages: 0,
+      hasNext: false,
+      hasPrev: false,
+    },
+    ...overrides,
+  };
+}
+
+/** Lean user JSON shape for PATCH name-field response validation */
+function leanPatchUserResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    _id: '507f1f77bcf86cd799439011',
+    orgId: '507f1f77bcf86cd799439012',
+    fullName: 'Test User',
+    email: 'test@test.com',
+    hasLoggedIn: false,
+    isDeleted: false,
+    createdAt: '2026-04-01T12:00:00.000Z',
+    updatedAt: '2026-04-01T12:00:00.000Z',
+    slug: 'user-1',
+    __v: 0,
+    ...overrides,
+  };
+}
+
 describe('UserController', () => {
   let controller: UserController;
   let mockConfig: any;
@@ -205,8 +240,10 @@ describe('UserController', () => {
     it('should return users with their groups', async () => {
       const mockUsersWithGroups = [
         {
-          _id: 'u1',
+          _id: '507f1f77bcf86cd799439011',
+          orgId: req.user.orgId,
           fullName: 'User One',
+          hasLoggedIn: true,
           groups: [{ name: 'admin', type: 'admin' }],
         },
       ];
@@ -221,14 +258,22 @@ describe('UserController', () => {
   });
 
   describe('getUserById', () => {
+    const leanUserDoc = {
+      _id: '507f1f77bcf86cd799439011',
+      orgId: '507f1f77bcf86cd799439012',
+      email: 'test@test.com',
+      fullName: 'Test User',
+      hasLoggedIn: true,
+      slug: 'user-1',
+      isDeleted: false,
+      createdAt: '2026-04-01T12:00:00.000Z',
+      updatedAt: '2026-04-01T12:00:00.000Z',
+      __v: 0,
+    };
+
     it('should return a user by id', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
-      const mockUser = {
-        _id: '507f1f77bcf86cd799439011',
-        fullName: 'Test User',
-        email: 'test@test.com',
-        orgId: '507f1f77bcf86cd799439012',
-      };
+      const mockUser = { ...leanUserDoc };
 
       sinon.stub(Users, 'findOne').returns({
         lean: sinon.stub().returns({
@@ -238,6 +283,7 @@ describe('UserController', () => {
 
       await controller.getUserById(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0]).to.deep.equal(mockUser);
     });
@@ -264,11 +310,7 @@ describe('UserController', () => {
       process.env.HIDE_EMAIL = 'true';
 
       req.params.id = '507f1f77bcf86cd799439011';
-      const mockUser = {
-        _id: '507f1f77bcf86cd799439011',
-        fullName: 'Test User',
-        email: 'test@test.com',
-      };
+      const mockUser = { ...leanUserDoc };
 
       sinon.stub(Users, 'findOne').returns({
         lean: sinon.stub().returns({
@@ -278,11 +320,41 @@ describe('UserController', () => {
 
       await controller.getUserById(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       const returnedUser = res.json.firstCall.args[0];
       expect(returnedUser.email).to.be.undefined;
 
       process.env.HIDE_EMAIL = originalEnv;
+    });
+
+    it('should call next with ValidationError when email is invalid', async () => {
+      const originalHide = process.env.HIDE_EMAIL;
+      delete process.env.HIDE_EMAIL;
+
+      req.params.id = '507f1f77bcf86cd799439011';
+      const badUser = {
+        ...leanUserDoc,
+        email: 'not-a-valid-email',
+      };
+
+      sinon.stub(Users, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(badUser),
+        }),
+      } as any);
+
+      await controller.getUserById(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(ValidationError);
+      expect(res.json.called).to.be.false;
+
+      if (originalHide === undefined) {
+        delete process.env.HIDE_EMAIL;
+      } else {
+        process.env.HIDE_EMAIL = originalHide;
+      }
     });
   });
 
@@ -374,65 +446,20 @@ describe('UserController', () => {
     });
   });
 
-  describe('getUsersByIds', () => {
-    it('should return users by array of ids', async () => {
-      const id1 = new mongoose.Types.ObjectId().toString();
-      const id2 = new mongoose.Types.ObjectId().toString();
-      req.body = { userIds: [id1, id2] };
-
-      const mockUsers = [
-        { _id: id1, fullName: 'User One' },
-        { _id: id2, fullName: 'User Two' },
-      ];
-
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
-
-      await controller.getUsersByIds(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockUsers)).to.be.true;
-    });
-
-    it('should call next with BadRequestError when userIds is empty', async () => {
-      req.body = { userIds: [] };
-
-      await controller.getUsersByIds(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('userIds must be provided as a non-empty array');
-    });
-
-    it('should call next with BadRequestError when userIds is not provided', async () => {
-      req.body = {};
-
-      await controller.getUsersByIds(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('userIds must be provided as a non-empty array');
-    });
-
-    it('should call next with BadRequestError when userIds is not an array', async () => {
-      req.body = { userIds: 'not-an-array' };
-
-      await controller.getUsersByIds(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('userIds must be provided as a non-empty array');
-    });
-  });
-
   describe('checkUserExistsByEmail', () => {
     it('should return users found by email', async () => {
       req.body = { email: 'test@test.com' };
-      const mockUsers = [{ _id: 'u1', email: 'test@test.com' }];
+      const mockUsers = [leanPatchUserResponse({ email: 'test@test.com' })];
 
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(mockUsers),
+        }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(mockUsers)).to.be.true;
     });
   });
@@ -444,24 +471,21 @@ describe('UserController', () => {
         email: 'new@test.com',
       };
 
-      const mockSave = sinon.stub().resolves();
-      const mockNewUser = {
-        _id: new mongoose.Types.ObjectId(),
-        fullName: 'New User',
-        email: 'new@test.com',
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        save: mockSave,
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
+      sinon.stub(Users.prototype, 'save').callsFake(async function (this: any) {
+        if (!this.slug) {
+          this.slug = 'user-mock';
+        }
+        const t = new Date('2026-04-01T00:00:00.000Z');
+        this.createdAt = t;
+        this.updatedAt = t;
+        this.__v = 0;
+        return this;
+      });
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
 
-      // We need to handle the constructor, so let's test the event publishing
       await controller.createUser(req, res, next);
 
-      // Either succeeds or goes to next with error
       if (next.called) {
-        // Constructor may fail since we can't fully mock Mongoose model constructors
         expect(next.calledOnce).to.be.true;
       } else {
         expect(res.status.calledWith(201)).to.be.true;
@@ -528,11 +552,9 @@ describe('UserController', () => {
         fullName: 'Old Name',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: '507f1f77bcf86cd799439011',
-          fullName: 'Updated Name',
-          email: 'test@test.com',
-        }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'Updated Name' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -581,10 +603,9 @@ describe('UserController', () => {
         fullName: 'Old Name',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: '507f1f77bcf86cd799439011',
-          fullName: 'New Full Name',
-        }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'New Full Name' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -632,7 +653,12 @@ describe('UserController', () => {
         firstName: 'Old',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ firstName: 'John' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'John Doe',
+            firstName: 'John',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -666,7 +692,12 @@ describe('UserController', () => {
         lastName: 'Old',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ lastName: 'Smith' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'John Smith',
+            lastName: 'Smith',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -690,7 +721,13 @@ describe('UserController', () => {
         designation: 'Engineer',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ designation: 'Senior Engineer' }),
+        toObject: sinon
+          .stub()
+          .returns(
+            leanPatchUserResponse({
+              designation: 'Senior Engineer',
+            }),
+          ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -713,7 +750,14 @@ describe('UserController', () => {
         fullName: 'Test User',
         email: 'old@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
+        toObject: sinon
+          .stub()
+          .returns(
+            leanPatchUserResponse({
+              email: 'new@test.com',
+              fullName: 'Test User',
+            }),
+          ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -833,9 +877,21 @@ describe('UserController', () => {
   describe('removeUserDisplayPicture', () => {
     it('should remove user display picture', async () => {
       const mockDp = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        userId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
         pic: 'base64data',
         mimeType: 'image/jpeg',
+        __v: 0,
         save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({
+          _id: '507f1f77bcf86cd799439011',
+          userId: '507f1f77bcf86cd799439011',
+          orgId: req.user.orgId,
+          pic: null,
+          mimeType: null,
+          __v: 0,
+        }),
       };
 
       sinon.stub(UserDisplayPicture, 'findOne').returns({
@@ -848,6 +904,7 @@ describe('UserController', () => {
       expect(mockDp.mimeType).to.be.null;
       expect(mockDp.save.calledOnce).to.be.true;
       expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
     });
 
     it('should return message when dp not found', async () => {
@@ -1122,10 +1179,15 @@ describe('UserController', () => {
     it('should return empty array when no users found', async () => {
       req.body = { email: 'notfound@test.com' };
 
-      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([]),
+        }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith([])).to.be.true;
     });
   });
@@ -1193,28 +1255,6 @@ describe('UserController', () => {
       req.user = { orgId: '507f1f77bcf86cd799439012' };
 
       await controller.listUsers(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('User ID is required');
-    });
-  });
-
-  describe('getUserTeams', () => {
-    it('should call next with BadRequestError when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('Organization ID is required');
-    });
-
-    it('should call next with BadRequestError when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-
-      await controller.getUserTeams(req, res, next);
 
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
@@ -1464,7 +1504,14 @@ describe('UserController', () => {
         fullName: 'Test',
         email: 'same@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'same@test.com' }),
+        toObject: sinon
+          .stub()
+          .returns(
+            leanPatchUserResponse({
+              email: 'same@test.com',
+              fullName: 'Test',
+            }),
+          ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -1488,10 +1535,12 @@ describe('UserController', () => {
         designation: 'Engineer',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          fullName: 'Updated Name',
-          designation: 'CTO',
-        }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'Updated Name',
+            designation: 'CTO',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -1527,7 +1576,12 @@ describe('UserController', () => {
         email: 'oldemail@test.com',
         fullName: 'Test User',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ _id: '507f1f77bcf86cd799439011', email: 'oldemail@test.com' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            email: 'oldemail@test.com',
+            fullName: 'Test User',
+          }),
+        ),
       };
 
       const findOneStub = sinon.stub(Users, 'findOne');
@@ -1547,8 +1601,10 @@ describe('UserController', () => {
         expect(mockUser.save.calledOnce).to.be.true;
         expect(res.json.calledOnce).to.be.true;
         expect(res.json.firstCall.args[0]).to.deep.equal({
-          _id: '507f1f77bcf86cd799439011',
-          email: 'oldemail@test.com',
+          ...leanPatchUserResponse({
+            email: 'oldemail@test.com',
+            fullName: 'Test User',
+          }),
           meta: {
             emailChangeMailStatus: 'sent',
           },
@@ -1588,7 +1644,12 @@ describe('UserController', () => {
         email: 'same@test.com',
         fullName: 'Old',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({}),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            email: 'same@test.com',
+            fullName: 'Updated',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -1775,26 +1836,6 @@ describe('UserController', () => {
       req.user = { orgId: 'o1', userId: '' };
 
       await controller.listUsers(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('User ID');
-    });
-  });
-
-  describe('getUserTeams', () => {
-    it('should throw BadRequestError when orgId is missing', async () => {
-      req.user = { userId: 'u1', orgId: '' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Organization ID');
-    });
-
-    it('should throw BadRequestError when userId is missing', async () => {
-      req.user = { orgId: 'o1', userId: '' };
-
-      await controller.getUserTeams(req, res, next);
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('User ID');
@@ -2018,8 +2059,15 @@ describe('UserController', () => {
 
       const mockUser = {
         _id: '507f1f77bcf86cd799439011',
+        orgId: '507f1f77bcf86cd799439012',
         email: 'hidden@test.com',
         fullName: 'Test User',
+        hasLoggedIn: true,
+        slug: 'user-1',
+        isDeleted: false,
+        createdAt: '2026-04-01T12:00:00.000Z',
+        updatedAt: '2026-04-01T12:00:00.000Z',
+        __v: 0,
       };
 
       sinon.stub(Users, 'findOne').returns({
@@ -2031,6 +2079,7 @@ describe('UserController', () => {
       await controller.getUserById(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
         expect(jsonArg.email).to.be.undefined;
       }
@@ -2123,10 +2172,27 @@ describe('UserController', () => {
       const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: {
-          users: [{ _id: 'u1', fullName: 'Test User' }],
-          total: 1,
-        },
+        data: graphListUsersConnectorPayload({
+          users: [
+            {
+              id: 'd4636eaa-bb18-4d7f-b34d-9b0557bfe29b',
+              userId: '507f1f77bcf86cd799439011',
+              name: 'Test User',
+              email: 'test@example.com',
+              isActive: true,
+              createdAtTimestamp: 1775284339784,
+              updatedAtTimestamp: 1775284339784,
+            },
+          ],
+          pagination: {
+            page: 1,
+            limit: 10,
+            total: 1,
+            pages: 1,
+            hasNext: false,
+            hasPrev: false,
+          },
+        }),
       });
 
       await controller.listUsers(req, res, next);
@@ -2151,55 +2217,6 @@ describe('UserController', () => {
       });
 
       await controller.listUsers(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // getUserTeams - success flow
-  // -----------------------------------------------------------------------
-  describe('getUserTeams - success flow', () => {
-    it('should return user teams from AI service command', async () => {
-      req.user = {
-        _id: '507f1f77bcf86cd799439011',
-        userId: '507f1f77bcf86cd799439011',
-        orgId: '507f1f77bcf86cd799439012',
-      };
-      req.query = { page: '1', limit: '10' };
-      req.context = { requestId: 'test-request' };
-
-      const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          teams: [{ _id: 't1', name: 'Engineering' }],
-          total: 1,
-        },
-      });
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledOnce).to.be.true;
-    });
-
-    it('should call next when AI service returns non-200', async () => {
-      req.user = {
-        _id: '507f1f77bcf86cd799439011',
-        userId: '507f1f77bcf86cd799439011',
-        orgId: '507f1f77bcf86cd799439012',
-      };
-      req.query = {};
-      req.context = { requestId: 'test-request' };
-
-      const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: null,
-      });
-
-      await controller.getUserTeams(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -2456,7 +2473,16 @@ describe('UserController', () => {
       };
 
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').callsFake(async function (this: any) {
+        if (!this.slug) {
+          this.slug = 'user-mock';
+        }
+        const t = new Date('2026-04-01T00:00:00.000Z');
+        this.createdAt = t;
+        this.updatedAt = t;
+        this.__v = 0;
+        return this;
+      });
 
       await controller.createUser(req, res, next);
 
@@ -2506,31 +2532,6 @@ describe('UserController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // getUserTeams - with search param
-  // -----------------------------------------------------------------------
-  describe('getUserTeams - with search param', () => {
-    it('should pass search param to AI service', async () => {
-      req.user = {
-        _id: '507f1f77bcf86cd799439011',
-        userId: '507f1f77bcf86cd799439011',
-        orgId: '507f1f77bcf86cd799439012',
-      };
-      req.query = { page: '1', limit: '5', search: 'eng' };
-      req.context = { requestId: 'test-request' };
-
-      const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { teams: [], total: 0 },
-      });
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // deleteUser - full success flow
   // -----------------------------------------------------------------------
   describe('deleteUser - full success flow', () => {
@@ -2559,6 +2560,7 @@ describe('UserController', () => {
 
       await controller.deleteUser(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg.message).to.equal('User deleted successfully');
@@ -2573,14 +2575,18 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('checkUserExistsByEmail - found', () => {
     it('should return found users', async () => {
-      sinon.stub(Users, 'find').resolves([
-        { _id: 'u1', email: 'exists@test.com' },
-      ] as any);
+      const row = leanPatchUserResponse({ email: 'exists@test.com' });
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([row]),
+        }),
+      } as any);
 
       req.body = { email: 'exists@test.com' };
 
       await controller.checkUserExistsByEmail(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0]).to.have.lengthOf(1);
     });
@@ -2626,7 +2632,9 @@ describe('UserController', () => {
         designation: 'Engineer',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ fullName: 'New Name' }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'New Name' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2653,7 +2661,9 @@ describe('UserController', () => {
         designation: '',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ fullName: 'New Name' }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'New Name' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2680,7 +2690,9 @@ describe('UserController', () => {
         designation: undefined,
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ fullName: 'New Name' }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'New Name' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2709,7 +2721,12 @@ describe('UserController', () => {
         designation: 'CTO',
         email: 'jane@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ firstName: 'Jane' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'Jane Doe',
+            firstName: 'Jane',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2737,7 +2754,12 @@ describe('UserController', () => {
         designation: null,
         email: 'jane@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ firstName: 'Jane' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'Jane',
+            firstName: 'Jane',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2767,7 +2789,13 @@ describe('UserController', () => {
         designation: 'Dev',
         email: 'john@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ lastName: 'Smith' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'John Smith',
+            firstName: 'John',
+            lastName: 'Smith',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2795,7 +2823,12 @@ describe('UserController', () => {
         designation: '',
         email: 'john@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ lastName: 'Smith' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            fullName: 'Smith',
+            lastName: 'Smith',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2825,7 +2858,7 @@ describe('UserController', () => {
         designation: 'VP',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ designation: 'VP' }),
+        toObject: sinon.stub().returns(leanPatchUserResponse({ fullName: 'Test', designation: 'VP' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2853,7 +2886,7 @@ describe('UserController', () => {
         designation: 'VP',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ designation: 'VP' }),
+        toObject: sinon.stub().returns(leanPatchUserResponse({ fullName: 'Test', designation: 'VP' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2883,7 +2916,15 @@ describe('UserController', () => {
         designation: 'Dev',
         email: 'old@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            email: 'new@test.com',
+            fullName: 'Test',
+            firstName: 'F',
+            lastName: 'L',
+            designation: 'Dev',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2911,7 +2952,12 @@ describe('UserController', () => {
         designation: '',
         email: 'old@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
+        toObject: sinon.stub().returns(
+          leanPatchUserResponse({
+            email: 'new@test.com',
+            fullName: 'Test',
+          }),
+        ),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2944,7 +2990,9 @@ describe('UserController', () => {
         designation: 'Manager',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ fullName: 'Updated' }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'Updated' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2972,7 +3020,9 @@ describe('UserController', () => {
         designation: null,
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ fullName: 'Updated' }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'Updated' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -3219,7 +3269,10 @@ describe('UserController', () => {
     it('should pass page, limit, search when all provided', async () => {
       req.query = { page: '1', limit: '10', search: 'test' };
 
-      const aiResponse = { statusCode: 200, data: [{ _id: 'u1' }] };
+      const aiResponse = {
+        statusCode: 200,
+        data: graphListUsersConnectorPayload(),
+      };
       const executeStub = sinon.stub().resolves(aiResponse);
       const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
       sinon.stub(AISvcCmd.prototype, 'execute').callsFake(executeStub);
@@ -3234,7 +3287,7 @@ describe('UserController', () => {
     it('should work when no query params provided', async () => {
       req.query = {};
 
-      const aiResponse = { statusCode: 200, data: [] };
+      const aiResponse = { statusCode: 200, data: graphListUsersConnectorPayload() };
       const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
       sinon.stub(AISvcCmd.prototype, 'execute').resolves(aiResponse);
 
@@ -3281,97 +3334,12 @@ describe('UserController', () => {
       req.query = { page: '2' };
 
       const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
+      sinon.stub(AISvcCmd.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: graphListUsersConnectorPayload(),
+      });
 
       await controller.listUsers(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Branch coverage: getUserTeams - query param branches
-  // -----------------------------------------------------------------------
-  describe('getUserTeams - query param branches', () => {
-    it('should pass page, limit, search when all provided', async () => {
-      req.query = { page: '1', limit: '10', search: 'team' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should work with no query params', async () => {
-      req.query = {};
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011', orgId: undefined };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Organization ID is required');
-    });
-
-    it('should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012', userId: undefined };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('User ID is required');
-    });
-
-    it('should pass only page when only page is provided', async () => {
-      req.query = { page: '3' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should pass only limit when only limit is provided', async () => {
-      req.query = { limit: '20' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-
-    it('should pass only search when only search is provided', async () => {
-      req.query = { search: 'dev' };
-
-      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
-      sinon.stub(AISvcCmd.prototype, 'execute').resolves({ statusCode: 200, data: [] });
-
-      await controller.getUserTeams(req, res, next);
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
@@ -3937,7 +3905,9 @@ describe('UserController', () => {
         fullName: 'Old',
         email: 'test@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ fullName: 'Updated' }),
+        toObject: sinon
+          .stub()
+          .returns(leanPatchUserResponse({ fullName: 'Updated' })),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -4014,7 +3984,11 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail - error handling', () => {
     it('should call next on database error', async () => {
       req.body = { email: 'test@test.com' };
-      sinon.stub(Users, 'find').rejects(new Error('DB error'));
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().rejects(new Error('DB error')),
+        }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 

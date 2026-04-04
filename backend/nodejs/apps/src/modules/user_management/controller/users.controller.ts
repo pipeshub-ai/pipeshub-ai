@@ -41,8 +41,26 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import {
+  CreateUserResponseSchema,
+  DeleteUserResponseSchema,
+  UnblockUserResponseSchema,
   GetAllUsersBlockedResponseSchema,
   GetAllUsersResponseSchema,
+  GetAllUsersWithGroupsResponseSchema,
+  GetUserByIdResponseSchema,
+  CheckUserExistsByEmailResponseSchema,
+  GetUserEmailByUserIdResponseSchema,
+  UpdateUserEmailResponseSchema,
+  UpdateUserFirstNameResponseSchema,
+  UpdateUserFullNameResponseSchema,
+  UpdateUserLastNameResponseSchema,
+  UpdateUserDesignationResponseSchema,
+  UpdateUserPutResponseSchema,
+  BulkInviteResponseSchema,
+  InviteSentResponseSchema,
+  GraphListUsersResponseSchema,
+  UserDisplayPictureErrorResponseSchema,
+  RemoveUserDisplayPictureResponseSchema,
 } from '../validation/user-validators';
 
 @injectable()
@@ -186,7 +204,12 @@ export class UserController {
       },
     ]);
 
-    res.status(200).json(users);
+    sendValidatedJson(
+      res,
+      GetAllUsersWithGroupsResponseSchema,
+      users,
+      HTTP_STATUS.OK,
+    );
   }
 
   async getUserById(
@@ -216,7 +239,7 @@ export class UserController {
         delete (user as any)?.email;
       }
 
-      res.json(user);
+      sendValidatedJson(res, GetUserByIdResponseSchema, user, HTTP_STATUS.OK);
     } catch (error) {
       next(error);
     }
@@ -261,9 +284,12 @@ export class UserController {
 
       }
 
-      res.status(200).json({
-        message: "User unblocked successfully",
-      });
+      sendValidatedJson(
+        res,
+        UnblockUserResponseSchema,
+        { message: 'User unblocked successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -293,40 +319,12 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
-      res.json({ email: user.email });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  async getUsersByIds(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    try {
-      const { userIds }: { userIds: string[] } = req.body;
-
-      // Validate if userIds is an array and not empty
-      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        throw new BadRequestError(
-          'userIds must be provided as a non-empty array',
-        );
-      }
-
-      // Ensure that userIds are valid MongoDB ObjectIds
-      const userObjectIds = userIds.map(
-        (id) => new mongoose.mongo.ObjectId(id),
+      sendValidatedJson(
+        res,
+        GetUserEmailByUserIdResponseSchema,
+        { email: user.email },
+        HTTP_STATUS.OK,
       );
-
-      // Fetch the users using the provided list of user IDs
-      const users = await Users.find({
-        orgId: req.user?.orgId, // Assuming orgId is in decodedToken
-        isDeleted: false,
-        _id: { $in: userObjectIds },
-      });
-
-      res.status(200).json(users);
     } catch (error) {
       next(error);
     }
@@ -343,9 +341,16 @@ export class UserController {
       const users = await Users.find({
         email: email,
         isDeleted: false,
-      });
+      })
+        .lean()
+        .exec();
 
-      res.json(users);
+      sendValidatedJson(
+        res,
+        CheckUserExistsByEmailResponseSchema,
+        users,
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -384,7 +389,13 @@ export class UserController {
       await this.eventService.stop();
       await newUser.save();
       this.logger.debug('user created');
-      res.status(201).json(newUser);
+      const payload = JSON.parse(JSON.stringify(newUser)) as unknown;
+      sendValidatedJson(
+        res,
+        CreateUserResponseSchema,
+        payload,
+        HTTP_STATUS.CREATED,
+      );
     } catch (error) {
       next(error);
     }
@@ -715,13 +726,20 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      // Save the updated user
-      res.json({
-        ...user.toObject(),
-        meta: {
-          emailChangeMailStatus: emailChangeRequested,
-        },
-      });
+      const payload = JSON.parse(
+        JSON.stringify({
+          ...user.toObject(),
+          meta: {
+            emailChangeMailStatus: emailChangeRequested,
+          },
+        }),
+      ) as unknown;
+      sendValidatedJson(
+        res,
+        UpdateUserPutResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -767,7 +785,13 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      sendValidatedJson(
+        res,
+        UpdateUserFullNameResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -814,7 +838,13 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      sendValidatedJson(
+        res,
+        UpdateUserFirstNameResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -861,7 +891,13 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      sendValidatedJson(
+        res,
+        UpdateUserLastNameResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -908,7 +944,13 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      sendValidatedJson(
+        res,
+        UpdateUserDesignationResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -955,7 +997,13 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      const payload = JSON.parse(JSON.stringify(user.toObject())) as unknown;
+      sendValidatedJson(
+        res,
+        UpdateUserEmailResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -1030,7 +1078,12 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
 
-      res.json({ message: 'User deleted successfully' });
+      sendValidatedJson(
+        res,
+        DeleteUserResponseSchema,
+        { message: 'User deleted successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -1100,7 +1153,12 @@ export class UserController {
         .lean()
         .exec();
       if (!userDp || !userDp.pic) {
-        res.status(200).json({ errorMessage: 'User pic not found' });
+        sendValidatedJson(
+          res,
+          UserDisplayPictureErrorResponseSchema,
+          { errorMessage: 'User pic not found' },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
@@ -1130,9 +1188,12 @@ export class UserController {
       }).exec();
 
       if (!userDp) {
-        res
-          .status(200)
-          .json({ errorMessage: 'User display picture not found' });
+        sendValidatedJson(
+          res,
+          UserDisplayPictureErrorResponseSchema,
+          { errorMessage: 'User display picture not found' },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
@@ -1141,7 +1202,13 @@ export class UserController {
 
       await userDp.save();
 
-      res.status(200).send(userDp);
+      const removedPayload = JSON.parse(JSON.stringify(userDp.toObject())) as unknown;
+      sendValidatedJson(
+        res,
+        RemoveUserDisplayPictureResponseSchema,
+        removedPayload,
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -1227,7 +1294,12 @@ export class UserController {
         }
       }
 
-      res.status(200).json({ message: 'Invite sent successfully' });
+      sendValidatedJson(
+        res,
+        InviteSentResponseSchema,
+        { message: 'Invite sent successfully' },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -1334,9 +1406,14 @@ export class UserController {
       }
       // If nothing was done, return 409
       if (newUsers.length === 0 && restoredUsers.length === 0) {
-        res.status(200).json({
-          errorMessage: 'All provided emails already have active accounts',
-        });
+        sendValidatedJson(
+          res,
+          BulkInviteResponseSchema,
+          {
+            errorMessage: 'All provided emails already have active accounts',
+          },
+          HTTP_STATUS.OK,
+        );
         return;
       }
       let errorSendingMail = false;
@@ -1524,13 +1601,24 @@ export class UserController {
       await this.eventService.stop();
 
       if (errorSendingMail) {
-        res.status(200).json({
-          message: 'Error sending mail invite. Check your SMTP configuration.',
-        });
+        sendValidatedJson(
+          res,
+          BulkInviteResponseSchema,
+          {
+            message:
+              'Error sending mail invite. Check your SMTP configuration.',
+          },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
-      res.status(200).json({ message: 'Invite sent successfully' });
+      sendValidatedJson(
+        res,
+        BulkInviteResponseSchema,
+        { message: 'Invite sent successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       next(error);
     }
@@ -1590,62 +1678,16 @@ export class UserController {
         throw new BadRequestError('Failed to get users');
       }
       const users = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(users);
+      sendValidatedJson(
+        res,
+        GraphListUsersResponseSchema,
+        users,
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       this.logger.error('Error getting users', {
         requestId,
         message: 'Error getting users',
-        error: error.message,
-      });
-      next(error);
-    }
-  }
-
-  async getUserTeams(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const { page, limit, search } = req.query;
-      let queryString = '';
-      if (page) {
-        queryString += `&page=${page}`;
-      }
-      if (limit) {
-        queryString += `&limit=${limit}`;
-      }
-      if (search) {
-        queryString += `&search=${search}`;
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/user/teams?${queryString}`,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        method: HttpMethod.GET,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to get user teams');
-      }
-      const userTeams = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(userTeams);
-    } catch (error: any) {
-      this.logger.error('Error getting user teams', {
-        requestId,
-        message: 'Error getting user teams',
         error: error.message,
       });
       next(error);

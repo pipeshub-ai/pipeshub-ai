@@ -12,6 +12,7 @@ import { EntitiesEventProducer } from '../../../../src/modules/user_management/s
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service';
+import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture';
 
 describe('User Routes', () => {
   let container: Container;
@@ -41,19 +42,13 @@ describe('User Routes', () => {
       warn: sinon.stub(),
     };
 
-    mockConfig = {
-      frontendUrl: 'http://localhost:3000',
-      scopedJwtSecret: 'test-secret',
-      cmBackend: 'http://localhost:3004',
-      connectorBackend: 'http://localhost:8088',
-    };
+    mockConfig = createMockAppConfig();
 
     mockUserController = {
       getAllUsers: sinon.stub().resolves(),
       getAllUsersWithGroups: sinon.stub().resolves(),
       getUserById: sinon.stub().resolves(),
       getUserEmailByUserId: sinon.stub().resolves(),
-      getUsersByIds: sinon.stub().resolves(),
       checkUserExistsByEmail: sinon.stub().resolves(),
       createUser: sinon.stub().resolves(),
       updateUser: sinon.stub().resolves(),
@@ -69,7 +64,6 @@ describe('User Routes', () => {
       resendInvite: sinon.stub().resolves(),
       addManyUsers: sinon.stub().resolves(),
       listUsers: sinon.stub().resolves(),
-      getUserTeams: sinon.stub().resolves(),
       unblockUser: sinon.stub().resolves(),
     };
 
@@ -333,19 +327,6 @@ describe('User Routes', () => {
       expect(resendInvite).to.not.be.undefined;
     });
 
-    it('should register POST /by-ids route', () => {
-      const router = createUserRouter(container);
-      const routes = (router as any).stack;
-
-      const byIds = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/by-ids' &&
-          layer.route.methods.post,
-      );
-      expect(byIds).to.not.be.undefined;
-    });
-
     it('should register PUT /:id/unblock route', () => {
       const router = createUserRouter(container);
       const routes = (router as any).stack;
@@ -370,19 +351,6 @@ describe('User Routes', () => {
           layer.route.methods.get,
       );
       expect(graphList).to.not.be.undefined;
-    });
-
-    it('should register GET /teams/list route', () => {
-      const router = createUserRouter(container);
-      const routes = (router as any).stack;
-
-      const teamsList = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/teams/list' &&
-          layer.route.methods.get,
-      );
-      expect(teamsList).to.not.be.undefined;
     });
 
     it('should register GET /fetch/with-groups route', () => {
@@ -631,17 +599,6 @@ describe('User Routes', () => {
       expect(mockUserController.getUserById.calledOnce).to.be.true;
     });
 
-    it('POST /by-ids handler should call userController.getUsersByIds', async () => {
-      const router = createUserRouter(container);
-      const handler = findRouteHandler(router, '/by-ids', 'post');
-      expect(handler).to.not.be.undefined;
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes();
-      await handler(mockReq, mockRes, mockNext);
-
-      expect(mockUserController.getUsersByIds.calledOnce).to.be.true;
-    });
-
     it('GET /email/exists handler should call userController.checkUserExistsByEmail', async () => {
       const router = createUserRouter(container);
       const handler = findRouteHandler(router, '/email/exists', 'get');
@@ -888,15 +845,5 @@ describe('User Routes', () => {
       expect(mockUserController.listUsers.calledOnce).to.be.true;
     });
 
-    it('GET /teams/list handler should call userController.getUserTeams', async () => {
-      const router = createUserRouter(container);
-      const handler = findRouteHandler(router, '/teams/list', 'get');
-      expect(handler).to.not.be.undefined;
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes();
-      await handler(mockReq, mockRes, mockNext);
-
-      expect(mockUserController.getUserTeams.calledOnce).to.be.true;
-    });
   });
 });

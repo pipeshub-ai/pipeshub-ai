@@ -272,6 +272,7 @@ describe('OrgCreationBody Zod Schema', () => {
         contactEmail: 'admin@example.com',
         adminFullName: 'Admin User',
         password: 'ValidPass1!',
+        registeredName: '',
       })
       expect(result.success).to.be.false
       if (!result.success) {

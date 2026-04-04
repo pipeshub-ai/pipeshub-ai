@@ -12,6 +12,7 @@ import { EntitiesEventProducer } from '../../../../src/modules/user_management/s
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
+import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture'
 
 describe('User Routes - handler coverage', () => {
   let container: Container
@@ -32,19 +33,13 @@ describe('User Routes - handler coverage', () => {
       debug: sinon.stub(), info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(),
     }
 
-    const mockConfig = {
-      frontendUrl: 'http://localhost:3000',
-      scopedJwtSecret: 'test-secret',
-      cmBackend: 'http://localhost:3004',
-      connectorBackend: 'http://localhost:8088',
-    }
+    const mockConfig = createMockAppConfig()
 
     mockUserController = {
       getAllUsers: sinon.stub().resolves(),
       getAllUsersWithGroups: sinon.stub().resolves(),
       getUserById: sinon.stub().resolves(),
       getUserEmailByUserId: sinon.stub().resolves(),
-      getUsersByIds: sinon.stub().resolves(),
       checkUserExistsByEmail: sinon.stub().resolves(),
       createUser: sinon.stub().resolves(),
       updateUser: sinon.stub().resolves(),
@@ -60,7 +55,6 @@ describe('User Routes - handler coverage', () => {
       resendInvite: sinon.stub().resolves(),
       addManyUsers: sinon.stub().resolves(),
       listUsers: sinon.stub().resolves(),
-      getUserTeams: sinon.stub().resolves(),
       unblockUser: sinon.stub().resolves(),
     }
 
@@ -155,20 +149,6 @@ describe('User Routes - handler coverage', () => {
     })
   })
 
-  describe('POST /by-ids handler', () => {
-    it('should call userController.getUsersByIds', async () => {
-      const handler = findHandler('/by-ids', 'post')
-      expect(handler).to.exist
-
-      const req = { body: { userIds: ['507f1f77bcf86cd799439011'] } } as any
-      const res = mockRes()
-      const next = sinon.stub()
-
-      await handler(req, res, next)
-      expect(mockUserController.getUsersByIds.calledOnce).to.be.true
-    })
-  })
-
   describe('GET /health handler', () => {
     it('should return health status', () => {
       const handler = findHandler('/health', 'get')
@@ -208,10 +188,8 @@ describe('User Routes - handler coverage', () => {
       // Stub loadAppConfig
       const configModule = require('../../../../src/modules/tokens_manager/config/config')
       sinon.stub(configModule, 'loadAppConfig').resolves({
-        frontendUrl: 'http://localhost:3000',
+        ...createMockAppConfig(),
         scopedJwtSecret: 'updated-secret',
-        cmBackend: 'http://localhost:3004',
-        connectorBackend: 'http://localhost:8088',
       })
 
       const req = { tokenPayload: { orgId: 'org1' } } as any
@@ -248,20 +226,6 @@ describe('User Routes - handler coverage', () => {
 
       await handler(req, res, next)
       expect(mockUserController.listUsers.calledOnce).to.be.true
-    })
-  })
-
-  describe('GET /teams/list handler', () => {
-    it('should call userController.getUserTeams', async () => {
-      const handler = findHandler('/teams/list', 'get')
-      expect(handler).to.exist
-
-      const req = {} as any
-      const res = mockRes()
-      const next = sinon.stub()
-
-      await handler(req, res, next)
-      expect(mockUserController.getUserTeams.calledOnce).to.be.true
     })
   })
 

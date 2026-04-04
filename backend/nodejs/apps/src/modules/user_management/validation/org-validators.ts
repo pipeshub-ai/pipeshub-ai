@@ -8,27 +8,16 @@ const OrgUpdatePermanentAddressBody = z.object({
   postCode: z.string().optional(),
 });
 
-export const OrgCreationBody = z
-  .object({
-    accountType: z.enum(['business']),
-    shortName: z.string().optional(),
-    contactEmail: z.string().email('Invalid email format'),
-    registeredName: z.string().optional(), // Will be enforced conditionally
-    adminFullName: z.string().min(1, 'Admin full name required'),
-    password: z.string().min(8, 'Minimum 8 characters password required'),
-    sendEmail: z.boolean().optional(),
-    permanentAddress: OrgUpdatePermanentAddressBody.optional(),
-  })
-  .refine(
-    (data) => {
-      // If accountType is 'business', registeredName must be present
-      return data.accountType === 'business' ? !!data.registeredName : true;
-    },
-    {
-      message: 'Registered Name is required for business accounts',
-      path: ['registeredName'], // This ensures the error is associated with registeredName
-    },
-  );
+export const OrgCreationBody = z.object({
+  accountType: z.enum(['business']),
+  shortName: z.string().optional(),
+  contactEmail: z.string().email('Invalid email format'),
+  registeredName: z.string().min(1, 'Registered Name is required for business accounts'),
+  adminFullName: z.string().min(1, 'Admin full name required'),
+  password: z.string().min(8, 'Minimum 8 characters password required'),
+  sendEmail: z.boolean().optional(),
+  permanentAddress: OrgUpdatePermanentAddressBody.optional(),
+});
 
 const OnboardingStatusUpdateBody = z.object({
     status: z.enum(['configured', 'notConfigured', 'skipped']),

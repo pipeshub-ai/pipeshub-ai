@@ -42,7 +42,7 @@ describe('UserGroupController', () => {
 
       sinon.stub(UserGroups, 'findOne').resolves(null);
 
-      const mockSavedGroup = {
+      const mockSavedGroupPlain = {
         _id: '69cd17ffbea35d8fcaed7701',
         name: 'Engineering',
         type: 'custom' as const,
@@ -55,13 +55,18 @@ describe('UserGroupController', () => {
         __v: 0,
       };
 
+      const mockSavedGroup = {
+        ...mockSavedGroupPlain,
+        toJSON: () => mockSavedGroupPlain,
+      };
+
       sinon.stub(UserGroups.prototype, 'save').resolves(mockSavedGroup);
 
       await controller.createUserGroup(req, res);
 
       expect(res.status.calledWith(201)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(res.json.firstCall.args[0]).to.deep.equal(mockSavedGroup);
+      expect(res.json.firstCall.args[0]).to.deep.equal(mockSavedGroupPlain);
     });
 
     it('should throw ValidationError when saved document fails response schema', async () => {
@@ -69,12 +74,16 @@ describe('UserGroupController', () => {
 
       sinon.stub(UserGroups, 'findOne').resolves(null);
 
-      sinon.stub(UserGroups.prototype, 'save').resolves({
+      const badPlain = {
         _id: '69cd17ffbea35d8fcaed7701',
         name: 'Bad',
         type: 'custom',
         orgId,
         users: [],
+      };
+      sinon.stub(UserGroups.prototype, 'save').resolves({
+        ...badPlain,
+        toJSON: () => badPlain,
       } as any);
 
       try {
@@ -304,6 +313,20 @@ describe('UserGroupController', () => {
         slug: 'usergroup-custom',
         __v: 0,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+            users: this.users,
+            isDeleted: this.isDeleted,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            slug: this.slug,
+            __v: this.__v,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').resolves(mockGroup as any);
@@ -337,6 +360,14 @@ describe('UserGroupController', () => {
         type: 'custom',
         orgId,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').resolves(mockGroup as any);
@@ -427,6 +458,21 @@ describe('UserGroupController', () => {
         slug: 'usergroup-custom',
         __v: 0,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+            users: this.users,
+            isDeleted: this.isDeleted,
+            deletedBy: this.deletedBy,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            slug: this.slug,
+            __v: this.__v,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').returns({
@@ -502,6 +548,21 @@ describe('UserGroupController', () => {
         slug: 'usergroup-custom',
         __v: 0,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+            users: this.users,
+            isDeleted: this.isDeleted,
+            deletedBy: this.deletedBy,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            slug: this.slug,
+            __v: this.__v,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').returns({
@@ -521,6 +582,13 @@ describe('UserGroupController', () => {
         type: 'custom',
         isDeleted: false,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            type: this.type,
+            isDeleted: this.isDeleted,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').returns({

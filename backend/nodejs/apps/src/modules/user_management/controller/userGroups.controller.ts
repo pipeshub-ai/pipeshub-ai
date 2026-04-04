@@ -66,7 +66,7 @@ export class UserGroupController {
     sendValidatedJson(
       res,
       CreateUserGroupResponseSchema,
-      group,
+      group.toJSON(),
       HTTP_STATUS.CREATED,
     );
   }
@@ -151,7 +151,7 @@ export class UserGroupController {
     sendValidatedJson(
       res,
       UserGroupDocumentResponseSchema,
-      group,
+      group.toJSON(),
       HTTP_STATUS.OK,
     );
   }
@@ -186,7 +186,7 @@ export class UserGroupController {
     sendValidatedJson(
       res,
       UserGroupDocumentResponseSchema,
-      group,
+      group.toJSON(),
       HTTP_STATUS.OK,
     );
   }
