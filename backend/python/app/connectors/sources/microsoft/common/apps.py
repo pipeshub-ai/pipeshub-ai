@@ -14,6 +14,10 @@ class OutlookApp(App):
     def __init__(self, connector_id: str) -> None:
         super().__init__(Connectors.OUTLOOK, AppGroups.MICROSOFT, connector_id)
 
+class OutlookIndividualApp(App):
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.OUTLOOK_INDIVIDUAL, AppGroups.MICROSOFT, connector_id)
+
 class OutlookCalendarApp(App):
     def __init__(self, connector_id: str) -> None:
         super().__init__(Connectors.OUTLOOK_CALENDAR, AppGroups.MICROSOFT, connector_id)

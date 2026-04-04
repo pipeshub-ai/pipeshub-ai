@@ -17877,7 +17877,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
-            if app is None:
+            if not app:
                 return None
             user_id = app.get("createdBy")
             if user_id is None:

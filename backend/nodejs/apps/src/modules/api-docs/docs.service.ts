@@ -202,7 +202,7 @@ export class ApiDocsService {
         description: 'Third-party integrations, OAuth flows, and data synchronization',
         version: '1.0.0',
         basePath: '/api/v1/connectors',
-        tags: ['Core Connectors', 'Connector Configuration', 'Connector Control', 'Connector OAuth', 'Connector Filters', 'Connector Records', 'Connector Statistics', 'Connector Streaming', 'Connector Webhooks'],
+        tags: ['Connector Instances', 'Core Connectors', 'Connector Configuration', 'Connector Control', 'Connector OAuth', 'Connector Filters', 'Connector Records', 'Connector Statistics', 'Connector Streaming', 'Connector Webhooks'],
         source: 'nodejs',
         order: 7,
       },
