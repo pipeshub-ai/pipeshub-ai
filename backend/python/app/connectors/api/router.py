@@ -6057,7 +6057,7 @@ def _apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str
         https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize
         https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
 
-    If tenant_id is provided and is not empty / "common" / "organizations",
+    If tenant_id is provided and is not empty / "common" / "organizations" / "consumers",
     we replace the current tenant segment with the supplied value so that
     single-tenant Azure AD applications (which cannot use the /common endpoint)
     can authenticate successfully.
@@ -6072,9 +6072,9 @@ def _apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str
     if not url or "login.microsoftonline.com" not in url:
         return url
 
-    # Normalize – treat blank or "common" as no-op
+    # Normalize – treat blank or multi-tenant keywords as no-op
     tenant = (tenant_id or "").strip()
-    if not tenant or tenant.lower() == "common":
+    if not tenant or tenant.lower() in ("common", "organizations", "consumers"):
         return url
 
     # Replace the tenant segment — URL looks like:

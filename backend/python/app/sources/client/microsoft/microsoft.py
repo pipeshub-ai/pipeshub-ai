@@ -81,7 +81,7 @@ class MSGraphClientWithClientIdSecret:
         client_id: str,
         client_secret: str,
         tenant_id: str,
-        scopes: list[str] = None,
+        scopes: list[str] | None = None,
         mode: GraphMode = GraphMode.APP
     ) -> None:
         if scopes is None:
@@ -116,6 +116,10 @@ class MSGraphClientWithClientIdSecret:
 class MSGraphClientWithDelegatedAuth:
     """Microsoft Graph client with delegated user authentication (OAuth).
 
+    Separate from MSGraphClientWithClientIdSecret because delegated auth requires:
+    - Static bearer token (vs Azure SDK's auto-refreshing ClientSecretCredential)
+    - JWT OID extraction and /me endpoint redirection (not needed for app-only auth)
+    
     Uses bearer token from user OAuth consent flow.
     Token refresh is handled by TokenRefreshService background process.
     """
@@ -131,6 +135,7 @@ class MSGraphClientWithDelegatedAuth:
         self._user_oid: str | None = None
 
         # Create bearer token authentication
+        # _StaticTokenProvider needed: BaseBearerTokenAuthenticationProvider requires AccessTokenProvider interface, can't accept raw token string
         token_provider = self._StaticTokenProvider(access_token)
         auth_provider = BaseBearerTokenAuthenticationProvider(token_provider)
         adapter = HttpxRequestAdapter(authentication_provider=auth_provider)
@@ -154,7 +159,7 @@ class MSGraphClientWithDelegatedAuth:
             self.client.path_parameters["user%2Did"] = self._user_oid
 
     class _StaticTokenProvider(AccessTokenProvider):
-        """Simple token provider that returns the current access token."""
+        """Implements AccessTokenProvider interface required by BaseBearerTokenAuthenticationProvider."""
 
         def __init__(self, token: str) -> None:
             self._token = token
@@ -187,7 +192,7 @@ class MSGraphClientWithDelegatedAuth:
         pass
 
     class _MeRedirectingGraphClient:
-        """Proxy that redirects .me to .users.by_user_id(oid) for delegated auth."""
+        """Intercepts .me property access to redirect to .users.by_user_id(oid), fixing SDK's URL template placeholder issue."""
 
         def __init__(self, real_client: GraphServiceClient, user_oid: str) -> None:
             self._real_client = real_client
