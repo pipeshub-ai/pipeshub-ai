@@ -511,7 +511,7 @@ class TestGetAgentToolsWithSchemasFallback:
         with patch("app.modules.agents.qna.tool_system.get_agent_tools", return_value=["tool1"]), \
              patch.dict("sys.modules", {"langchain_core.tools": None}):
             result = get_agent_tools_with_schemas(state)
-        assert isinstance(result, list)
+        assert result == ["tool1"]
 
     def test_generic_exception_falls_back(self):
         from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas

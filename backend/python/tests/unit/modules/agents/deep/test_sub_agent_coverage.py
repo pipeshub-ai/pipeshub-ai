@@ -1892,7 +1892,7 @@ class TestWrapRetrievalToolsForContextEfficiency:
             MockST.from_function.return_value = wrapped_tool
             result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
             assert MockST.from_function.called
-            assert len(result) == 1
+            assert result == [wrapped_tool]
 
     def test_wrap_failure_falls_back_to_original(self):
         """If StructuredTool.from_function raises, original tool is kept."""

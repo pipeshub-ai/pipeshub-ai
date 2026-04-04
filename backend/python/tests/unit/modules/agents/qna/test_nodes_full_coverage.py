@@ -675,7 +675,7 @@ class TestReflectCascading:
 
 
 class TestRespondConversationTasks:
-    """Cover lines 6959-6965: conversation_id with task markers."""
+    """Cover edge cases in respond_node, specifically for _is_semantically_empty."""
 
     def test_task_markers_exception_handled(self):
         """_is_semantically_empty handles various inputs correctly."""
