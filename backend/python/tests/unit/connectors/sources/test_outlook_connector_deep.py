@@ -11,7 +11,7 @@ Covers additional methods not exercised by existing test suites:
 - handle_webhook_notification
 - cleanup (with/without client, errors)
 - run_incremental_sync
-- get_filter_options (raises NotImplementedError)
+- get_filter_options (unsupported keys raise ValueError)
 - reindex_records (user/group mailbox records)
 - _reindex_user_mailbox_records / _reindex_single_user_records
 - _reindex_group_mailbox_records
@@ -30,11 +30,18 @@ import pytest
 from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.outlook.connector import (
-    STANDARD_OUTLOOK_FOLDERS,
-    THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH,
     OutlookConnector,
     OutlookCredentials,
 )
+from app.connectors.sources.microsoft.common.outlook_constants import (
+    OutlookFolders,
+    OutlookThreadDetection,
+)
+
+# Backwards compatibility aliases for tests
+STANDARD_OUTLOOK_FOLDERS = OutlookFolders.STANDARD_FOLDERS
+THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = OutlookThreadDetection.ROOT_CONVERSATION_INDEX_LENGTH
+
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -112,40 +119,13 @@ class TestExtractEmailFromRecipient:
 
     def test_fallback_to_string(self):
         c, *_ = _make_connector()
-        # Object with no email_address or emailAddress
-        recipient = MagicMock(spec=[])
+        # Recipient with email_address but no address attribute
+        recipient = MagicMock()
+        recipient.email_address = None
         result = c._extract_email_from_recipient(recipient)
-        assert result != ''  # Falls back to str(recipient)
+        assert result == ''  # Returns empty string when email_address is None
 
 
-# ===========================================================================
-# _safe_get_attr
-# ===========================================================================
-
-
-class TestSafeGetAttr:
-
-    def test_object_attribute(self):
-        c, *_ = _make_connector()
-        obj = MagicMock()
-        obj.name = "Test"
-        assert c._safe_get_attr(obj, "name") == "Test"
-
-    def test_dict_get(self):
-        c, *_ = _make_connector()
-        obj = {"name": "Test"}
-        assert c._safe_get_attr(obj, "name") == "Test"
-
-    def test_missing_returns_default(self):
-        c, *_ = _make_connector()
-        obj = MagicMock(spec=[])
-        assert c._safe_get_attr(obj, "missing", "default") == "default"
-
-    def test_none_object(self):
-        c, *_ = _make_connector()
-        # None doesn't have attributes or get method - should return default
-        result = c._safe_get_attr(None, "attr", "fallback")
-        assert result == "fallback"
 
 
 # ===========================================================================
@@ -190,40 +170,6 @@ class TestGetMimeTypeEnum:
         c, *_ = _make_connector()
         assert c._get_mime_type_enum("TEXT/HTML") == MimeTypes.HTML
 
-
-# ===========================================================================
-# _parse_datetime
-# ===========================================================================
-
-
-class TestParseDatetime:
-
-    def test_none(self):
-        c, *_ = _make_connector()
-        assert c._parse_datetime(None) is None
-
-    def test_datetime_object(self):
-        c, *_ = _make_connector()
-        dt = datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
-        result = c._parse_datetime(dt)
-        assert isinstance(result, int)
-        assert result > 0
-
-    def test_iso_string(self):
-        c, *_ = _make_connector()
-        result = c._parse_datetime("2024-06-15T10:30:00+00:00")
-        assert isinstance(result, int)
-        assert result > 0
-
-    def test_z_suffix_string(self):
-        c, *_ = _make_connector()
-        result = c._parse_datetime("2024-06-15T10:30:00Z")
-        assert isinstance(result, int)
-
-    def test_invalid_string(self):
-        c, *_ = _make_connector()
-        result = c._parse_datetime("not a date")
-        assert result is None
 
 
 # ===========================================================================
@@ -420,9 +366,9 @@ class TestRunIncrementalSync:
 class TestGetFilterOptions:
 
     @pytest.mark.asyncio
-    async def test_raises_not_implemented(self):
+    async def test_unsupported_filter_key_raises_value_error(self):
         c, *_ = _make_connector()
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await c.get_filter_options("any_key")
 
 
@@ -554,11 +500,11 @@ class TestTransformFolderToRecordGroup:
         folder = MagicMock()
         folder.id = "f1"
         folder.display_name = "Inbox"
-        folder._is_top_level = True
         folder.parent_folder_id = "some_parent"
 
         user = MagicMock(email="u@test.com")
-        result = c._transform_folder_to_record_group(folder, user)
+        # Pass is_top_level=True as parameter (not folder attribute)
+        result = c._transform_folder_to_record_group(folder, user, is_top_level=True)
         assert result is not None
         assert result.parent_external_group_id is None
 
@@ -596,7 +542,9 @@ class TestGetChildFoldersRecursive:
     @pytest.mark.asyncio
     async def test_no_folder_id(self):
         c, *_ = _make_connector()
-        folder = MagicMock(spec=[])
+        folder = MagicMock()
+        folder.id = None
+        folder.display_name = "Invalid Folder"
         result = await c._get_child_folders_recursive("user1", folder)
         assert result == []
 
