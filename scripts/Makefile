@@ -8,7 +8,7 @@
 	clean-docker clean-docker-no-etcd clean-docker-neo4j \
 	stop-and-clean-volumes stop-and-clean-volumes-no-etcd stop-and-clean-volumes-neo4j \
 	setup-nodejs implode-setup-nodejs nodejs setup-python setup-python-deps \
-	implode-setup-python connectors indexing query docling \
+	implode-setup-python connectors indexing query docling check-python-version \
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
@@ -94,6 +94,7 @@ help: ## Show this help message
 	@echo "  make indexing             - Run indexing service (requires venv)"
 	@echo "  make query                - Run query service (requires venv)"
 	@echo "  make docling              - Run docling service (requires venv)"
+	@echo "  make check-python-version - Check Python version used by the venv"
 	@echo ""
 	@echo "$(GREEN)Frontend:$(NC)"
 	@echo "  make setup-frontend       - Setup frontend (install deps)"
@@ -485,8 +486,19 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 		fi; \
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
-		echo "$(BLUE)Creating Python virtual environment...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.12; \
+		echo "$(BLUE)Select Python version for virtual environment:$(NC)"; \
+		echo "  1) Python 3.10"; \
+		echo "  2) Python 3.11"; \
+		echo "  3) Python 3.12"; \
+		read -p "Enter choice [1-3] (default: 3): " pychoice; \
+		case "$$pychoice" in \
+			1) PYTHON_VERSION="3.10" ;; \
+			2) PYTHON_VERSION="3.11" ;; \
+			3|"") PYTHON_VERSION="3.12" ;; \
+			*) echo "$(RED)Invalid choice. Using Python 3.12$(NC)"; PYTHON_VERSION="3.12" ;; \
+		esac; \
+		echo "$(BLUE)Creating Python virtual environment with Python $$PYTHON_VERSION...$(NC)"; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python $$PYTHON_VERSION; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
@@ -535,6 +547,14 @@ docling: ## Run Python docling service
 	@echo "$(BLUE)Starting docling service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.docling_main
+
+check-python-version: ## Check Python version used by the venv
+	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
+		echo "$(RED)Error: Virtual environment not found. Run 'make setup-python' first$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Python version in venv:$(NC)"
+	@$(ROOT_DIR)/backend/python/venv/bin/python --version
 
 # ==============================================================================
 # Frontend Setup
@@ -728,12 +748,12 @@ test-nodejs-coverage: ## Run Node.js unit tests with coverage
 
 test-python: ## Run Python unit tests (parallel)
 	@echo "$(BLUE)Running Python unit tests (parallel)...$(NC)"
-	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e ".[dev]" --quiet && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
 	@echo "$(GREEN)Python unit tests complete!$(NC)"
 
 test-python-coverage: ## Run Python unit tests with coverage report (parallel)
 	@echo "$(BLUE)Running Python unit tests with coverage (parallel)...$(NC)"
-	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e ".[dev]" --quiet && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
 	@echo "$(GREEN)Python unit tests with coverage complete!$(NC)"
 	@echo "$(YELLOW)Coverage report available at: backend/python/coverage_html/$(NC)"
 

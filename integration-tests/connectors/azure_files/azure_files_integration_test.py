@@ -1,29 +1,27 @@
 # pyright: ignore-file
 
 """
-Azure Files Connector – Full Lifecycle Integration Test (test.pipeshub.com)
-===========================================================================
+Azure Files Connector – Integration Tests
+===========================================
 
-Ordered test class exercising the complete Azure Files connector lifecycle:
+Tests receive a fully set-up connector via the ``azure_files_connector`` fixture
+(defined in conftest.py), which handles:
+  - Constructor: share creation, sample data upload, connector creation, full sync
+  - Destructor:  connector disable/delete + graph cleanup, share deletion
 
-  1. Create file share               →  storage SDK
-  2. Upload sample data              →  storage SDK
-  3. Create connector instance       →  Pipeshub API
-  4. Enable sync (init + test conn)  →  Pipeshub API
-  5. Full sync                       →  graph validation
-  6. Incremental sync                →  graph validation
-  7. Rename file                     →  storage SDK + sync → graph validation
-  8. Move file                       →  storage SDK + sync → graph validation
-  9. Disable connector               →  Pipeshub API
-  10. Delete connector               →  Pipeshub API  → graph validation (zero)
-  11. Cleanup share                  →  storage SDK
+Test cases:
+  TC-SYNC-001   — Full sync + graph validation
+  TC-INCR-001   — Incremental sync (upload new files, verify new + old unchanged)
+  TC-UPDATE-001 — Content change detection (overwrite file, verify update in place)
+  TC-RENAME-001 — Rename detection (old name gone, new name present)
+  TC-MOVE-001   — Move detection (file path reflects new prefix under same share group)
 """
 
 import logging
-import os
 import sys
 import uuid
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 from neo4j import Driver
@@ -33,124 +31,130 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
-    assert_all_records_cleaned,
     assert_app_record_group_edges,
     assert_min_records,
     assert_no_orphan_records,
     assert_record_groups_and_edges,
+    assert_record_not_exists,
     assert_record_paths_or_names_contain,
+    count_permission_edges,
     count_records,
-    count_record_groups,
+    fetch_record_names,
     graph_summary,
+    record_name_path_contains,
     record_paths_or_names_contain,
 )
-from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
-    PipeshubClient,
+from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
+from connectors.azure_files.azure_files_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
+    AzureFilesStorageHelper,
 )
-from storage_helpers import AzureFilesStorageHelper  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("azure-files-lifecycle-test")
 
-_SHARE_NAME = f"pipeshub-inttest-azfiles-{uuid.uuid4().hex[:8]}"
-_CONNECTOR_NAME = f"azure-files-lifecycle-test-{uuid.uuid4().hex[:8]}"
-_state: dict = {}
+
+def _wait_for_stable_count(
+    neo4j_driver: Driver,
+    connector_id: str,
+    pipeshub_client: PipeshubClient,
+    stability_checks: int = 4,
+    interval: int = 10,
+) -> int:
+    """Poll until the record count is stable across consecutive checks."""
+    prev = count_records(neo4j_driver, connector_id)
+    stable = 0
+    for _ in range(stability_checks * 4):
+        pipeshub_client.wait(interval)
+        current = count_records(neo4j_driver, connector_id)
+        if current == prev:
+            stable += 1
+            if stable >= stability_checks:
+                return current
+        else:
+            logger.info(
+                "Record count still settling: %d -> %d (connector %s)",
+                prev, current, connector_id,
+            )
+            prev = current
+            stable = 0
+    return prev
 
 
 @pytest.mark.integration
 @pytest.mark.azure_files
-class TestAzureFilesFullLifecycle:
-    """Full lifecycle integration test for the Azure Files connector."""
+class TestAzureFilesConnector:
+    """Integration tests for the Azure Files connector (constructor/destructor in conftest)."""
 
+    # ------------------------------------------------------------------ #
+    # TC-SYNC-001 — Full sync + graph validation
+    # ------------------------------------------------------------------ #
     @pytest.mark.order(1)
-    def test_01_create_share(self, azure_files_storage: AzureFilesStorageHelper) -> None:
-        logger.info("Creating Azure Files share: %s", _SHARE_NAME)
-        azure_files_storage.create_share(_SHARE_NAME)
-        objects = azure_files_storage.list_objects(_SHARE_NAME)
-        assert isinstance(objects, list)
-        _state["bucket_created"] = True
-        logger.info("✅ Share %s created", _SHARE_NAME)
-
-    @pytest.mark.order(2)
-    def test_02_upload_sample_data(
-        self, azure_files_storage: AzureFilesStorageHelper, sample_data_root: Path
+    def test_tc_sync_001_full_sync_graph_validation(
+        self,
+        azure_files_connector: Dict[str, Any],
+        neo4j_driver: Driver,
     ) -> None:
-        assert _state.get("bucket_created"), "Share must be created first"
-        count = azure_files_storage.upload_directory(_SHARE_NAME, sample_data_root)
-        logger.info("✅ Uploaded %d files to share %s", count, _SHARE_NAME)
-        assert count > 0
-        _state["uploaded_count"] = count
-
-        objects = azure_files_storage.list_objects(_SHARE_NAME)
-        for key in objects:
-            if not key.endswith("/"):
-                _state["rename_source_key"] = key
-                _state["rename_source_name"] = Path(key).name
-                break
-        assert _state.get("rename_source_key"), (
-            "No file key after upload; rename/move require at least one file."
-        )
-
-    @pytest.mark.order(3)
-    def test_03_init_connector(self, pipeshub_client: PipeshubClient) -> None:
-        conn_str = os.getenv("AZURE_FILES_CONNECTION_STRING")
-        assert conn_str, "AZURE_FILES_CONNECTION_STRING must be set"
-
-        config = {"auth": {"connectionString": conn_str}}
-        instance = pipeshub_client.create_connector(
-            connector_type="Azure Files",
-            instance_name=_CONNECTOR_NAME,
-            scope="personal",
-            config=config,
-        )
-        assert instance.connector_id
-        _state["connector"] = instance
-        _state["connector_id"] = instance.connector_id
-        logger.info("✅ Azure Files connector created: %s", instance.connector_id)
-
-    @pytest.mark.order(4)
-    def test_04_test_connection(self, pipeshub_client: PipeshubClient) -> None:
-        connector_id = _state["connector_id"]
-        pipeshub_client.toggle_sync(connector_id, enable=True)
-        logger.info("✅ Sync enabled (connection tested)")
-
-    @pytest.mark.order(5)
-    def test_05_full_sync_graph_validation(
-        self, pipeshub_client: PipeshubClient, neo4j_driver: Driver
-    ) -> None:
-        connector_id = _state["connector_id"]
-        uploaded = _state.get("uploaded_count", 1)
-
-        pipeshub_client.wait_for_sync(
-            connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= uploaded,
-            timeout=180,
-            poll_interval=10,
-            description="full sync",
-        )
-
-        full_count = count_records(neo4j_driver, connector_id)
-        _state["full_sync_count"] = full_count
+        """
+        TC-SYNC-001: After full sync, validate the graph thoroughly.
+        """
+        connector_id = azure_files_connector["connector_id"]
+        uploaded = azure_files_connector["uploaded_count"]
+        full_count = azure_files_connector["full_sync_count"]
 
         assert_min_records(neo4j_driver, connector_id, uploaded)
-        # Allow one missing BELONGS_TO edge (backend may create record before group link)
+
         assert_record_groups_and_edges(
             neo4j_driver,
             connector_id,
             min_groups=1,
             min_record_edges=max(1, full_count - 1),
         )
+
         assert_app_record_group_edges(neo4j_driver, connector_id, min_edges=1)
         assert_no_orphan_records(neo4j_driver, connector_id)
 
-        summary = graph_summary(neo4j_driver, connector_id)
-        logger.info("📊 Graph summary after full sync: %s", summary)
+        known_name = azure_files_connector.get("rename_source_name")
+        if known_name:
+            assert_record_paths_or_names_contain(
+                neo4j_driver, connector_id, [known_name]
+            )
 
-    @pytest.mark.order(6)
-    def test_06_incremental_sync_graph_validation(
-        self, pipeshub_client: PipeshubClient, neo4j_driver: Driver
+        perm_count = count_permission_edges(neo4j_driver, connector_id)
+        logger.info("Permission edges: %d (connector %s)", perm_count, connector_id)
+
+        summary = graph_summary(neo4j_driver, connector_id)
+        logger.info("Graph summary after full sync: %s (connector %s)", summary, connector_id)
+
+    # ------------------------------------------------------------------ #
+    # TC-INCR-001 — Incremental sync (new files)
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(2)
+    def test_tc_incr_001_incremental_sync_new_files(
+        self,
+        azure_files_connector: Dict[str, Any],
+        azure_files_storage: AzureFilesStorageHelper,
+        pipeshub_client: PipeshubClient,
+        neo4j_driver: Driver,
     ) -> None:
-        connector_id = _state["connector_id"]
-        before = count_records(neo4j_driver, connector_id)
+        """
+        TC-INCR-001: Upload new files, run incremental sync, verify:
+        - New files appear as new Records in the graph
+        - Existing record count is stable (old records unchanged)
+        """
+        connector_id = azure_files_connector["connector_id"]
+        share_name = azure_files_connector["share_name"]
+        before_count = count_records(neo4j_driver, connector_id)
+
+        new_files = {
+            "incremental-test/new-file-alpha.csv": b"id,name,value\n1,alpha,100\n2,bravo,200\n",
+            "incremental-test/new-file-beta.csv": b"id,name,value\n1,charlie,300\n2,delta,400\n",
+        }
+        for path_key, file_bytes in new_files.items():
+            azure_files_storage.upload_file(share_name, path_key, file_bytes)
+
+        logger.info(
+            "Uploaded %d new files for incremental sync (connector %s)",
+            len(new_files), connector_id,
+        )
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
@@ -158,30 +162,148 @@ class TestAzureFilesFullLifecycle:
 
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= before,
-            timeout=120,
+            check_fn=lambda: count_records(neo4j_driver, connector_id) > before_count,
+            timeout=180,
             poll_interval=10,
-            description="incremental sync",
+            description="incremental sync (new files)",
         )
 
-        after = count_records(neo4j_driver, connector_id)
-        assert after >= before
-        logger.info("✅ Incremental sync: before=%d, after=%d", before, after)
+        after_count = count_records(neo4j_driver, connector_id)
+        assert after_count > before_count, (
+            f"Expected record count to increase after uploading new files; "
+            f"before={before_count}, after={after_count} (connector {connector_id})"
+        )
 
-    @pytest.mark.order(7)
-    def test_07_rename_file_graph_validation(
-        self, azure_files_storage: AzureFilesStorageHelper, pipeshub_client: PipeshubClient, neo4j_driver: Driver
+        all_names = fetch_record_names(neo4j_driver, connector_id)
+        logger.info(
+            "Record names after incremental sync (%d total): %s (connector %s)",
+            len(all_names), all_names[:20], connector_id,
+        )
+
+        new_names = [Path(path_key).name for path_key in new_files]
+        for name in new_names:
+            found = record_paths_or_names_contain(neo4j_driver, connector_id, [name])
+            if not found:
+                logger.warning(
+                    "New file '%s' not found by exact name in graph "
+                    "(share %s, connector %s)",
+                    name, share_name, connector_id,
+                )
+
+        assert after_count >= before_count, (
+            f"Old records lost during incremental sync; before={before_count}, after={after_count} "
+            f"(connector {connector_id})"
+        )
+
+        azure_files_connector["incr_sync_count"] = after_count
+        logger.info(
+            "TC-INCR-001 passed: before=%d, after=%d (connector %s)",
+            before_count, after_count, connector_id,
+        )
+
+    # ------------------------------------------------------------------ #
+    # TC-UPDATE-001 — Content change detection
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(3)
+    def test_tc_update_001_content_change_detection(
+        self,
+        azure_files_connector: Dict[str, Any],
+        azure_files_storage: AzureFilesStorageHelper,
+        pipeshub_client: PipeshubClient,
+        neo4j_driver: Driver,
     ) -> None:
-        connector_id = _state["connector_id"]
-        old_key = _state.get("rename_source_key")
-        assert old_key, "rename_source_key missing — test_02 must set it after upload."
+        """
+        TC-UPDATE-001: Overwrite an existing file with new content. After sync:
+        - The Record still exists (updated in place)
+        - Record count is unchanged
+        - ETag changes
+        """
+        connector_id = azure_files_connector["connector_id"]
+        share_name = azure_files_connector["share_name"]
+        update_key = azure_files_connector["update_target_key"]
+        update_name = azure_files_connector["update_target_name"]
 
+        _wait_for_stable_count(neo4j_driver, connector_id, pipeshub_client)
+        before_count = count_records(neo4j_driver, connector_id)
+        logger.info(
+            "TC-UPDATE-001 baseline: %d records (connector %s)",
+            before_count, connector_id,
+        )
+
+        pre_meta = azure_files_storage.get_file_metadata(share_name, update_key)
+        logger.info(
+            "Pre-update metadata for %s: etag=%s (connector %s)",
+            update_key, pre_meta.get("etag"), connector_id,
+        )
+
+        new_content = f"Updated content at {uuid.uuid4().hex}".encode()
+        azure_files_storage.overwrite_file(share_name, update_key, new_content)
+
+        post_meta = azure_files_storage.get_file_metadata(share_name, update_key)
+        assert post_meta["etag"] != pre_meta["etag"], (
+            f"Azure Files ETag should change after overwrite; "
+            f"before={pre_meta['etag']}, after={post_meta['etag']} (connector {connector_id})"
+        )
+
+        pipeshub_client.toggle_sync(connector_id, enable=False)
+        pipeshub_client.wait(3)
+        pipeshub_client.toggle_sync(connector_id, enable=True)
+
+        pipeshub_client.wait_for_sync(
+            connector_id,
+            check_fn=lambda: count_records(neo4j_driver, connector_id) >= before_count,
+            timeout=120,
+            poll_interval=10,
+            description="update sync",
+        )
+
+        assert_record_paths_or_names_contain(
+            neo4j_driver, connector_id, [update_name]
+        )
+
+        after_count = count_records(neo4j_driver, connector_id)
+        assert after_count == before_count, (
+            f"Record count must be stable after content update; "
+            f"before={before_count}, after={after_count} (connector {connector_id})"
+        )
+
+        logger.info(
+            "TC-UPDATE-001 passed: record count stable at %d, "
+            "ETag changed %s -> %s (connector %s)",
+            after_count, pre_meta["etag"], post_meta["etag"], connector_id,
+        )
+
+    # ------------------------------------------------------------------ #
+    # TC-RENAME-001 — Rename detection
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(4)
+    def test_tc_rename_001_rename_detection(
+        self,
+        azure_files_connector: Dict[str, Any],
+        azure_files_storage: AzureFilesStorageHelper,
+        pipeshub_client: PipeshubClient,
+        neo4j_driver: Driver,
+    ) -> None:
+        """
+        TC-RENAME-001: Rename a file. After incremental sync:
+        - A Record exists for the new name
+        - The Record for the old name is gone from the graph
+        """
+        connector_id = azure_files_connector["connector_id"]
+        share_name = azure_files_connector["share_name"]
+        old_key = azure_files_connector["rename_source_key"]
         old_name = Path(old_key).name
+
         new_name = f"renamed-{old_name}"
         parts = old_key.rsplit("/", 1)
         new_key = f"{parts[0]}/{new_name}" if len(parts) == 2 else new_name
 
-        azure_files_storage.rename_object(_SHARE_NAME, old_key, new_key)
+        logger.info(
+            "Renaming %s/%s -> %s (connector %s)",
+            share_name, old_key, new_key, connector_id,
+        )
+
+        azure_files_storage.rename_object(share_name, old_key, new_key)
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
@@ -198,63 +320,71 @@ class TestAzureFilesFullLifecycle:
         )
 
         assert_record_paths_or_names_contain(neo4j_driver, connector_id, [new_name])
-        _state["move_source_key"] = new_key
-        _state["move_source_name"] = new_name
-        logger.info("✅ Rename validated (connector %s)", connector_id)
+        assert_record_not_exists(neo4j_driver, connector_id, old_name)
 
-    @pytest.mark.order(8)
-    def test_08_move_file_graph_validation(
-        self, azure_files_storage: AzureFilesStorageHelper, pipeshub_client: PipeshubClient, neo4j_driver: Driver
+        # Rename uses server-side File Rename (see AzureFilesStorageHelper) so SMB file_id
+        # is preserved and the connector can treat it as the same Record path update.
+        azure_files_connector["move_source_key"] = new_key
+        azure_files_connector["move_source_name"] = new_name
+        logger.info(
+            "TC-RENAME-001 passed: '%s' -> '%s' (connector %s)",
+            old_name, new_name, connector_id,
+        )
+
+    # ------------------------------------------------------------------ #
+    # TC-MOVE-001 — Move detection (same share)
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(5)
+    def test_tc_move_001_move_detection(
+        self,
+        azure_files_connector: Dict[str, Any],
+        azure_files_storage: AzureFilesStorageHelper,
+        pipeshub_client: PipeshubClient,
+        neo4j_driver: Driver,
     ) -> None:
-        connector_id = _state["connector_id"]
-        old_key = _state.get("move_source_key")
-        assert old_key, "move_source_key missing — test_07 must complete rename first."
+        """
+        TC-MOVE-001: Move a file to a different directory. After sync:
+        - Record exists at the new path (File.path includes the new prefix)
 
-        move_name = _state["move_source_name"]
-        new_key = f"moved-folder/{move_name}"
+        Azure Files uses one RecordGroup per share; directories are paths.
+        """
+        connector_id = azure_files_connector["connector_id"]
+        share_name = azure_files_connector["share_name"]
+        old_key = azure_files_connector["move_source_key"]
+        move_name = azure_files_connector["move_source_name"]
 
-        azure_files_storage.move_object(_SHARE_NAME, old_key, new_key)
+        new_prefix = "moved-folder"
+        new_key = f"{new_prefix}/{move_name}"
+
+        logger.info(
+            "Moving %s/%s -> %s (connector %s)",
+            share_name, old_key, new_key, connector_id,
+        )
+
+        azure_files_storage.move_object(share_name, old_key, new_key)
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        # Wait until moved file is visible in graph
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: record_paths_or_names_contain(
-                neo4j_driver, connector_id, [move_name]
+            check_fn=lambda: record_name_path_contains(
+                neo4j_driver, connector_id, move_name, new_prefix
             ),
             timeout=120,
             poll_interval=10,
             description="move sync",
         )
 
-        assert_record_paths_or_names_contain(neo4j_driver, connector_id, [move_name])
-        groups = count_record_groups(neo4j_driver, connector_id)
-        assert groups >= 2
-        logger.info("✅ Move validated (connector %s)", connector_id)
+        assert record_name_path_contains(
+            neo4j_driver, connector_id, move_name, new_prefix
+        ), (
+            f"Expected File.path for {move_name!r} to contain {new_prefix!r} "
+            f"(connector {connector_id})"
+        )
 
-    @pytest.mark.order(9)
-    def test_09_disable_connector(self, pipeshub_client: PipeshubClient) -> None:
-        connector_id = _state["connector_id"]
-        pipeshub_client.toggle_sync(connector_id, enable=False)
-        status = pipeshub_client.get_connector_status(connector_id)
-        assert not status.get("isActive")
-        logger.info("✅ Connector %s disabled", connector_id)
-
-    @pytest.mark.order(10)
-    def test_10_delete_connector_graph_validation(
-        self, pipeshub_client: PipeshubClient, neo4j_driver: Driver
-    ) -> None:
-        connector_id = _state["connector_id"]
-        pipeshub_client.delete_connector(connector_id)
-        pipeshub_client.wait(15)
-        assert_all_records_cleaned(neo4j_driver, connector_id, timeout=360)
-        logger.info("✅ Connector deleted, graph cleaned for %s", connector_id)
-
-    @pytest.mark.order(11)
-    def test_11_cleanup_share(self, azure_files_storage: AzureFilesStorageHelper) -> None:
-        logger.info("Cleaning up share %s", _SHARE_NAME)
-        azure_files_storage.delete_share(_SHARE_NAME)
-        logger.info("✅ Share %s deleted", _SHARE_NAME)
+        logger.info(
+            "TC-MOVE-001 passed: file at new path under %s/ (connector %s)",
+            new_prefix, connector_id,
+        )
