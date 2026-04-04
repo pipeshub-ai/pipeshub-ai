@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 
@@ -672,8 +673,9 @@ class TestBuildProductRecord:
         connector = _make_connector()
         product = {"Id": "prod-2", "Name": "Gadget", "ProductCode": None, "Family": None}
         record = connector._build_product_record(product)
-        assert "prod-2" in (record.weburl or "")
-        assert "myinstance.salesforce.com" in (record.weburl or "")
+        weburl = record.weburl or ""
+        assert urlparse(weburl).netloc == "myinstance.salesforce.com"
+        assert "prod-2" in weburl
 
     def test_connector_metadata_is_set(self):
         connector = _make_connector()
@@ -747,7 +749,7 @@ class TestBuildDealRecord:
         assert record.preview_renderable is False
         # weburl contains instance URL and record ID
         assert record.weburl is not None
-        assert "myinstance.salesforce.com" in record.weburl
+        assert urlparse(record.weburl).netloc == "myinstance.salesforce.com"
         assert "opp-1" in record.weburl
 
     def test_unassigned_deal_when_no_account(self):
