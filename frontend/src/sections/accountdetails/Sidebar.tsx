@@ -105,6 +105,12 @@ export default function Sidebar() {
       adminOnly: false, // Available to all business users
     },
     {
+      name: 'MCP Servers',
+      icon: linkVariantIcon,
+      path: `${baseUrl}/settings/mcp-servers`,
+      adminOnly: false,
+    },
+    {
       name: 'AI Models',
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,

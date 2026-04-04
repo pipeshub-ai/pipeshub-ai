@@ -63,6 +63,8 @@ import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.p
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { McpClientContainer } from './modules/mcp_client/container/mcp-client.container';
+import { createMcpClientRouter } from './modules/mcp_client/routes/mcp-client.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { SamlController } from './modules/auth/controller/saml.controller';
 
@@ -87,6 +89,7 @@ export class Application {
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private mcpClientContainer!: Container;
   private port: number;
 
   constructor() {
@@ -171,6 +174,10 @@ export class Application {
         configurationManagerConfig,
       );
 
+      this.mcpClientContainer = await McpClientContainer.initialize(
+        configurationManagerConfig,
+      );
+
       await this.addOAuthServicesToAuthMiddleware();
 
 
@@ -226,6 +233,11 @@ export class Application {
         .inSingletonScope();
 
       this.toolsetsContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
+      this.mcpClientContainer
         .bind<PrometheusService>(PrometheusService)
         .toSelf()
         .inSingletonScope();
@@ -436,6 +448,12 @@ export class Application {
       createToolsetsRouter(this.toolsetsContainer)
     );
 
+    // MCP client routes
+    this.app.use(
+      '/api/v1/mcp',
+      createMcpClientRouter(this.mcpClientContainer)
+    );
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -519,6 +537,7 @@ export class Application {
       await CrawlingManagerContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
+      await McpClientContainer.dispose();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {
