@@ -436,3 +436,90 @@ class TestSanitizeToolNameIfNeeded:
         state = _make_state()
         result = _sanitize_tool_name_if_needed("standalone", None, state)
         assert result == "standalone"
+
+
+# ============================================================================
+# _needs_tool_name_sanitization — provider-specific branches (lines 60, 69, 72)
+# ============================================================================
+
+
+class TestNeedsToolNameSanitization:
+    """Cover lines 60, 69, 72: ChatAnthropic/ChatOpenAI isinstance checks."""
+
+    def test_anthropic_returns_true(self):
+        """Anthropic LLM instances require sanitization."""
+        from langchain_anthropic import ChatAnthropic
+        from app.modules.agents.qna.tool_system import _requires_sanitized_tool_names
+        # Use spec to make isinstance check pass
+        mock_llm = MagicMock(spec=ChatAnthropic)
+        result = _requires_sanitized_tool_names(mock_llm)
+        assert result is True
+
+    def test_openai_returns_true(self):
+        """OpenAI LLM instances require sanitization."""
+        from langchain_openai import ChatOpenAI
+        from app.modules.agents.qna.tool_system import _requires_sanitized_tool_names
+        mock_llm = MagicMock(spec=ChatOpenAI)
+        result = _requires_sanitized_tool_names(mock_llm)
+        assert result is True
+
+    def test_import_error_fallback(self):
+        """When both imports fail, defaults to True."""
+        from app.modules.agents.qna.tool_system import _requires_sanitized_tool_names
+        mock_llm = MagicMock()
+        with patch.dict("sys.modules", {"langchain_anthropic": None, "langchain_openai": None}):
+            result = _requires_sanitized_tool_names(mock_llm)
+        assert result is True
+
+
+# ============================================================================
+# get_agent_tools — exception in fetch_full_record (lines 456-459)
+# ============================================================================
+
+
+class TestGetAgentToolsFetchRecordError:
+    """Cover lines 456-459: exception adding fetch_full_record tool."""
+
+    def test_fetch_record_exception_logged(self):
+        from app.modules.agents.qna.tool_system import get_agent_tools
+        state = _make_state(
+            has_knowledge=True,
+            virtual_record_id_to_result={"rec1": "data1"},
+            _cached_agent_tools=None,
+        )
+        with patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools", return_value=[]), \
+             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", side_effect=RuntimeError("boom")):
+            result = get_agent_tools(state)
+        assert isinstance(result, list)
+        state["logger"].warning.assert_called()
+
+
+# ============================================================================
+# get_agent_tools_with_schemas — fallback paths (lines 655-662)
+# ============================================================================
+
+
+class TestGetAgentToolsWithSchemasFallback:
+    """Cover lines 655-662: ImportError and generic Exception fallbacks."""
+
+    def test_import_error_falls_back(self):
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        state = _make_state(
+            has_knowledge=True,
+            _cached_schema_tools=None,
+        )
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools", return_value=["tool1"]), \
+             patch.dict("sys.modules", {"langchain_core.tools": None}):
+            result = get_agent_tools_with_schemas(state)
+        assert isinstance(result, list)
+
+    def test_generic_exception_falls_back(self):
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        state = _make_state(
+            has_knowledge=True,
+            _cached_schema_tools=None,
+        )
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools", return_value=["tool1"]), \
+             patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools", side_effect=RuntimeError("kaboom")):
+            result = get_agent_tools_with_schemas(state)
+        assert isinstance(result, list)
