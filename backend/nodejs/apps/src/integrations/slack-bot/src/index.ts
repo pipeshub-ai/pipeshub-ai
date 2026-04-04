@@ -1802,7 +1802,7 @@ async function processSlackMessage(
       url,
       {
         query,
-        chatMode: "quick",
+        chatMode: "auto",
       },
       {
         headers: {
