@@ -82,7 +82,7 @@ from typing import Any, Literal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
-
+from app.modules.agents.deep.state import get_opik_config
 from app.modules.agents.deep.state import DeepAgentState
 
 logger = logging.getLogger(__name__)
@@ -377,7 +377,7 @@ def _parse_critic_response(raw: str, log: logging.Logger) -> CriticVerdict | Non
 
             return CriticVerdict(
                 decision=decision,
-                issues=issues[:6],
+                issues=issues,
                 feedback_for_orchestrator=obj.get("feedback_for_orchestrator", ""),
                 confidence=obj.get("confidence", "High"),
             )
@@ -400,9 +400,8 @@ async def critic_node(
     """
     Critic node: evaluates the orchestrator's plan before execution.
 
-    Always runs. Sets `critic_verdict` in state (a CriticVerdict).
-    Sets `critic_approved` to True/False so the routing function can
-    branch without importing CriticVerdict.
+    Always runs. Sets `critic_approved` (bool) and `critic_feedback` (str)
+    in state so the routing function can branch.
 
     Flow:
       1. Read the plan from state["task_plan"].
@@ -429,27 +428,27 @@ async def critic_node(
         plan.get("can_answer_directly"),
     )
 
-    # ── Build messages ─────────────────────────────────────────────────────
-
-    # SystemMessage: critic identity + rubric + output contract.
-    # Static per invocation — anchors evaluation posture before the plan is seen.
-    system_msg = SystemMessage(content=_CRITIC_SYSTEM_PROMPT)
-
-    # HumanMessage: per-request evidence (query, context, plan).
-    # Changes every invocation — this is "the thing to evaluate right now."
-    evidence_text = _build_critic_evidence_message(
-        user_query=query,
-        plan=plan,
-        available_domains=available_domains,
-        has_knowledge=has_knowledge,
-    )
-    human_msg = HumanMessage(content=evidence_text)
-
-    messages = [system_msg, human_msg]
-
-    # ── LLM call ───────────────────────────────────────────────────────────
     try:
-        from app.modules.agents.deep.state import get_opik_config
+        # ── Build messages ─────────────────────────────────────────────────────
+
+        # SystemMessage: critic identity + rubric + output contract.
+        # Static per invocation — anchors evaluation posture before the plan is seen.
+        system_msg = SystemMessage(content=_CRITIC_SYSTEM_PROMPT)
+
+        # HumanMessage: per-request evidence (query, context, plan).
+        # Changes every invocation — this is "the thing to evaluate right now."
+        evidence_text = _build_critic_evidence_message(
+            user_query=query,
+            plan=plan,
+            available_domains=available_domains,
+            has_knowledge=has_knowledge,
+        )
+        human_msg = HumanMessage(content=evidence_text)
+
+        messages = [system_msg, human_msg]
+
+        # ── LLM call ───────────────────────────────────────────────────────────
+        
 
         invoke_kwargs: dict[str, Any] = {}
         opik_config = get_opik_config()
@@ -463,62 +462,69 @@ async def critic_node(
         log.error("Critic LLM call failed: %s — defaulting to APPROVE", e)
         state["critic_approved"] = True
         state["critic_feedback"] = ""
-        state["critic_verdict"] = CriticVerdict(decision="approve", confidence="Low")
         state["critic_done"] = True
         return state
 
-    # ── Parse verdict ──────────────────────────────────────────────────────
-    verdict = _parse_critic_response(raw, log)
 
-    if verdict is None:
-        # Parse failure → approve (fail-open: critic bugs must not block execution)
-        log.warning("Critic parse failed — defaulting to APPROVE (fail-open)")
-        verdict = CriticVerdict(decision="approve", confidence="Low")
+    try:
 
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    log.info(
-        "Critic verdict: %s (confidence=%s, %d issue(s)) in %.0fms",
-        verdict.decision.upper(),
-        verdict.confidence,
-        len(verdict.issues),
-        duration_ms,
-    )
+        # ── Parse verdict ──────────────────────────────────────────────────────
+        verdict = _parse_critic_response(raw, log)
 
-    if verdict.issues:
-        for i, issue in enumerate(verdict.issues, 1):
-            log.info(
-                "  [%d] %s/%s — %s → %s",
-                i,
-                issue.get("severity", "?").upper(),
-                issue.get("rule", "?"),
-                issue.get("description", ""),
-                issue.get("fix", ""),
-            )
+        if verdict is None:
+            # Parse failure → approve (fail-open: critic bugs must not block execution)
+            log.warning("Critic parse failed — defaulting to APPROVE (fail-open)")
+            verdict = CriticVerdict(decision="approve", confidence="Low")
 
-    # ── Store verdict and route ────────────────────────────────────────────
-    state["critic_verdict"] = verdict
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.debug(
+            "Critic verdict: %s (confidence=%s, %d issue(s)) in %.0fms",
+            verdict.decision.upper(),
+            verdict.confidence,
+            len(verdict.issues),
+            duration_ms,
+        )
 
-    if verdict.decision == "approve":
+        if verdict.issues:
+            for i, issue in enumerate(verdict.issues, 1):
+                log.debug(
+                    "  [%d] %s/%s — %s → %s",
+                    i,
+                    issue.get("severity", "?").upper(),
+                    issue.get("rule", "?"),
+                    issue.get("description", ""),
+                    issue.get("fix", ""),
+                )
+
+        # ── Route based on verdict ─────────────────────────────────────────────
+        if verdict.decision == "approve":
+            state["critic_approved"] = True
+            state["critic_feedback"] = ""
+            state["critic_issues"] = None
+            log.info("Critic: APPROVED — proceeding to execution")
+        else:
+            # REVISE: store feedback + structured issues for orchestrator.
+            # The orchestrator will re-plan ONCE. After that, the critic does
+            # NOT run again — the graph bypasses the critic on the second pass.
+            state["critic_approved"] = False
+            state["critic_feedback"] = verdict.feedback_for_orchestrator
+            state["critic_issues"] = verdict.issues if verdict.issues else None
+            log.info("Critic: REVISE — sending feedback to orchestrator for one re-plan")
+            if verdict.feedback_for_orchestrator:
+                log.debug(
+                    "Critic feedback_for_orchestrator: %s",
+                    verdict.feedback_for_orchestrator,
+                )
+
+        state["critic_done"] = True
+
+        return state
+    except Exception as e:
+        log.error("Critic node failed: %s — defaulting to APPROVE", e)
         state["critic_approved"] = True
         state["critic_feedback"] = ""
-        log.info("Critic: APPROVED — proceeding to execution")
-    else:
-        # REVISE: store feedback for orchestrator, mark not approved.
-        # The orchestrator will re-plan ONCE. After that, the critic does
-        # NOT run again — the graph bypasses the critic on the second pass.
-        state["critic_approved"] = False
-        state["critic_feedback"] = verdict.feedback_for_orchestrator
-        log.info("Critic: REVISE — sending feedback to orchestrator for one re-plan")
-        if verdict.feedback_for_orchestrator:
-            log.debug(
-                "Critic feedback_for_orchestrator: %s",
-                verdict.feedback_for_orchestrator,
-            )
-
-    state["critic_done"] = True
-
-    return state
-
+        state["critic_done"] = True
+        return state
 
 # ---------------------------------------------------------------------------
 # Routing function — used by the graph to determine next node
@@ -585,27 +591,41 @@ def inject_critic_feedback_into_messages(
     """
     feedback = state.get("critic_feedback", "")
     prior_plan = state.get("task_plan", {})
+    issues: list[dict[str, str]] = state.get("critic_issues") or []
 
     if not feedback:
         return messages
 
-    prior_plan_json = json.dumps(prior_plan, indent=2)[:2000]
+    parts: list[str] = [
+        "## CRITIC FEEDBACK — Your previous plan (shown in the preceding message) "
+        "was reviewed and requires revision.\n",
+    ]
 
-    critic_instruction = (
-        "## CRITIC FEEDBACK — Your previous plan was reviewed and requires revision.\n\n"
-        "### Your previous plan (for reference)\n"
-        "```json\n"
-        f"{prior_plan_json}\n"
-        "```\n\n"
-        "### Required changes\n"
-        f"{feedback}\n\n"
+    if issues:
+        parts.append("### Issues found\n")
+        for i, issue in enumerate(issues, 1):
+            severity = issue.get("severity", "?").upper()
+            rule = issue.get("rule", "")
+            desc = issue.get("description", "")
+            fix = issue.get("fix", "")
+            rule_tag = f" ({rule})" if rule else ""
+            parts.append(f"  {i}. **{severity}{rule_tag}**: {desc}")
+            if fix:
+                parts.append(f"     Fix: {fix}")
+        parts.append("")
+
+    parts.append("### Required changes\n")
+    parts.append(f"{feedback}\n")
+    parts.append(
         "Please produce a REVISED plan that addresses ALL of the above issues. "
         "Output ONLY the corrected JSON object. Apply every fix listed above. "
         "Do not repeat issues that the critic flagged — resolve them."
     )
 
+    critic_instruction = "\n".join(parts)
+
     return [
         *messages,
-        AIMessage(content=json.dumps(prior_plan)),
+        AIMessage(content=json.dumps(prior_plan, indent=2)),
         HumanMessage(content=critic_instruction),
     ]
