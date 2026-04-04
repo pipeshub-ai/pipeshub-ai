@@ -694,7 +694,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
                 record_instance = create_record_instance_from_dict(record, graph_doc)
                 if record_instance:
                     if isinstance(record_instance, DealRecord):
-                        record["context_metadata"] = await record_instance.to_llm_context(
+                        record["context_metadata"] = await record_instance.to_llm_context_with_graph(
                             frontend_url=frontend_url,
                             graph_provider=graph_provider,
                         )

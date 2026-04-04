@@ -180,11 +180,11 @@ class CollectionNames(Enum):
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
-    SALES_PROSPECT = "salesProspect"  # Org -> Org: Salesforce prospect/account relationship
-    SALES_CUSTOMER = "salesCustomer"  # Org -> Org: Salesforce customer relationship
-    SALES_LEAD = "salesLead"  # Org -> Person: Salesforce lead (until converted to contact)
-    SALES_CONTACT = "salesContact"  # Org -> Person: Salesforce contact relationship
-    SALES_DEAL = "salesDeal"  # Org -> Deal: Salesforce opportunity/deal relationship
+    PROSPECT = "prospect"              # Org -> Org: prospect/account relationship
+    CUSTOMER = "customer"              # Org -> Org: customer relationship
+    LEAD = "lead"                      # Org -> Person: lead (until converted to contact)
+    CONTACT = "contact"                # Org -> Person: contact relationship
+    DEAL_INFO = "dealInfo"             # Org -> Deal: opportunity/deal relationship
     DEAL_OF = "dealOf"  # Deal -> Org: deal belongs to organization
     SOLD_IN = "soldIn"  # Product -> Deal: lineItems [{quantity, unitPrice}, ...] per product–deal
     MEMBER_OF = "memberOf"  # Person -> Org: membership with Title, Department

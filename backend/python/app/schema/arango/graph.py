@@ -110,27 +110,27 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [CollectionNames.AGENT_KNOWLEDGE.value],
     },
     {
-        "edge_collection": CollectionNames.SALES_PROSPECT.value,
+        "edge_collection": CollectionNames.PROSPECT.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.ORGS.value],
     },
     {
-        "edge_collection": CollectionNames.SALES_CUSTOMER.value,
+        "edge_collection": CollectionNames.CUSTOMER.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.ORGS.value],
     },
     {
-        "edge_collection": CollectionNames.SALES_LEAD.value,
+        "edge_collection": CollectionNames.LEAD.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.PEOPLE.value],
     },
     {
-        "edge_collection": CollectionNames.SALES_CONTACT.value,
+        "edge_collection": CollectionNames.CONTACT.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.PEOPLE.value],
     },
     {
-        "edge_collection": CollectionNames.SALES_DEAL.value,
+        "edge_collection": CollectionNames.DEAL_INFO.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.RECORDS.value],
     },
@@ -141,8 +141,8 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.SOLD_IN.value,
-        "from_vertex_collections": [CollectionNames.PRODUCTS.value],
-        "to_vertex_collections": [CollectionNames.DEALS.value],
+        "from_vertex_collections": [CollectionNames.RECORDS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value],
     },
     {
         "edge_collection": CollectionNames.MEMBER_OF.value,

@@ -98,11 +98,11 @@ class Neo4jRelationshipType(Enum):
     SOLD_IN = "SOLD_IN"
     DEAL_OF = "DEAL_OF"
     MEMBER_OF = "MEMBER_OF"
-    SALES_PROSPECT = "SALES_PROSPECT"
-    SALES_CUSTOMER = "SALES_CUSTOMER"
-    SALES_LEAD = "SALES_LEAD"
-    SALES_CONTACT = "SALES_CONTACT"
-    SALES_DEAL = "SALES_DEAL"
+    PROSPECT = "PROSPECT"
+    CUSTOMER = "CUSTOMER"
+    LEAD = "LEAD"
+    CONTACT = "CONTACT"
+    DEAL_INFO = "DEAL_INFO"
 
 # Mapping from ArangoDB CollectionNames to Neo4j Labels
 COLLECTION_TO_LABEL: dict[str, str] = {
@@ -172,11 +172,11 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
     CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,
     CollectionNames.MEMBER_OF.value: Neo4jRelationshipType.MEMBER_OF.value,
-    CollectionNames.SALES_PROSPECT.value: Neo4jRelationshipType.SALES_PROSPECT.value,
-    CollectionNames.SALES_CUSTOMER.value: Neo4jRelationshipType.SALES_CUSTOMER.value,
-    CollectionNames.SALES_LEAD.value: Neo4jRelationshipType.SALES_LEAD.value,
-    CollectionNames.SALES_CONTACT.value: Neo4jRelationshipType.SALES_CONTACT.value,
-    CollectionNames.SALES_DEAL.value: Neo4jRelationshipType.SALES_DEAL.value,
+    CollectionNames.PROSPECT.value: Neo4jRelationshipType.PROSPECT.value,
+    CollectionNames.CUSTOMER.value: Neo4jRelationshipType.CUSTOMER.value,
+    CollectionNames.LEAD.value: Neo4jRelationshipType.LEAD.value,
+    CollectionNames.CONTACT.value: Neo4jRelationshipType.CONTACT.value,
+    CollectionNames.DEAL_INFO.value: Neo4jRelationshipType.DEAL_INFO.value,
 }
 
 

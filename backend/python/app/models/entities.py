@@ -48,7 +48,7 @@ class RecordGroupType(str, Enum):
     RSS_FEED = "RSS_FEED"
     SALESFORCE_FILE = "SALESFORCE_FILE"
     PRODUCT = "PRODUCT"
-    DEALS = "DEALS"
+    DEAL = "DEAL"
     CASE = "CASE"
     TASK = "TASK"
     SALESFORCE_ORG = "SALESFORCE_ORG"
@@ -1108,6 +1108,9 @@ class ProductRecord(Record):
 
     product_code: str | None = Field(default=None, description="Product code")
     product_family: str | None = Field(default=None, description="Product family")
+    is_active: bool | None = Field(default=None, description="Whether the product is active")
+    sku: str | None = Field(default=None, description="Stock keeping unit")
+    list_price: float | None = Field(default=None, description="Standard list price from pricebook")
 
     def to_arango_record(self) -> dict:
         return {
@@ -1115,6 +1118,9 @@ class ProductRecord(Record):
             "orgId": self.org_id,
             "productCode": self.product_code,
             "productFamily": self.product_family,
+            "isActive": self.is_active,
+            "sku": self.sku,
+            "listPrice": self.list_price,
         }
 
     @staticmethod
@@ -1152,6 +1158,9 @@ class ProductRecord(Record):
             parent_node_id=record_doc.get("parentNodeId", None), #optional, default is None
             product_code=product_doc.get("productCode"),
             product_family=product_doc.get("productFamily"),
+            is_active=product_doc.get("isActive"),
+            sku=product_doc.get("sku"),
+            list_price=product_doc.get("listPrice"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1185,6 +1194,12 @@ class ProductRecord(Record):
             specific_lines.append(f"* Product Code: {self.product_code}")
         if self.product_family:
             specific_lines.append(f"* Product Family: {self.product_family}")
+        if self.is_active is not None:
+            specific_lines.append(f"* Active: {self.is_active}")
+        if self.sku:
+            specific_lines.append(f"* SKU: {self.sku}")
+        if self.list_price is not None:
+            specific_lines.append(f"* List Price: {self.list_price}")
 
         if specific_lines:
             lines.append("Product Information:")
@@ -1208,12 +1223,12 @@ class DealRecord(Record):
     close_date: str | None = Field(default=None, description="Close date")
 
     @staticmethod
-    async def fetch_sales_deal_edges_to_deal(graph_provider: Any, record_id: str) -> list[dict[str, Any]]:
-        """Load salesDeal edges whose graph target (_to) is this deal record (Org → Deal)."""
+    async def fetch_deal_info_edges_to_deal(graph_provider: Any, record_id: str) -> list[dict[str, Any]]:
+        """Load dealInfo edges whose graph target (_to) is this deal record (Org → Deal)."""
         node_id = f"{CollectionNames.RECORDS.value}/{record_id}"
         return await graph_provider.get_edges_to_node(
             node_id=node_id,
-            edge_collection=CollectionNames.SALES_DEAL.value,
+            edge_collection=CollectionNames.DEAL_INFO.value,
         )
 
     @staticmethod
@@ -1249,11 +1264,11 @@ class DealRecord(Record):
 
         return relations
 
-    def _sales_deal_edges_to_llm_lines(self, edges: list[dict[str, Any]]) -> list[str]:
-        """Format incoming salesDeal edge documents for LLM context (Arango _from/_to or Neo4j generic shape)."""
-        lines: list[str] = ["SalesDeal relations (incoming to this deal, Org → Deal):"]
+    def _deal_info_edges_to_llm_lines(self, edges: list[dict[str, Any]]) -> list[str]:
+        """Format incoming dealInfo edge documents for LLM context (Arango _from/_to or Neo4j generic shape)."""
+        lines: list[str] = ["DealInfo relations (incoming to this deal, Org → Deal):"]
         if not edges:
-            lines.append("* No incoming salesDeal edges.")
+            lines.append("* No incoming dealInfo edges.")
             return lines
         for i, edge in enumerate(edges, start=1):
             from_ref = edge.get("_from")
@@ -1279,9 +1294,9 @@ class DealRecord(Record):
     def _sold_in_edges_products_to_llm_lines(self, relations: list[dict[str, Any]]) -> list[str]:
         """Format soldIn edge + product data for LLM context.
         Each individual line item is emitted as its own numbered instance."""
-        lines: list[str] = ["SoldIn relations (incoming to this deal, Product → Deal):"]
+        lines: list[str] = ["Products in this deal:"]
         if not relations:
-            lines.append("* No incoming soldIn edges.")
+            lines.append("* No products in this deal.")
             return lines
 
         counter = 1
@@ -1332,12 +1347,11 @@ class DealRecord(Record):
 
         return lines
 
-    async def to_llm_context(
+    def to_llm_context(
         self,
         frontend_url: str | None = None,
-        graph_provider: Any = None,
     ) -> str:
-        """Returns formatted deal/opportunity-specific metadata for LLM context"""
+        """Returns formatted deal/opportunity-specific metadata for LLM context."""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
 
@@ -1369,25 +1383,38 @@ class DealRecord(Record):
             lines.append("Deal Information:")
             lines.extend(specific_lines)
 
-        sales_deal_edges: list[dict[str, Any]] | None = None
-        if graph_provider:
-            try:
-                sales_deal_edges = await self.fetch_sales_deal_edges_to_deal(graph_provider, self.id)
-            except (ValueError, TypeError, AttributeError):
-                sales_deal_edges = None
+        return "\n".join(lines)
 
-        if sales_deal_edges is not None:
-            lines.extend(self._sales_deal_edges_to_llm_lines(sales_deal_edges))
+    async def to_llm_context_with_graph(
+        self,
+        frontend_url: str | None = None,
+        graph_provider: Any = None,
+    ) -> str:
+        """
+        Returns full deal LLM context including graph-edge data (sales deal
+        relationships and sold-in product links).  Callers that have a
+        graph_provider should use this method; callers without one can fall
+        back to the synchronous to_llm_context().
+        """
+        base_context = self.to_llm_context(frontend_url=frontend_url)
+        if not graph_provider:
+            return base_context
 
-        sold_in_relations: list[dict[str, Any]] | None = None
-        if graph_provider:
-            try:
-                sold_in_relations = await self.fetch_sold_in_edges_with_products_to_deal(graph_provider, self.id)
-            except (ValueError, TypeError, AttributeError):
-                sold_in_relations = None
+        lines = [base_context]
 
-        if sold_in_relations is not None:
-            lines.extend(self._sold_in_edges_products_to_llm_lines(sold_in_relations))
+        try:
+            deal_info_edges = await self.fetch_deal_info_edges_to_deal(graph_provider, self.id)
+            if deal_info_edges is not None:
+                lines.extend(self._deal_info_edges_to_llm_lines(deal_info_edges))
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+        try:
+            sold_in_relations = await self.fetch_sold_in_edges_with_products_to_deal(graph_provider, self.id)
+            if sold_in_relations is not None:
+                lines.extend(self._sold_in_edges_products_to_llm_lines(sold_in_relations))
+        except (ValueError, TypeError, AttributeError):
+            pass
 
         return "\n".join(lines)
 

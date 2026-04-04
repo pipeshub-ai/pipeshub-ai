@@ -22,8 +22,8 @@ orgs_schema = {
             "isExternal": {"type": "boolean", "default": False},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
-            "sourceCreatedAtTimestamp": {"type": "number"},
-            "sourceLastModifiedTimestamp": {"type": "number"},
+            "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
         },
         "required": ["accountType", "isActive"],
         "additionalProperties": False,
@@ -45,7 +45,7 @@ user_schema = {
             "fullName": {"type": "string"},
             "email": {"type": "string", "format": "email"},
             "designation": {"type": "string"},
-            "profileId": {"type": ["string", "null"]}, # profile ID for profile permissions in Salesforce
+            "profileId": {"type": ["string", "null"]},
             "businessPhones": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -111,7 +111,7 @@ app_role_schema = {
             "description": {"type": "string"},
             # should be a uuid
             "externalRoleId": {"type": "string", "minLength": 1},
-            "parentRoleId": {"type": ["string", "null"]}, # parent role ID for hierarchy in salesforce
+            "parentRoleId": {"type": ["string", "null"]},
             "connectorName": {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
@@ -415,12 +415,12 @@ ticket_record_schema = {
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
             "labels":{
-                "type": "array",
+                "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assignee_source_id":{
-                "type": "array",
+                "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
@@ -511,6 +511,9 @@ product_record_schema = {
             "orgId": {"type": "string"},
             "productCode": {"type": ["string", "null"]},
             "productFamily": {"type": ["string", "null"]},
+            "isActive": {"type": ["boolean", "null"]},
+            "sku": {"type": ["string", "null"]},
+            "listPrice": {"type": ["number", "null"]},
         },
         "additionalProperties": False,
     },
@@ -1009,7 +1012,6 @@ people_schema = {
             "email": {"type": "string", "format": "email"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
-            # Salesforce contact fields
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},

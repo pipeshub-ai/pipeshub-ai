@@ -107,8 +107,8 @@ belongs_to_schema = {
     "message": "Document does not match the belongsTo schema.",
 }
 
-# Org -> Org: Salesforce prospect relationship (Account start to first won opportunity)
-sales_prospect_schema = {
+# Org -> Org: prospect relationship (Account start to first won opportunity)
+prospect_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -125,11 +125,11 @@ sales_prospect_schema = {
         "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the sales prospect schema.",
+    "message": "Document does not match the prospect schema.",
 }
 
-# Org -> Org: Salesforce customer relationship
-sales_customer_schema = {
+# Org -> Org: customer relationship
+customer_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -146,11 +146,11 @@ sales_customer_schema = {
         "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the sales customer schema.",
+    "message": "Document does not match the customer schema.",
 }
 
-# Org -> Person: Salesforce lead (until converted to contact)
-sales_lead_schema = {
+# Org -> Person: lead (until converted to contact)
+lead_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -172,11 +172,11 @@ sales_lead_schema = {
         "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the sales lead schema.",
+    "message": "Document does not match the lead schema.",
 }
 
-# Org -> Person: Salesforce contact relationship
-sales_contact_schema = {
+# Org -> Person: contact relationship
+contact_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -192,11 +192,11 @@ sales_contact_schema = {
         "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the sales contact schema.",
+    "message": "Document does not match the contact schema.",
 }
 
-# Org -> Deal: Salesforce opportunity/deal relationship
-sales_deal_schema = {
+# Org -> Deal: opportunity/deal relationship
+deal_info_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -209,7 +209,7 @@ sales_deal_schema = {
         "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the sales deal schema.",
+    "message": "Document does not match the deal info schema.",
 }
 
 # Deal -> Org: deal belongs to organization
@@ -228,7 +228,11 @@ deal_of_schema = {
     "message": "Document does not match the dealOf schema.",
 }
 
-# Product -> Deal: product sold in deal (parallel arrays of primitives per OLI)
+# Product -> Deal: product sold in deal.
+#
+# Parallel arrays (quantities, unitPrices, totalPrices, isDeletedFlags) store all
+# OLI rows for a (Product2, Opportunity) pair. Arrays are always written atomically
+# (delete + batch_create), so length parity is guaranteed by construction.
 sold_in_schema = {
     "rule": {
         "type": "object",
