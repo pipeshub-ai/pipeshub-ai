@@ -130,7 +130,8 @@ async def orchestrator_node(
                 inject_critic_feedback_into_messages,
             )
             messages = inject_critic_feedback_into_messages(messages, state)
-            state["critic_feedback"] = ""   # consume — don't re-inject next time
+            state["critic_feedback"] = ""      # consume — don't re-inject next time
+            state["critic_issues"] = None
 
         # Add continue/retry context from previous iterations
         if iteration > 0:
