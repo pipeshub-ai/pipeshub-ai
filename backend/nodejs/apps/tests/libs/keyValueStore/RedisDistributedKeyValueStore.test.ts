@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { DistributedKeyValueStore } from '../../../src/libs/keyValueStore/keyValueStore';
 import { RedisDistributedKeyValueStore, RedisStoreConfig } from '../../../src/libs/keyValueStore/providers/RedisDistributedKeyValueStore';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../../src/libs/errors/etcd.errors';
 

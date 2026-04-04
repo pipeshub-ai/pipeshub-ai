@@ -1007,14 +1007,17 @@ describe('tokens_manager/services/cm.service', () => {
     })
 
     describe('initializeOAuthIssuer', () => {
-      it('should not overwrite existing issuer', async () => {
+      it('should always persist resolved issuer even when one exists', async () => {
         mockKvStore.get.resolves(JSON.stringify({ oauthProvider: { issuer: 'http://existing-issuer' } }))
+        process.env.OAUTH_ISSUER = 'http://fresh-issuer'
         await configService.initializeOAuthIssuer()
-        // set should not be called since issuer already exists
-        expect(mockKvStore.set.called).to.be.false
+        expect(mockKvStore.set.calledOnce).to.be.true
+        const saved = JSON.parse(mockKvStore.set.firstCall.args[1])
+        expect(saved.oauthProvider.issuer).to.equal('http://fresh-issuer')
+        delete process.env.OAUTH_ISSUER
       })
 
-      it('should set issuer from env var in development', async () => {
+      it('should set issuer from env var', async () => {
         mockKvStore.get.resolves('{}')
         process.env.OAUTH_ISSUER = 'http://dev-issuer'
         await configService.initializeOAuthIssuer()
@@ -1022,14 +1025,15 @@ describe('tokens_manager/services/cm.service', () => {
         delete process.env.OAUTH_ISSUER
       })
 
-      it('should set issuer from development fallback when no env var', async () => {
+      it('should fall back to localhost when frontend URL contains localhost', async () => {
         mockKvStore.get.resolves('{}')
         delete process.env.OAUTH_ISSUER
-        process.env.NODE_ENV = 'development'
+        delete process.env.FRONTEND_PUBLIC_URL
         process.env.PORT = '3001'
         await configService.initializeOAuthIssuer()
-        expect(mockKvStore.set.calledOnce).to.be.true
-        process.env.NODE_ENV = 'test'
+        expect(mockKvStore.set.called).to.be.true
+        const saved = JSON.parse(mockKvStore.set.lastCall.args[1])
+        expect(saved.oauthProvider.issuer).to.equal('http://localhost:3001')
         delete process.env.PORT
       })
     })
@@ -1043,21 +1047,23 @@ describe('tokens_manager/services/cm.service', () => {
         delete process.env.OAUTH_ISSUER
       })
 
-      it('should return stored issuer when no env var', async () => {
+      it('should return frontend URL when it does not contain localhost', async () => {
         delete process.env.OAUTH_ISSUER
-        mockKvStore.get.resolves(JSON.stringify({ oauthProvider: { issuer: 'http://stored-issuer' } }))
+        delete process.env.FRONTEND_PUBLIC_URL
+        mockKvStore.get.resolves(JSON.stringify({
+          frontend: { publicEndpoint: 'https://app.example.com' },
+        }))
         const result = await configService.getOAuthIssuer()
-        expect(result).to.equal('http://stored-issuer')
+        expect(result).to.equal('https://app.example.com')
       })
 
-      it('should fall back to dev localhost when in development', async () => {
+      it('should fall back to localhost when frontend URL contains localhost', async () => {
         delete process.env.OAUTH_ISSUER
-        process.env.NODE_ENV = 'development'
+        delete process.env.FRONTEND_PUBLIC_URL
         process.env.PORT = '3001'
         mockKvStore.get.resolves('{}')
         const result = await configService.getOAuthIssuer()
         expect(result).to.equal('http://localhost:3001')
-        process.env.NODE_ENV = 'test'
         delete process.env.PORT
       })
     })
