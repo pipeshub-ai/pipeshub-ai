@@ -7,7 +7,6 @@ dependencies = [
   "pytest>=7.0",
   "pytest-asyncio>=0.21.0",
   "pytest-order>=1.1.0",
-  "pytest-mask-secrets>=1.2.0",
   "python-dotenv>=1.0",
   "requests>=2.31.0",
   "neo4j>=5.0.0",

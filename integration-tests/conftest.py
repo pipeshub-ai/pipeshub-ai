@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import sys
 import time
 import warnings
@@ -12,122 +11,12 @@ from typing import List
 
 import pytest
 from dotenv import load_dotenv
-import pytest_mask_secrets.plugin as _pytest_mask_secrets_plugin
-from pytest_mask_secrets.plugin import mask_secrets_key
-
-from secret_mask_constants import (
-    ENV_KEY_NAME_SUBSTRINGS_FOR_MASKING,
-    REGEX_REDACTION_PATTERNS_AFTER_LITERALS,
-    SECRET_ENV_KEYS_FOR_MASKING,
-    SECRET_ENV_VALUE_MIN_LEN,
-)
 
 _THIS_DIR = Path(__file__).resolve().parent
 _HELPER_DIR = _THIS_DIR / "helper"
 _REPORTS_DIR = _THIS_DIR / "reports"
 if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
-
-_REDACTING_LOG_FACTORY_INSTALLED = False
-
-
-def _collect_secret_values() -> List[str]:
-    """Env literals registered for masking (explicit list + dynamic sensitive key names)."""
-    values: list[str] = []
-    for key in SECRET_ENV_KEYS_FOR_MASKING:
-        v = os.environ.get(key, "").strip()
-        if v:
-            values.append(v)
-    for k, v in os.environ.items():
-        if len(v.strip()) < SECRET_ENV_VALUE_MIN_LEN:
-            continue
-        ku = k.upper()
-        if any(s in ku for s in ENV_KEY_NAME_SUBSTRINGS_FOR_MASKING):
-            values.append(v.strip())
-    return sorted(set(values), key=len, reverse=True)
-
-
-def _secrets_set_for_masking() -> set[str]:
-    """
-    Same secret strings pytest-mask-secrets uses on reports (plugin.py pytest_runtest_logreport),
-    plus Pipeshub env literals (also added to the stash in pytest_configure).
-    """
-    secrets: set[str] = set()
-    if os.environ.get("MASK_SECRETS_AUTO", "") not in ("0", ""):
-        candidates = re.compile("(TOKEN|PASSWORD|PASSWD|SECRET)")
-        mine = re.compile(r"MASK_SECRETS(_AUTO)?\b")
-        secrets |= {
-            os.environ[k]
-            for k in os.environ
-            if candidates.search(k) and not mine.match(k)
-        }
-    if "MASK_SECRETS" in os.environ:
-        vars_ = os.environ["MASK_SECRETS"].split(",")
-        secrets |= {os.environ[k] for k in vars_ if k in os.environ}
-    stash = getattr(_pytest_mask_secrets_plugin, "_stash", None)
-    if stash is not None:
-        secrets |= stash.get(mask_secrets_key, set())
-    secrets |= set(_collect_secret_values())
-    return {s for s in secrets if s}
-
-
-def _mask_plaintext_secrets(text: str) -> str:
-    """
-    Identical substitution to pytest-mask-secrets: one regex built from re.escape(secret),
-    replacement '*****' (see plugin.py).
-    """
-    if not text:
-        return text
-    secrets = _secrets_set_for_masking()
-    if not secrets:
-        return text
-    escaped = [re.escape(s) for s in sorted(secrets, key=len, reverse=True) if s]
-    if not escaped:
-        return text
-    pattern = re.compile(f"({'|'.join(escaped)})")
-    return pattern.sub("*****", text)
-
-
-def _redact_text(text: str) -> str:
-    if not text:
-        return text
-
-    redacted = _mask_plaintext_secrets(text)
-    for pattern, repl in REGEX_REDACTION_PATTERNS_AFTER_LITERALS:
-        redacted = re.sub(pattern, repl, redacted)
-    return redacted
-
-
-def _install_redacting_log_record_factory() -> None:
-    """
-    Redact secrets in all log output (including pytest live log).
-
-    Installed at import time so logging before pytest_configure is safe. Child loggers
-    do not inherit root filters; wrapping getMessage on every LogRecord is reliable.
-    After redaction, msg/args are replaced so handlers that read fields directly do not
-    retain raw secrets.
-    """
-    global _REDACTING_LOG_FACTORY_INSTALLED
-    if _REDACTING_LOG_FACTORY_INSTALLED:
-        return
-
-    prev_factory = logging.getLogRecordFactory()
-
-    def factory(*args: object, **kwargs: object) -> logging.LogRecord:
-        record = prev_factory(*args, **kwargs)  # type: ignore[misc]
-        orig_getMessage = record.getMessage
-
-        def redacting_getMessage() -> str:
-            text = _redact_text(orig_getMessage())
-            record.msg = text
-            record.args = ()
-            return text
-
-        record.getMessage = redacting_getMessage  # type: ignore[method-assign]
-        return record
-
-    logging.setLogRecordFactory(factory)
-    _REDACTING_LOG_FACTORY_INSTALLED = True
 
 
 def _load_env() -> None:
@@ -159,7 +48,6 @@ def _init_global_test_env() -> None:
 
 
 _init_global_test_env()
-_install_redacting_log_record_factory()
 
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
@@ -170,7 +58,7 @@ _integration_test_reports: List[TestReportEntry] = []
 
 
 @pytest.fixture(scope="session", autouse=True)
-def local_oauth_credentials(pytestconfig: pytest.Config) -> None:
+def local_oauth_credentials() -> None:
     """
     When running in local mode without CLIENT_ID/CLIENT_SECRET, obtain them from the backend
     (initAuth -> authenticate -> create OAuth app) and set in env so PipeshubClient works.
@@ -185,10 +73,6 @@ def local_oauth_credentials(pytestconfig: pytest.Config) -> None:
     client_id, client_secret = obtain_local_oauth_credentials(base_url)
     os.environ["CLIENT_ID"] = client_id
     os.environ["CLIENT_SECRET"] = client_secret
-
-    secrets_set = pytestconfig.stash[mask_secrets_key]
-    secrets_set.add(client_id)
-    secrets_set.add(client_secret)
 
 
 def get_pipeshub_client() -> PipeshubClient:
@@ -253,20 +137,15 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Initialize report collection, register secrets for pytest-mask-secrets, and log redaction."""
+    """Initialize report collection for the HTML integration report."""
     global _integration_test_reports
     _integration_test_reports = []
     config._integration_test_reports = _integration_test_reports  # type: ignore[attr-defined]
     config._integration_session_start = time.monotonic()  # type: ignore[attr-defined]
 
-    # trylast=True: plugin has initialized mask_secrets_key stash.
-    secrets_set = config.stash[mask_secrets_key]
-    for value in _collect_secret_values():
-        secrets_set.add(value)
-
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Collect pass/fail/skip + failure text for HTML report (pytest-mask-secrets handles pytest output)."""
+    """Collect pass/fail/skip + failure text for HTML report."""
     if report.when != "call":
         return
     config = getattr(report, "config", None)
@@ -278,9 +157,9 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     longrepr = getattr(report, "longrepr", None)
     longreprtext = getattr(report, "longreprtext", None)
     if longreprtext:
-        full_text = _redact_text(longreprtext.strip())
+        full_text = longreprtext.strip()
     elif longrepr is not None:
-        full_text = _redact_text(str(longrepr).strip())
+        full_text = str(longrepr).strip()
     else:
         full_text = ""
 
@@ -292,9 +171,9 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     stderr_captured = None
     for name, content in getattr(report, "sections", []) or []:
         if name == "Captured stdout call" or name == "Captured stdout":
-            stdout_captured = (stdout_captured or "") + _redact_text(content)
+            stdout_captured = (stdout_captured or "") + content
         elif name == "Captured stderr call" or name == "Captured stderr":
-            stderr_captured = (stderr_captured or "") + _redact_text(content)
+            stderr_captured = (stderr_captured or "") + content
 
     reports.append(
         TestReportEntry(

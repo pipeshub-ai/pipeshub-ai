@@ -20,7 +20,6 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
     - [Neo4j (graph validation)](#neo4j-graph-validation)
     - [Storage credentials (per connector)](#storage-credentials-per-connector)
     - [Sample data (optional)](#sample-data-optional)
-    - [Secret masking in pytest output](#secret-masking-in-pytest-output)
   - [Setup: step-by-step](#setup-step-by-step)
     - [1. Clone and enter the repo](#1-clone-and-enter-the-repo)
     - [2. Create virtualenv and install deps](#2-create-virtualenv-and-install-deps)
@@ -145,22 +144,6 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 |--------------------------------------|---------|
 | `PIPESHUB_INTEGRATION_TEST_REPO_URL` | Override GitHub repo URL for sample data (default: `https://github.com/pipeshub-ai/integration-test.git`). |
 | `PIPESHUB_INTEGRATION_TEST_CACHE_DIR` | Override directory for cloning the repo (default: repo root’s `.integration-test-cache`). |
-
----
-
-### Secret masking in pytest output
-
-Masking is centralized in [`secret_mask_constants.py`](secret_mask_constants.py):
-
-| Mechanism | Purpose |
-|-----------|---------|
-| `SECRET_ENV_KEYS_FOR_MASKING` | Explicit env var names whose values are always registered. |
-| `ENV_KEY_NAME_SUBSTRINGS_FOR_MASKING` | Any env key whose name contains one of these substrings (and value length ≥ `SECRET_ENV_VALUE_MIN_LEN`) is also registered. |
-| `REGEX_REDACTION_PATTERNS_AFTER_LITERALS` | Extra regex passes (PEM blocks, JSON secret fields, Azure fragments, Bearer lines) after literal substitution. |
-
-Logs use the same literal substitution as [pytest-mask-secrets](https://github.com/mganisin/pytest-mask-secrets) (`*****`). The plugin still masks pytest reports from its stash; `conftest` registers literals from the constants above plus `MASK_SECRETS` / `MASK_SECRETS_AUTO` behavior. Runtime OAuth values from the local flow are added to the stash when obtained.
-
-When you add a new credential env var, add its name to `SECRET_ENV_KEYS_FOR_MASKING`, or extend the substring / regex tables if it follows a pattern.
 
 ---
 
