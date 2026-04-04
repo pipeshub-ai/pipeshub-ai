@@ -11,6 +11,7 @@ from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
     AnyoneWithLink,
+    AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
@@ -21,6 +22,7 @@ from app.models.entities import (
     Record,
     RecordGroup,
     User,
+    UserGroup,
 )
 from app.models.permission import Permission
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -52,6 +54,11 @@ class GraphTransactionStore(TransactionStore):
 
     async def get_record_by_key(self, key: str) -> Optional[Record]:
         return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
+
+    async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
+        """Get app metadata by connector ID."""
+        doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, transaction=self.txn)
+        return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
@@ -351,6 +358,13 @@ class GraphTransactionStore(TransactionStore):
         Delegates to graph_provider for implementation.
         """
         return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn)
+
+    async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent. Used by TEAM-scope connectors.
+        """
+        return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
 
     async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)

@@ -1,8 +1,32 @@
 // src/sections/qna/agents/components/flow-agent-builder.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useNodesState, useEdgesState, addEdge, Connection, Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Box, useTheme, alpha } from '@mui/material';
+import {
+  Box,
+  useTheme,
+  alpha,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  Typography,
+  Stack,
+  IconButton,
+  CircularProgress,
+  Alert,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
+} from '@mui/material';
+import robotIcon from '@iconify-icons/mdi/robot';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle-outline';
+import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
+import closeIcon from '@iconify-icons/mdi/close';
+import { Icon } from '@iconify/react';
 
 // Icons
 import brainIcon from '@iconify-icons/mdi/brain';
@@ -11,6 +35,7 @@ import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
 
 import { useAccountType } from 'src/hooks/use-account-type';
+import { paths } from 'src/routes/paths';
 
 import type { AgentFormData, AgentTemplate } from 'src/types/agent';
 import type { AgentBuilderProps, NodeData } from './types/agent';
@@ -30,9 +55,191 @@ import TemplateSelector from './components/template-selector';
 // Utils and types
 import { extractAgentConfigFromFlow, normalizeDisplayName, formattedProvider } from './utils/agent';
 import AgentApiService from './services/api';
+import AgentToolsetConfigDialog from './components/agent-builder/agent-toolset-config-dialog';
+
+// ---------------------------------------------------------------------------
+// ServiceAccountConfirmDialog
+// ---------------------------------------------------------------------------
+interface ServiceAccountConfirmDialogProps {
+  open: boolean;
+  agentName: string;
+  creating: boolean;
+  error: string | null;
+  /** True when the user already has toolset nodes dropped on the canvas. */
+  hasUserToolsets: boolean;
+  /** True when converting an existing (already-saved) agent instead of creating a new one. */
+  isConverting?: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}
+
+const ServiceAccountConfirmDialog: React.FC<ServiceAccountConfirmDialogProps> = ({
+  open,
+  agentName,
+  creating,
+  error,
+  hasUserToolsets,
+  isConverting = false,
+  onClose,
+  onConfirm,
+}) => {
+  const theme = useTheme();
+
+  const features = [
+    { text: 'Dedicated credentials per toolset (not per-user)', positive: true },
+    { text: 'Full access to all configured knowledge bases, regardless of who is chatting', positive: true },
+    { text: 'Cannot be reverted back to a regular agent', positive: false },
+  ];
+
+  const title = isConverting ? 'Convert to Service Account' : 'Enable Service Account';
+  const description = isConverting
+    ? 'This agent will be permanently converted to a Service Account — an independent identity with its own credentials and elevated access.'
+    : 'This agent will be created as a Service Account — an independent identity with its own credentials and elevated access.';
+  const confirmLabel = isConverting ? 'Convert to Service Account' : 'Create Service Account Agent';
+  const busyLabel = isConverting ? 'Converting…' : 'Creating Agent…';
+  const nextStepsNote = isConverting
+    ? 'The agent will be saved and you can immediately configure agent-level toolset credentials. Existing per-user toolset credentials are not transferred.'
+    : 'The agent will be saved now so you can configure its toolset credentials. You can then add knowledge, configure the model, and update other settings before finishing.';
+
+  return (
+    <Dialog
+      open={open}
+      onClose={creating ? undefined : onClose}
+      maxWidth="sm"
+      fullWidth
+      PaperProps={{
+        sx: {
+          borderRadius: 2.5,
+          boxShadow: '0 24px 48px rgba(0,0,0,0.15)',
+        },
+      }}
+    >
+      <DialogTitle sx={{ pb: 1, pr: 7 }}>
+        <Stack direction="row" alignItems="center" spacing={1.5}>
+          <Box
+            sx={{
+              width: 40,
+              height: 40,
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: `${theme.palette.secondary.main}18`,
+              flexShrink: 0,
+            }}
+          >
+            <Icon icon={robotIcon} width={22} height={22} color={theme.palette.secondary.main} />
+          </Box>
+          <Box>
+            <Typography variant="h6" fontWeight={700} lineHeight={1.2}>
+              {title}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Agent: <strong>{agentName || '(unnamed)'}</strong>
+            </Typography>
+          </Box>
+        </Stack>
+
+        {!creating && (
+          <IconButton
+            onClick={onClose}
+            size="small"
+            sx={{ position: 'absolute', right: 12, top: 12, color: 'text.secondary' }}
+          >
+            <Icon icon={closeIcon} width={20} height={20} />
+          </IconButton>
+        )}
+      </DialogTitle>
+
+      <DialogContent sx={{ pt: 0 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {description} Here&apos;s what that means:
+        </Typography>
+
+        <List dense disablePadding>
+          {features.map((f) => (
+            <ListItem key={f.text} disableGutters sx={{ py: 0.5, alignItems: 'flex-start' }}>
+              <ListItemIcon sx={{ minWidth: 28, mt: 0.25 }}>
+                <Icon
+                  icon={f.positive ? checkCircleIcon : alertCircleIcon}
+                  width={18}
+                  height={18}
+                  color={f.positive ? theme.palette.success.main : theme.palette.warning.main}
+                />
+              </ListItemIcon>
+              <ListItemText
+                primary={f.text}
+                primaryTypographyProps={{ variant: 'body2', color: 'text.primary' }}
+              />
+            </ListItem>
+          ))}
+        </List>
+
+        {hasUserToolsets && (
+          <Alert severity="error" sx={{ mt: 2, mb: 1 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+              Please remove toolset nodes from the canvas first.
+            </Typography>
+            <Typography variant="body2">
+              Toolsets on the canvas use <em>per-user</em> credentials which are incompatible with
+              Service Account mode. Remove the toolset nodes, then{' '}
+              {isConverting ? 'convert' : 'create'} the agent. You can drag toolsets back
+              afterwards and configure <em>agent-specific</em> credentials for each one.
+            </Typography>
+          </Alert>
+        )}
+
+        <Box
+          sx={{
+            mt: 2,
+            p: 1.5,
+            borderRadius: 1.5,
+            backgroundColor: `${theme.palette.info.main}10`,
+            border: `1px solid ${theme.palette.info.main}30`,
+          }}
+        >
+          <Typography variant="caption" color="text.secondary">
+            <strong>Next steps:</strong> {nextStepsNote}
+          </Typography>
+        </Box>
+
+        {error && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error}
+          </Alert>
+        )}
+      </DialogContent>
+
+      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+        <Button onClick={onClose} disabled={creating} variant="outlined" color="inherit">
+          Cancel
+        </Button>
+        <Button
+          onClick={onConfirm}
+          disabled={creating || hasUserToolsets}
+          variant="contained"
+          color="secondary"
+          startIcon={
+            creating ? (
+              <CircularProgress size={14} color="inherit" />
+            ) : (
+              <Icon icon={robotIcon} width={16} height={16} />
+            )
+          }
+          sx={{ minWidth: 210 }}
+        >
+          {creating ? busyLabel : confirmLabel}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+// ---------------------------------------------------------------------------
 
 const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, onClose }) => {
   const theme = useTheme();
+  const navigate = useNavigate();
+  const location = useLocation();
   const SIDEBAR_WIDTH = 280;
 
   // Data loading hook - ALL data fetched once
@@ -48,7 +255,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     loadedAgent,
     error,
     setError,
-    refreshToolsets, // Function to refresh toolsets after OAuth
+    refreshToolsets, // Function to refresh toolsets after OAuth / credential change
+    refreshAgent,    // Re-fetch agent + toolsets in-place (used after conversion)
+    loadMoreToolsets,
+    toolsetsHasMore,
+    toolsetsLoadingMore,
   } = useAgentBuilderData(editingAgent);
 
   const {isBusiness} = useAccountType();
@@ -87,6 +298,29 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   // Share with org state - initialized from loaded agent data
   const [shareWithOrg, setShareWithOrg] = useState<boolean>(false);
 
+  // Derive isServiceAccount directly from the fetched agent so there is no
+  // extra render cycle where loadedAgent is set but the old useState value is
+  // still false. Using a separate useState caused a brief window where the
+  // "Manage Credentials" gear button disappeared for already-authenticated
+  // service-account toolsets because isServiceAccount was read as false.
+  const isServiceAccount = loadedAgent?.isServiceAccount ?? false;
+
+  // Whether the service account confirmation dialog is open
+  const [serviceAccountConfirmOpen, setServiceAccountConfirmOpen] = useState(false);
+  const [serviceAccountCreating, setServiceAccountCreating] = useState(false);
+  const [serviceAccountError, setServiceAccountError] = useState<string | null>(null);
+
+  // Manage credentials dialog for agent-scoped toolsets
+  const [agentToolsetDialog, setAgentToolsetDialog] = useState<{
+    toolset: any;
+    instanceId: string;
+  } | null>(null);
+
+  // The effective agent key — simply the editing agent's key.
+  // After a service-account quick-save, we navigate to the edit route so this
+  // is always correct once the component (re)mounts.
+  const effectiveAgentKey = editingAgent?._key;
+
   // Existing agent can be opened in view-only mode based on permissions.
   const isReadOnly = useMemo(() => {
     const sourceAgent = loadedAgent || editingAgent;
@@ -94,10 +328,25 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     return sourceAgent.can_edit === false;
   }, [loadedAgent, editingAgent]);
 
-  // Sync shareWithOrg from loaded agent
+  // When the builder re-mounts after a service-account quick-save (router state
+  // carries serviceAccountJustCreated), show a success toast so the user knows
+  // the agent was saved and they are now in edit mode.
+  useEffect(() => {
+    if (location.state?.serviceAccountJustCreated) {
+      setSuccess('Service account agent created! You can now configure toolset credentials using the 🔑 icon in the sidebar.');
+      // Clear the router state flag so it doesn't re-trigger on next render
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+    // Only run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync shareWithOrg from loaded agent.
+  // Service account agents are always org-shared — force the toggle to true
+  // so the UI reflects the enforced invariant even if the stored value is stale.
   useEffect(() => {
     if (loadedAgent) {
-      setShareWithOrg(loadedAgent.shareWithOrg ?? false);
+      setShareWithOrg(loadedAgent.isServiceAccount === true ? true : (loadedAgent.shareWithOrg ?? false));
     }
   }, [loadedAgent]);
 
@@ -651,6 +900,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       setSaving(true);
       setError(null);
 
+      // currentAgent: the agent being edited (from URL param) or null for a fresh create
       const currentAgent = loadedAgent || editingAgent;
       // extractAgentConfigFromFlow now returns properly typed ToolsetReference[] and KnowledgeReference[]
       const agentConfig: AgentFormData = extractAgentConfigFromFlow(
@@ -658,7 +908,8 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         nodes,
         edges,
         currentAgent,
-        shareWithOrg
+        shareWithOrg,
+        isServiceAccount
       );
 
       const agent = currentAgent
@@ -687,6 +938,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     loadedAgent,
     editingAgent,
     shareWithOrg,
+    isServiceAccount,
     onSuccess,
     setSaving,
     setError,
@@ -710,11 +962,13 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         templateDialogOpen={templateDialogOpen}
         setTemplateDialogOpen={setTemplateDialogOpen}
         templatesLoading={templatesLoading}
-        agentId={editingAgent?._key || ''}
+        agentId={effectiveAgentKey || ''}
         shareWithOrg={shareWithOrg}
         setShareWithOrg={setShareWithOrg}
         hasToolsets={hasToolsets}
         isReadOnly={isReadOnly}
+        isServiceAccount={isServiceAccount}
+        onEnableServiceAccount={() => setServiceAccountConfirmOpen(true)}
       />
 
       {/* Main Content */}
@@ -727,7 +981,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         configuredConnectors={configuredConnectors}
         connectorRegistry={connectorRegistry}
         toolsets={toolsets}
-        refreshToolsets={refreshToolsets}
+        refreshToolsets={(agentKey?: string, svcAccount?: boolean, search?: string) =>
+          refreshToolsets(agentKey, svcAccount, search)
+        }
+        loadMoreToolsets={loadMoreToolsets}
+        toolsetsHasMore={toolsetsHasMore}
+        toolsetsLoadingMore={toolsetsLoadingMore}
         isBusiness={isBusiness}
         activeToolsetTypes={activeToolsetTypes}
         nodes={nodes}
@@ -759,6 +1018,18 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         }}
         onError={(errorMsg) => setError(errorMsg)}
         isReadOnly={isReadOnly}
+        isServiceAccount={isServiceAccount}
+        agentKey={effectiveAgentKey}
+        onManageAgentToolsetCredentials={(toolset: any) => {
+          if (!effectiveAgentKey) {
+            setError('Enable service account mode first before managing toolset credentials.');
+            return;
+          }
+          setAgentToolsetDialog({
+            toolset,
+            instanceId: toolset.instanceId || '',
+          });
+        }}
       />
 
       {/* Notifications */}
@@ -792,6 +1063,87 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         onConfirmEdgeDelete={() => (edgeToDelete ? deleteEdge(edgeToDelete) : Promise.resolve())}
         deleting={deleting}
         nodes={nodes}
+      />
+
+      {/* Agent Toolset Credentials Dialog (service account agents) */}
+      {agentToolsetDialog && effectiveAgentKey && (
+        <AgentToolsetConfigDialog
+          toolset={agentToolsetDialog.toolset}
+          instanceId={agentToolsetDialog.instanceId}
+          agentKey={effectiveAgentKey}
+          onClose={() => setAgentToolsetDialog(null)}
+          onSuccess={() => {
+            setAgentToolsetDialog(null);
+            refreshToolsets(effectiveAgentKey, true);
+          }}
+        />
+      )}
+
+      {/* Service Account Confirm Dialog */}
+      <ServiceAccountConfirmDialog
+        open={serviceAccountConfirmOpen}
+        agentName={agentName}
+        creating={serviceAccountCreating}
+        error={serviceAccountError}
+        hasUserToolsets={hasToolsets}
+        isConverting={Boolean(loadedAgent || editingAgent)}
+        onClose={() => {
+          setServiceAccountConfirmOpen(false);
+          setServiceAccountError(null);
+        }}
+        onConfirm={async () => {
+          if (!agentName?.trim()) {
+            setServiceAccountError('Please enter an agent name before enabling service account mode.');
+            return;
+          }
+          setServiceAccountCreating(true);
+          setServiceAccountError(null);
+          try {
+            // Build payload from the current flow state so all fields are included.
+            // isServiceAccount is forced to true regardless of previous value.
+            // shareWithOrg is also forced to true: service account agents must always
+            // be org-wide so that internal (Slack) calls can reach them.
+            const currentAgent = loadedAgent || editingAgent;
+            const agentConfig: AgentFormData = extractAgentConfigFromFlow(
+              agentName.trim(),
+              nodes,
+              edges,
+              currentAgent ?? null,
+              true, // force shareWithOrg = true for service account agents
+              true  // isServiceAccount
+            );
+
+            if (currentAgent) {
+              // ── Converting an existing agent ──────────────────────────────
+              // Use updateAgent so the existing _key is preserved, then
+              // refresh the agent data in-place (no navigation needed).
+              // This avoids the "same URL → no remount" problem and gives an
+              // immediate, smooth update: the header badge flips to "Service
+              // Account" and the toolset list reloads from the agent endpoint.
+              await AgentApiService.updateAgent(currentAgent._key, agentConfig);
+              setServiceAccountConfirmOpen(false);
+              // refreshAgent re-fetches the agent from the API (gets
+              // isServiceAccount: true) and reloads toolsets from the correct
+              // agent-scoped endpoint — all without leaving the page.
+              await refreshAgent(currentAgent._key);
+              setSuccess('Agent converted to Service Account! Configure per-toolset credentials using the 🔑 icon in the sidebar.');
+            } else {
+              // ── Creating a brand-new service-account agent ────────────────
+              // Navigate to the edit route so the builder fully re-mounts with
+              // the real _key and fetches agent-scoped toolsets from the start.
+              const created = await AgentApiService.createAgent(agentConfig);
+              setServiceAccountConfirmOpen(false);
+              navigate(paths.dashboard.agent.edit(created._key), {
+                state: { serviceAccountJustCreated: true },
+              });
+            }
+          } catch (err: any) {
+            const msg = err?.response?.data?.detail || 'Failed to enable service account mode. Please try again.';
+            setServiceAccountError(msg);
+          } finally {
+            setServiceAccountCreating(false);
+          }
+        }}
       />
 
       {/* Template Selector Dialog - Disabled for v1 */}

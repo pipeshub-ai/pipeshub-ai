@@ -36,7 +36,7 @@ def _make_connector():
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1")
+    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
 
 
 class TestSharePointSiteUrlConstruction:
@@ -217,5 +217,7 @@ class TestSharePointCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-sp",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, SharePointConnector)

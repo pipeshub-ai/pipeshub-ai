@@ -185,6 +185,8 @@ def connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="gmail-ind-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
@@ -1140,6 +1142,8 @@ def _make_connector():
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope="personal",
+            created_by="test-user-id",
         )
         # The mocked GmailIndividualApp causes connector_name to be a MagicMock.
         # Set it to the real enum value so Pydantic models validate correctly.
@@ -2126,6 +2130,8 @@ def connector_fullcov():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="gmail-ind-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()

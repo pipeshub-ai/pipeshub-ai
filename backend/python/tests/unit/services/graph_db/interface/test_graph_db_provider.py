@@ -12,6 +12,7 @@ Tests cover:
 
 import importlib
 import sys
+import types
 from abc import ABC
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -76,9 +77,14 @@ class TestModuleImports:
         with TYPE_CHECKING patched to True."""
         import app.services.graph_db.interface.graph_db_provider as mod
 
+        # Avoid importing full FastAPI/Starlette stack during forced TYPE_CHECKING=True
+        # reload, which can trigger circular import noise in test environments.
+        fake_fastapi = types.ModuleType("fastapi")
+        fake_fastapi.Request = type("Request", (), {})
+
         with patch.object(
             sys.modules["typing"], "TYPE_CHECKING", True
-        ):
+        ), patch.dict(sys.modules, {"fastapi": fake_fastapi}):
             importlib.reload(mod)
 
         # After reload with TYPE_CHECKING=True, the guarded imports
@@ -370,8 +376,15 @@ class TestAbstractMethodInventory:
         "delete_all_team_permissions",
         "get_team_owner_removal_info",
         "get_team_permissions_and_owner_count",
+        "add_user_to_all_team",
+        "ensure_all_team_with_users",
+        "ensure_team_app_edge",
         # User operations
         "get_organization_users",
+        # Agent permission operations
+        "get_agent",
+        "check_agent_permission",
+        "get_all_virtual_record_ids_for_knowledge",
     ]
 
     def test_all_expected_methods_are_abstract(self):

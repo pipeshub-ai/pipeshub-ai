@@ -172,7 +172,9 @@ class BookStackConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             BookStackApp(connector_id),
@@ -180,7 +182,9 @@ class BookStackConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         self.connector_name = Connectors.BOOKSTACK
@@ -2420,7 +2424,9 @@ class BookStackConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         """
         Factory method to create a BookStack connector instance.
@@ -2439,5 +2445,11 @@ class BookStackConnector(BaseConnector):
         await data_entities_processor.initialize()
 
         return BookStackConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )

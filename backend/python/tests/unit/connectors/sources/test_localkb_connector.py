@@ -45,6 +45,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="team",
+        created_by="test-user",
     )
     return connector
 
@@ -201,6 +203,8 @@ class TestKnowledgeBaseConnector:
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id="kb-conn-1",
+                scope="team",
+                created_by="user-1",
             )
             assert isinstance(connector, KnowledgeBaseConnector)
             mock_proc.initialize.assert_awaited_once()
@@ -435,6 +439,8 @@ def _make_connector_cov():
         data_store_provider=ds_provider,
         config_service=config_service,
         connector_id="kb-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
 
 

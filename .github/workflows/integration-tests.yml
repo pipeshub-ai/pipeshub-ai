@@ -35,7 +35,7 @@ env:
 jobs:
   integration-tests:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 60
 
     environment:

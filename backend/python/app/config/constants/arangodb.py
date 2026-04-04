@@ -63,6 +63,7 @@ class Connectors(Enum):
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
     ZAMMAD = "ZAMMAD"
+    ZOOM = "ZOOM"
 
     UNKNOWN = "UNKNOWN"
 
@@ -87,6 +88,7 @@ class AppGroups(Enum):
     AZURE = "Azure"
     LINEAR = "Linear"
     ZAMMAD = "Zammad"
+    ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
     RSS = "RSS"
 
@@ -136,6 +138,7 @@ class CollectionNames(Enum):
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
     PULLREQUESTS = "prs"
+    MEETINGS = "meetings"
 
     # Users and groups
     PEOPLE = "people"
@@ -293,6 +296,7 @@ class RecordTypes(Enum):
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
     PULL_REQUEST = "PULL_REQUEST"
+    MEETING = "MEETING"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
@@ -355,6 +359,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "PROJECT": CollectionNames.PROJECTS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
-    "PULL_REQUEST":CollectionNames.PULLREQUESTS.value
+    "PULL_REQUEST": CollectionNames.PULLREQUESTS.value,
+    "MEETING": CollectionNames.MEETINGS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

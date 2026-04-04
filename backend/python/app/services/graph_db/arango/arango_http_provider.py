@@ -40,6 +40,7 @@ from app.models.entities import (
     FileRecord,
     LinkRecord,
     MailRecord,
+    MeetingRecord,
     Person,
     ProjectRecord,
     Record,
@@ -59,6 +60,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     link_record_schema,
     mail_record_schema,
+    meeting_record_schema,
     orgs_schema,
     people_schema,
     project_record_schema,
@@ -120,6 +122,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
@@ -632,6 +635,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return LinkRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.PROJECTS.value:
                 return ProjectRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -3099,6 +3104,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -3556,13 +3563,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_apps(self, user_key: str) -> list[dict]:
         """Get all apps (connectors) associated with a user by user document key (_key)."""
         try:
+            user_from = f"{CollectionNames.USERS.value}/{user_key}"
             query = f"""
-            FOR app IN OUTBOUND CONCAT('{CollectionNames.USERS.value}/', @user_key) {CollectionNames.USER_APP_RELATION.value}
-                RETURN app
+            LET user_apps = (
+                FOR app IN OUTBOUND @user_from {CollectionNames.USER_APP_RELATION.value}
+                    RETURN app
+            )
+            LET team_apps = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == @user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                        RETURN app
+            )
+            LET combined = APPEND(user_apps, team_apps)
+            FOR app IN combined
+                COLLECT key = app._key INTO grouped KEEP app
+                RETURN grouped[0].app
             """
             results = await self.execute_query(
                 query,
-                bind_vars={"user_key": user_key},
+                bind_vars={"user_from": user_from},
             )
             return list(results) if results else []
         except Exception as e:
@@ -4839,6 +4861,229 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+            raise
+
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """
+        Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
+
+        Creates team node with id=all_{org_id} if missing, fetches all active users,
+        and adds PERMISSION edges for users not already in the team.
+
+        Idempotent, runs without transaction, safe to call multiple times.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_key, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_key,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Get all active users sorted by createdAtTimestamp ascending
+            users = await self.get_users(org_id, active=True)
+            if not users:
+                self.logger.debug(f"No active users found for org {org_id}")
+                return
+
+            users_sorted = sorted(users, key=lambda u: u.get("createdAtTimestamp", 0))
+            self.logger.info(f"📊 Found {len(users_sorted)} active users for org {org_id}")
+
+            # 3. Get current team members to determine if team is empty
+            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
+            existing_member_count = len((team_with_users or {}).get("members", []))
+            owner_assigned = existing_member_count > 0
+
+            self.logger.info(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
+            if team_with_users and team_with_users.get("members"):
+                self.logger.info(
+                    "📊 Existing members: %s",
+                    [
+                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
+                        for m in team_with_users.get("members", [])
+                    ],
+                )
+
+            # 4. Add each user without a PERMISSION edge
+            for user in users_sorted:
+                user_key = user.get("_key") or user.get("id")
+                if not user_key:
+                    continue
+
+                existing_edge = await self.get_edge(
+                    from_id=user_key,
+                    from_collection=CollectionNames.USERS.value,
+                    to_id=team_key,
+                    to_collection=CollectionNames.TEAMS.value,
+                    collection=CollectionNames.PERMISSION.value,
+                )
+                if existing_edge:
+                    continue
+
+                role = "OWNER" if not owner_assigned else "READER"
+                self.logger.info(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
+
+                if not owner_assigned:
+                    owner_assigned = True
+                    try:
+                        await self.update_node(
+                            team_key,
+                            CollectionNames.TEAMS.value,
+                            {"createdBy": user_key, "updatedAtTimestamp": ts},
+                        )
+                        self.logger.info(f"✅ Updated team createdBy to {user_key}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
+
+                permission_edge = {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_key,
+                    "to_collection": CollectionNames.TEAMS.value,
+                    "type": "USER",
+                    "role": role,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_create_edges(
+                    [permission_edge], CollectionNames.PERMISSION.value
+                )
+                self.logger.info(f"✅ Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
+            raise
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """
+        Add a specific user to the org's 'All' team with a PERMISSION edge.
+
+        Ensures All team exists, checks if user already has PERMISSION edge,
+        and adds it if missing. First user in team gets OWNER, subsequent get READER.
+
+        Idempotent, safe to call multiple times for same user.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_key, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_key,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Check if this user already has a PERMISSION edge
+            existing_edge = await self.get_edge(
+                from_id=user_key,
+                from_collection=CollectionNames.USERS.value,
+                to_id=team_key,
+                to_collection=CollectionNames.TEAMS.value,
+                collection=CollectionNames.PERMISSION.value,
+            )
+            if existing_edge:
+                self.logger.debug(f"User {user_key} already has PERMISSION edge to All team")
+                return
+
+            # 3. Check if team has any existing members to determine role
+            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
+            existing_member_count = len((team_with_users or {}).get("members", []))
+            role = "OWNER" if existing_member_count == 0 else "READER"
+
+            self.logger.info(f"Assigning role {role} to user {user_key} (existing members: {existing_member_count})")
+
+            # 4. If assigning first OWNER, update team.createdBy
+            if role == "OWNER":
+                try:
+                    await self.update_node(
+                        team_key,
+                        CollectionNames.TEAMS.value,
+                        {"createdBy": user_key, "updatedAtTimestamp": ts},
+                    )
+                    self.logger.info(f"Updated team createdBy to {user_key}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
+
+            # 5. Create PERMISSION edge
+            permission_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_key,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [permission_edge], CollectionNames.PERMISSION.value
+            )
+            self.logger.info(f"Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
+            raise
+
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates teams/all_{org_id} -> apps/{connector_id} if not present.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            existing = await self.get_edge(
+                from_id=team_key,
+                from_collection=CollectionNames.TEAMS.value,
+                to_id=connector_id,
+                to_collection=CollectionNames.APPS.value,
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=transaction
+            )
+            if existing:
+                return
+            ts = get_epoch_timestamp_in_ms()
+            edge = {
+                "_from": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "_to": f"{CollectionNames.APPS.value}/{connector_id}",
+                "sourceUserId": team_key,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": ts,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [edge],
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=transaction
+            )
+            self.logger.debug(f"Created team->app edge: teams/{team_key} -> apps/{connector_id}")
+        except Exception as e:
+            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
     async def batch_upsert_user_groups(
@@ -6331,6 +6576,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
@@ -13399,14 +13645,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str,
         transaction: str | None = None
     ) -> list[str]:
-        """Get list of app IDs the user has access to."""
-        query = """
-        FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
-            FILTER app != null
-            RETURN app._key
-        """
-        result = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
-        return result if result else []
+        """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
+        try:
+            apps = await self.get_user_apps(user_key)
+            return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
+        except Exception as e:
+            self.logger.error("❌ Failed to get user app ids: %s", str(e))
+            return []
 
     async def get_knowledge_hub_context_permissions(
         self,
@@ -15474,21 +15719,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Note: createdBy stores MongoDB userId, so we compare with user.userId, not user.id
         """
         return f"""
-        LET user_app_rel = FIRST(
-            FOR rel IN userAppRelation
-                FILTER rel._from == {user_var}._id
-                AND rel._to == {node_var}._id
-                RETURN rel
-        )
-        LET is_admin = ({user_var}.role == "ADMIN" OR {user_var}.orgRole == "ADMIN")
-        LET app_scope = {node_var}.scope != null ? {node_var}.scope : "personal"
-        LET is_creator = ({node_var}.createdBy == {user_var}.userId OR {node_var}.createdBy == {user_var}._key)
         LET permission_role = (
-            user_app_rel == null ? null :
-            (is_admin == true AND app_scope == "team") ? "EDITOR" :
-            (is_admin == true AND app_scope == "personal") ? "OWNER" :
-            (app_scope == "team" AND is_creator == true) ? "OWNER" :
-            "READER"
+            // Check if user has USER_APP_RELATION to app
+            LET user_app_rel = FIRST(
+                FOR rel IN userAppRelation
+                    FILTER rel._from == {user_var}._id
+                    AND rel._to == {node_var}._id
+                    RETURN rel
+            )
+
+            // Check if user has path User->Team->App (user in team, team has userAppRelation to app)
+            LET team_app_rel = FIRST(
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == {user_var}._id
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR rel IN userAppRelation
+                        FILTER rel._from == perm._to AND rel._to == {node_var}._id
+                        LIMIT 1
+                        RETURN rel
+            )
+
+            // Check if user is admin
+            LET is_admin = ({user_var}.role == "ADMIN" OR {user_var}.orgRole == "ADMIN")
+
+            // Get app scope and check if user is creator
+            // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
+            LET app_scope = {node_var}.scope != null ? {node_var}.scope : "personal"
+            LET is_creator = ({node_var}.createdBy == {user_var}.userId OR {node_var}.createdBy == {user_var}._key)
+
+            // Determine role based on conditions
+            RETURN CASE
+                // No direct user->app and no team->app: no access
+                WHEN user_app_rel == null AND team_app_rel == null THEN null
+                // Access via team (All)->app: READER; admin gets EDITOR for team apps
+                WHEN user_app_rel == null AND team_app_rel != null THEN (is_admin == true ? "EDITOR" : "READER")
+                // Admin users: Team apps get EDITOR, Personal apps get OWNER
+                WHEN is_admin == true AND app_scope == "team" THEN "EDITOR"
+                WHEN is_admin == true AND app_scope == "personal" THEN "OWNER"
+                // Team app creator gets OWNER
+                WHEN app_scope == "team" AND is_creator == true THEN "OWNER"
+                // Otherwise READER
+                ELSE "READER"
+            END
         )
         """
 
@@ -16636,6 +16909,177 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
             return {}
 
+    async def get_all_virtual_record_ids_for_knowledge(
+        self,
+        org_id: str,
+        connector_ids: list[str] | None = None,
+        kb_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """
+        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
+        WITHOUT applying per-user permission filtering.
+
+        Used exclusively for service account agents that have "super entity" access to
+        their configured knowledge sources.
+
+        Args:
+            org_id: Organization ID to scope the query
+            connector_ids: List of connector/app IDs to include (non-KB connectors)
+            kb_ids: List of KB record group IDs to include
+
+        Returns:
+            Dict mapping virtualRecordId -> recordId; empty dict if nothing configured.
+        """
+        start_time = time.time()
+
+        has_connectors = bool(connector_ids)
+        has_kbs = bool(kb_ids)
+
+        if not has_connectors and not has_kbs:
+            self.logger.info("get_all_virtual_record_ids_for_knowledge: no connectors/KBs configured, returning empty")
+            return {}
+
+        try:
+            tasks = []
+
+            # For each connector, fetch ALL records (no user permission join)
+            if has_connectors:
+                for connector_id in connector_ids:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(self._get_all_virtual_ids_for_connector(org_id, connector_id))
+
+            # For KBs, fetch ALL records belonging to those record groups
+            if has_kbs:
+                tasks.append(self._get_all_kb_virtual_ids(org_id, kb_ids))
+
+            if not tasks:
+                return {}
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"get_all_virtual_record_ids_for_knowledge task {i} failed: {result}")
+                    continue
+                if result:
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
+
+            elapsed = time.time() - start_time
+            self.logger.info(
+                f"get_all_virtual_record_ids_for_knowledge: found {len(virtual_id_to_record_id)} records "
+                f"(connectors={connector_ids}, kb_ids={kb_ids}) in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"get_all_virtual_record_ids_for_knowledge failed: {e}", exc_info=True)
+            return {}
+
+    async def _get_all_virtual_ids_for_connector(
+        self,
+        org_id: str,
+        connector_id: str,
+    ) -> dict[str, str]:
+        """
+        Get all virtualRecordId -> recordId for a connector WITHOUT user permission filtering.
+        Returns all completed records for the org in this connector.
+        """
+        try:
+            query = """
+            FOR record IN @@records
+                FILTER record.connectorId == @connectorId
+                FILTER record.orgId == @orgId
+                FILTER record.indexingStatus == @completedStatus
+                FILTER record.isDeleted != true
+                FILTER record.virtualRecordId != null AND record.virtualRecordId != ""
+                COLLECT virtualRecordId = record.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).record._key
+                FILTER recordId != null
+                RETURN {virtualRecordId: virtualRecordId, recordId: recordId}
+            """
+            bind_vars = {
+                "@records": CollectionNames.RECORDS.value,
+                "connectorId": connector_id,
+                "orgId": org_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+            }
+
+            query_start = time.time()
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            elapsed = time.time() - query_start
+
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
+
+            self.logger.info(
+                f"Service account connector {connector_id}: "
+                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"_get_all_virtual_ids_for_connector({connector_id}) failed: {e}", exc_info=True)
+            return {}
+
+    async def _get_all_kb_virtual_ids(
+        self,
+        org_id: str,
+        kb_ids: list[str],
+    ) -> dict[str, str]:
+        """
+        Get all virtualRecordId -> recordId for KB record groups WITHOUT user permission filtering.
+        Returns all completed UPLOAD records belonging to the specified record groups.
+        """
+        try:
+            query = f"""
+            FOR kb IN @@recordGroups
+                FILTER kb._key IN @kb_ids
+                FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.origin == "UPLOAD"
+                    FILTER record.orgId == @orgId
+                    FILTER record.indexingStatus == @completedStatus
+                    FILTER record.isDeleted != true
+                    FILTER record.virtualRecordId != null AND record.virtualRecordId != ""
+                    COLLECT virtualRecordId = record.virtualRecordId INTO groups
+                    LET recordId = FIRST(groups).record._key
+                    FILTER recordId != null
+                    RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+            """
+            bind_vars = {
+                "@recordGroups": CollectionNames.RECORD_GROUPS.value,
+                "kb_ids": kb_ids,
+                "orgId": org_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+            }
+
+            query_start = time.time()
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            elapsed = time.time() - query_start
+
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
+
+            self.logger.info(
+                f"Service account KBs ({len(kb_ids)} ids): "
+                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"_get_all_kb_virtual_ids failed: {e}", exc_info=True)
+            return {}
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -16730,7 +17174,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if not tasks:
                 self.logger.warning(f"No queries to execute for user {user_id} with filters {filters}")
-                return []
+                return {}
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -17755,101 +18199,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
-    async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> dict | None:
+    async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
-        Get an agent by ID with user permissions and linked graph data.
+        Fetch the complete agent document with linked graph data.
+
+        This method does NOT perform any permission check — callers must invoke
+        ``check_agent_permission`` separately before calling this method.
 
         Includes:
-        - Agent document with permissions
+        - Agent document
         - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
         - Linked knowledge with filters (via agentHasKnowledge)
+        - shareWithOrg flag (requires org_id to evaluate the ORG permission edge)
         """
         try:
             query = f"""
-            LET user_key = @user_id
-            LET org_key = @org_id
             LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+            LET agent = DOCUMENT(agent_path)
 
-            // Get user's teams first
-            LET user_teams = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
-                    FILTER perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
-                    RETURN perm._to
-            )
-
-            // Check individual user permissions on the agent
-            LET individual_access = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "USER"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "INDIVIDUAL",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            )
-
-            // Check org permissions on the agent (only if no individual access)
-            LET org_access = LENGTH(individual_access) == 0 && org_key != null ? (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "ORG"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "ORG",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            ) : []
-
-            // Check team permissions on the agent (only if no individual or org access)
-            LET team_access = LENGTH(individual_access) == 0 && LENGTH(org_access) == 0 ? (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "TEAM"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            ) : []
-
-            // Get base agent with permissions (first available access type)
-            LET base_agent = LENGTH(individual_access) > 0 ?
-                FIRST(individual_access) :
-                (LENGTH(org_access) > 0 ? FIRST(org_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) : null))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
 
             // Get linked toolsets with their tools
-            LET linked_toolsets = base_agent != null ? (
+            LET linked_toolsets = (
                 FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                     FILTER edge._from == agent_path
                     LET toolset = DOCUMENT(edge._to)
                     FILTER toolset != null
 
-                    // Get tools linked to this toolset
                     LET toolset_tools = (
                         FOR tool_edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
                             FILTER tool_edge._from == edge._to
@@ -17873,23 +18250,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         selectedTools: toolset.selectedTools,
                         tools: toolset_tools
                     }}
-            ) : []
+            )
 
             // Get linked knowledge with filters and enrich with names
-            LET linked_knowledge = base_agent != null ? (
+            LET linked_knowledge = (
                 FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
                     FILTER edge._from == agent_path
                     LET knowledge = DOCUMENT(edge._to)
                     FILTER knowledge != null
 
-                    // Parse filters to check if this is a KB or app
                     LET filters_parsed = TYPENAME(knowledge.filters) == "string" ?
                         JSON_PARSE(knowledge.filters) : knowledge.filters
                     LET record_groups = filters_parsed.recordGroups || []
                     LET is_kb = LENGTH(record_groups) > 0
 
-                    // For KBs: Get KB name from record group document
-                    // KBs have recordGroups in filters, and we look up the KB document
                     LET kb_info = is_kb && LENGTH(record_groups) > 0 ? (
                         LET first_kb_id = record_groups[0]
                         LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.RECORD_GROUPS.value}/', first_kb_id))
@@ -17899,13 +18273,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             name: kb_doc.groupName,
                             type: "KB",
                             displayName: kb_doc.groupName,
-                            // Use KB connector instance ID from KB document, fallback to knowledge.connectorId
                             connectorId: kb_doc.connectorId || knowledge.connectorId
                         }}
                     ) : []
 
-                    // For apps: Get connector instance name from APPS collection
-                    // Apps have empty recordGroups or no recordGroups
                     LET app_info = !is_kb ? (
                         LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
                         FILTER connector_instance != null
@@ -17916,7 +18287,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         }}
                     ) : []
 
-                    // Determine the display info
                     LET display_info = LENGTH(kb_info) > 0 ? FIRST(kb_info) :
                                       (LENGTH(app_info) > 0 ? FIRST(app_info) : {{
                                           name: knowledge.connectorId,
@@ -17926,39 +18296,44 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                     RETURN {{
                         _key: knowledge._key,
-                        // For KBs, use connectorId from KB document (KB connector instance ID)
-                        // For apps, use the connectorId from knowledge (connector instance ID)
                         connectorId: LENGTH(kb_info) > 0 ? FIRST(kb_info).connectorId : knowledge.connectorId,
                         filters: knowledge.filters,
                         name: display_info.name,
                         type: display_info.type,
                         displayName: display_info.displayName || display_info.name
                     }}
-            ) : []
+            )
 
-            // Check if the agent is shared with the org (edge-based, not stored in doc)
-            LET share_with_org = base_agent != null && org_key != null ? (
+            // shareWithOrg: when org_id is provided match the specific org node;
+            // when org_id is absent check whether any Orgs collection node has a
+            // permission edge to this agent (source collection check, not type field)
+            LET share_with_org = @org_id != null ? (
                 LENGTH(
                     FOR perm IN {CollectionNames.PERMISSION.value}
-                        FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                        FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
                         FILTER perm._to == agent_path
-                        FILTER perm.type == "ORG"
                         LIMIT 1
                         RETURN 1
                 ) > 0
-            ) : false
+            ) : (
+                LENGTH(
+                    FOR perm IN {CollectionNames.PERMISSION.value}
+                        FILTER STARTS_WITH(perm._from, '{CollectionNames.ORGS.value}/')
+                        FILTER perm._to == agent_path
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+            )
 
-            // Return agent with linked data
-            RETURN base_agent != null ? MERGE(base_agent, {{
+            RETURN MERGE(agent, {{
                 toolsets: linked_toolsets,
                 knowledge: linked_knowledge,
                 shareWithOrg: share_with_org
-            }}) : null
+            }})
             """
 
             bind_vars = {
                 "agent_id": agent_id,
-                "user_id": user_id,
                 "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
             }
@@ -17966,7 +18341,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or len(result) == 0 or result[0] is None:
-                self.logger.warning(f"No agent/permissions found for user {user_id} on agent {agent_id}")
+                self.logger.warning(f"Agent {agent_id} not found or deleted")
                 return None
 
             agent = result[0]
@@ -17988,6 +18363,101 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to get agent: {str(e)}")
+            return None
+
+    async def check_agent_permission(
+        self, agent_id: str, user_id: str, org_id: str
+    ) -> dict | None:
+        """
+        Lightweight permission check that returns the caller's access rights on
+        an agent without fetching toolsets or knowledge.
+
+        Returns None if the agent does not exist, is deleted, or the user has
+        no access via individual, org, or team permission edges.
+        """
+        try:
+            query = f"""
+            LET user_key = @user_id
+            LET org_key  = @org_id
+            LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+            LET agent = DOCUMENT(agent_path)
+
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+
+            // User's team memberships
+            LET user_teams = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    RETURN perm._to
+            )
+
+            // Individual access
+            LET individual_access = FIRST(
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "USER"
+                    RETURN {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }}
+            )
+
+            // Org access (only if no individual access)
+            LET org_access = individual_access == null && org_key != null ? FIRST(
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "ORG"
+                    RETURN {{
+                        access_type: "ORG",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }}
+            ) : null
+
+            // Team access (only if no individual or org access)
+            LET team_access = individual_access == null && org_access == null ? FIRST(
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    RETURN {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }}
+            ) : null
+
+            LET access = individual_access != null ? individual_access :
+                         (org_access != null ? org_access :
+                         (team_access != null ? team_access : null))
+
+            RETURN access
+            """
+
+            bind_vars = {"agent_id": agent_id, "user_id": user_id, "org_id": org_id}
+            result = await self.execute_query(query, bind_vars=bind_vars)
+
+            if not result or result[0] is None:
+                return None
+            return result[0]
+
+        except Exception as e:
+            self.logger.error(f"Failed to check agent permission: {str(e)}")
             return None
 
     async def get_all_agents(
@@ -18220,14 +18690,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
         """
         try:
-            # Check if user has permission to update the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
 
-            # Check if user can edit the agent
-            if not agent_with_permission.get("can_edit", False):
+            if not perm.get("can_edit", False):
                 self.logger.warning(f"User {user_id} does not have edit permission on agent {agent_id}")
                 return False
 
@@ -18239,7 +18707,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
@@ -18317,14 +18785,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            # Check if user has permission to delete the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
 
-            # Check if user can delete the agent
-            if not agent_with_permission.get("can_delete", False):
+            if not perm.get("can_delete", False):
                 self.logger.warning(f"User {user_id} does not have delete permission on agent {agent_id}")
                 return False
 
@@ -18804,14 +19270,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> bool | None:
         """Share an agent to users and teams"""
         try:
-            # Check if agent exists and user has permission to share it
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
 
-            # Check if user can share the agent
-            if not agent_with_permission.get("can_share", False):
+            if not perm.get("can_share", False):
                 self.logger.warning(f"User {user_id} does not have share permission on agent {agent_id}")
                 return False
 
@@ -18867,9 +19331,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> dict | None:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
-            # Check if user has permission to unshare the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None or not agent_with_permission.get("can_share", False):
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm or not perm.get("can_share", False):
                 return {"success": False, "reason": "Insufficient permissions to unshare agent"}
 
             # Build conditions for batch delete
@@ -18914,14 +19377,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
-            # Check if the requesting user is the OWNER of the agent
-            agent_with_permission = await self.get_agent(agent_id, owner_user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
 
-            # Only OWNER can update permissions - Fixed to use the flattened structure
-            if agent_with_permission.get("user_role") != "OWNER":
+            if perm.get("user_role") != "OWNER":
                 self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
                 return {"success": False, "reason": "Only OWNER can update permissions"}
 
@@ -18989,14 +19450,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> list[dict] | None:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
-            # Check if user has access to the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return None
 
-            # Only OWNER can view all permissions - Fixed to use the flattened structure
-            if agent_with_permission.get("user_role") != "OWNER":
+            if perm.get("user_role") != "OWNER":
                 self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
                 return None
 

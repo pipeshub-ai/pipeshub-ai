@@ -28,7 +28,7 @@ from app.connectors.sources.s3.base_connector import (
     parse_parent_external_id,
 )
 from app.connectors.sources.s3.connector import S3Connector
-from app.models.entities import FileRecord, Record, RecordType
+from app.models.entities import FileRecord, Record, RecordType, User
 
 
 @pytest.fixture()
@@ -45,6 +45,13 @@ def mock_dep():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
+    u = User(
+        email="user@test.com",
+        org_id="org-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
+    proc.get_user_by_user_id = AsyncMock(return_value=u)
     return proc
 
 
@@ -55,6 +62,7 @@ def mock_dsp():
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
     mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
     mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
@@ -84,6 +92,8 @@ def connector(mock_logger, mock_dep, mock_dsp, mock_cs):
             data_store_provider=mock_dsp,
             config_service=mock_cs,
             connector_id="s3-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -203,14 +213,14 @@ class TestHelperFunctions:
 class TestCreateS3Permissions:
     @pytest.mark.asyncio
     async def test_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -218,7 +228,7 @@ class TestCreateS3Permissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
@@ -226,20 +236,20 @@ class TestCreateS3Permissions:
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
-        mock_tx.get_user_by_id = AsyncMock(side_effect=Exception("DB error"))
+        mock_tx.get_user_by_user_id = AsyncMock(side_effect=Exception("DB error"))
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         mock_tx = mock_dsp.transaction.return_value
-        mock_tx.get_user_by_id = AsyncMock(return_value={"email": ""})
+        mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": ""})
         perms = await connector._create_s3_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"

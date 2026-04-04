@@ -97,7 +97,7 @@ def _make_deleted_entry(name="old.txt", path="/old.txt"):
 def _make_mock_tx_store(existing_record=None):
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
-    tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
     return tx
 
 
@@ -172,6 +172,8 @@ def connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
@@ -271,6 +273,8 @@ class TestDropboxConnectorInit:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
         assert conn.connector_id == "conn-123"
         assert conn.data_source is None
@@ -290,6 +294,8 @@ class TestDropboxConnectorInit:
             logger=mock_logger, data_entities_processor=mock_data_entities_processor,
             data_store_provider=mock_data_store_provider, config_service=mock_config_service,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
         result = await conn.init()
         assert result is True
@@ -304,6 +310,8 @@ class TestDropboxConnectorInit:
             logger=mock_logger, data_entities_processor=mock_data_entities_processor,
             data_store_provider=mock_data_store_provider, config_service=config_svc,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
         assert await conn.init() is False
 
@@ -317,6 +325,8 @@ class TestDropboxConnectorInit:
             logger=mock_logger, data_entities_processor=mock_data_entities_processor,
             data_store_provider=mock_data_store_provider, config_service=mock_config_service,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
         assert await conn.init() is False
 
@@ -333,6 +343,8 @@ class TestDropboxConnectorInit:
             logger=mock_logger, data_entities_processor=mock_data_entities_processor,
             data_store_provider=mock_data_store_provider, config_service=mock_config_service,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
         assert await conn.init() is False
 
@@ -349,6 +361,8 @@ class TestDropboxConnectorInit:
             logger=mock_logger, data_entities_processor=mock_data_entities_processor,
             data_store_provider=mock_data_store_provider, config_service=config_svc,
             connector_id="conn-123",
+            scope="team",
+            created_by="test-user",
         )
         assert await conn.init() is False
 
@@ -1045,6 +1059,8 @@ class TestDropboxIndividualConnectorInit:
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="conn-ind-1",
+            scope="team",
+            created_by="test-user",
         )
         assert conn.connector_id == "conn-ind-1"
         assert conn.data_source is None
@@ -1067,6 +1083,8 @@ def _make_dropbox_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="dbx-conn-1",
+            scope="team",
+            created_by="test-user",
         )
     connector.sync_filters = FilterCollection()
     connector.indexing_filters = FilterCollection()
@@ -1592,7 +1610,7 @@ def _make_connector():
     dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
     cs = AsyncMock()
-    return DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1")
+    return DropboxConnector(logger, dep, dsp, cs, "conn-dbx-1", "team", "test-user-id")
 
 
 def _make_file_metadata(name="test.pdf"):
@@ -1829,6 +1847,8 @@ class TestDropboxCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-dbx",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, DropboxConnector)
 
@@ -2042,6 +2062,8 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="conn-123",
+            scope="personal",
+            created_by="test-user-id",
         )
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
@@ -4961,7 +4983,12 @@ class TestCreateConnector:
         mock_processor_cls.return_value = proc
 
         conn = await DropboxConnector.create_connector(
-            mock_logger_fullcov, mock_data_store_provider, mock_config_service, "conn-123"
+            mock_logger_fullcov,
+            mock_data_store_provider,
+            mock_config_service,
+            "conn-123",
+            "team",
+            "test-user-id",
         )
         assert isinstance(conn, DropboxConnector)
         proc.initialize.assert_called_once()

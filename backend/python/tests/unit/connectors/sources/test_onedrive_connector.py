@@ -63,7 +63,7 @@ def _make_mock_deps():
 def _make_connector():
     """Create an OneDrive connector with mocked dependencies."""
     logger, dep, dsp, cs = _make_mock_deps()
-    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-1")
+    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-1", "team", "test-user")
     return connector
 
 
@@ -1803,7 +1803,7 @@ def _make_connector_cov():
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-cov")
+    connector = OneDriveConnector(logger, dep, dsp, cs, "conn-onedrive-cov", "team", "test-user-id")
     return connector
 
 
@@ -4059,7 +4059,9 @@ class TestCreateConnector:
             dsp = MagicMock()
             cs = MagicMock()
 
-            result = await OneDriveConnector.create_connector(logger, dsp, cs, "conn-1")
+            result = await OneDriveConnector.create_connector(
+                logger, dsp, cs, "conn-1", "team", "test-user-id"
+            )
             assert isinstance(result, OneDriveConnector)
             mock_instance.initialize.assert_awaited_once()
 

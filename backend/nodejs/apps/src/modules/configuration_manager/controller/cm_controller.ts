@@ -442,7 +442,7 @@ const parseSlackBotStore = (
   }
 };
 
-const getSlackBotStore = async (
+export const getSlackBotStore = async (
   keyValueStoreService: KeyValueStoreService,
 ): Promise<SlackBotStore> => {
   const configManagerConfig = loadConfigurationManagerConfig();

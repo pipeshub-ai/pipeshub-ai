@@ -93,7 +93,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    c = JiraConnector(logger, dep, dsp, cs, "conn-jira-deep")
+    c = JiraConnector(logger, dep, dsp, cs, "conn-jira-deep", "team", "test-user-id")
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()

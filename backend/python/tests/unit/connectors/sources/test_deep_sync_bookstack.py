@@ -99,6 +99,8 @@ def connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="bs-1",
+            scope="team",
+            created_by="test-user",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()

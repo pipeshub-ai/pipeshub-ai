@@ -15,6 +15,7 @@ from app.models.entities import (
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
+    MeetingRecord,
     OriginTypes,
     ProjectRecord,
     Record,
@@ -40,12 +41,15 @@ group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
+TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+
 collection_map = {
                     RecordType.TICKET.value: "tickets",
                     RecordType.PROJECT.value: "projects",
                     RecordType.FILE.value: "files",
                     RecordType.MAIL.value: "mails",
                     RecordType.LINK.value: "links",
+                    RecordType.MEETING.value: "meetings",
                 }
 
 def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Optional[Dict[str, Any]] = None) -> Optional[Record]:
@@ -152,7 +156,19 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
                 "linked_record_id": graph_doc.get("linkedRecordId"),
             }
             return LinkRecord(**base_args, **specific_args)
-
+        elif record_type == RecordType.MEETING.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.MEETING,
+                "host_email": graph_doc.get("hostEmail"),
+                "host_id": graph_doc.get("hostId"),
+                "meeting_type": graph_doc.get("meetingType"),
+                "duration_minutes": graph_doc.get("durationMinutes"),
+                "start_time": graph_doc.get("startTime"),
+                "end_time": graph_doc.get("endTime"),
+                "timezone": graph_doc.get("timezone"),
+                "recording_url": graph_doc.get("recordingUrl"),
+            }
+            return MeetingRecord(**base_args, **specific_args)
         else:
             return None
     except Exception as e:
@@ -1622,7 +1638,7 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
 
-    Format: url#:~:text=start_text,end_text
+    Format: base URL, then ``#:~:text=`` plus encoded start (and optional ``,end``).
 
     Args:
         base_url: The base URL of the page
@@ -1637,6 +1653,11 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     try:
         snippet = text_snippet.strip()
         if not snippet:
+            return base_url
+
+        # If the URL already carries a #:~:text= fragment (set deliberately by a
+        # connector, e.g. Zoom transcript listing page), preserve it as-is.
+        if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
             return base_url
 
         start_text, end_text = extract_start_end_text(snippet)

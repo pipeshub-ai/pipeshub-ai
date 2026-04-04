@@ -86,12 +86,21 @@ export interface MyToolset {
   tools: Array<{ name: string; fullName: string; description: string }>;
   isConfigured: boolean;
   isAuthenticated: boolean;
+  /**
+   * True when non-OAuth credentials exist for this toolset.
+   * Returned by the agent-scoped GET /agents/{key} endpoint instead of raw auth
+   * values (which are never exposed in list responses for security).
+   */
+  hasCredentials?: boolean;
   isFromRegistry?: boolean;
   createdBy?: string;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
-  /** Stored credential payload — shape depends on auth type. */
-  auth?: Record<string, unknown>;
+  /**
+   * Raw credential payload (user-scoped /my-toolsets only).
+   * Agent-scoped endpoints always return null here — use hasCredentials instead.
+   */
+  auth?: Record<string, unknown> | null;
 }
 
 /**
