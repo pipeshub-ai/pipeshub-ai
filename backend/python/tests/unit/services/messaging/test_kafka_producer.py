@@ -185,14 +185,14 @@ class TestSendEvent:
         assert call_kwargs.kwargs.get("key") == "k" or call_kwargs[1].get("key") == "k"
 
     @pytest.mark.asyncio
-    async def test_send_event_returns_false_on_exception(self, logger, plain_config):
+    async def test_send_event_raises_on_exception(self, logger, plain_config):
         producer = KafkaMessagingProducer(logger, plain_config)
         producer.send_message = AsyncMock(side_effect=Exception("boom"))
 
-        result = await producer.send_event(
-            topic="t", event_type="EVT", payload={}
-        )
-        assert result is False
+        with pytest.raises(Exception, match="boom"):
+            await producer.send_event(
+                topic="t", event_type="EVT", payload={}
+            )
 
 
 # ===========================================================================
@@ -366,14 +366,14 @@ class TestSendMessage:
         assert call_kwargs["key"] is None
 
     @pytest.mark.asyncio
-    async def test_send_message_failure_returns_false(self, logger, plain_config):
+    async def test_send_message_failure_raises(self, logger, plain_config):
         producer_obj = KafkaMessagingProducer(logger, plain_config)
         mock_aio = AsyncMock()
         mock_aio.send_and_wait = AsyncMock(side_effect=Exception("send failed"))
         producer_obj.producer = mock_aio
 
-        result = await producer_obj.send_message("t", {"data": 1})
-        assert result is False
+        with pytest.raises(Exception, match="send failed"):
+            await producer_obj.send_message("t", {"data": 1})
 
     @pytest.mark.asyncio
     async def test_send_message_auto_initializes(self, logger, plain_config):

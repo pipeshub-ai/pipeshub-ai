@@ -106,12 +106,12 @@ class TestCleanup:
     @pytest.mark.asyncio
     async def test_closes_redis_client(self, producer):
         mock_redis = AsyncMock()
-        mock_redis.close = AsyncMock()
+        mock_redis.aclose = AsyncMock()
         producer.redis = mock_redis
 
         await producer.cleanup()
 
-        mock_redis.close.assert_awaited_once()
+        mock_redis.aclose.assert_awaited_once()
         assert producer.redis is None
 
     @pytest.mark.asyncio
@@ -122,7 +122,7 @@ class TestCleanup:
     @pytest.mark.asyncio
     async def test_handles_close_exception(self, producer):
         mock_redis = AsyncMock()
-        mock_redis.close = AsyncMock(side_effect=Exception("close failed"))
+        mock_redis.aclose = AsyncMock(side_effect=Exception("close failed"))
         producer.redis = mock_redis
 
         await producer.cleanup()
@@ -188,13 +188,13 @@ class TestSendMessage:
         mock_redis.ping.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_exception(self, producer):
+    async def test_raises_on_exception(self, producer):
         mock_redis = AsyncMock()
         mock_redis.xadd = AsyncMock(side_effect=Exception("xadd failed"))
         producer.redis = mock_redis
 
-        result = await producer.send_message("t", {"d": 1})
-        assert result is False
+        with pytest.raises(Exception, match="xadd failed"):
+            await producer.send_message("t", {"d": 1})
 
 
 class TestSendEvent:
@@ -218,13 +218,13 @@ class TestSendEvent:
         assert "timestamp" in sent_msg
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_exception(self, producer):
+    async def test_raises_on_exception(self, producer):
         producer.send_message = AsyncMock(side_effect=Exception("boom"))
 
-        result = await producer.send_event(
-            topic="t", event_type="EVT", payload={}
-        )
-        assert result is False
+        with pytest.raises(Exception, match="boom"):
+            await producer.send_event(
+                topic="t", event_type="EVT", payload={}
+            )
 
 
 class TestStartStop:

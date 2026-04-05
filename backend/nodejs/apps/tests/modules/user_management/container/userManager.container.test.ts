@@ -82,15 +82,15 @@ describe('UserManagerContainer', () => {
 
     it('should set instance to null after dispose', async () => {
       const mockKvStore = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() };
-      const mockEntityEvents = { isConnected: sinon.stub().returns(true), stop: sinon.stub().resolves() };
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() };
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['KeyValueStoreService', 'EntitiesEventProducer'].includes(key),
+          ['KeyValueStoreService', 'MessageProducer'].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'KeyValueStoreService') return mockKvStore;
-          if (key === 'EntitiesEventProducer') return mockEntityEvents;
+          if (key === 'MessageProducer') return mockMessageProducer;
           return null;
         }),
       };
@@ -102,7 +102,7 @@ describe('UserManagerContainer', () => {
         await UserManagerContainer.dispose();
         expect((UserManagerContainer as any).instance).to.be.null;
         expect(mockKvStore.disconnect.calledOnce).to.be.true;
-        expect(mockEntityEvents.stop.calledOnce).to.be.true;
+        expect(mockMessageProducer.disconnect.calledOnce).to.be.true;
       } finally {
         if ((UserManagerContainer as any).instance !== null) {
           (UserManagerContainer as any).instance = originalInstance;
@@ -112,15 +112,15 @@ describe('UserManagerContainer', () => {
 
     it('should not disconnect services when they are not connected', async () => {
       const mockKvStore = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() };
-      const mockEntityEvents = { isConnected: sinon.stub().returns(false), stop: sinon.stub() };
+      const mockMessageProducer = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() };
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['KeyValueStoreService', 'EntitiesEventProducer'].includes(key),
+          ['KeyValueStoreService', 'MessageProducer'].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'KeyValueStoreService') return mockKvStore;
-          if (key === 'EntitiesEventProducer') return mockEntityEvents;
+          if (key === 'MessageProducer') return mockMessageProducer;
           return null;
         }),
       };
@@ -131,7 +131,7 @@ describe('UserManagerContainer', () => {
       try {
         await UserManagerContainer.dispose();
         expect(mockKvStore.disconnect.called).to.be.false;
-        expect(mockEntityEvents.stop.called).to.be.false;
+        expect(mockMessageProducer.disconnect.called).to.be.false;
       } finally {
         if ((UserManagerContainer as any).instance !== null) {
           (UserManagerContainer as any).instance = originalInstance;

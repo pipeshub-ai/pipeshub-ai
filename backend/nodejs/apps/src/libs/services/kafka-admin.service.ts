@@ -1,11 +1,10 @@
-import { Kafka, Admin, ITopicConfig } from 'kafkajs';
+import { Kafka, Admin, ITopicConfig, ITopicMetadata } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
-import {
-  IMessageAdmin,
-  TopicDefinition,
-} from '../types/messaging.types';
+import { IMessageAdmin, TopicDefinition } from '../types/messaging.types';
+import { KAFKA_ADMIN_CLIENT_ID } from '../constants/messaging.constants';
 import { Logger } from './logger.service';
 
+// Required topics for the application
 export const REQUIRED_TOPICS: TopicDefinition[] = [
   { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'entity-events', numPartitions: 1, replicationFactor: 1 },
@@ -24,7 +23,7 @@ export class KafkaAdminService implements IMessageAdmin {
   constructor(config: KafkaConfig, logger: Logger) {
     this.logger = logger;
     this.kafka = new Kafka({
-      clientId: config.clientId || 'pipeshub-admin',
+      clientId: config.clientId ?? KAFKA_ADMIN_CLIENT_ID,
       brokers: config.brokers,
       ssl: config.ssl,
       sasl: config.sasl,
@@ -32,6 +31,11 @@ export class KafkaAdminService implements IMessageAdmin {
     this.admin = this.kafka.admin();
   }
 
+  /**
+   * Ensures all required topics exist in the Kafka cluster.
+   * Creates any missing topics with the specified configuration.
+   * This is especially important for AWS MSK where auto.create.topics.enable is disabled by default.
+   */
   async ensureTopicsExist(
     topics: TopicDefinition[] = REQUIRED_TOPICS,
   ): Promise<void> {
@@ -77,7 +81,7 @@ export class KafkaAdminService implements IMessageAdmin {
       }
 
       this.logger.error('Failed to ensure Kafka topics exist', {
-        error: error.message || error,
+        error: error.message ?? error,
       });
       throw error;
     } finally {
@@ -92,6 +96,9 @@ export class KafkaAdminService implements IMessageAdmin {
     }
   }
 
+  /**
+   * Lists all topics in the Kafka cluster
+   */
   async listTopics(): Promise<string[]> {
     try {
       await this.admin.connect();
@@ -102,7 +109,12 @@ export class KafkaAdminService implements IMessageAdmin {
     }
   }
 
-  async describeTopics(topics: string[]): Promise<any> {
+  /**
+   * Describes the configuration of specified topics
+   */
+  async describeTopics(
+    topics: string[],
+  ): Promise<{ topics: ITopicMetadata[] }> {
     try {
       await this.admin.connect();
       const metadata = await this.admin.fetchTopicMetadata({ topics });
@@ -113,6 +125,10 @@ export class KafkaAdminService implements IMessageAdmin {
   }
 }
 
+/**
+ * Utility function to ensure Kafka topics exist during application startup.
+ * Safe to call multiple times - will only create topics that don't exist.
+ */
 export async function ensureKafkaTopicsExist(
   kafkaConfig: {
     brokers: string[];
@@ -127,7 +143,8 @@ export async function ensureKafkaTopicsExist(
   topics?: TopicDefinition[],
 ): Promise<void> {
   const config: KafkaConfig = {
-    clientId: 'pipeshub-admin',
+    type: 'kafka',
+    clientId: KAFKA_ADMIN_CLIENT_ID,
     brokers: kafkaConfig.brokers,
     ssl: kafkaConfig.ssl,
     sasl: kafkaConfig.sasl,

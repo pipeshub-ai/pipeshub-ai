@@ -1,8 +1,8 @@
-import json
-from typing import Dict, Optional
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import EventTypes
+from app.services.messaging.config import Topic
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -23,6 +23,7 @@ class KafkaService:
         self.config_service = config_service
         self.logger = logger
         self._producer = producer
+        self._producer_started = False
 
     async def _ensure_producer(self) -> None:
         """Ensure the producer is initialized and started"""
@@ -31,13 +32,16 @@ class KafkaService:
                 "No messaging producer configured. "
                 "Set producer via constructor or set_producer()."
             )
-        await self._producer.start()
+        if not self._producer_started:
+            await self._producer.start()
+            self._producer_started = True
 
     def set_producer(self, producer: IMessagingProducer) -> None:
         """Set the messaging producer (for deferred initialization)"""
         self._producer = producer
+        self._producer_started = False
 
-    async def publish_event(self, topic: str, event: Dict) -> bool:
+    async def publish_event(self, topic: str, event: dict) -> bool:
         """
         Publish an event to a specified topic.
         :param topic: The topic/stream to publish to
@@ -93,7 +97,7 @@ class KafkaService:
             key = str(formatted_event["payload"]["recordId"])
 
             result = await self._producer.send_message(  # type: ignore
-                topic="record-events",
+                topic=Topic.RECORD_EVENTS.value,
                 message=formatted_event,
                 key=key,
             )
@@ -108,7 +112,7 @@ class KafkaService:
 
         except Exception as e:
             self.logger.error("Failed to send event: %s", str(e))
-            return False
+            raise
 
     async def stop_producer(self) -> None:
         """Stop the producer and clean up resources"""

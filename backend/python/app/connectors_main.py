@@ -25,7 +25,7 @@ from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
 )
-from app.services.messaging.config import get_message_broker_type
+from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -270,7 +270,7 @@ async def stop_kafka_consumers(container: ConnectorAppContainer) -> None:
     for name, consumer in consumers:
         try:
             await consumer.stop()
-            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+            logger.info(f"✅ {name.title()} message consumer stopped")
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
 
@@ -305,7 +305,7 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error cancelling sync tasks at shutdown: {e}")
 
-        # Stop Kafka consumers
+        # Stop message consumers
         await stop_kafka_consumers(container)
 
         # Stop messaging producer
@@ -438,20 +438,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
-    # Resume sync services BEFORE starting Kafka consumers so that
+    # Resume sync services BEFORE starting message consumers so that
     # connectors_map is populated before we begin processing sync events.
     try:
         await resume_sync_services(app_container, data_store)
     except Exception as e:
         logger.error(f"❌ Error during sync service resumption: {str(e)}")
 
-    # Start all Kafka consumers centrally - pass already resolved graph_provider
+    # Start all message consumers centrally - pass already resolved graph_provider
     try:
         consumers = await start_kafka_consumers(app_container, graph_provider)
         app_container.kafka_consumers = consumers
-        logger.info("✅ All Kafka consumers started successfully")
+        logger.info("✅ All message consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.

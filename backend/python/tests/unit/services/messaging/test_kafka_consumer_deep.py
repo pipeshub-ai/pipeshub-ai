@@ -14,13 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     FUTURE_CLEANUP_INTERVAL,
-    IndexingEvent,
     IndexingKafkaConsumer,
-    MAX_CONCURRENT_INDEXING,
-    MAX_CONCURRENT_PARSING,
 )
 
 
@@ -268,28 +266,32 @@ class TestInitialize:
 class TestParseMessage:
     def test_bytes_json(self, consumer):
         """Bytes message is decoded and parsed as JSON."""
-        msg = _make_message(value=json.dumps({"key": "value"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "value"}}).encode("utf-8"))
 
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
 
-        assert result == {"key": "value"}
+        assert isinstance(result, StreamMessage)
+        assert result.eventType == "test"
+        assert result.payload == {"key": "value"}
 
     def test_string_json(self, consumer):
         """String message is parsed as JSON."""
-        msg = _make_message(value=json.dumps({"key": "value"}))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "value"}}))
 
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
 
-        assert result == {"key": "value"}
+        assert isinstance(result, StreamMessage)
+        assert result.eventType == "test"
 
     def test_double_encoded_json(self, consumer):
         """Double-encoded JSON is handled correctly."""
-        inner = json.dumps({"key": "value"})
+        inner = json.dumps({"eventType": "test", "payload": {"key": "value"}})
         msg = _make_message(value=json.dumps(inner).encode("utf-8"))
 
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
 
-        assert result == {"key": "value"}
+        assert isinstance(result, StreamMessage)
+        assert result.payload == {"key": "value"}
 
     def test_invalid_json_returns_none(self, consumer):
         """Invalid JSON returns None."""
@@ -523,12 +525,12 @@ class TestProcessMessageWrapper:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         consumer.message_handler = handler
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
 
         await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
 
@@ -549,7 +551,7 @@ class TestProcessMessageWrapper:
 
         consumer.message_handler = handler
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
 
         # Should not raise (errors are caught)
         await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
@@ -581,7 +583,7 @@ class TestProcessMessageWrapper:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
         consumer.message_handler = None
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
 
         await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
 
@@ -596,7 +598,7 @@ class TestProcessMessageWrapper:
         consumer.parsing_semaphore = None
         consumer.indexing_semaphore = None
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
 
         await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         # Should not raise
@@ -609,12 +611,12 @@ class TestProcessMessageWrapper:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": "parsing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
             # No indexing_complete event
 
         consumer.message_handler = handler
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
 
         await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
 
@@ -672,13 +674,13 @@ class TestStartProcessingTask:
             assert consumer.worker_loop_ready.wait(timeout=5.0)
             consumer.running = True
 
-            msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"))
+            msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
             tp = _make_topic_partition()
 
             # Set a handler that yields both events
             async def handler(parsed_msg):
-                yield {"event": "parsing_complete", "data": {}}
-                yield {"event": "indexing_complete", "data": {}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
             consumer.message_handler = handler
 
@@ -702,12 +704,12 @@ class TestStartProcessingTask:
 
 class TestConstants:
     def test_max_concurrent_parsing(self):
-        """MAX_CONCURRENT_PARSING has a positive default."""
-        assert MAX_CONCURRENT_PARSING > 0
+        """max_concurrent_parsing has a positive default."""
+        assert messaging_env.max_concurrent_parsing > 0
 
     def test_max_concurrent_indexing(self):
-        """MAX_CONCURRENT_INDEXING has a positive default."""
-        assert MAX_CONCURRENT_INDEXING > 0
+        """max_concurrent_indexing has a positive default."""
+        assert messaging_env.max_concurrent_indexing > 0
 
     def test_future_cleanup_interval(self):
         """FUTURE_CLEANUP_INTERVAL is positive."""

@@ -8,6 +8,8 @@ import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from app.services.messaging.config import MessageBrokerType
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -335,15 +337,19 @@ class TestStartMessagingProducer:
         mock_container = _make_container()
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
+        mock_kafka_service = MagicMock()
+        mock_container.kafka_service.return_value = mock_kafka_service
 
         with (
-            patch("app.connectors_main.KafkaUtils.create_producer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils.create_producer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingFactory.create_producer", return_value=mock_producer),
         ):
             await start_messaging_producer(mock_container)
 
         mock_producer.initialize.assert_awaited_once()
         assert mock_container.messaging_producer is mock_producer
+        mock_kafka_service.set_producer.assert_called_once_with(mock_producer)
 
     async def test_exception_is_raised(self):
         """Exception during producer start is propagated."""
@@ -352,7 +358,8 @@ class TestStartMessagingProducer:
         mock_container = _make_container()
 
         with (
-            patch("app.connectors_main.KafkaUtils.create_producer_config", new_callable=AsyncMock, side_effect=RuntimeError("kafka down")),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils.create_producer_config", new_callable=AsyncMock, side_effect=RuntimeError("kafka down")),
         ):
             with pytest.raises(RuntimeError, match="kafka down"):
                 await start_messaging_producer(mock_container)
@@ -377,8 +384,9 @@ class TestStartKafkaConsumers:
         mock_sync_consumer.start = AsyncMock()
 
         with (
-            patch("app.connectors_main.KafkaUtils.create_entity_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.connectors_main.KafkaUtils.create_sync_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]),
@@ -401,8 +409,9 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.stop = AsyncMock()
 
         with (
-            patch("app.connectors_main.KafkaUtils.create_entity_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.connectors_main.KafkaUtils.create_sync_kafka_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("sync config fail")),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("sync config fail")),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.MessagingFactory.create_consumer", return_value=mock_entity_consumer),
         ):
@@ -423,8 +432,9 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.stop = AsyncMock(side_effect=RuntimeError("cleanup fail"))
 
         with (
-            patch("app.connectors_main.KafkaUtils.create_entity_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.connectors_main.KafkaUtils.create_sync_kafka_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("config fail")),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("config fail")),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.MessagingFactory.create_consumer", return_value=mock_entity_consumer),
         ):

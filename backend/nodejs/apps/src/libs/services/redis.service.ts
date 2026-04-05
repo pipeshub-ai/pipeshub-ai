@@ -17,7 +17,7 @@ export class RedisService {
   constructor(config: RedisConfig, logger: Logger) {
     this.config = config;
     this.logger = logger;
-    this.keyPrefix = config.keyPrefix || 'app:';
+    this.keyPrefix = config.keyPrefix ?? 'app:';
     this.initializeClient();
   }
 
@@ -27,10 +27,10 @@ export class RedisService {
       port: this.config.port,
       username: this.config.username,
       password: this.config.password,
-      db: this.config.db || 0,
-      connectTimeout: this.config.connectTimeout || 10000,
-      maxRetriesPerRequest: this.config.maxRetriesPerRequest || 3,
-      enableOfflineQueue: this.config.enableOfflineQueue || true,
+      db: this.config.db ?? 0,
+      connectTimeout: this.config.connectTimeout ?? 10000,
+      maxRetriesPerRequest: this.config.maxRetriesPerRequest ?? 3,
+      enableOfflineQueue: this.config.enableOfflineQueue ?? true,
       retryStrategy: (times: number) => {
         const delay = Math.min(times * 50, 2000);
         return delay;
@@ -74,7 +74,9 @@ export class RedisService {
   }
 
   private buildKey(key: string, namespace?: string): string {
-    return `${this.keyPrefix}${namespace ? `${namespace}:` : ''}${key}`;
+    const namespacePrefix =
+      namespace !== undefined && namespace !== '' ? `${namespace}:` : '';
+    return `${this.keyPrefix}${namespacePrefix}${key}`;
   }
 
   async get<T>(key: string, options: CacheOptions = {}): Promise<T | null> {
@@ -82,11 +84,11 @@ export class RedisService {
       const fullKey = this.buildKey(key, options.namespace);
       const value = await this.client.get(fullKey);
 
-      if (!value) {
+      if (value === null) {
         return null;
       }
 
-      return JSON.parse(value);
+      return JSON.parse(value) as T;
     } catch (error) {
       throw new RedisCacheError('Failed to get cached value', {
         key,
@@ -95,15 +97,15 @@ export class RedisService {
     }
   }
 
-  async set<T>(
+  async set(
     key: string,
-    value: T,
+    value: unknown,
     options: CacheOptions = {},
   ): Promise<void> {
     try {
       const fullKey = this.buildKey(key, options.namespace);
       const serializedValue = JSON.stringify(value);
-      const ttl = options.ttl || this.defaultTTL;
+      const ttl = options.ttl ?? this.defaultTTL;
 
       await this.client.set(fullKey, serializedValue, 'EX', ttl);
     } catch (error) {
@@ -126,25 +128,12 @@ export class RedisService {
     }
   }
 
-  async exists(key: string, options: CacheOptions = {}): Promise<boolean> {
-    try {
-      const fullKey = this.buildKey(key, options.namespace);
-      const result = await this.client.exists(fullKey);
-      return result === 1;
-    } catch (error) {
-      throw new RedisCacheError('Failed to check key existence', {
-        key,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
   async increment(key: string, options: CacheOptions = {}): Promise<number> {
     try {
       const fullKey = this.buildKey(key, options.namespace);
       const result = await this.client.incr(fullKey);
 
-      if (options.ttl) {
+      if (options.ttl !== undefined) {
         await this.client.expire(fullKey, options.ttl);
       }
 
@@ -155,126 +144,5 @@ export class RedisService {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
-  }
-
-  async setHash(
-    key: string,
-    field: string,
-    value: any,
-    options: CacheOptions = {},
-  ): Promise<void> {
-    try {
-      const fullKey = this.buildKey(key, options.namespace);
-      const serializedValue = JSON.stringify(value);
-
-      await this.client.hset(fullKey, field, serializedValue);
-
-      if (options.ttl) {
-        await this.client.expire(fullKey, options.ttl);
-      }
-    } catch (error) {
-      throw new RedisCacheError('Failed to set hash field', {
-        key,
-        field,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  async getHash<T>(
-    key: string,
-    field: string,
-    options: CacheOptions = {},
-  ): Promise<T | null> {
-    try {
-      const fullKey = this.buildKey(key, options.namespace);
-      const value = await this.client.hget(fullKey, field);
-
-      if (!value) {
-        return null;
-      }
-
-      return JSON.parse(value);
-    } catch (error) {
-      throw new RedisCacheError('Failed to get hash field', {
-        key,
-        field,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  async getAllHash<T>(
-    key: string,
-    options: CacheOptions = {},
-  ): Promise<Record<string, T> | null> {
-    try {
-      const fullKey = this.buildKey(key, options.namespace);
-      const values = await this.client.hgetall(fullKey);
-
-      if (!values) {
-        return null;
-      }
-
-      return Object.entries(values).reduce(
-        (acc, [field, value]) => ({
-          ...acc,
-          [field]: JSON.parse(value),
-        }),
-        {},
-      );
-    } catch (error) {
-      throw new RedisCacheError('Failed to get all hash fields', {
-        key,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  async deleteHash(
-    key: string,
-    field: string,
-    options: CacheOptions = {},
-  ): Promise<void> {
-    try {
-      const fullKey = this.buildKey(key, options.namespace);
-      await this.client.hdel(fullKey, field);
-    } catch (error) {
-      throw new RedisCacheError('Failed to delete hash field', {
-        key,
-        field,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  async acquireLock(
-    lockName: string,
-    ttl: number = 30,
-  ): Promise<string | null> {
-    const token = Math.random().toString(36).substring(2);
-    const locked = await this.client.set(
-      `lock:${lockName}`,
-      token,
-      'EX',
-      ttl,
-      'NX',
-    );
-
-    return locked ? token : null;
-  }
-
-  async releaseLock(lockName: string, token: string): Promise<boolean> {
-    const script = `
-            if redis.call("get", KEYS[1]) == ARGV[1] then
-                return redis.call("del", KEYS[1])
-            else
-                return 0
-            end
-        `;
-
-    const result = await this.client.eval(script, 1, `lock:${lockName}`, token);
-
-    return result === 1;
   }
 }

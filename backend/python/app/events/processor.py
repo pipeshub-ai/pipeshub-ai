@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -120,8 +121,8 @@ class Processor:
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 # Must yield both events to release semaphores properly
-                yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
             _ , config = await get_llm(self.config_service)
@@ -147,8 +148,8 @@ class Processor:
                         )
 
                     # Yield both events since we're skipping processing
-                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
 
                 except DocumentProcessingError:
@@ -175,14 +176,14 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             # Signal parsing complete
-            yield {"event": "parsing_complete", "data": {"record_id": record_id}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
             self.logger.info("✅ Image processing completed successfully")
             return
@@ -233,7 +234,7 @@ class Processor:
             parsed_data = await processor.parse_document(record_name, pdf_binary)
 
             # Signal parsing complete
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(parsed_data)
@@ -244,7 +245,7 @@ class Processor:
 
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
             record = convert_record_dict_to_record(record)
@@ -256,7 +257,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PyMuPDF+OpenCV processor")
             return
@@ -277,11 +278,11 @@ class Processor:
             parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
             if parse_result is None:
                 self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                yield {"event": "docling_failed", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
                 return
 
             # Signal parsing complete after Docling parsing
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
 
             # Phase 2: Create blocks (involves LLM calls for tables)
@@ -296,7 +297,7 @@ class Processor:
 
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
             record = convert_record_dict_to_record(record)
@@ -308,7 +309,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
             return
@@ -436,7 +437,7 @@ class Processor:
                         raise
 
                 # Signal parsing complete after all pages are parsed
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
                 # Phase 2: Create blocks for all pages (involves LLM calls for tables)
                 all_blocks = []
@@ -485,7 +486,7 @@ class Processor:
                 record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
 
                 record = convert_record_dict_to_record(record)
@@ -501,12 +502,12 @@ class Processor:
                 await pipeline.apply(ctx)
 
                 # Signal indexing complete
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
                 self.logger.info("✅ PDF processing completed successfully using VLM OCR")
                 return
             else:
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             blocks_from_ocr = ocr_result.get("blocks", [])
             blocks = []
@@ -564,7 +565,7 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             record = convert_record_dict_to_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
@@ -575,7 +576,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ PDF processing completed successfully")
             return
@@ -627,7 +628,7 @@ class Processor:
             conv_res = await processor.parse_document(recordName, docx_binary)
 
             # Signal parsing complete after Docling parsing
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
@@ -640,7 +641,7 @@ class Processor:
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 # Must yield indexing_complete to release indexing semaphore properly
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
@@ -651,7 +652,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ Docx/Doc processing completed successfully using docling")
 
@@ -847,7 +848,7 @@ class Processor:
             )
 
             # Signal parsing complete after blocks are processed
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Enhance TABLE BlockGroups with LLM summaries and row descriptions
             await self._enhance_tables_with_llm(block_containers)
@@ -860,7 +861,7 @@ class Processor:
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 # Must yield indexing_complete to release indexing semaphore properly
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
             # Convert to Record entity and attach blocks
@@ -877,7 +878,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ Blocks Container processing completed successfully")
 
@@ -1385,15 +1386,15 @@ class Processor:
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
             # Phase 1: Load workbook (no LLM calls)
             parser.load_workbook_from_binary(excel_binary)
 
             # Signal parsing complete after workbook is loaded
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for summaries)
             blocks_containers = await parser.create_blocks(llm)
@@ -1404,7 +1405,7 @@ class Processor:
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 # Must yield indexing_complete to release indexing semaphore properly
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             record = convert_record_dict_to_record(record)
             record.block_containers = blocks_containers
@@ -1415,7 +1416,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ Excel processing completed successfully.")
         except Exception as e:
@@ -1505,8 +1506,8 @@ class Processor:
             if all_rows is None or not all_rows:
                 self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
 
                 return
@@ -1522,14 +1523,14 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             record = convert_record_dict_to_record(record)
             record.virtual_record_id = virtual_record_id
 
             # Signal parsing complete after delimited file is parsed (before LLM block creation)
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Process all tables using unified multi-table logic
             self.logger.info(f"📊 Processing {len(tables)} table(s)")
@@ -1542,7 +1543,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ Delimited file processing completed successfully")
 
@@ -1678,8 +1679,8 @@ class Processor:
                 try:
                     await self._mark_record(recordId, ProgressStatus.EMPTY)
                     self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
-                    yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
                 except DocumentProcessingError:
                     raise
@@ -1719,7 +1720,7 @@ class Processor:
             conv_res = await processor.parse_document(f"{filename_without_ext}.md", md_bytes)
 
             # Signal parsing complete after Docling parsing
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
@@ -1730,7 +1731,7 @@ class Processor:
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 # Must yield indexing_complete to release indexing semaphore properly
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             record = convert_record_dict_to_record(record)
 
@@ -1761,7 +1762,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ MD processing completed successfully using docling")
             return
@@ -1837,7 +1838,7 @@ class Processor:
             conv_res = await processor.parse_document(recordName, pptx_binary)
 
             # Signal parsing complete after Docling parsing
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
@@ -1847,7 +1848,7 @@ class Processor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
@@ -1858,7 +1859,7 @@ class Processor:
             await pipeline.apply(ctx)
 
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ PPTX processing completed successfully using docling")
             return

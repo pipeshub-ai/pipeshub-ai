@@ -68,7 +68,8 @@ class TestEnsureTopicsExist:
         mock_redis.xgroup_create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_handles_per_topic_error_gracefully(self, logger, config):
+    async def test_handles_per_topic_error_raises_after_loop(self, logger, config):
+        """Per-topic errors are collected and a RuntimeError is raised after the loop."""
         admin = RedisStreamsAdmin(logger, config)
         mock_redis = AsyncMock()
         mock_redis.exists = AsyncMock(side_effect=Exception("Redis error"))
@@ -78,7 +79,8 @@ class TestEnsureTopicsExist:
             "app.services.messaging.redis_streams.admin.Redis",
             return_value=mock_redis,
         ):
-            await admin.ensure_topics_exist(["bad-stream"])
+            with pytest.raises(RuntimeError, match="Failed to ensure 1 Redis stream"):
+                await admin.ensure_topics_exist(["bad-stream"])
 
     @pytest.mark.asyncio
     async def test_uses_default_topics_when_none_provided(self, logger, config):
@@ -99,7 +101,7 @@ class TestEnsureTopicsExist:
 
     @pytest.mark.asyncio
     async def test_closes_redis_even_on_per_topic_error(self, logger, config):
-        """Per-topic errors are caught and logged, not re-raised.
+        """Per-topic errors cause a RuntimeError after the loop, but
         Redis is still closed in the finally block."""
         admin = RedisStreamsAdmin(logger, config)
         mock_redis = AsyncMock()
@@ -110,7 +112,8 @@ class TestEnsureTopicsExist:
             "app.services.messaging.redis_streams.admin.Redis",
             return_value=mock_redis,
         ):
-            await admin.ensure_topics_exist(["stream-a"])
+            with pytest.raises(RuntimeError, match="Failed to ensure 1 Redis stream"):
+                await admin.ensure_topics_exist(["stream-a"])
 
         mock_redis.close.assert_awaited_once()
 

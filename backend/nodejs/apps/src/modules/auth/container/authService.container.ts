@@ -16,9 +16,8 @@ import { JitProvisioningService } from '../services/jit-provisioning.service';
 import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  getMessageBrokerType,
+  resolveMessageBrokerConfig,
   createMessageProducer,
-  buildRedisBrokerConfig,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -90,13 +89,8 @@ export class AuthServiceContainer {
         .toConstantValue(configurationService);
 
       // Create broker-agnostic message producer
-      const brokerType = getMessageBrokerType();
-      const messageProducer = createMessageProducer(
-        brokerType,
-        brokerType === 'kafka' ? appConfig.kafka : undefined,
-        brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
-        logger,
-      );
+      const brokerConfig = resolveMessageBrokerConfig(appConfig);
+      const messageProducer = createMessageProducer(brokerConfig, logger);
       await messageProducer.connect();
 
       container

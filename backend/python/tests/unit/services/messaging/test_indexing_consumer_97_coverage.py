@@ -21,15 +21,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     FUTURE_CLEANUP_INTERVAL,
-    IndexingEvent,
     IndexingKafkaConsumer,
-    MAX_CONCURRENT_INDEXING,
-    MAX_CONCURRENT_PARSING,
-    MAX_PENDING_INDEXING_TASKS,
-    SHUTDOWN_TASK_TIMEOUT,
 )
 
 
@@ -251,8 +247,8 @@ class TestConsumeLoopNotRunningInner:
         consumer.running = True
         mock_consumer = MagicMock()
 
-        msg1 = _make_message(value=b'{"key": "val"}')
-        msg2 = _make_message(value=b'{"key": "val2"}')
+        msg1 = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        msg2 = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val2"}}).encode("utf-8"))
 
         call_count = 0
 
@@ -296,8 +292,8 @@ class TestConsumeLoopMessageException:
         consumer.running = True
         mock_consumer = MagicMock()
 
-        msg1 = _make_message(value=b'{"key": "val1"}')
-        msg2 = _make_message(value=b'{"key": "val2"}')
+        msg1 = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val1"}}).encode("utf-8"))
+        msg2 = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val2"}}).encode("utf-8"))
 
         call_count = 0
 
@@ -434,7 +430,7 @@ class TestOnFutureDoneException:
 
             asyncio.run_coroutine_threadsafe(setup_semaphores(), consumer.worker_loop).result(timeout=5)
 
-            msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+            msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
             # Wait for task completion
@@ -507,10 +503,10 @@ class TestProcessMessageWrapperEdgeCases:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": IndexingEvent.PARSING_COMPLETE}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is True
@@ -527,10 +523,10 @@ class TestProcessMessageWrapperEdgeCases:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": "other_event"}
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="r1"))
 
         consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is True
@@ -547,11 +543,11 @@ class TestProcessMessageWrapperEdgeCases:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": IndexingEvent.PARSING_COMPLETE}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
             raise RuntimeError("boom")
 
         consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is False
@@ -647,7 +643,7 @@ class TestBackpressureAlreadyLogged:
 
         # Add futures to reach capacity
         with consumer._futures_lock:
-            for _ in range(MAX_PENDING_INDEXING_TASKS + 1):
+            for _ in range(messaging_env.max_pending_indexing_tasks + 1):
                 f = Future()
                 consumer._active_futures.add(f)
 

@@ -448,18 +448,17 @@ describe('Redis Streams Service', () => {
     });
 
     describe('pause', () => {
-      it('should set running to false', () => {
+      it('should be a no-op for running state', () => {
         consumer.running = true;
         consumer.pause(['t1']);
-        expect(consumer.running).to.be.false;
-        expect(mockLogger.debug.calledOnce).to.be.true;
+        expect(consumer.running).to.be.true;
       });
     });
 
     describe('resume', () => {
-      it('should log resume message', () => {
+      it('should be a no-op', () => {
         consumer.resume(['t1']);
-        expect(mockLogger.debug.calledOnce).to.be.true;
+        expect(mockLogger.debug.called).to.be.false;
       });
     });
 
@@ -506,7 +505,7 @@ describe('Redis Streams Service', () => {
         mockRedis.exists.resolves(0);
         await admin.ensureTopicsExist(topics);
         expect(mockRedis.connect.calledOnce).to.be.true;
-        expect(mockRedis.xadd.callCount).to.equal(2);
+        expect(mockRedis.xgroup.callCount).to.equal(4);
         expect(mockRedis.quit.calledOnce).to.be.true;
       });
 
@@ -514,7 +513,7 @@ describe('Redis Streams Service', () => {
         const topics = [{ topic: 'existing-stream' }];
         mockRedis.exists.resolves(1);
         await admin.ensureTopicsExist(topics);
-        expect(mockRedis.xadd.called).to.be.false;
+        expect(mockRedis.xgroup.called).to.be.false;
       });
 
       it('should handle per-topic errors gracefully', async () => {

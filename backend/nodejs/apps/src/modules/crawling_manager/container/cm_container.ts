@@ -13,9 +13,8 @@ import { ConnectorsCrawlingService } from '../services/connectors/connectors';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  getMessageBrokerType,
+  resolveMessageBrokerConfig,
   createMessageProducer,
-  buildRedisBrokerConfig,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -78,13 +77,8 @@ export class CrawlingManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerType = getMessageBrokerType();
-      const messageProducer = createMessageProducer(
-        brokerType,
-        brokerType === 'kafka' ? appConfig.kafka : undefined,
-        brokerType === 'redis' ? buildRedisBrokerConfig(appConfig.redis) : undefined,
-        container.get('Logger'),
-      );
+      const brokerConfig = resolveMessageBrokerConfig(appConfig);
+      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container

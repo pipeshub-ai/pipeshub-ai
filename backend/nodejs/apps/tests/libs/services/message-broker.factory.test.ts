@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { KafkaConfig } from '../../../src/libs/types/kafka.types';
 import { RedisBrokerConfig } from '../../../src/libs/types/messaging.types';
+import { ENV_MESSAGE_BROKER } from '../../../src/libs/constants/messaging.constants';
 
 // ---------------------------------------------------------------------------
 // Override ioredis mock to support `import { Redis } from 'ioredis'`
@@ -17,14 +18,17 @@ class FakeRedisForFactory extends EventEmitter {
   ping = sinon.stub().resolves('PONG');
   constructor(_options?: any) {
     super();
-    process.nextTick(() => { this.emit('connect'); this.emit('ready'); });
+    process.nextTick(() => {
+      this.emit('connect');
+      this.emit('ready');
+    });
   }
 }
 
 function ensureIoredisMock() {
   const ioredisPath = require.resolve('ioredis');
   const original = require.cache[ioredisPath];
-  const FakeRedis = function(this: any, _opt: any) {
+  const FakeRedis = function (this: any, _opt: any) {
     return Object.assign(this, new FakeRedisForFactory(_opt));
   } as any;
   FakeRedis.prototype = FakeRedisForFactory.prototype;
@@ -34,9 +38,13 @@ function ensureIoredisMock() {
   } as any;
 
   // Reload the modules that import ioredis
-  const rsPath = require.resolve('../../../src/libs/services/redis-streams.service');
+  const rsPath = require.resolve(
+    '../../../src/libs/services/redis-streams.service',
+  );
   delete require.cache[rsPath];
-  const factoryPath = require.resolve('../../../src/libs/services/message-broker.factory');
+  const factoryPath = require.resolve(
+    '../../../src/libs/services/message-broker.factory',
+  );
   delete require.cache[factoryPath];
 }
 
@@ -45,15 +53,19 @@ ensureIoredisMock();
 
 import {
   getMessageBrokerType,
-  createMessageProducer,
-  createMessageConsumer,
-  createMessageAdmin,
+  createMessageProducerForBrokerType,
+  createMessageConsumerForBrokerType,
+  createMessageAdminForBrokerType,
   buildRedisBrokerConfig,
   ensureMessageTopicsExist,
+  resolveMessageBrokerConfig,
   REQUIRED_TOPICS,
 } from '../../../src/libs/services/message-broker.factory';
 
-import { BaseKafkaProducerConnection, BaseKafkaConsumerConnection } from '../../../src/libs/services/kafka.service';
+import {
+  BaseKafkaProducerConnection,
+  BaseKafkaConsumerConnection,
+} from '../../../src/libs/services/kafka.service';
 import { KafkaAdminService } from '../../../src/libs/services/kafka-admin.service';
 import {
   BaseRedisStreamsProducerConnection,
@@ -65,6 +77,7 @@ describe('MessageBrokerFactory', () => {
   let mockLogger: MockLogger;
 
   const kafkaConfig: KafkaConfig = {
+    type: 'kafka',
     clientId: 'test-client',
     brokers: ['localhost:9092'],
     groupId: 'test-group',
@@ -121,82 +134,150 @@ describe('MessageBrokerFactory', () => {
 
     it('should throw for unsupported broker types', () => {
       process.env.MESSAGE_BROKER = 'rabbitmq';
-      expect(() => getMessageBrokerType()).to.throw('Unsupported MESSAGE_BROKER type');
+      expect(() => getMessageBrokerType()).to.throw(
+        `Unsupported ${ENV_MESSAGE_BROKER} type`,
+      );
     });
   });
 
   // ================================================================
-  // createMessageProducer
+  // createMessageProducerForBrokerType
   // ================================================================
-  describe('createMessageProducer', () => {
+  describe('createMessageProducerForBrokerType', () => {
     it('should return a Kafka producer when broker type is kafka', () => {
-      const producer = createMessageProducer('kafka', kafkaConfig, undefined, mockLogger as any);
+      const producer = createMessageProducerForBrokerType(
+        'kafka',
+        kafkaConfig,
+        undefined,
+        mockLogger as any,
+      );
       expect(producer).to.be.instanceOf(BaseKafkaProducerConnection);
     });
 
     it('should return a Redis producer when broker type is redis', () => {
-      const producer = createMessageProducer('redis', undefined, redisConfig, mockLogger as any);
+      const producer = createMessageProducerForBrokerType(
+        'redis',
+        undefined,
+        redisConfig,
+        mockLogger as any,
+      );
       expect(producer).to.be.instanceOf(BaseRedisStreamsProducerConnection);
     });
 
     it('should throw when kafka config is missing for kafka broker', () => {
-      expect(() => createMessageProducer('kafka', undefined, undefined, mockLogger as any))
-        .to.throw('Kafka config is required');
+      expect(() =>
+        createMessageProducerForBrokerType(
+          'kafka',
+          undefined,
+          undefined,
+          mockLogger as any,
+        ),
+      ).to.throw('Kafka config is required');
     });
 
     it('should throw when redis config is missing for redis broker', () => {
-      expect(() => createMessageProducer('redis', undefined, undefined, mockLogger as any))
-        .to.throw('Redis config is required');
+      expect(() =>
+        createMessageProducerForBrokerType(
+          'redis',
+          undefined,
+          undefined,
+          mockLogger as any,
+        ),
+      ).to.throw('Redis config is required');
     });
   });
 
   // ================================================================
-  // createMessageConsumer
+  // createMessageConsumerForBrokerType
   // ================================================================
-  describe('createMessageConsumer', () => {
+  describe('createMessageConsumerForBrokerType', () => {
     it('should return a Kafka consumer when broker type is kafka', () => {
-      const consumer = createMessageConsumer('kafka', kafkaConfig, undefined, mockLogger as any);
+      const consumer = createMessageConsumerForBrokerType(
+        'kafka',
+        kafkaConfig,
+        undefined,
+        mockLogger as any,
+      );
       expect(consumer).to.be.instanceOf(BaseKafkaConsumerConnection);
     });
 
     it('should return a Redis consumer when broker type is redis', () => {
-      const consumer = createMessageConsumer('redis', undefined, redisConfig, mockLogger as any);
+      const consumer = createMessageConsumerForBrokerType(
+        'redis',
+        undefined,
+        redisConfig,
+        mockLogger as any,
+      );
       expect(consumer).to.be.instanceOf(BaseRedisStreamsConsumerConnection);
     });
 
     it('should throw when kafka config is missing for kafka broker', () => {
-      expect(() => createMessageConsumer('kafka', undefined, undefined, mockLogger as any))
-        .to.throw('Kafka config is required');
+      expect(() =>
+        createMessageConsumerForBrokerType(
+          'kafka',
+          undefined,
+          undefined,
+          mockLogger as any,
+        ),
+      ).to.throw('Kafka config is required');
     });
 
     it('should throw when redis config is missing for redis broker', () => {
-      expect(() => createMessageConsumer('redis', undefined, undefined, mockLogger as any))
-        .to.throw('Redis config is required');
+      expect(() =>
+        createMessageConsumerForBrokerType(
+          'redis',
+          undefined,
+          undefined,
+          mockLogger as any,
+        ),
+      ).to.throw('Redis config is required');
     });
   });
 
   // ================================================================
-  // createMessageAdmin
+  // createMessageAdminForBrokerType
   // ================================================================
-  describe('createMessageAdmin', () => {
+  describe('createMessageAdminForBrokerType', () => {
     it('should return a KafkaAdminService when broker type is kafka', () => {
-      const admin = createMessageAdmin('kafka', kafkaConfig, undefined, mockLogger as any);
+      const admin = createMessageAdminForBrokerType(
+        'kafka',
+        kafkaConfig,
+        undefined,
+        mockLogger as any,
+      );
       expect(admin).to.be.instanceOf(KafkaAdminService);
     });
 
     it('should return a RedisStreamsAdminService when broker type is redis', () => {
-      const admin = createMessageAdmin('redis', undefined, redisConfig, mockLogger as any);
+      const admin = createMessageAdminForBrokerType(
+        'redis',
+        undefined,
+        redisConfig,
+        mockLogger as any,
+      );
       expect(admin).to.be.instanceOf(RedisStreamsAdminService);
     });
 
     it('should throw when kafka config is missing for kafka broker', () => {
-      expect(() => createMessageAdmin('kafka', undefined, undefined, mockLogger as any))
-        .to.throw('Kafka config is required');
+      expect(() =>
+        createMessageAdminForBrokerType(
+          'kafka',
+          undefined,
+          undefined,
+          mockLogger as any,
+        ),
+      ).to.throw('Kafka config is required');
     });
 
     it('should throw when redis config is missing for redis broker', () => {
-      expect(() => createMessageAdmin('redis', undefined, undefined, mockLogger as any))
-        .to.throw('Redis config is required');
+      expect(() =>
+        createMessageAdminForBrokerType(
+          'redis',
+          undefined,
+          undefined,
+          mockLogger as any,
+        ),
+      ).to.throw('Redis config is required');
     });
   });
 
@@ -262,38 +343,71 @@ describe('MessageBrokerFactory', () => {
   // ================================================================
   describe('ensureMessageTopicsExist', () => {
     it('should create admin and call ensureTopicsExist for kafka', async () => {
-      const ensureStub = sinon.stub(KafkaAdminService.prototype, 'ensureTopicsExist').resolves();
+      const ensureStub = sinon
+        .stub(KafkaAdminService.prototype, 'ensureTopicsExist')
+        .resolves();
       await ensureMessageTopicsExist(
-        'kafka',
-        { brokers: ['localhost:9092'] },
-        undefined,
+        {
+          type: 'kafka',
+          kafka: { type: 'kafka', brokers: ['localhost:9092'] },
+        },
         mockLogger as any,
       );
       expect(ensureStub.calledOnce).to.be.true;
     });
 
     it('should create admin and call ensureTopicsExist for redis', async () => {
-      const ensureStub = sinon.stub(RedisStreamsAdminService.prototype, 'ensureTopicsExist').resolves();
+      const ensureStub = sinon
+        .stub(RedisStreamsAdminService.prototype, 'ensureTopicsExist')
+        .resolves();
       await ensureMessageTopicsExist(
-        'redis',
-        undefined,
-        redisConfig,
+        { type: 'redis', redis: redisConfig },
         mockLogger as any,
       );
       expect(ensureStub.calledOnce).to.be.true;
     });
 
     it('should pass custom topics when provided', async () => {
-      const ensureStub = sinon.stub(KafkaAdminService.prototype, 'ensureTopicsExist').resolves();
-      const customTopics = [{ topic: 'custom-topic', numPartitions: 3, replicationFactor: 2 }];
+      const ensureStub = sinon
+        .stub(KafkaAdminService.prototype, 'ensureTopicsExist')
+        .resolves();
+      const customTopics = [
+        { topic: 'custom-topic', numPartitions: 3, replicationFactor: 2 },
+      ];
       await ensureMessageTopicsExist(
-        'kafka',
-        { brokers: ['localhost:9092'] },
-        undefined,
+        {
+          type: 'kafka',
+          kafka: { type: 'kafka', brokers: ['localhost:9092'] },
+        },
         mockLogger as any,
         customTopics,
       );
       expect(ensureStub.firstCall.args[0]).to.deep.equal(customTopics);
+    });
+  });
+
+  // ================================================================
+  // resolveMessageBrokerConfig
+  // ================================================================
+  describe('resolveMessageBrokerConfig', () => {
+    it('should resolve kafka when MESSAGE_BROKER=kafka', () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      const r = resolveMessageBrokerConfig({
+        kafka: { brokers: ['localhost:9092'] },
+        redis: { host: 'localhost', port: 6379 },
+      } as any);
+      expect(r.type).to.equal('kafka');
+      expect((r as any).kafka.brokers).to.deep.equal(['localhost:9092']);
+    });
+
+    it('should resolve redis when MESSAGE_BROKER=redis', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+      const r = resolveMessageBrokerConfig({
+        kafka: { brokers: ['localhost:9092'] },
+        redis: { host: 'localhost', port: 6379 },
+      } as any);
+      expect(r.type).to.equal('redis');
+      expect((r as any).redis.host).to.equal('localhost');
     });
   });
 });
