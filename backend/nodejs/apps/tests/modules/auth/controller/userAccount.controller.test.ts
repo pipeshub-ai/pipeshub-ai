@@ -20,6 +20,103 @@ import {
   GoneError,
   ForbiddenError,
 } from '../../../../src/libs/errors/http.errors';
+import {
+  AuthenticateResponseSchema,
+  DataStringResponseSchema,
+  HasPasswordMethodResponseSchema,
+  InitAuthResponseSchema,
+  LoginOtpGenerateResponseSchema,
+  OAuthExchangeResponseSchema,
+  RefreshTokenResponseSchema,
+  ResetPasswordResponseSchema,
+  ValidateEmailChangeResponseSchema,
+} from '../../../../src/modules/auth/validation/userAccount-validation';
+
+/** Matches `RefreshTokenUserSchema` for `getUserById` mocks that reach `sendValidatedJson`. */
+const mockRefreshTokenUser = {
+  _id: 'u1',
+  orgId: 'o1',
+  email: 'test@test.com',
+  fullName: 'Test User',
+  hasLoggedIn: true,
+  isDeleted: false,
+  slug: 'user-1',
+  createdAt: '2026-04-03T07:11:26.330Z',
+  updatedAt: '2026-04-03T08:59:47.540Z',
+  __v: 0,
+};
+
+function expectInitAuthResponseBody(body: unknown): void {
+  const result = InitAuthResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectAuthenticateResponseBody(body: unknown): void {
+  const result = AuthenticateResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectLoginOtpGenerateResponseBody(body: unknown): void {
+  const result = LoginOtpGenerateResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectResetPasswordResponseBody(body: unknown): void {
+  const result = ResetPasswordResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectDataStringResponseBody(body: unknown): void {
+  const result = DataStringResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectRefreshTokenResponseBody(body: unknown): void {
+  const result = RefreshTokenResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectHasPasswordMethodResponseBody(body: unknown): void {
+  const result = HasPasswordMethodResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectOAuthExchangeResponseBody(body: unknown): void {
+  const result = OAuthExchangeResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
+
+function expectValidateEmailChangeResponseBody(body: unknown): void {
+  const result = ValidateEmailChangeResponseSchema.safeParse(body);
+  expect(
+    result.success,
+    result.success ? '' : JSON.stringify(result.error.format()),
+  ).to.be.true;
+}
 
 describe('UserAccountController', () => {
   let controller: UserAccountController;
@@ -386,11 +483,15 @@ describe('UserAccountController', () => {
 
       expect(res.setHeader.calledWith('x-session-token', 'session-token-123'))
         .to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
+      expectInitAuthResponseBody(jsonArg);
       expect(jsonArg.currentStep).to.equal(0);
       expect(jsonArg.allowedMethods).to.deep.include('password');
       expect(jsonArg.message).to.equal('Authentication initialized');
+      expect(jsonArg.jitEnabled).to.be.false;
+      expect(jsonArg.authProviders).to.deep.equal({});
     });
 
     it('should fall back to password when org auth config is not found', async () => {
@@ -416,8 +517,10 @@ describe('UserAccountController', () => {
 
       await controller.initAuth(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
+      expectInitAuthResponseBody(jsonArg);
       expect(jsonArg.allowedMethods).to.deep.include('password');
     });
 
@@ -445,7 +548,9 @@ describe('UserAccountController', () => {
 
       // New behavior: session creation returning null doesn't throw,
       // it just doesn't set the header and returns json
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
+      expectInitAuthResponseBody(res.json.firstCall.args[0]);
     });
   });
 
@@ -459,8 +564,11 @@ describe('UserAccountController', () => {
 
       await controller.hasPasswordMethod(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.true;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.isPasswordAuthEnabled).to.be.true;
+      expectHasPasswordMethodResponseBody(jsonArg);
     });
 
     it('should return isPasswordAuthEnabled false when password method does not exist', async () => {
@@ -472,8 +580,11 @@ describe('UserAccountController', () => {
 
       await controller.hasPasswordMethod(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.false;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.isPasswordAuthEnabled).to.be.false;
+      expectHasPasswordMethodResponseBody(jsonArg);
     });
 
     it('should call next(error) on exception', async () => {
@@ -683,10 +794,10 @@ describe('UserAccountController', () => {
       await controller.forgotPasswordEmail(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.send.calledOnce).to.be.true;
-      expect(res.send.firstCall.args[0].data).to.equal(
-        'password reset mail sent',
-      );
+      expect(res.json.calledOnce).to.be.true;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.data).to.equal('password reset mail sent');
+      expectDataStringResponseBody(jsonArg);
     });
 
     it('should call next(error) when email is missing', async () => {
@@ -1069,7 +1180,7 @@ describe('UserAccountController', () => {
       await controller.setUpAuthConfig(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.firstCall.args[0].message).to.equal(
+      expect(res.json.firstCall.args[0].data).to.equal(
         'Org config already done',
       );
     });
@@ -1094,31 +1205,25 @@ describe('UserAccountController', () => {
   });
 
   describe('exchangeOAuthToken', () => {
-    it('should call next(BadRequestError) when required params are missing', async () => {
+    it('should call next(BadRequestError) when organization is not found', async () => {
       const req: any = {
-        body: { code: 'abc' }, // missing email, provider, redirectUri
+        body: {
+          code: 'auth-code',
+          provider: 'google',
+          redirectUri: 'http://localhost:3000/callback',
+        },
         ip: '127.0.0.1',
       };
+
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve(null) }),
+      } as any);
 
       await controller.exchangeOAuthToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.equal(
-        'Missing required OAuth parameters',
-      );
-    });
-
-    it('should call next(BadRequestError) when all params are missing', async () => {
-      const req: any = {
-        body: {},
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.equal('Organization not found');
     });
   });
 
@@ -1447,79 +1552,6 @@ describe('UserAccountController', () => {
     });
   });
 
-  describe('userAccountSetup', () => {
-    it('should call next(BadRequestError) when fullName is missing', async () => {
-      const req: any = {
-        body: { password: 'Test1!aa' },
-        user: { userId: 'u1', orgId: 'o1' },
-        ip: '127.0.0.1',
-      };
-
-      await controller.userAccountSetup(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.equal(
-        'Full Name is required',
-      );
-    });
-
-    it('should call next(BadRequestError) when password is missing', async () => {
-      const req: any = {
-        body: { fullName: 'Test User' },
-        user: { userId: 'u1', orgId: 'o1' },
-        ip: '127.0.0.1',
-      };
-
-      await controller.userAccountSetup(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.equal(
-        'Password is required',
-      );
-    });
-
-    it('should successfully setup user account', async () => {
-      const req: any = {
-        body: {
-          fullName: 'Test User',
-          password: 'ValidPass1!',
-          email: 'test@test.com',
-          firstName: 'Test',
-          lastName: 'User',
-        },
-        user: { userId: 'u1', orgId: 'o1' },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(UserCredentials, 'findOne').resolves(null);
-      sinon.stub(UserActivities, 'create').resolves({} as any);
-
-      // updatePassword creates new credentials when none exist
-      const mockNewCred: any = {
-        orgId: 'o1',
-        userId: 'u1',
-        hashedPassword: null,
-        ipAddress: null,
-        save: sinon.stub().resolves(),
-      };
-      // We need the constructor to work, so stub the whole flow
-      sinon.stub(UserCredentials.prototype, 'save').resolves(mockNewCred);
-
-      mockIamService.updateUser.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', fullName: 'Test User', email: 'test@test.com' },
-      });
-
-      await controller.userAccountSetup(req, res, next);
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-      }
-    });
-  });
-
   describe('authenticateWithPassword', () => {
     it('should throw NotFoundError when no password is set', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
@@ -1709,8 +1741,7 @@ describe('UserAccountController', () => {
         expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
         expect(jsonArg.message).to.equal('Fully authenticated');
-        expect(jsonArg).to.have.property('accessToken');
-        expect(jsonArg).to.have.property('refreshToken');
+        expectAuthenticateResponseBody(jsonArg);
       }
     });
 
@@ -1846,7 +1877,7 @@ describe('UserAccountController', () => {
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserById.resolves({
         statusCode: 200,
-        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com' },
+        data: { ...mockRefreshTokenUser },
       });
 
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
@@ -1861,6 +1892,7 @@ describe('UserAccountController', () => {
         const jsonArg = res.json.firstCall.args[0];
         expect(jsonArg).to.have.property('accessToken');
         expect(jsonArg).to.have.property('user');
+        expectRefreshTokenResponseBody(jsonArg);
       }
     });
 
@@ -1926,8 +1958,10 @@ describe('UserAccountController', () => {
 
       if (!next.called) {
         expect(res.setHeader.calledWith('x-session-token', 'session-jit-123')).to.be.true;
+        expect(res.status.calledWith(200)).to.be.true;
         expect(res.json.calledOnce).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.jitEnabled).to.be.true;
         expect(jsonArg.allowedMethods).to.deep.include('google');
       }
@@ -1958,8 +1992,10 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         expect(res.json.calledOnce).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.allowedMethods).to.deep.include('password');
       }
     });
@@ -2001,36 +2037,12 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.authProviders).to.have.property('google');
         expect(jsonArg.authProviders.google.clientId).to.equal('google-client-id');
       }
-    });
-  });
-
-  describe('exchangeOAuthToken', () => {
-    it('should call next(BadRequestError) for missing provider', async () => {
-      const req: any = {
-        body: { code: 'abc', email: 'test@test.com', redirectUri: 'http://localhost' },
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-    });
-
-    it('should call next(BadRequestError) for missing code', async () => {
-      const req: any = {
-        body: { email: 'test@test.com', provider: 'oauth', redirectUri: 'http://localhost' },
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
     });
   });
 
@@ -2055,7 +2067,9 @@ describe('UserAccountController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        expect(res.send.firstCall.args[0].data).to.equal('password reset');
+        const jsonArg = res.json.firstCall.args[0];
+        expect(jsonArg.data).to.equal('password reset');
+        expectDataStringResponseBody(jsonArg);
       }
     });
   });
@@ -2096,9 +2110,9 @@ describe('UserAccountController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        const sendArg = res.send.firstCall.args[0];
-        expect(sendArg.data).to.equal('password reset');
-        expect(sendArg).to.have.property('accessToken');
+        const jsonArg = res.json.firstCall.args[0];
+        expect(jsonArg.data).to.equal('password reset');
+        expectResetPasswordResponseBody(jsonArg);
       }
     });
   });
@@ -2191,7 +2205,7 @@ describe('UserAccountController', () => {
       await controller.setUpAuthConfig(req, res);
 
       if (res.status.calledWith(201)) {
-        expect(res.json.firstCall.args[0].message).to.include('created successfully');
+        expect(res.json.firstCall.args[0].data).to.include('created successfully');
       }
 
       mockConfig.rsAvailable = origRsAvailable;
@@ -2251,6 +2265,9 @@ describe('UserAccountController', () => {
       await controller.getLoginOtp(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.message).to.equal('OTP sent');
+      expectLoginOtpGenerateResponseBody(jsonArg);
     });
   });
 
@@ -2290,7 +2307,9 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.authProviders).to.have.property('microsoft');
       }
     });
@@ -2332,7 +2351,9 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.authProviders).to.have.property('azuread');
       }
     });
@@ -2381,7 +2402,9 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.authProviders).to.have.property('oauth');
         expect(jsonArg.authProviders.oauth).to.not.have.property('clientSecret');
         expect(jsonArg.authProviders.oauth).to.not.have.property('tokenEndpoint');
@@ -2430,7 +2453,9 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.jitEnabled).to.be.true;
         expect(jsonArg.allowedMethods).to.include('microsoft');
         expect(jsonArg.allowedMethods).to.include('azureAd');
@@ -2482,7 +2507,9 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.jitEnabled).to.be.true;
         expect(jsonArg.allowedMethods).to.include('oauth');
         // oauth provider should not include secrets
@@ -2528,12 +2555,14 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         // Should fall back to password when JIT config not available
         expect(jsonArg.allowedMethods).to.include('password');
       }
     });
-  })
+  });
 
   describe('initAuth - skipDomainCheck', () => {
     it('should find first org when skipDomainCheck is true and user not found', async () => {
@@ -2565,7 +2594,9 @@ describe('UserAccountController', () => {
       await controller.initAuth(req, res, next);
 
       if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true;
         const jsonArg = res.json.firstCall.args[0];
+        expectInitAuthResponseBody(jsonArg);
         expect(jsonArg.allowedMethods).to.include('password');
       }
       mockConfig.skipDomainCheck = false;
@@ -2951,7 +2982,7 @@ describe('UserAccountController', () => {
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserById.resolves({
         statusCode: 200,
-        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'Test User' },
+        data: { ...mockRefreshTokenUser },
       });
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
         isBlocked: false,
@@ -2967,6 +2998,7 @@ describe('UserAccountController', () => {
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg).to.have.property('accessToken');
+      expectRefreshTokenResponseBody(jsonArg);
     });
   });
 
@@ -3153,8 +3185,36 @@ describe('UserAccountController', () => {
 
       await controller.hasPasswordMethod(req, res, next);
 
+      expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
-      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.true;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.isPasswordAuthEnabled).to.be.true;
+      expectHasPasswordMethodResponseBody(jsonArg);
+    });
+  });
+
+  describe('validateEmailChange', () => {
+    it('should update email and return success message', async () => {
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({ _id: 'u1' } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+
+      const req: any = {
+        tokenPayload: {
+          userId: 'u1',
+          orgId: 'o1',
+          newEmail: 'New@Example.com',
+        },
+        ip: '127.0.0.1',
+      };
+
+      await controller.validateEmailChange(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(200)).to.be.true;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.message).to.equal('Email updated successfully');
+      expectValidateEmailChangeResponseBody(jsonArg);
     });
   });
 
@@ -3503,6 +3563,7 @@ describe('UserAccountController', () => {
           const jsonArg = res.json.firstCall.args[0];
           expect(jsonArg.access_token).to.equal('at-123');
           expect(jsonArg.id_token).to.equal('it-123');
+          expectOAuthExchangeResponseBody(jsonArg);
         }
       } finally {
         global.fetch = originalFetch;
