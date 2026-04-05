@@ -10,6 +10,7 @@ import {
 describe('tokens_manager/services/entity_event.service', () => {
   let producer: EntitiesEventProducer
   let mockLogger: any
+  let mockProducer: any
 
   beforeEach(() => {
     mockLogger = {
@@ -18,10 +19,15 @@ describe('tokens_manager/services/entity_event.service', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    producer = new EntitiesEventProducer(
-      { brokers: ['localhost:9092'] },
-      mockLogger,
-    )
+    mockProducer = {
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(false),
+      publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    }
+    producer = new EntitiesEventProducer(mockProducer, mockLogger)
   })
 
   afterEach(() => {
@@ -55,8 +61,6 @@ describe('tokens_manager/services/entity_event.service', () => {
 
   describe('publishEvent', () => {
     it('should publish event with correct key and headers', async () => {
-      const publishStub = sinon.stub(producer, 'publish' as any).resolves()
-
       const event: any = {
         eventType: EventType.AppEnabledEvent,
         timestamp: 1234567890,
@@ -71,8 +75,8 @@ describe('tokens_manager/services/entity_event.service', () => {
 
       await producer.publishEvent(event)
 
-      expect(publishStub.calledOnce).to.be.true
-      const [topic, message] = publishStub.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('entity-events')
       expect(message.key).to.equal(EventType.AppEnabledEvent)
       expect(message.headers.eventType).to.equal(EventType.AppEnabledEvent)
@@ -80,7 +84,7 @@ describe('tokens_manager/services/entity_event.service', () => {
     })
 
     it('should log error if publish fails', async () => {
-      sinon.stub(producer, 'publish' as any).rejects(new Error('Kafka error'))
+      mockProducer.publish.rejects(new Error('Kafka error'))
 
       const event: any = {
         eventType: EventType.AppEnabledEvent,
@@ -96,19 +100,17 @@ describe('tokens_manager/services/entity_event.service', () => {
 
   describe('start', () => {
     it('should call connect if not connected', async () => {
-      sinon.stub(producer, 'isConnected' as any).value(false)
-      const connectStub = sinon.stub(producer, 'connect' as any).resolves()
+      mockProducer.isConnected.returns(false)
       await producer.start()
-      expect(connectStub.calledOnce).to.be.true
+      expect(mockProducer.connect.calledOnce).to.be.true
     })
   })
 
   describe('stop', () => {
     it('should call disconnect if connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(true)
-      const disconnectStub = sinon.stub(producer, 'disconnect' as any).resolves()
+      mockProducer.isConnected.returns(true)
       await producer.stop()
-      expect(disconnectStub.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
   })
 })

@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.messaging.config import StreamMessage
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -272,18 +273,19 @@ class TestCreateEntityMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler({"eventType": "orgCreated", "payload": {"orgId": "o1"}})
+            result = await handler(StreamMessage(eventType="orgCreated", payload={"orgId": "o1"}))
             assert result is True
             mock_svc.process_event.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_none_message(self):
+    async def test_none_message_returns_false(self):
+        """None is invalid; handler catches errors and returns False."""
         container = _make_app_container()
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService"):
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
             result = await handler(None)
-            assert result is True
+            assert result is False
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
@@ -291,7 +293,7 @@ class TestCreateEntityMessageHandler:
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService"):
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler({"payload": {"key": "val"}})
+            result = await handler(StreamMessage(eventType="", payload={"key": "val"}))
             assert result is False
 
     @pytest.mark.asyncio
@@ -300,7 +302,7 @@ class TestCreateEntityMessageHandler:
         graph_provider = MagicMock()
         with patch("app.services.messaging.kafka.utils.utils.EntityEventService"):
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler({"eventType": "orgCreated"})
+            result = await handler(StreamMessage(eventType="orgCreated", payload={}))
             assert result is False
 
     @pytest.mark.asyncio
@@ -313,7 +315,7 @@ class TestCreateEntityMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_entity_message_handler(container, graph_provider)
-            result = await handler({"eventType": "orgCreated", "payload": {"orgId": "o1"}})
+            result = await handler(StreamMessage(eventType="orgCreated", payload={"orgId": "o1"}))
             assert result is False
 
 
@@ -333,7 +335,7 @@ class TestCreateSyncMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-            result = await handler({"eventType": "gmail.start", "payload": {"orgId": "o1"}})
+            result = await handler(StreamMessage(eventType="gmail.start", payload={"orgId": "o1"}))
             assert result is True
 
     @pytest.mark.asyncio
@@ -346,23 +348,24 @@ class TestCreateSyncMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-            result = await handler({"eventType": "start", "payload": {"connector": "gmail"}})
+            result = await handler(StreamMessage(eventType="start", payload={"connector": "gmail"}))
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_none_message(self):
+    async def test_none_message_returns_false(self):
+        """None is invalid; handler catches errors and returns False."""
         container = _make_app_container()
         graph_provider = MagicMock()
         handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
         result = await handler(None)
-        assert result is True
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
         container = _make_app_container()
         graph_provider = MagicMock()
         handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-        result = await handler({"payload": {}})
+        result = await handler(StreamMessage(eventType="", payload={}))
         assert result is False
 
     @pytest.mark.asyncio
@@ -371,7 +374,7 @@ class TestCreateSyncMessageHandler:
         graph_provider = MagicMock()
         handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
         # event_type has no dot and payload has no connector
-        result = await handler({"eventType": "start", "payload": {}})
+        result = await handler(StreamMessage(eventType="start", payload={}))
         assert result is False
 
     @pytest.mark.asyncio
@@ -384,7 +387,7 @@ class TestCreateSyncMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_sync_message_handler(container, graph_provider)
-            result = await handler({"eventType": "gmail.start", "payload": {"orgId": "o1"}})
+            result = await handler(StreamMessage(eventType="gmail.start", payload={"orgId": "o1"}))
             assert result is False
 
 
@@ -414,24 +417,24 @@ class TestCreateRecordMessageHandler:
 
             handler = await KafkaUtils.create_record_message_handler(container)
             events = []
-            async for event in handler({"eventType": "recordCreated", "payload": {"id": "r1"}}):
+            async for event in handler(StreamMessage(eventType="recordCreated", payload={"id": "r1"})):
                 events.append(event)
             assert len(events) == 2
             assert events[0]["event"] == "parsing_complete"
             assert events[1]["event"] == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_none_message(self):
+    async def test_none_message_raises(self):
+        """Handler now expects StreamMessage, not None. Passing None should raise."""
         container = _make_app_container()
         container._event_processor = AsyncMock()
         container.config_service.return_value = AsyncMock()
 
         with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler"):
             handler = await KafkaUtils.create_record_message_handler(container)
-            events = []
-            async for event in handler(None):
-                events.append(event)
-            assert len(events) == 0
+            with pytest.raises((TypeError, AttributeError)):
+                async for _ in handler(None):
+                    pass
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
@@ -442,7 +445,7 @@ class TestCreateRecordMessageHandler:
         with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler"):
             handler = await KafkaUtils.create_record_message_handler(container)
             events = []
-            async for event in handler({"payload": {"id": "r1"}}):
+            async for event in handler(StreamMessage(eventType="", payload={"id": "r1"})):
                 events.append(event)
             assert len(events) == 0
 
@@ -455,7 +458,7 @@ class TestCreateRecordMessageHandler:
         with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler"):
             handler = await KafkaUtils.create_record_message_handler(container)
             events = []
-            async for event in handler({"eventType": "recordCreated"}):
+            async for event in handler(StreamMessage(eventType="recordCreated", payload={})):
                 events.append(event)
             assert len(events) == 0
 
@@ -477,7 +480,7 @@ class TestCreateRecordMessageHandler:
 
             handler = await KafkaUtils.create_record_message_handler(container)
             with pytest.raises(RuntimeError, match="processing error"):
-                async for _ in handler({"eventType": "recordCreated", "payload": {"id": "r1"}}):
+                async for _ in handler(StreamMessage(eventType="recordCreated", payload={"id": "r1"})):
                     pass
 
     @pytest.mark.asyncio
@@ -528,7 +531,7 @@ class TestCreateAiConfigMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler({"eventType": "llmConfigured", "payload": {"provider": "openai"}})
+            result = await handler(StreamMessage(eventType="llmConfigured", payload={"provider": "openai"}))
             assert result is True
             mock_svc.process_event.assert_awaited_once()
 
@@ -544,11 +547,12 @@ class TestCreateAiConfigMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler({"eventType": "embeddingModelConfigured", "payload": {"model": "ada"}})
+            result = await handler(StreamMessage(eventType="embeddingModelConfigured", payload={"model": "ada"}))
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_none_message(self):
+    async def test_none_message_returns_false(self):
+        """None is invalid; handler catches errors and returns False."""
         container = _make_app_container()
         mock_retrieval = AsyncMock()
         container.retrieval_service = AsyncMock(return_value=mock_retrieval)
@@ -556,7 +560,7 @@ class TestCreateAiConfigMessageHandler:
         with patch("app.services.messaging.kafka.utils.utils.AiConfigEventService"):
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
             result = await handler(None)
-            assert result is True
+            assert result is False
 
     @pytest.mark.asyncio
     async def test_missing_event_type(self):
@@ -566,7 +570,7 @@ class TestCreateAiConfigMessageHandler:
 
         with patch("app.services.messaging.kafka.utils.utils.AiConfigEventService"):
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler({"payload": {}})
+            result = await handler(StreamMessage(eventType="", payload={}))
             assert result is False
 
     @pytest.mark.asyncio
@@ -580,7 +584,7 @@ class TestCreateAiConfigMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler({"eventType": "userAdded", "payload": {}})
+            result = await handler(StreamMessage(eventType="userAdded", payload={}))
             assert result is True
             mock_svc.process_event.assert_not_awaited()
 
@@ -596,5 +600,5 @@ class TestCreateAiConfigMessageHandler:
             MockSvc.return_value = mock_svc
 
             handler = await KafkaUtils.create_aiconfig_message_handler(container)
-            result = await handler({"eventType": "llmConfigured", "payload": {}})
+            result = await handler(StreamMessage(eventType="llmConfigured", payload={}))
             assert result is False

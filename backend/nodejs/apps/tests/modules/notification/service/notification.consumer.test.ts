@@ -6,6 +6,7 @@ import { NotificationConsumer } from '../../../../src/modules/notification/servi
 describe('notification/service/notification.consumer', () => {
   let consumer: NotificationConsumer
   let mockLogger: any
+  let mockConsumer: any
 
   beforeEach(() => {
     mockLogger = {
@@ -14,8 +15,18 @@ describe('notification/service/notification.consumer', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
+    mockConsumer = {
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(false),
+      subscribe: sinon.stub().resolves(),
+      consume: sinon.stub().resolves(),
+      pause: sinon.stub(),
+      resume: sinon.stub(),
+      healthCheck: sinon.stub().resolves(true),
+    }
     consumer = new NotificationConsumer(
-      { brokers: ['localhost:9092'] },
+      mockConsumer,
       mockLogger,
     )
   })
@@ -24,82 +35,67 @@ describe('notification/service/notification.consumer', () => {
     sinon.restore()
   })
 
-  // Get the grandparent prototype (BaseKafkaConsumerConnection.prototype)
-  // which has the connect/disconnect methods that super.connect()/super.disconnect() call
-  function getBasePrototype() {
-    return Object.getPrototypeOf(Object.getPrototypeOf(consumer))
-  }
-
   describe('start', () => {
     it('should call connect if not connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(false)
-      const connectStub = sinon.stub(getBasePrototype(), 'connect').resolves()
+      mockConsumer.isConnected.returns(false)
       await consumer.start()
-      expect(connectStub.calledOnce).to.be.true
+      expect(mockConsumer.connect.calledOnce).to.be.true
     })
 
     it('should not connect if already connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(true)
-      const connectStub = sinon.stub(getBasePrototype(), 'connect').resolves()
+      mockConsumer.isConnected.returns(true)
       await consumer.start()
-      expect(connectStub.called).to.be.false
+      expect(mockConsumer.connect.called).to.be.false
     })
   })
 
   describe('stop', () => {
     it('should disconnect if connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(true)
-      const disconnectStub = sinon.stub(getBasePrototype(), 'disconnect').resolves()
+      mockConsumer.isConnected.returns(true)
       await consumer.stop()
-      expect(disconnectStub.calledOnce).to.be.true
+      expect(mockConsumer.disconnect.calledOnce).to.be.true
     })
 
     it('should not disconnect if not connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(false)
-      const disconnectStub = sinon.stub(getBasePrototype(), 'disconnect').resolves()
+      mockConsumer.isConnected.returns(false)
       await consumer.stop()
-      expect(disconnectStub.called).to.be.false
+      expect(mockConsumer.disconnect.called).to.be.false
     })
   })
 
   describe('subscribe', () => {
     it('should subscribe if connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(true)
-      const superSubscribe = sinon.stub(getBasePrototype(), 'subscribe').resolves()
+      mockConsumer.isConnected.returns(true)
       await consumer.subscribe(['test-topic'], false)
-      expect(superSubscribe.calledOnce).to.be.true
+      expect(mockConsumer.subscribe.calledOnce).to.be.true
     })
 
     it('should not subscribe if not connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(false)
-      const superSubscribe = sinon.stub(getBasePrototype(), 'subscribe').resolves()
+      mockConsumer.isConnected.returns(false)
       await consumer.subscribe(['test-topic'], false)
-      expect(superSubscribe.called).to.be.false
+      expect(mockConsumer.subscribe.called).to.be.false
     })
 
     it('should subscribe with fromBeginning flag', async () => {
-      sinon.stub(consumer, 'isConnected').returns(true)
-      const superSubscribe = sinon.stub(getBasePrototype(), 'subscribe').resolves()
+      mockConsumer.isConnected.returns(true)
       await consumer.subscribe(['test-topic'], true)
-      expect(superSubscribe.calledWith(['test-topic'], true)).to.be.true
+      expect(mockConsumer.subscribe.calledWith(['test-topic'], true)).to.be.true
     })
   })
 
   describe('consume', () => {
     it('should not consume if not connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(false)
-      const superConsume = sinon.stub(getBasePrototype(), 'consume').resolves()
+      mockConsumer.isConnected.returns(false)
       const handler = sinon.stub().resolves()
       await consumer.consume(handler)
-      expect(superConsume.called).to.be.false
+      expect(mockConsumer.consume.called).to.be.false
     })
 
-    it('should call super.consume with wrapped handler if connected', async () => {
-      sinon.stub(consumer, 'isConnected').returns(true)
-      const superConsume = sinon.stub(getBasePrototype(), 'consume').resolves()
+    it('should call consumer.consume with wrapped handler if connected', async () => {
+      mockConsumer.isConnected.returns(true)
       const handler = sinon.stub().resolves()
       await consumer.consume(handler)
-      expect(superConsume.calledOnce).to.be.true
+      expect(mockConsumer.consume.calledOnce).to.be.true
     })
   })
 })

@@ -55,16 +55,16 @@ describe('tokens_manager/container/token-manager.container', () => {
     it('should disconnect all services on dispose', async () => {
       const mockMongo = { isConnected: sinon.stub().returns(true), destroy: sinon.stub().resolves() }
       const mockRedis = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
-      const mockKafka = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
-      const mockEntity = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
 
       const mockContainer = {
-        isBound: sinon.stub().returns(true),
+        isBound: sinon.stub().callsFake((key: string) =>
+          ['MongoService', 'RedisService', 'MessageProducer'].includes(key),
+        ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'MongoService') return mockMongo
           if (key === 'RedisService') return mockRedis
-          if (key === 'KafkaService') return mockKafka
-          if (key === 'EntitiesEventProducer') return mockEntity
+          if (key === 'MessageProducer') return mockMessageProducer
           return null
         }),
       };
@@ -73,8 +73,7 @@ describe('tokens_manager/container/token-manager.container', () => {
       await TokenManagerContainer.dispose()
 
       expect(mockRedis.disconnect.calledOnce).to.be.true
-      expect(mockKafka.disconnect.calledOnce).to.be.true
-      expect(mockEntity.disconnect.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect(mockMongo.destroy.calledOnce).to.be.true
       expect((TokenManagerContainer as any).instance).to.be.null
     })
@@ -143,17 +142,15 @@ describe('tokens_manager/container/token-manager.container', () => {
       expect((TokenManagerContainer as any).instance).to.be.null
     })
 
-    it('should disconnect Kafka and entity events producer', async () => {
-      const mockKafka = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
-      const mockEntity = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
+    it('should disconnect MessageProducer only', async () => {
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['KafkaService', 'EntitiesEventProducer'].includes(key),
+          key === 'MessageProducer',
         ),
         get: sinon.stub().callsFake((key: string) => {
-          if (key === 'KafkaService') return mockKafka
-          if (key === 'EntitiesEventProducer') return mockEntity
+          if (key === 'MessageProducer') return mockMessageProducer
           return null
         }),
       };
@@ -161,8 +158,7 @@ describe('tokens_manager/container/token-manager.container', () => {
 
       await TokenManagerContainer.dispose()
 
-      expect(mockKafka.disconnect.calledOnce).to.be.true
-      expect(mockEntity.disconnect.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
     })
   })
 })

@@ -13,13 +13,16 @@ import {
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
 import LocalStorageAdapter from '../../../../src/modules/storage/providers/local-storage.provider'
+import { envGuard } from '../../../helpers/env-guard'
 
 function createAdapter(): LocalStorageAdapter {
   return new LocalStorageAdapter({ mountName: 'PipesHub', baseUrl: 'http://localhost:3000' } as any)
 }
 
 describe('LocalStorageAdapter - branch coverage', () => {
-  afterEach(() => { sinon.restore() })
+  const env = envGuard()
+  beforeEach(() => env.snapshot())
+  afterEach(() => { env.restore(); sinon.restore() })
 
   // =========================================================================
   // Constructor - non-StorageError wrapping
@@ -95,12 +98,9 @@ describe('LocalStorageAdapter - branch coverage', () => {
     it('should succeed and log in development mode', async () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'mkdir').resolves(undefined)
-      const origEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       await (adapter as any).ensureMountExists()
-
-      process.env.NODE_ENV = origEnv
     })
   })
 
@@ -112,7 +112,6 @@ describe('LocalStorageAdapter - branch coverage', () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'mkdir').resolves(undefined)
       sinon.stub(fs, 'writeFile').resolves(undefined)
-      const origEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       const result = await adapter.uploadDocumentToStorageService({
@@ -123,7 +122,6 @@ describe('LocalStorageAdapter - branch coverage', () => {
       })
 
       expect(result.statusCode).to.equal(200)
-      process.env.NODE_ENV = origEnv
     })
 
     it('should re-throw StorageError from validateFilePayload', async () => {
@@ -188,7 +186,6 @@ describe('LocalStorageAdapter - branch coverage', () => {
     it('should log in development mode on success', async () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'writeFile').resolves(undefined)
-      const origEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       try {
@@ -198,7 +195,6 @@ describe('LocalStorageAdapter - branch coverage', () => {
       } catch {
         // May fail due to path mismatch; that's fine, we're testing the dev logging branch
       }
-      process.env.NODE_ENV = origEnv
     })
   })
 
@@ -271,7 +267,6 @@ describe('LocalStorageAdapter - branch coverage', () => {
     it('should log in development mode on successful read', async () => {
       const adapter = createAdapter()
       sinon.stub(fs, 'readFile').resolves(Buffer.from('content'))
-      const origEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       try {
@@ -281,7 +276,6 @@ describe('LocalStorageAdapter - branch coverage', () => {
       } catch {
         // May fail due to path resolution
       }
-      process.env.NODE_ENV = origEnv
     })
   })
 

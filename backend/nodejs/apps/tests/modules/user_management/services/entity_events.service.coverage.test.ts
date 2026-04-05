@@ -126,7 +126,15 @@ describe('EntitiesEventProducer - additional coverage', () => {
     it('should publish event to entity-events topic', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
       ;(instance as any).topic = 'entity-events'
-      instance.publish = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
@@ -141,8 +149,8 @@ describe('EntitiesEventProducer - additional coverage', () => {
 
       await instance.publishEvent(event)
 
-      expect(instance.publish.calledOnce).to.be.true
-      const [topic, message] = instance.publish.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('entity-events')
       expect(message.key).to.equal(EventType.OrgCreatedEvent)
       expect(JSON.parse(message.value)).to.deep.include({ eventType: EventType.OrgCreatedEvent })
@@ -153,7 +161,15 @@ describe('EntitiesEventProducer - additional coverage', () => {
     it('should log error when publish fails', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
       ;(instance as any).topic = 'entity-events'
-      instance.publish = sinon.stub().rejects(new Error('Publish error'))
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().rejects(new Error('Publish error')),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
@@ -174,7 +190,15 @@ describe('EntitiesEventProducer - additional coverage', () => {
     it('should include timestamp header as string', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
       ;(instance as any).topic = 'entity-events'
-      instance.publish = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const timestamp = 1234567890
@@ -190,7 +214,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
 
       await instance.publishEvent(event)
 
-      const message = instance.publish.firstCall.args[1]
+      const message = mockProducer.publish.firstCall.args[1]
       expect(message.headers.timestamp).to.equal('1234567890')
     })
   })
@@ -198,20 +222,34 @@ describe('EntitiesEventProducer - additional coverage', () => {
   describe('start and stop methods', () => {
     it('should call disconnect when connected in stop', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
-      instance.isConnected = sinon.stub().returns(true)
-      instance.disconnect = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
 
       await instance.stop()
-      expect(instance.disconnect.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
 
     it('should not call disconnect when not connected in stop', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
-      instance.isConnected = sinon.stub().returns(false)
-      instance.disconnect = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(false),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
 
       await instance.stop()
-      expect(instance.disconnect.called).to.be.false
+      expect(mockProducer.disconnect.called).to.be.false
     })
   })
 })

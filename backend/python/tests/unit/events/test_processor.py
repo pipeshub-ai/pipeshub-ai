@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor, convert_record_dict_to_record
 from app.models.entities import RecordType
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 import logging
 
 
@@ -312,8 +313,8 @@ class TestProcessImage:
         events = await _collect(proc.process_image("rec-1", b"image-data", "vr-1"))
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_non_multimodal_llm_sets_enable_multimodal_status(self):
@@ -352,8 +353,8 @@ class TestProcessGmailMessage:
         proc, _, _, _ = _make_processor()
 
         async def mock_html(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_html_document", side_effect=mock_html):
             events = await _collect(
@@ -369,7 +370,7 @@ class TestProcessGmailMessage:
             )
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
+        assert events[0].event == "parsing_complete"
 
 
 # ===========================================================================
@@ -397,7 +398,7 @@ class TestProcessPdfWithDocling:
         )
 
         assert len(events) == 1
-        assert events[0]["event"] == "docling_failed"
+        assert events[0].event == "docling_failed"
 
     @pytest.mark.asyncio
     async def test_docling_success_yields_parsing_complete(self):
@@ -425,8 +426,8 @@ class TestProcessPdfWithDocling:
                     )
                 )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -459,8 +460,8 @@ class TestProcessPdfWithPyMuPDF:
             )
 
         # Should have parsing_complete, then indexing_complete
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_appends_pdf_extension(self):
@@ -523,8 +524,8 @@ class TestProcessDocxDocument:
                 )
             )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success_yields_both_events(self):
@@ -554,8 +555,8 @@ class TestProcessDocxDocument:
                 )
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_exception_propagates(self):
@@ -599,8 +600,8 @@ class TestProcessDocDocument:
         proc.parsers["doc"] = mock_parser
 
         async def mock_docx(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_docx_document", side_effect=mock_docx):
             events = await _collect(
@@ -654,8 +655,8 @@ class TestProcessBlocks:
                         )
                     )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_dict_input_handled(self):
@@ -727,8 +728,8 @@ class TestProcessBlocks:
                     )
                 )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -805,8 +806,8 @@ class TestProcessExcelDocument:
                 )
             )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_record_not_found_yields_indexing_complete(self):
@@ -834,8 +835,8 @@ class TestProcessExcelDocument:
                 )
             )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -856,8 +857,8 @@ class TestProcessXlsDocument:
         proc.parsers["xls"] = mock_parser
 
         async def mock_excel(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_excel_document", side_effect=mock_excel):
             events = await _collect(
@@ -893,8 +894,8 @@ class TestProcessHtmlDocument:
         proc.parsers["html"] = mock_html_parser
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_md_document", side_effect=mock_md):
             events = await _collect(
@@ -939,8 +940,8 @@ class TestProcessMdDocument:
             )
         )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_bytes_input_decoded(self):
@@ -972,8 +973,8 @@ class TestProcessMdDocument:
                     )
                 )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -994,8 +995,8 @@ class TestProcessMdxDocument:
         proc.parsers["mdx"] = mock_parser
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_md_document", side_effect=mock_md):
             events = await _collect(
@@ -1070,8 +1071,8 @@ class TestProcessTxtDocument:
         proc, _, _, _ = _make_processor()
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_md_document", side_effect=mock_md):
             events = await _collect(
@@ -1149,8 +1150,8 @@ class TestProcessPptxDocument:
                 )
             )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1199,8 +1200,8 @@ class TestProcessPptDocument:
         proc.parsers["ppt"] = mock_parser
 
         async def mock_pptx(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {}}
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         with patch.object(proc, "process_pptx_document", side_effect=mock_pptx):
             events = await _collect(
@@ -1274,8 +1275,8 @@ class TestProcessDelimitedDocument:
                 )
             )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1303,8 +1304,8 @@ class TestProcessDelimitedDocument:
                     )
                 )
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_uses_custom_extension(self):
@@ -1364,8 +1365,8 @@ class TestProcessImageSuccess:
 
                         events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -1397,8 +1398,8 @@ class TestProcessImageAdditional:
                 mock_emb.return_value = {"isMultimodal": True}
                 events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_no_multimodal_sets_enable_status(self):
@@ -1413,8 +1414,8 @@ class TestProcessImageAdditional:
                 mock_emb.return_value = {"isMultimodal": False}
                 events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_no_multimodal_batch_upsert_failure(self):
@@ -1475,15 +1476,15 @@ class TestProcessGmailMessage:
         proc, _, gp, config = _make_processor()
 
         async def mock_html(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_html_document = mock_html
         events = await _collect(proc.process_gmail_message(
             "email.html", "rec-1", 1, "gmail", "org-1", b"<html>hi</html>", "vr-1"
         ))
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_error_propagates(self):
@@ -1524,8 +1525,8 @@ class TestProcessPdfWithPyMuPDF:
                 "test.pdf", "rec-1", b"pdfdata", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success_path(self):
@@ -1544,8 +1545,8 @@ class TestProcessPdfWithPyMuPDF:
                     "test.pdf", "rec-1", b"pdfdata", "vr-1"
                 ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -1565,7 +1566,7 @@ class TestProcessPdfWithDocling:
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
         ))
-        assert events[0]["event"] == "docling_failed"
+        assert events[0].event == "docling_failed"
 
     @pytest.mark.asyncio
     async def test_block_creation_fails(self):
@@ -1590,8 +1591,8 @@ class TestProcessPdfWithDocling:
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
         ))
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success_path(self):
@@ -1607,8 +1608,8 @@ class TestProcessPdfWithDocling:
                 "test.pdf", "rec-1", b"pdfdata", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -1630,14 +1631,14 @@ class TestProcessDocDocument:
         proc.parsers[ExtensionTypes.DOC.value] = mock_parser
 
         async def mock_docx(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_docx_document = mock_docx
         events = await _collect(proc.process_doc_document(
             "test.doc", "rec-1", 1, "upload", "org-1", b"doc_binary", "vr-1"
         ))
-        assert events[0]["event"] == "parsing_complete"
+        assert events[0].event == "parsing_complete"
         mock_parser.convert_doc_to_docx.assert_called_once()
 
 
@@ -1666,8 +1667,8 @@ class TestProcessDocxDocument:
                     "test.docx", "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
                 ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -1684,8 +1685,8 @@ class TestProcessDocxDocument:
                 "test.docx", "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -1780,8 +1781,8 @@ class TestProcessHtmlDocument:
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_md_document = mock_md
 
@@ -1790,8 +1791,8 @@ class TestProcessHtmlDocument:
                 "test.html", "rec-1", 1, "upload", "org-1", b"<html>test</html>", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_html_cleaning_failure_fallback(self):
@@ -1804,8 +1805,8 @@ class TestProcessHtmlDocument:
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_md_document = mock_md
 
@@ -1837,14 +1838,14 @@ class TestProcessMdxDocument:
         proc.parsers[ExtensionTypes.MDX.value] = mock_parser
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_md_document = mock_md
         events = await _collect(proc.process_mdx_document(
             "test.mdx", "rec-1", 1, "upload", "org-1", "mdx content", "vr-1"
         ))
-        assert events[0]["event"] == "parsing_complete"
+        assert events[0].event == "parsing_complete"
         mock_parser.convert_mdx_to_md.assert_called_once()
 
 
@@ -1868,8 +1869,8 @@ class TestProcessMdDocument:
         ))
 
         proc._mark_record.assert_awaited_once()
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -1892,7 +1893,7 @@ class TestProcessMdDocument:
                 "test.md", "rec-1", b"# Hello world", "vr-1"
             ))
 
-        assert events[-1]["event"] == "indexing_complete"
+        assert events[-1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_string_input(self):
@@ -1917,8 +1918,8 @@ class TestProcessMdDocument:
                     "test.md", "rec-1", "# Hello world", "vr-1"
                 ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -1950,15 +1951,15 @@ class TestProcessTxtDocument:
         proc, _, gp, config = _make_processor()
 
         async def mock_md(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_md_document = mock_md
         events = await _collect(proc.process_txt_document(
             "test.txt", "rec-1", 1, "upload", "org-1",
             b"Hello text", "vr-1", "FILE", "KB", "UPLOAD"
         ))
-        assert events[0]["event"] == "parsing_complete"
+        assert events[0].event == "parsing_complete"
 
 
 # ===========================================================================
@@ -1986,8 +1987,8 @@ class TestProcessPptxDocument:
                     "test.pptx", "rec-1", 1, "upload", "org-1", b"pptx_binary", "vr-1"
                 ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -2004,8 +2005,8 @@ class TestProcessPptxDocument:
                 "test.pptx", "rec-1", 1, "upload", "org-1", b"pptx_binary", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -2032,8 +2033,8 @@ class TestProcessExcelDocument:
                 "test.xlsx", "rec-1", 1, "upload", "org-1", b"", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -2055,8 +2056,8 @@ class TestProcessExcelDocument:
                     "test.xlsx", "rec-1", 1, "upload", "org-1", b"excel_data", "vr-1"
                 ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -2076,8 +2077,8 @@ class TestProcessExcelDocument:
                 "test.xlsx", "rec-1", 1, "upload", "org-1", b"excel_data", "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -2099,15 +2100,15 @@ class TestProcessXlsDocument:
         proc.parsers[ExtensionTypes.XLS.value] = mock_xls_parser
 
         async def mock_excel(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "rec-1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "rec-1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
         proc.process_excel_document = mock_excel
 
         events = await _collect(proc.process_xls_document(
             "test.xls", "rec-1", 1, "upload", "org-1", b"xls_binary", "vr-1"
         ))
-        assert events[0]["event"] == "parsing_complete"
+        assert events[0].event == "parsing_complete"
         mock_xls_parser.convert_xls_to_xlsx.assert_called_once()
 
 
@@ -2136,8 +2137,8 @@ class TestProcessBlocks:
                 blocks_dict.encode('utf-8'), "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_dict_input(self):
@@ -2154,8 +2155,8 @@ class TestProcessBlocks:
                 {"blocks": [], "block_groups": []}, "vr-1"
             ))
 
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_invalid_type_raises(self):
@@ -2181,7 +2182,7 @@ class TestProcessBlocks:
             '{"blocks": [], "block_groups": []}', "vr-1"
         ))
 
-        assert events[-1]["event"] == "indexing_complete"
+        assert events[-1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -2843,8 +2844,8 @@ class TestProcessPdfDocumentWithOcr:
                         )
                     )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_azure_di_provider(self):
@@ -2880,8 +2881,8 @@ class TestProcessPdfDocumentWithOcr:
                     )
                 )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_ocrmypdf_provider(self):
@@ -2917,7 +2918,7 @@ class TestProcessPdfDocumentWithOcr:
                     )
                 )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_no_handler_fallback_to_multimodal(self):
@@ -2961,7 +2962,7 @@ class TestProcessPdfDocumentWithOcr:
                             )
                         )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_no_handler_fallback_to_ocrmypdf(self):
@@ -2998,7 +2999,7 @@ class TestProcessPdfDocumentWithOcr:
                         )
                     )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_non_vlm_with_empty_blocks(self):
@@ -3034,8 +3035,8 @@ class TestProcessPdfDocumentWithOcr:
                     )
                 )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_vlm_ocr_with_pages_processes(self):
@@ -3083,8 +3084,8 @@ class TestProcessPdfDocumentWithOcr:
                         )
                     )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found_yields_indexing_complete(self):
@@ -3117,7 +3118,7 @@ class TestProcessPdfDocumentWithOcr:
                 )
             )
 
-        assert events[-1]["event"] == "indexing_complete"
+        assert events[-1].event == "indexing_complete"
 
 # =============================================================================
 # Merged from test_processor_coverage.py
@@ -3234,8 +3235,8 @@ class TestProcessImageCoverage:
         events = await _collect_events(
             proc.process_image("r1", b"image_data", "vr1")
         )
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -3259,8 +3260,8 @@ class TestProcessPdfWithPyMuPDFCoverage:
             events = await _collect_events(
                 proc.process_pdf_with_pymupdf("test.pdf", "r1", b"pdf_data", "vr1")
             )
-            assert any(e["event"] == "parsing_complete" for e in events)
-            assert any(e["event"] == "indexing_complete" for e in events)
+            assert any(e.event == "parsing_complete" for e in events)
+            assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -3280,8 +3281,8 @@ class TestProcessPdfWithPyMuPDFCoverage:
                     proc.process_pdf_with_pymupdf("test.pdf", "r1", b"pdf_data", "vr1")
                 )
 
-            assert any(e["event"] == "parsing_complete" for e in events)
-            assert any(e["event"] == "indexing_complete" for e in events)
+            assert any(e.event == "parsing_complete" for e in events)
+            assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -3299,7 +3300,7 @@ class TestProcessPdfWithDoclingCoverage:
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
         )
-        assert any(e["event"] == "docling_failed" for e in events)
+        assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_blocks_failure(self):
@@ -3323,8 +3324,8 @@ class TestProcessPdfWithDoclingCoverage:
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
         )
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -3348,8 +3349,8 @@ class TestProcessDocxDocumentCoverage:
             events = await _collect_events(
                 proc.process_docx_document("test.docx", "r1", 1, "upload", "o1", b"docx", "vr1")
             )
-            assert any(e["event"] == "parsing_complete" for e in events)
-            assert any(e["event"] == "indexing_complete" for e in events)
+            assert any(e.event == "parsing_complete" for e in events)
+            assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -3501,8 +3502,8 @@ class TestProcessBlocksCoverage:
                         proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_bytes, "vr1")
                     )
 
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_dict_input(self):
@@ -3521,7 +3522,7 @@ class TestProcessBlocksCoverage:
                         proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_dict, "vr1")
                     )
 
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_invalid_type_raises(self):
@@ -3545,7 +3546,7 @@ class TestProcessBlocksCoverage:
                     proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_dict, "vr1")
                 )
 
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ===================================================================
@@ -3559,12 +3560,12 @@ class TestProcessGmailMessageCoverage:
         proc = _make_processor_cov()
 
         async def _fake_html(*args, **kwargs):
-            yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
-            yield {"event": "indexing_complete", "data": {"record_id": "r1"}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         proc.process_html_document = _fake_html
 
         events = await _collect_events(
             proc.process_gmail_message("msg", "r1", 1, "gmail", "o1", b"<p>Hello</p>", "vr1")
         )
-        assert any(e["event"] == "parsing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
