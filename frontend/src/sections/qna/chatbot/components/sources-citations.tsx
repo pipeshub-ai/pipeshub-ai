@@ -37,7 +37,7 @@ import {
 import type { CustomCitation } from 'src/types/chat-bot';
 import type { Record } from 'src/types/chat-message';
 import {
-  getWebUrlWithFragment,
+  getWebUrl,
 } from 'src/sections/knowledgebase/utils/utils';
 
 
@@ -303,7 +303,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   const handleViewDocument = useCallback((file: FileInfo) => {
     // Check if previewRenderable is false - if so, open webUrl instead of viewer
     if (file.citation?.metadata?.previewRenderable === false) {
-      const webUrl = getWebUrlWithFragment(file.citation);
+      const webUrl = getWebUrl(file.citation);
       if (webUrl) {
         window.open(webUrl, '_blank', 'noopener,noreferrer');
       }
@@ -318,7 +318,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
     (file: FileInfo) => {
       // Check if previewRenderable is false - if so, open webUrl instead of viewer
       if (file.citation?.metadata?.previewRenderable === false) {
-        const webUrl = getWebUrlWithFragment(file.citation);
+        const webUrl = getWebUrl(file.citation);
         if (webUrl) {
           window.open(webUrl, '_blank', 'noopener,noreferrer');
         }
@@ -350,7 +350,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
           const citation = recordCitations[0];
           // Check if previewRenderable is false - if so, open webUrl instead of viewer
           if (citation?.metadata?.previewRenderable === false) {
-            const webUrl = getWebUrlWithFragment(citation);
+            const webUrl = getWebUrl(citation);
             if (webUrl) {
               window.open(webUrl, '_blank', 'noopener,noreferrer');
             }
@@ -695,7 +695,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               (() => {
                                 const firstCitation = recordCitations[0];
                                 if (firstCitation?.metadata?.previewRenderable === false) {
-                                  return getWebUrlWithFragment(firstCitation) || firstCitation?.metadata?.webUrl || '#';
+                                  return getWebUrl(firstCitation) || firstCitation?.metadata?.webUrl || '#';
                                 }
                                 return firstCitation?.metadata?.webUrl || '#';
                               })()
@@ -707,7 +707,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                               const firstCitation = recordCitations[0];
                               // If there's a webUrl, let the link handle navigation naturally
                               if (firstCitation?.metadata?.webUrl || 
-                                  (firstCitation?.metadata?.previewRenderable === false && getWebUrlWithFragment(firstCitation))) {
+                                  (firstCitation?.metadata?.previewRenderable === false && getWebUrl(firstCitation))) {
                                 // Link will navigate naturally via href
                                 return;
                               }
@@ -844,14 +844,14 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                           e.stopPropagation();
                           // Check if previewRenderable is false - if so, open webUrl instead of viewer
                           if (citation.metadata?.previewRenderable === false) {
-                            const webUrl = getWebUrlWithFragment(citation);
+                            const webUrl = getWebUrl(citation);
                             if (webUrl) {
                               window.open(webUrl, '_blank', 'noopener,noreferrer');
                             }
                             return;
                           }
                           if (!citation.metadata?.extension && citation.metadata?.webUrl) {
-                            const webUrl = getWebUrlWithFragment(citation);
+                            const webUrl = getWebUrl(citation);
                             if (webUrl) {
                               window.open(webUrl, '_blank', 'noopener,noreferrer');
                             }

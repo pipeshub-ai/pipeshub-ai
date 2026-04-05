@@ -33,7 +33,6 @@ import { ORIGIN } from './constants/knowledge-search';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
-import { extractCleanTextFragment, addTextFragmentToUrl } from './utils/utils';
 
 const VIEWABLE_EXTENSIONS = [
   'pdf',
@@ -312,14 +311,6 @@ const KnowledgeSearch = ({
     if (recordMeta.origin === 'UPLOAD' && !webUrl.startsWith('http')) {
       const baseUrl = `${window.location.protocol}//${window.location.host}`;
       webUrl = baseUrl + webUrl;
-    }
-
-    const content = record.content;
-    if (content && typeof content === 'string' && content.trim().length > 0) {
-      const textFragment = extractCleanTextFragment(content);
-      if (textFragment) {
-        webUrl = addTextFragmentToUrl(webUrl, textFragment);
-      }
     }
 
     window.open(webUrl, '_blank', 'noopener,noreferrer');
