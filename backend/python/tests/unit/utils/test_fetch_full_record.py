@@ -62,7 +62,6 @@ class TestFetchMultipleRecordsImpl:
         }
         result = await _fetch_multiple_records_impl(["r1", "r2"], records_map)
         assert result["ok"] is True
-        assert result["record_count"] == 2
         assert len(result["records"]) == 2
 
     @pytest.mark.asyncio
@@ -74,9 +73,8 @@ class TestFetchMultipleRecordsImpl:
         }
         result = await _fetch_multiple_records_impl(["r1", "r_missing"], records_map)
         assert result["ok"] is True
-        assert result["record_count"] == 1
-        assert "not_found" in result
-        assert "r_missing" in result["not_found"]
+        assert len(result["records"]) == 1
+        assert "r_missing" in result["not_available_ids"]
 
     @pytest.mark.asyncio
     async def test_none_found(self):
@@ -113,7 +111,7 @@ class TestFetchMultipleRecordsImpl:
         }
         result = await _fetch_multiple_records_impl(["r2"], records_map)
         assert result["ok"] is True
-        assert result["record_count"] == 1
+        assert len(result["records"]) == 1
 
 
 class TestCreateFetchFullRecordTool:
