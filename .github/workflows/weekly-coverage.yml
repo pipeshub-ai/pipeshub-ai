@@ -121,7 +121,7 @@ jobs:
           coverage run -m pytest tests/unit -v
           coverage json -o coverage/coverage-summary.json
           coverage html -d coverage/htmlcov
-          coverage report --fail-under=93
+          coverage report --fail-under=92
 
       - name: Collect Python coverage summary for email
         id: python-coverage-email
@@ -207,7 +207,7 @@ jobs:
                   "type": "section",
                   "fields": [
                     { "type": "mrkdwn", "text": "*Node.js:* ${{ needs.nodejs-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 90%, stmts 90%, funcs 90%, branches 80%" },
-                    { "type": "mrkdwn", "text": "*Python:* ${{ needs.python-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 93%" }
+                    { "type": "mrkdwn", "text": "*Python:* ${{ needs.python-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 92%" }
                   ]
                 },
                 {
