@@ -75,7 +75,7 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.USER_APP_RELATION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value],
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
         "to_vertex_collections": [CollectionNames.APPS.value],
     },
     {
@@ -108,5 +108,45 @@ EDGE_DEFINITIONS = [
         "edge_collection": CollectionNames.AGENT_HAS_KNOWLEDGE.value,
         "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
         "to_vertex_collections": [CollectionNames.AGENT_KNOWLEDGE.value],
+    },
+    {
+        "edge_collection": CollectionNames.PROSPECT.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
+    {
+        "edge_collection": CollectionNames.CUSTOMER.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
+    {
+        "edge_collection": CollectionNames.LEAD.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.PEOPLE.value],
+    },
+    {
+        "edge_collection": CollectionNames.CONTACT.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.PEOPLE.value],
+    },
+    {
+        "edge_collection": CollectionNames.DEAL_INFO.value,
+        "from_vertex_collections": [CollectionNames.ORGS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value],
+    },
+    {
+        "edge_collection": CollectionNames.DEAL_OF.value,
+        "from_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
+    },
+    {
+        "edge_collection": CollectionNames.SOLD_IN.value,
+        "from_vertex_collections": [CollectionNames.RECORDS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value],
+    },
+    {
+        "edge_collection": CollectionNames.MEMBER_OF.value,
+        "from_vertex_collections": [CollectionNames.PEOPLE.value],
+        "to_vertex_collections": [CollectionNames.ORGS.value],
     },
 ]

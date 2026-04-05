@@ -66,6 +66,8 @@ def github_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="gh-conn-1",
+            scope="team",
+            created_by="test-user",
         )
     return connector
 
@@ -1047,6 +1049,8 @@ def github_connector_cov(mock_logger_cov, mock_data_entities_processor_cov,
             data_store_provider=mock_data_store_provider_cov,
             config_service=mock_config_service,
             connector_id="gh-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -2307,6 +2311,8 @@ class TestCreateConnector:
                 data_store_provider=mock_data_store_provider_cov,
                 config_service=mock_config_service,
                 connector_id="gh-test-1",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, GithubConnector)
 
@@ -2364,6 +2370,8 @@ def github_connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="gh-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -3074,7 +3082,9 @@ class TestCreateConnectorFactory:
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
-            conn = await GithubConnector.create_connector(logger, dsp, cs, "gh-factory")
+            conn = await GithubConnector.create_connector(
+                logger, dsp, cs, "gh-factory", "team", "test-user-id"
+            )
             assert isinstance(conn, GithubConnector)
 
 

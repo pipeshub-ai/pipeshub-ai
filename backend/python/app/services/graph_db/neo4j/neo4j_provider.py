@@ -44,10 +44,13 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    DealRecord,
     FileRecord,
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    Person,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -1691,13 +1694,13 @@ class Neo4jProvider(IGraphDBProvider):
                 # Find collection name from label (reverse lookup)
                 from_collection = ""
                 to_collection = ""
-                for coll, lbl_enum in COLLECTION_TO_LABEL.items():
-                    if lbl_enum.value in from_labels:
+                for coll, lbl in COLLECTION_TO_LABEL.items():
+                    if lbl in from_labels:
                         from_collection = coll
                         break
 
-                for coll, lbl_enum in COLLECTION_TO_LABEL.items():
-                    if lbl_enum.value in to_labels:
+                for coll, lbl in COLLECTION_TO_LABEL.items():
+                    if lbl in to_labels:
                         to_collection = coll
                         break
 
@@ -2043,6 +2046,10 @@ class Neo4jProvider(IGraphDBProvider):
                 return LinkRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MEETINGS.value:
                 return MeetingRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -3397,11 +3404,16 @@ class Neo4jProvider(IGraphDBProvider):
             return False
 
     async def get_user_apps(self, user_id: str) -> list:
-        """Get all apps associated with a user"""
+        """Get all apps associated with a user: direct User->App and via User->Team->App."""
         try:
             query = """
-            MATCH (user:User {id: $user_id})-[:USER_APP_RELATION]->(app:App)
-            RETURN app
+            MATCH (user:User {id: $user_id})
+            OPTIONAL MATCH (user)-[:USER_APP_RELATION]->(app1:App)
+            OPTIONAL MATCH (user)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            UNWIND app_list AS app
+            WITH app WHERE app IS NOT NULL
+            RETURN DISTINCT app
             """
             results = await self.client.execute_query(
                 query,
@@ -4789,6 +4801,237 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+            raise
+
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """
+        Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
+
+        Creates team node with id=all_{org_id} if missing, fetches all active users,
+        and adds PERMISSION edges for users not already in the team.
+        Oldest user (by createdAtTimestamp) gets OWNER; subsequent users get READER.
+
+        Idempotent, runs without transaction, safe to call multiple times.
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_id, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_id,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Get all active users sorted by createdAtTimestamp ascending
+            users = await self.get_users(org_id, active=True)
+            if not users:
+                self.logger.debug(f"No active users found for org {org_id}")
+                return
+
+            users_sorted = sorted(users, key=lambda u: u.get("createdAtTimestamp", 0))
+            self.logger.info(f"📊 Found {len(users_sorted)} active users for org {org_id}")
+
+            # 3. Get current team members to determine if team is empty
+            team_with_users = await self.get_team_with_users(team_id=team_id, user_key=None)
+            existing_member_count = len((team_with_users or {}).get("members", []))
+            owner_assigned = existing_member_count > 0
+
+            self.logger.info(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
+            if team_with_users and team_with_users.get("members"):
+                self.logger.info(
+                    "📊 Existing members: %s",
+                    [
+                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
+                        for m in team_with_users.get("members", [])
+                    ],
+                )
+
+            # 4. Add each user without a PERMISSION edge
+            for user in users_sorted:
+                user_key = user.get("id")
+                if not user_key:
+                    continue
+
+                # Check if edge already exists
+                query = """
+                MATCH (u:Users {id: $user_key})-[r:PERMISSION]->(t:Teams {id: $team_id})
+                RETURN r
+                LIMIT 1
+                """
+                result = await self.client.execute_query(
+                    query,
+                    parameters={"user_key": user_key, "team_id": team_id}
+                )
+                if result:
+                    continue
+
+                role = "OWNER" if not owner_assigned else "READER"
+                self.logger.info(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
+
+                if not owner_assigned:
+                    owner_assigned = True
+                    try:
+                        await self.update_node(
+                            team_id,
+                            CollectionNames.TEAMS.value,
+                            {"createdBy": user_key, "updatedAtTimestamp": ts},
+                        )
+                        self.logger.info(f"✅ Updated team createdBy to {user_key}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+
+                permission_edge = {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_id,
+                    "to_collection": CollectionNames.TEAMS.value,
+                    "type": "USER",
+                    "role": role,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_create_edges(
+                    [permission_edge], CollectionNames.PERMISSION.value
+                )
+                self.logger.info(f"✅ Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
+            raise
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """
+        Add a specific user to the org's 'All' team with a PERMISSION edge.
+
+        Ensures All team exists, checks if user already has PERMISSION edge,
+        and adds it if missing. First user in team gets OWNER, subsequent get READER.
+
+        Idempotent, safe to call multiple times for same user.
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+            
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_id, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_id,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Check if this user already has a PERMISSION edge
+            check_edge_query = """
+            MATCH (u:Users {id: $user_key})-[r:PERMISSION]->(t:Teams {id: $team_id})
+            RETURN r
+            LIMIT 1
+            """
+            existing_edge = await self.client.execute_query(
+                check_edge_query,
+                parameters={"user_key": user_key, "team_id": team_id}
+            )
+            if existing_edge:
+                self.logger.debug(f"User {user_key} already has PERMISSION edge to All team")
+                return
+
+            # 3. Check if team has any existing members to determine role
+            count_query = """
+            MATCH ()-[r:PERMISSION]->(t:Teams {id: $team_id})
+            RETURN count(r) as count
+            """
+            count_result = await self.client.execute_query(
+                count_query,
+                parameters={"team_id": team_id}
+            )
+
+            member_count = count_result[0].get("count", 0) if count_result else 0
+            role = "OWNER" if member_count == 0 else "READER"
+
+            self.logger.info(f"Assigning role {role} to user {user_key} (existing members: {member_count})")
+
+            # 4. If assigning first OWNER, update team.createdBy
+            if role == "OWNER":
+                try:
+                    await self.update_node(
+                        team_id,
+                        CollectionNames.TEAMS.value,
+                        {"createdBy": user_key, "updatedAtTimestamp": ts},
+                    )
+                    self.logger.info(f"Updated team createdBy to {user_key}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+
+            # 5. Create PERMISSION edge
+            permission_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_id,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [permission_edge], CollectionNames.PERMISSION.value
+            )
+            self.logger.info(f"Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
+            raise
+
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates (Teams all_{org_id})-[:USER_APP_RELATION]->(App) if not present.
+
+        Team membership is ensured elsewhere (All team migration, user-added Kafka flow).
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+            query = """
+            MATCH (t:Teams {id: $team_id})
+            MERGE (a:App {id: $connector_id})
+            MERGE (t)-[r:USER_APP_RELATION]->(a)
+            ON CREATE SET r.sourceUserId = $team_id, r.syncState = 'NOT_STARTED', r.lastSyncUpdate = $ts,
+                r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
+            """
+            await self.client.execute_query(
+                query,
+                parameters={
+                    "team_id": team_id,
+                    "connector_id": connector_id,
+                    "ts": ts,
+                },
+                txn_id=transaction
+            )
+            self.logger.debug(f"Ensured team->app edge: Teams {team_id} -> App {connector_id}")
+        except Exception as e:
+            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
     async def batch_upsert_user_groups(
@@ -11842,12 +12085,20 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def batch_upsert_people(
         self,
-        people: list[dict],
-        collection: str,
+        people: list[Person],
         transaction: str | None = None
-    ) -> bool | None:
-        """Batch upsert people nodes."""
+    ) -> None:
+        """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
+            if not people:
+                return
+
+            collection = CollectionNames.PEOPLE.value
+            people_dicts = [
+                self._arango_to_neo4j_node(person.to_arango_person(), collection)
+                for person in people
+            ]
+
             label = collection_to_label(collection)
             query = f"""
             UNWIND $people AS person
@@ -11857,10 +12108,10 @@ class Neo4jProvider(IGraphDBProvider):
             """
             await self.client.execute_query(
                 query,
-                parameters={"people": people},
+                parameters={"people": people_dicts},
                 txn_id=transaction
             )
-            return True
+            self.logger.debug(f"Upserted {len(people)} people records")
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
             return False
@@ -13349,9 +13600,13 @@ class Neo4jProvider(IGraphDBProvider):
         """Get list of app IDs the user has access to."""
         try:
             query = """
-            MATCH (u:User {id: $user_key})-[:USER_APP_RELATION]->(app:App)
-            WHERE app IS NOT NULL
-            RETURN app.id AS app_id
+            MATCH (u:User {id: $user_key})
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app1:App)
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            UNWIND app_list AS app
+            WITH app WHERE app IS NOT NULL
+            RETURN DISTINCT app.id AS app_id
             """
             results = await self.client.execute_query(
                 query,
@@ -13368,7 +13623,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str,
         org_id: str,
         parent_id: str | None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        parent_type: str | None = None,
     ) -> dict[str, Any]:
         """
         Get user's context-level permissions.
@@ -13402,7 +13658,6 @@ class Neo4jProvider(IGraphDBProvider):
                 )
             else:
                 # Node level - use generic permission checker
-                # Generate permission calls for all node types
                 record_permission_call = self._get_permission_role_cypher(
                     node_type="record",
                     node_var="record",
@@ -13419,60 +13674,48 @@ class Neo4jProvider(IGraphDBProvider):
                     user_var="u"
                 )
 
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
+                context_perm_return = """
+                WITH coalesce(permission_role, 'READER') AS final_role
 
-                // Find the node (could be Record, App, or RecordGroup)
-                OPTIONAL MATCH (record:Record {{id: $parent_id}})
-                OPTIONAL MATCH (app:App {{id: $parent_id}})
-                OPTIONAL MATCH (rg:RecordGroup {{id: $parent_id}})
-
-                WITH u, record, app, rg,
-                     coalesce(record, app, rg) AS node,
-                     record IS NOT NULL AS is_record,
-                     app IS NOT NULL AS is_app,
-                     rg IS NOT NULL AS is_rg
-
-                WHERE node IS NOT NULL
-
-                // Get permission for Records
-                CALL {{
-                    WITH u, record, is_record
-                    WITH u, record
-                    WHERE is_record
-                    {record_permission_call}
-                    RETURN permission_role AS record_perm
-                }}
-
-                // Get permission for RecordGroups
-                CALL {{
-                    WITH u, rg, is_rg
-                    WITH u, rg
-                    WHERE is_rg
-                    {rg_permission_call}
-                    RETURN permission_role AS rg_perm
-                }}
-
-                // Get permission for Apps
-                CALL {{
-                    WITH u, app, is_app
-                    WITH u, app
-                    WHERE is_app
-                    {app_permission_call}
-                    RETURN permission_role AS app_perm
-                }}
-
-                WITH coalesce(record_perm, rg_perm, app_perm, 'READER') AS final_role
-
-                RETURN {{
+                RETURN {
                     role: final_role,
                     canUpload: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canCreateFolders: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canDelete: final_role IN ['OWNER', 'ADMIN'],
                     canManagePermissions: final_role IN ['OWNER', 'ADMIN']
-                }} AS result
+                } AS result
                 """
+
+                graph_type: str | None = None
+                if parent_type:
+                    graph_type = (
+                        "record" if parent_type in ("folder", "record") else parent_type
+                    )
+
+                if graph_type == "record":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (record:Record {{id: $parent_id}})
+                {record_permission_call}
+                {context_perm_return}
+                """
+                elif graph_type == "recordGroup":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (rg:RecordGroup {{id: $parent_id}})
+                {rg_permission_call}
+                {context_perm_return}
+                """
+                elif graph_type == "app":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (app:App {{id: $parent_id}})
+                {app_permission_call}
+                {context_perm_return}
+                """
+                else:
+                    raise ValueError(f"Invalid or unsupported parent_type: {parent_type}")
 
                 results = await self.client.execute_query(
                     query,
@@ -13490,6 +13733,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "canDelete": False,
                 "canManagePermissions": False
             }
+        except ValueError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub context permissions failed: {str(e)}")
             return {
@@ -14578,28 +14823,30 @@ class Neo4jProvider(IGraphDBProvider):
             // Check if user has USER_APP_RELATION to app
             OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
 
+            // Check if user has path User->Team->App (user in team, team has USER_APP_RELATION to app)
+            OPTIONAL MATCH ({user_var})-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[team_app_rel:USER_APP_RELATION]->({node_var})
+
             // Check if user is admin
-            WITH {node_var}, {user_var}, user_app_rel,
+            WITH {node_var}, {user_var}, user_app_rel, team_app_rel,
                 (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
 
             // Get app scope and check if user is creator
             // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
-            WITH {node_var}, {user_var}, user_app_rel, is_admin,
+            WITH {node_var}, {user_var}, user_app_rel, team_app_rel, is_admin,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
 
             // Determine role based on conditions
             RETURN CASE
-                // If no USER_APP_RELATION, no access
-                WHEN user_app_rel IS NULL THEN null
-
+                // No direct user->app and no team->app: no access
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL THEN null
+                // Access via team (All)->app: READER; admin gets EDITOR
+                WHEN user_app_rel IS NULL AND team_app_rel IS NOT NULL THEN (CASE WHEN is_admin THEN 'EDITOR' ELSE 'READER' END)
                 // Admin users: EDITOR for team apps, OWNER for personal apps
                 WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
                 WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
-
                 // Team app creator gets OWNER role
                 WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
-
                 // Default: READER for regular users with USER_APP_RELATION
                 ELSE 'READER'
             END AS permission_role
@@ -17635,7 +17882,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
-            if app is None:
+            if not app:
                 return None
             user_id = app.get("createdBy")
             if user_id is None:

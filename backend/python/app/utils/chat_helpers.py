@@ -11,6 +11,7 @@ from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupType, SemanticMetadata
 from app.models.entities import (
     Connectors,
+    DealRecord,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,
@@ -88,6 +89,8 @@ class CitationRefMapper:
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
+TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+
 collection_map = {
                     RecordType.TICKET.value: "tickets",
                     RecordType.PROJECT.value: "projects",
@@ -95,6 +98,7 @@ collection_map = {
                     RecordType.MAIL.value: "mails",
                     RecordType.LINK.value: "links",
                     RecordType.MEETING.value: "meetings",
+                    RecordType.DEAL.value: "deals",
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -201,6 +205,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "linked_record_id": graph_doc.get("linkedRecordId"),
             }
             return LinkRecord(**base_args, **specific_args)
+
         elif record_type == RecordType.MEETING.value and graph_doc:
             specific_args = {
                 "record_type": RecordType.MEETING,
@@ -214,6 +219,24 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "recording_url": graph_doc.get("recordingUrl"),
             }
             return MeetingRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.DEAL.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.DEAL,
+                "name": graph_doc.get("name"),
+                "amount": float(graph_doc.get("amount")) if graph_doc.get("amount") is not None else None,
+                "expected_revenue": graph_doc.get("expectedRevenue"),
+                "expected_close_date": graph_doc.get("expectedCloseDate"),
+                "conversion_probability": graph_doc.get("conversionProbability"),
+                "type": graph_doc.get("type"),
+                "owner_id": graph_doc.get("ownerId"),
+                "is_won": graph_doc.get("isWon"),
+                "is_closed": graph_doc.get("isClosed"),
+                "created_date": graph_doc.get("createdDate"),
+                "close_date": graph_doc.get("closeDate"),
+            }
+            return DealRecord(**base_args, **specific_args)
+
         else:
             return None
     except Exception as e:
@@ -721,7 +744,15 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
 
                 record_instance = create_record_instance_from_dict(record, graph_doc)
                 if record_instance:
-                    record["context_metadata"] = record_instance.to_llm_context(frontend_url=frontend_url)
+                    if isinstance(record_instance, DealRecord):
+                        record["context_metadata"] = await record_instance.to_llm_context_with_graph(
+                            frontend_url=frontend_url,
+                            graph_provider=graph_provider,
+                        )
+                    else:
+                        record["context_metadata"] = record_instance.to_llm_context(
+                            frontend_url=frontend_url
+                        )
                 else:
                     record["context_metadata"] = ""
 
@@ -1604,7 +1635,7 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
 
-    Format: url#:~:text=start_text,end_text
+    Format: base URL, then ``#:~:text=`` plus encoded start (and optional ``,end``).
 
     Args:
         base_url: The base URL of the page
@@ -1623,6 +1654,11 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
 
         snippet = text_snippet.strip()
         if not snippet:
+            return base_url
+
+        # If the URL already carries a #:~:text= fragment (set deliberately by a
+        # connector, e.g. Zoom transcript listing page), preserve it as-is.
+        if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
             return base_url
 
         start_text, end_text = extract_start_end_text(snippet)

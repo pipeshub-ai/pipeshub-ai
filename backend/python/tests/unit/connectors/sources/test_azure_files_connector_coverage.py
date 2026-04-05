@@ -44,6 +44,15 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-azf-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -53,6 +62,8 @@ def mock_data_store_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.ensure_team_app_edge = AsyncMock()
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
@@ -81,6 +92,8 @@ def connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="azf-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -417,7 +430,7 @@ class TestAzureFilesExtensionFilter:
 class TestAzureFilesRecordGroups:
     @pytest.mark.asyncio
     async def test_create_record_groups_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_shares(["share1", "share2"])
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
@@ -425,7 +438,7 @@ class TestAzureFilesRecordGroups:
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_with_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = "creator@test.com"
         connector.created_by = "user-1"
         await connector._create_record_groups_for_shares(["share1"])
@@ -436,7 +449,7 @@ class TestAzureFilesRecordGroups:
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = None
         connector.created_by = None
         await connector._create_record_groups_for_shares(["share1"])
@@ -452,7 +465,7 @@ class TestAzureFilesRecordGroups:
 
     @pytest.mark.asyncio
     async def test_create_record_groups_none_share(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_shares([None, "valid"])
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         assert len(args) == 1

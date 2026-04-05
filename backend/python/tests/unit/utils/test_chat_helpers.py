@@ -19,6 +19,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.utils.chat_helpers import (
+    TEXT_FRAGMENT_DIRECTIVE_PREFIX,
     _extract_text_content_recursive,
     _find_first_block_index_recursive,
     build_block_web_url,
@@ -405,7 +406,7 @@ class TestGenerateTextFragmentUrl:
         url = "https://example.com/page"
         snippet = "The quick brown fox jumps over the lazy dog and then some more words follow at the end of the sentence"
         result = generate_text_fragment_url(url, snippet)
-        assert result.startswith("https://example.com/page#:~:text=")
+        assert result.startswith(f"https://example.com/page{TEXT_FRAGMENT_DIRECTIVE_PREFIX}")
 
     def test_url_with_existing_hash_is_stripped(self):
         url = "https://example.com/page#section1"
@@ -413,7 +414,7 @@ class TestGenerateTextFragmentUrl:
         result = generate_text_fragment_url(url, snippet)
         # The old hash should be removed
         assert "#section1" not in result
-        assert "#:~:text=" in result
+        assert TEXT_FRAGMENT_DIRECTIVE_PREFIX in result
 
     def test_no_alphanumeric_snippet_returns_base_url(self):
         url = "https://example.com/page"
@@ -426,6 +427,17 @@ class TestGenerateTextFragmentUrl:
         result = generate_text_fragment_url(url, snippet)
         encoded = quote("hello world", safe="")
         assert encoded in result
+
+    def test_preserves_existing_text_fragment_url(self):
+        """Connector-set text fragment (e.g. Zoom meeting topic) must not be replaced by chunk text."""
+        url = (
+            f"https://zoom.us/recording/meeting/transcript"
+            f"{TEXT_FRAGMENT_DIRECTIVE_PREFIX}python%20basics%20overview"
+        )
+        result = generate_text_fragment_url(
+            url, "Transcript noise from chunk would break link"
+        )
+        assert result == url
 
 
 # ===================================================================

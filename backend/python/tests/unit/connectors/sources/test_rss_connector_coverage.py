@@ -17,7 +17,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.rss.connector import RSSConnector
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,13 @@ def _make_connector():
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.get_all_active_users = AsyncMock(return_value=[])
+    _creator = User(
+        email="user@test.com",
+        org_id="org-1",
+        source_user_id="test-user-id",
+        full_name="Test User",
+    )
+    dep.get_user_by_user_id = AsyncMock(return_value=_creator)
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
@@ -41,6 +48,8 @@ def _make_connector():
         data_store_provider=ds_provider,
         config_service=config_service,
         connector_id="rss-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
 
 
@@ -571,7 +580,9 @@ class TestRunSync:
     async def test_sync_raises_on_general_error(self):
         conn = _make_connector()
         conn.feed_urls = ["https://feed.com/rss"]
-        conn.data_entities_processor.get_all_active_users = AsyncMock(side_effect=Exception("db error"))
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("db error")
+        )
         with pytest.raises(Exception, match="db error"):
             await conn.run_sync()
 

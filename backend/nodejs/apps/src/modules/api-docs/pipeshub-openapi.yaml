@@ -3629,6 +3629,10 @@ components:
           description: "Authentication type (required if connector supports multiple auth methods)"
           enum: [OAUTH, OAUTH_ADMIN_CONSENT, API_TOKEN, USERNAME_PASSWORD, SERVICE_ACCOUNT]
           example: "OAUTH"
+        oauthConfigId:
+          type: string
+          description: "ID of admin-created OAuth App to use (required for non-admin users creating OAuth connectors, optional for admins)"
+          example: "oauth_config_123"
         config:
           type: object
           description: Initial configuration (can also be set after creation)
@@ -15170,6 +15174,14 @@ paths:
                   instanceName: "My Confluence"
                   scope: "personal"
                   authType: "API_TOKEN"
+              slackWithOAuthApp:
+                summary: Slack with OAuth App (Non-Admin)
+                value:
+                  connectorType: "slack"
+                  instanceName: "My Team Slack"
+                  scope: "personal"
+                  authType: "OAUTH"
+                  oauthConfigId: "oauth_config_123"
       responses:
         '201':
           description: Instance created
@@ -15189,11 +15201,19 @@ paths:
             <li>Invalid connector type</li>
             <li>Scope not supported by connector</li>
             <li>Duplicate instance name</li>
+            <li>Non-admin users must select an OAuth App when creating OAuth connectors</li>
             </ul>
         '401':
           description: Unauthorized
         '403':
-          description: Admin required for team-scope connectors
+          description: |
+            Forbidden. Possible reasons:<br>
+            <ul>
+            <li>Admin privileges required for team-scope connectors</li>
+            <li>Non-admin users cannot provide OAuth credentials (clientId, clientSecret, etc.)</li>
+            </ul>
+        '404':
+          description: Selected OAuth App not found or not accessible
 
   /connectors/active:
     get:

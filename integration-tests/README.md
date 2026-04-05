@@ -282,9 +282,11 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). |
 | `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (client_credentials). |
 | `helper/graph_assertions.py` | Neo4j graph validation helpers. |
-| `helper/storage_helpers.py` | Storage SDK helpers (S3, GCS, Azure Blob, Azure Files). |
+| `helper/connector_lifecycle.py` | Shared connector constructor/destructor (upload, sync wait, teardown). |
+| `connectors/<provider>/*_storage_helper.py` | Per-provider storage SDK wrappers (S3, GCS, Azure Blob, Azure Files). |
+| `connectors/<provider>/conftest.py` | Session storage fixture + module connector lifecycle for that provider. |
 | `sample-data/sample_data.py` | Clones sample-data repo and returns path to files. |
-| `connectors/conftest.py` | Session fixtures: client, Neo4j driver, sample_data_root, storage helpers. |
+| `conftest.py` (package root) | Env load, HTML report hooks, session fixtures: Pipeshub client, Neo4j, sample_data_root. |
 | `connectors/*/` | Per-connector lifecycle test modules. |
 | `helper/integration_report.py` | Builds the HTML report (root cause parsing, cascade hints, full tracebacks). |
 | `reports/INTEGRATION_TEST_REPORT_<timestamp>.html` | HTML report per run (only report artifact). |

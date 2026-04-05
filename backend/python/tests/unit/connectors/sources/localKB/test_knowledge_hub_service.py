@@ -693,6 +693,25 @@ class TestGetPermissions:
         assert result.role == "EDITOR"
 
     @pytest.mark.asyncio
+    async def test_forwards_parent_type_to_graph_provider(self, service, mock_graph_provider):
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = {
+            "role": "READER",
+            "canUpload": False,
+            "canCreateFolders": False,
+            "canEdit": False,
+            "canDelete": False,
+            "canManagePermissions": False,
+        }
+        result = await service._get_permissions("uk1", "o1", "app-key", "app")
+        assert result is not None
+        mock_graph_provider.get_knowledge_hub_context_permissions.assert_called_once_with(
+            user_key="uk1",
+            org_id="o1",
+            parent_id="app-key",
+            parent_type="app",
+        )
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_no_role(self, service, mock_graph_provider):
         mock_graph_provider.get_knowledge_hub_context_permissions.return_value = {"role": None}
         result = await service._get_permissions("uk1", "o1", "p1")

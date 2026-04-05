@@ -18,7 +18,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["helper", "connectors*"]
+include = ["helper", "connectors", "connectors.*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

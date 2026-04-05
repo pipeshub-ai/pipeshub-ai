@@ -465,18 +465,19 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Error handling — negative tests
   // =========================================================================
   describe('error handling', () => {
-    // Logger is a singleton shared across test suites. Instead of stubbing
-    // the singleton instance (which causes "already stubbed" errors when
-    // other suites touch it), stub Logger.prototype.error so every instance
-    // picks up the stub regardless of identity.
+    // Stub the singleton instance directly — Logger.getInstance() always
+    // returns the same object, so stubbing its `error` method ensures we
+    // intercept calls from the controller (which holds a reference to the
+    // same singleton).
     let errorStub: sinon.SinonStub
+    const loggerInstance = Logger.getInstance()
 
     beforeEach(() => {
-      // Defensively restore any lingering stub from other suites
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      // Defensively restore any lingering stub
+      if (typeof (loggerInstance.error as any).restore === 'function') {
+        (loggerInstance.error as any).restore()
       }
-      errorStub = sinon.stub(Logger.prototype, 'error')
+      errorStub = sinon.stub(loggerInstance, 'error')
     })
 
     it('should call next(error) when createMCPServer throws', async () => {

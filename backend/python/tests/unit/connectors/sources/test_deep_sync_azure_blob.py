@@ -16,6 +16,7 @@ from app.connectors.sources.azure_blob.connector import (
     get_mimetype_for_azure_blob,
     get_parent_path_from_blob_name,
 )
+from app.models.entities import User
 from app.models.permission import EntityType, PermissionType
 
 
@@ -37,6 +38,15 @@ def mock_dep():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-az-deep",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -46,7 +56,8 @@ def mock_ds_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.ensure_team_app_edge = AsyncMock()
     mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
@@ -82,6 +93,8 @@ def connector(mock_logger, mock_dep, mock_ds_provider, mock_config):
             data_store_provider=mock_ds_provider,
             config_service=mock_config,
             connector_id="az-deep-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     conn.data_source = AsyncMock()
     conn.account_name = "teststorage"
@@ -183,14 +196,14 @@ class TestAzureBlobRunSync:
 
 class TestCreateRecordGroups:
     async def test_team_scope_uses_org_permission(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
         assert permissions[0].entity_type == EntityType.ORG
 
     async def test_personal_scope_uses_creator_permission(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = "creator@t.com"
         connector.created_by = "uid-1"
         await connector._create_record_groups_for_containers(["c1"])
@@ -200,7 +213,7 @@ class TestCreateRecordGroups:
         assert permissions[0].type == PermissionType.OWNER
 
     async def test_personal_scope_no_creator_falls_back_to_org(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = None
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]

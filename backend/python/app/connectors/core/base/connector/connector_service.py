@@ -13,6 +13,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
+from app.connectors.core.registry.connector_builder import ConnectorScope
 
 
 class BaseConnector(ABC):
@@ -24,9 +25,21 @@ class BaseConnector(ABC):
     app: App
     connector_name: Connectors
     connector_id: str
+    scope: str
+    created_by: str
+    creator_email: Optional[str]
 
-    def __init__(self, app: App, logger, data_entities_processor: DataSourceEntitiesProcessor,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
+    def __init__(
+        self,
+        app: App,
+        logger: Logger,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str
+    ) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.app = app
@@ -34,6 +47,9 @@ class BaseConnector(ABC):
         self.data_store_provider = data_store_provider
         self.config_service = config_service
         self.connector_id = connector_id
+        self.scope = scope
+        self.created_by = created_by
+        self.creator_email = None
 
     @abstractmethod
     async def init(self) -> bool:
@@ -114,3 +130,20 @@ class BaseConnector(ABC):
 
     def get_connector_id(self) -> str:
         return self.connector_id
+
+    async def _load_creator_email(self) -> None:
+        """
+        Load and cache the creator's email for personal scope connectors.
+        
+        This is useful for connectors that need to create permissions for the creator.
+        Call this in init() if needed (typically for personal scope connectors).
+        """
+        if self.scope == ConnectorScope.PERSONAL.value and self.created_by:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_user_id(self.created_by)
+                    if user and user.get("email"):
+                        self.creator_email = user.get("email")
+                        self.logger.debug(f"Cached creator email: {self.creator_email}")
+            except Exception as e:
+                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")

@@ -202,3 +202,6 @@ backend/python/requirements.txt
 backend/python/r.txt
 backend/python/uv.lock
 .claude/skills/unit-test/SKILL.md
+
+# others
+tasks
