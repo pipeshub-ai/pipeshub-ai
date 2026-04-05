@@ -94,7 +94,15 @@ describe('Org Routes - handler coverage', () => {
       const handler = findHandler('/', 'post')
       expect(handler).to.exist
 
-      const req = { body: { accountType: 'individual', contactEmail: 'test@example.com', adminFullName: 'Admin', password: 'pass12345' } } as any
+      const req = {
+        body: {
+          accountType: 'business',
+          contactEmail: 'test@example.com',
+          adminFullName: 'Admin',
+          password: 'pass12345',
+          registeredName: 'Test Org',
+        },
+      } as any
       const res = mockRes()
       const next = sinon.stub()
 

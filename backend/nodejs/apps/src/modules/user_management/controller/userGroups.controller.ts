@@ -1,6 +1,5 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
-import { Users } from '../schema/users.schema'; // Adjust path as needed
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -9,21 +8,22 @@ import {
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
 import { groupTypes, UserGroups } from '../schema/userGroup.schema';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import {
+  AddUsersToGroupsResponseSchema,
+  CreateUserGroupResponseSchema,
+  GetAllUserGroupsResponseSchema,
+  GetGroupStatisticsResponseSchema,
+  GetGroupsForUserResponseSchema,
+  GetUsersInGroupResponseSchema,
+  RemoveUsersFromGroupsResponseSchema,
+  UserGroupDocumentResponseSchema,
+} from '../validation/userGroup-validators';
+import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 
 @injectable()
 export class UserGroupController {
   constructor() {}
-
-  async getAllUsers(
-    req: AuthenticatedUserRequest,
-    res: Response,
-  ): Promise<void> {
-    const users = await Users.find({
-      orgId: req.user?.orgId,
-      isDeleted: false,
-    });
-    res.json(users);
-  }
 
   async createUserGroup(
     req: AuthenticatedUserRequest,
@@ -63,7 +63,12 @@ export class UserGroupController {
 
     const group = await newGroup.save();
 
-    res.status(201).json(group);
+    sendValidatedJson(
+      res,
+      CreateUserGroupResponseSchema,
+      group.toJSON(),
+      HTTP_STATUS.CREATED,
+    );
   }
 
   async getAllUserGroups(
@@ -79,7 +84,12 @@ export class UserGroupController {
       .lean()
       .exec();
 
-    res.status(200).json(groups);
+    sendValidatedJson(
+      res,
+      GetAllUserGroupsResponseSchema,
+      groups,
+      HTTP_STATUS.OK,
+    );
   }
 
   async getUserGroupById(
@@ -100,7 +110,12 @@ export class UserGroupController {
       throw new NotFoundError('UserGroup not found');
     }
 
-    res.json(userGroup);
+    sendValidatedJson(
+      res,
+      UserGroupDocumentResponseSchema,
+      userGroup,
+      HTTP_STATUS.OK,
+    );
   }
 
   async updateGroup(
@@ -133,7 +148,12 @@ export class UserGroupController {
 
     await group.save();
 
-    res.status(200).json(group);
+    sendValidatedJson(
+      res,
+      UserGroupDocumentResponseSchema,
+      group.toJSON(),
+      HTTP_STATUS.OK,
+    );
   }
 
   async deleteGroup(
@@ -163,7 +183,12 @@ export class UserGroupController {
 
     await group.save();
 
-    res.status(200).json(group);
+    sendValidatedJson(
+      res,
+      UserGroupDocumentResponseSchema,
+      group.toJSON(),
+      HTTP_STATUS.OK,
+    );
   }
 
   async addUsersToGroups(
@@ -191,7 +216,12 @@ export class UserGroupController {
       throw new BadRequestError('No groups found or updated');
     }
 
-    res.status(200).json({ message: 'Users added to groups successfully' });
+    sendValidatedJson(
+      res,
+      AddUsersToGroupsResponseSchema,
+      { message: 'Users added to groups successfully' },
+      HTTP_STATUS.OK,
+    );
   }
 
   async removeUsersFromGroups(
@@ -219,7 +249,12 @@ export class UserGroupController {
       throw new BadRequestError('No groups found or updated');
     }
 
-    res.status(200).json({ message: 'Users removed from groups successfully' });
+    sendValidatedJson(
+      res,
+      RemoveUsersFromGroupsResponseSchema,
+      { message: 'Users removed from groups successfully' },
+      HTTP_STATUS.OK,
+    );
   }
 
   async getUsersInGroup(
@@ -239,7 +274,15 @@ export class UserGroupController {
       throw new NotFoundError('Group not found');
     }
 
-    res.status(200).json({ users: group.users });
+    const users = (group.users ?? []).map((id: unknown) =>
+      typeof id === 'string' ? id : String(id),
+    );
+    sendValidatedJson(
+      res,
+      GetUsersInGroupResponseSchema,
+      { users },
+      HTTP_STATUS.OK,
+    );
   }
 
   async getGroupsForUser(
@@ -253,9 +296,17 @@ export class UserGroupController {
       orgId,
       users: { $in: [userId] },
       isDeleted: false,
-    }).select('name type');
+    })
+      .select('name type')
+      .lean()
+      .exec();
 
-    res.status(200).json(groups);
+    sendValidatedJson(
+      res,
+      GetGroupsForUserResponseSchema,
+      groups,
+      HTTP_STATUS.OK,
+    );
   }
 
   async getGroupStatistics(
@@ -276,6 +327,11 @@ export class UserGroupController {
       },
     ]);
 
-    res.status(200).json(stats);
+    sendValidatedJson(
+      res,
+      GetGroupStatisticsResponseSchema,
+      stats,
+      HTTP_STATUS.OK,
+    );
   }
 }

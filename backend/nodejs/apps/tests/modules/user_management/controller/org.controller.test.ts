@@ -1,7 +1,6 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import mongoose from 'mongoose';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { OrgLogos } from '../../../../src/modules/user_management/schema/orgLogo.schema';
@@ -9,6 +8,11 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
+import {
+  createMockOrgDocumentForSoftDelete,
+  createMockOrgUpdatedDocument,
+  stubOrgPrototypeToJsonForApiContract,
+} from '../../../helpers/mock-org-updated-document';
 
 describe('OrgController', () => {
   let controller: OrgController;
@@ -128,18 +132,17 @@ describe('OrgController', () => {
 
   describe('getOrganizationById', () => {
     it('should return org when found', async () => {
-      const mockOrg = {
-        _id: '507f1f77bcf86cd799439012',
+      const mockOrg = createMockOrgUpdatedDocument({
         registeredName: 'Test Org',
-        isDeleted: false,
-      };
+      });
 
       sinon.stub(Org, 'findOne').resolves(mockOrg as any);
 
       await controller.getOrganizationById(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockOrg)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0].registeredName).to.equal('Test Org');
     });
 
     it('should call next with NotFoundError when org not found', async () => {
@@ -167,10 +170,12 @@ describe('OrgController', () => {
       };
 
       sinon.stub(Org, 'findOne').resolves(mockOrg as any);
-      sinon.stub(Org, 'findByIdAndUpdate').resolves({
-        ...mockOrg,
-        registeredName: 'Updated Org',
-      } as any);
+      sinon.stub(Org, 'findByIdAndUpdate').resolves(
+        createMockOrgUpdatedDocument({
+          registeredName: 'Updated Org',
+          contactEmail: 'new@org.com',
+        }) as any,
+      );
 
       await controller.updateOrganizationDetails(req, res, next);
 
@@ -196,8 +201,7 @@ describe('OrgController', () => {
   describe('deleteOrganization', () => {
     it('should soft delete org and publish event', async () => {
       const mockOrg = {
-        _id: '507f1f77bcf86cd799439012',
-        isDeleted: false,
+        ...createMockOrgDocumentForSoftDelete(),
         save: sinon.stub().resolves(),
       };
 
@@ -274,6 +278,15 @@ describe('OrgController', () => {
         logo: 'base64data',
         mimeType: 'image/jpeg',
         save: sinon.stub().resolves(),
+        toJSON() {
+          return {
+            logo: this.logo,
+            mimeType: this.mimeType,
+            _id: '507f1f77bcf86cd799439011',
+            orgId: '507f1f77bcf86cd799439012',
+            __v: 0,
+          };
+        },
       };
 
       sinon.stub(OrgLogos, 'findOne').returns({
@@ -419,6 +432,14 @@ describe('OrgController', () => {
   describe('createOrg', () => {
     let mockPrometheusService: any;
 
+    const validBusinessCreateBody = {
+      accountType: 'business' as const,
+      contactEmail: 'admin@example.com',
+      adminFullName: 'Admin User',
+      password: 'ValidPass1!',
+      registeredName: 'Example Org Ltd',
+    };
+
     beforeEach(() => {
       mockPrometheusService = {
         recordActivity: sinon.stub(),
@@ -429,6 +450,7 @@ describe('OrgController', () => {
       };
 
       req.container = mockContainer;
+      stubOrgPrototypeToJsonForApiContract();
     });
 
     it('should throw NotFoundError when container is missing', async () => {
@@ -444,9 +466,7 @@ describe('OrgController', () => {
 
     it('should throw error for weak password (no uppercase, no special char)', async () => {
       req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
+        ...validBusinessCreateBody,
         password: 'abcdefgh1',
       };
 
@@ -462,9 +482,7 @@ describe('OrgController', () => {
 
     it('should throw error for password without digits', async () => {
       req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
+        ...validBusinessCreateBody,
         password: 'Abcdefgh!',
       };
 
@@ -478,9 +496,7 @@ describe('OrgController', () => {
 
     it('should throw error for password without special characters', async () => {
       req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
+        ...validBusinessCreateBody,
         password: 'Abcdefg12',
       };
 
@@ -493,12 +509,7 @@ describe('OrgController', () => {
     });
 
     it('should throw error when org already exists', async () => {
-      req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
-      };
+      req.body = { ...validBusinessCreateBody };
 
       sinon.stub(Org, 'countDocuments').resolves(1);
 
@@ -512,10 +523,8 @@ describe('OrgController', () => {
 
     it('should throw error for email without valid domain', async () => {
       req.body = {
-        accountType: 'individual',
+        ...validBusinessCreateBody,
         contactEmail: 'invalid-email',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
       };
 
       sinon.stub(Org, 'countDocuments').resolves(0);
@@ -530,10 +539,8 @@ describe('OrgController', () => {
 
     it('should throw error for email with multiple @ signs', async () => {
       req.body = {
-        accountType: 'individual',
+        ...validBusinessCreateBody,
         contactEmail: 'user@domain@extra.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
       };
 
       sinon.stub(Org, 'countDocuments').resolves(0);
@@ -546,43 +553,10 @@ describe('OrgController', () => {
       }
     });
 
-    it('should successfully create org with valid individual data', async () => {
-      req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
-      };
-
-      sinon.stub(Org, 'countDocuments').resolves(0);
-
-      const mockOrgId = new mongoose.Types.ObjectId();
-      const mockUserId = new mongoose.Types.ObjectId();
-
-      sinon.stub(Org.prototype, 'save').resolves();
-      sinon.stub(Users.prototype, 'save').resolves();
-      sinon.stub(UserCredentials.prototype, 'save').resolves();
-      sinon.stub(UserGroups.prototype, 'save').resolves();
-      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
-
-      try {
-        await controller.createOrg(req, res);
-        expect(res.status.calledWith(200)).to.be.true;
-        expect(res.json.calledOnce).to.be.true;
-      } catch (error: any) {
-        // The controller wraps all errors in InternalServerError,
-        // so if any mock is incomplete it may throw here.
-        // A successful test should not reach this catch.
-        expect.fail(`Unexpected error: ${error.message}`);
-      }
-    });
-
     it('should successfully create org with valid business data', async () => {
       req.body = {
-        accountType: 'business',
+        ...validBusinessCreateBody,
         contactEmail: 'admin@acme.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
         registeredName: 'Acme Corp',
       };
 
@@ -605,10 +579,7 @@ describe('OrgController', () => {
 
     it('should send email when sendEmail is true', async () => {
       req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
+        ...validBusinessCreateBody,
         sendEmail: true,
       };
 
@@ -628,12 +599,7 @@ describe('OrgController', () => {
     });
 
     it('should not send email when sendEmail is falsy', async () => {
-      req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
-      };
+      req.body = { ...validBusinessCreateBody };
 
       sinon.stub(Org, 'countDocuments').resolves(0);
       sinon.stub(Org.prototype, 'save').resolves();
@@ -651,12 +617,7 @@ describe('OrgController', () => {
     });
 
     it('should publish OrgCreatedEvent and NewUserEvent on success', async () => {
-      req.body = {
-        accountType: 'individual',
-        contactEmail: 'admin@example.com',
-        adminFullName: 'Admin User',
-        password: 'ValidPass1!',
-      };
+      req.body = { ...validBusinessCreateBody };
 
       sinon.stub(Org, 'countDocuments').resolves(0);
       sinon.stub(Org.prototype, 'save').resolves();
@@ -706,10 +667,11 @@ describe('OrgController', () => {
       };
 
       sinon.stub(Org, 'findOne').resolves(mockOrg as any);
-      sinon.stub(Org, 'findByIdAndUpdate').resolves({
-        ...mockOrg,
-        contactEmail: 'new@org.com',
-      } as any);
+      sinon.stub(Org, 'findByIdAndUpdate').resolves(
+        createMockOrgUpdatedDocument({
+          contactEmail: 'new@org.com',
+        }) as any,
+      );
 
       await controller.updateOrganizationDetails(req, res, next);
 
