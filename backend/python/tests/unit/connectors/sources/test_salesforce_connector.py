@@ -26,9 +26,12 @@ from app.connectors.sources.salesforce.connector import (
     USER_GROUPS_SYNC_POINT_KEY,
     MessageSegment,
     RecordUpdate,
+    SalesforceAccount,
     SalesforceCase,
     SalesforceConnector,
     SalesforceContentVersion,
+    SalesforceLead,
+    SalesforceLineItem,
     SalesforceOpportunity,
     SalesforceProduct,
     SalesforceRole,
@@ -1004,14 +1007,14 @@ class TestParseOpportunities:
 
     def test_returns_first_won_close_date(self):
         connector = _make_connector()
-        acc = {
-            "Opportunities": {
+        acc = SalesforceAccount(
+            Opportunities={
                 "records": [
                     {"IsWon": True, "IsClosed": True, "CloseDate": "2024-01-15"},
                     {"IsWon": True, "IsClosed": True, "CloseDate": "2024-06-01"},
                 ]
             }
-        }
+        )
         end_time_ms, active_customer = connector._parse_opportunities(acc)
         assert end_time_ms is not None
         # Should be the first won close date
@@ -1019,26 +1022,26 @@ class TestParseOpportunities:
 
     def test_active_customer_when_open_opportunity(self):
         connector = _make_connector()
-        acc = {
-            "Opportunities": {
+        acc = SalesforceAccount(
+            Opportunities={
                 "records": [
                     {"IsWon": False, "IsClosed": False, "CloseDate": "2024-12-01"},
                 ]
             }
-        }
+        )
         _, active_customer = connector._parse_opportunities(acc)
         assert active_customer is True
 
     def test_returns_none_when_no_opportunities(self):
         connector = _make_connector()
-        acc = {"Opportunities": {"records": []}}
+        acc = SalesforceAccount(Opportunities={"records": []})
         end_time_ms, active_customer = connector._parse_opportunities(acc)
         assert end_time_ms is None
         assert active_customer is False
 
     def test_handles_missing_opportunities_key(self):
         connector = _make_connector()
-        acc = {}
+        acc = SalesforceAccount()
         end_time_ms, active_customer = connector._parse_opportunities(acc)
         assert end_time_ms is None
         assert active_customer is False
@@ -1922,7 +1925,7 @@ class TestSyncAccounts:
         mock_tx.batch_upsert_orgs = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        account = {
+        account = SalesforceAccount.model_validate({
             "Id": "acc-1",
             "Name": "Acme Corp",
             "Website": "https://acme.com",
@@ -1937,7 +1940,7 @@ class TestSyncAccounts:
             "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
             "SystemModstamp": "2024-06-01T00:00:00.000+0000",
             "Opportunities": {"records": []},
-        }
+        })
         await connector._sync_accounts([account])
         connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
@@ -1949,7 +1952,7 @@ class TestSyncAccounts:
         mock_tx.batch_upsert_orgs = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        account = {"Name": "No ID Account", "Opportunities": {"records": []}}
+        account = SalesforceAccount(Name="No ID Account", Opportunities={"records": []})
         await connector._sync_accounts([account])
         # record_groups_with_perms is empty → on_new_record_groups not awaited
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
@@ -1964,7 +1967,7 @@ class TestSyncAccounts:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.delete_edges_from = AsyncMock()
 
-        account = {
+        account = SalesforceAccount.model_validate({
             "Id": "acc-2",
             "Name": "BigCo",
             "CreatedDate": "2023-01-01T00:00:00.000+0000",
@@ -1974,7 +1977,7 @@ class TestSyncAccounts:
                     {"IsWon": True, "IsClosed": True, "CloseDate": "2024-01-15"},
                 ]
             },
-        }
+        })
         await connector._sync_accounts([account])
         # Should have created customer edge (batch_create_edges called multiple times)
         assert mock_tx.batch_create_edges.await_count >= 1
@@ -2058,15 +2061,13 @@ class TestSyncLeads:
     @pytest.mark.asyncio
     async def test_skips_lead_without_email(self):
         connector = _make_connector()
-        lead = {
-            "Id": "lead-1",
-            "FirstName": "Bob",
-            "LastName": "Jones",
-            "Company": "Startup",
-            "Status": "New",
-            "CreatedDate": None,
-            "LastModifiedDate": None,
-        }
+        lead = SalesforceLead(
+            Id="lead-1",
+            FirstName="Bob",
+            LastName="Jones",
+            Company="Startup",
+            Status="New",
+        )
         await connector._sync_leads([lead])
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
@@ -2079,24 +2080,22 @@ class TestSyncLeads:
         mock_tx.batch_upsert_people = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        lead = {
-            "Id": "lead-1",
-            "FirstName": "Bob",
-            "LastName": "Jones",
-            "Email": "bob@startup.com",
-            "Phone": "555-9999",
-            "Company": "Startup Inc",
-            "Title": "CEO",
-            "Status": "Open",
-            "Rating": "Hot",
-            "Industry": "Tech",
-            "LeadSource": "Web",
-            "AnnualRevenue": 500000.0,
-            "CreatedDate": "2024-01-01T00:00:00.000+0000",
-            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
-            "ConvertedDate": None,
-            "ConvertedContactId": None,
-        }
+        lead = SalesforceLead(
+            Id="lead-1",
+            FirstName="Bob",
+            LastName="Jones",
+            Email="bob@startup.com",
+            Phone="555-9999",
+            Company="Startup Inc",
+            Title="CEO",
+            Status="Open",
+            Rating="Hot",
+            Industry="Tech",
+            LeadSource="Web",
+            AnnualRevenue=500000.0,
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+        )
         await connector._sync_leads([lead])
         mock_tx.batch_upsert_people.assert_awaited_once()
         mock_tx.batch_create_edges.assert_awaited_once()
@@ -2104,7 +2103,7 @@ class TestSyncLeads:
     @pytest.mark.asyncio
     async def test_skips_lead_without_id(self):
         connector = _make_connector()
-        lead = {"Email": "nobody@example.com", "Company": "Unknown"}
+        lead = SalesforceLead(Email="nobody@example.com", Company="Unknown")
         await connector._sync_leads([lead])
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_upsert_people.assert_not_awaited()
@@ -2906,7 +2905,7 @@ class TestGetUpdatedAccount:
             soql_accounts_query="SELECT Id, Name FROM Account",
         )
         assert len(result) == 1
-        assert result[0]["Id"] == "001000000000001AAA"
+        assert result[0].Id == "001000000000001AAA"
 
     @pytest.mark.asyncio
     async def test_combines_accounts_from_opportunities(self):
@@ -2933,18 +2932,17 @@ class TestGetUpdatedAccount:
 class TestSyncFiles:
 
     def _make_file_row(self, doc_id="doc-1", title="Report.pdf"):
-        return {
-            "ContentDocumentId": doc_id,
-            "Title": title,
-            "PathOnClient": title,
-            "ContentSize": 2048,
-            "FileExtension": "pdf",
-            "FileType": "PDF",
-            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
-            "CreatedDate": "2024-01-01T00:00:00.000+0000",
-            "Checksum": "checksum123",
-            "Id": "ver-1",
-        }
+        return SalesforceContentVersion(
+            ContentDocumentId=doc_id,
+            Title=title,
+            PathOnClient=title,
+            ContentSize=2048,
+            FileExtension="pdf",
+            LastModifiedDate="2024-06-01T00:00:00.000+0000",
+            CreatedDate="2024-01-01T00:00:00.000+0000",
+            Checksum="checksum123",
+            Id="ver-1",
+        )
 
     @pytest.mark.asyncio
     async def test_skips_when_no_file_records(self):
@@ -3054,7 +3052,7 @@ class TestSyncSoldInEdges:
     async def test_skips_when_no_valid_pairs(self):
         """Line items without Product2Id or OpportunityId should be skipped."""
         connector = _make_connector()
-        line_items = [{"OpportunityId": None, "Product2": None}]
+        line_items = [SalesforceLineItem(OpportunityId=None, Product2=None)]
         await connector._sync_sold_in_edges(line_item_records=line_items, api_version="59.0")
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
         mock_tx.batch_create_edges.assert_not_awaited()
@@ -3065,10 +3063,10 @@ class TestSyncSoldInEdges:
         OPP_ID = "006000000000001AAA"
         PROD_ID = "01t000000000001AAA"
         connector = _make_connector()
-        line_items = [{
-            "OpportunityId": OPP_ID,
-            "Product2": {"Id": PROD_ID},
-        }]
+        line_items = [SalesforceLineItem(
+            OpportunityId=OPP_ID,
+            Product2={"Id": PROD_ID},
+        )]
         # Bulk SOQL returns one line item
         connector._soql_query_paginated = AsyncMock(
             return_value=_sf_response(True, {
@@ -3101,7 +3099,7 @@ class TestSyncSoldInEdges:
         OPP_ID = "006000000000001AAA"
         PROD_ID = "01t000000000002AAA"
         connector = _make_connector()
-        line_items = [{"OpportunityId": OPP_ID, "Product2": {"Id": PROD_ID}}]
+        line_items = [SalesforceLineItem(OpportunityId=OPP_ID, Product2={"Id": PROD_ID})]
         connector._soql_query_paginated = AsyncMock(
             return_value=_sf_response(True, {
                 "records": [{

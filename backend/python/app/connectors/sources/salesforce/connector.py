@@ -362,6 +362,64 @@ class SalesforceContact(BaseModel):
     CreatedDate: Optional[str] = None
     LastModifiedDate: Optional[str] = None
 
+class SalesforceAccount(BaseModel):
+    """A row from the Salesforce Account object."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    Id: Optional[str] = None
+    Name: Optional[str] = None
+    Type: Optional[str] = None
+    Rating: Optional[str] = None
+    Website: Optional[str] = None
+    Industry: Optional[str] = None
+    Ownership: Optional[str] = None
+    Phone: Optional[str] = None
+    DunsNumber: Optional[str] = None
+    CreatedDate: Optional[str] = None
+    LastModifiedDate: Optional[str] = None
+    Opportunities: Optional[Dict[str, Any]] = None
+
+
+class SalesforceLead(BaseModel):
+    """A row from the Salesforce Lead object."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    Id: Optional[str] = None
+    FirstName: Optional[str] = None
+    LastName: Optional[str] = None
+    Email: Optional[str] = None
+    Phone: Optional[str] = None
+    Company: Optional[str] = None
+    Title: Optional[str] = None
+    Status: Optional[str] = None
+    Rating: Optional[str] = None
+    Industry: Optional[str] = None
+    LeadSource: Optional[str] = None
+    AnnualRevenue: Optional[float] = None
+    CreatedDate: Optional[str] = None
+    LastModifiedDate: Optional[str] = None
+    ConvertedDate: Optional[str] = None
+    ConvertedContactId: Optional[str] = None
+
+
+class SalesforceLineItem(BaseModel):
+    """A row from the Salesforce OpportunityLineItem object."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    Id: Optional[str] = None
+    OpportunityId: Optional[str] = None
+    Product2: Optional[Dict[str, Any]] = None
+    UnitPrice: Optional[float] = None
+    Quantity: Optional[float] = None
+    TotalPrice: Optional[float] = None
+    IsDeleted: Optional[bool] = None
+    CreatedDate: Optional[str] = None
+    LastModifiedDate: Optional[str] = None
+
+
 # Sync point keys for incremental sync (time-based)
 USERS_SYNC_POINT_KEY = "users"
 ROLES_SYNC_POINT_KEY = "roles"
@@ -2044,7 +2102,7 @@ class SalesforceConnector(BaseConnector):
                 else:
                     self.logger.info("Full account sync: no previous sync point")
                     response = await self._soql_query_paginated(api_version=api_version, q=soql_accounts_query)
-                    account_records = response.data.get("records", [])
+                    account_records = [SalesforceAccount.model_validate(r) for r in response.data.get("records", [])]
                 await self._sync_accounts(account_records)
                 await self.records_sync_point.update_sync_point(
                     ACCOUNTS_SYNC_POINT_KEY,
@@ -2090,7 +2148,8 @@ class SalesforceConnector(BaseConnector):
                     soql_leads_query = f"{base_leads_soql} ORDER BY LastModifiedDate ASC"
                     self.logger.info("Full leads sync: no previous sync point")
                 response = await self._soql_query_paginated(api_version=api_version, q=soql_leads_query)
-                await self._sync_leads(response.data.get("records", []))
+                lead_records = [SalesforceLead.model_validate(r) for r in response.data.get("records", [])]
+                await self._sync_leads(lead_records)
                 await self.records_sync_point.update_sync_point(
                     LEADS_SYNC_POINT_KEY,
                     {"lastSyncTimestamp": get_epoch_timestamp_in_ms()},
@@ -2144,7 +2203,10 @@ class SalesforceConnector(BaseConnector):
                     soql_sold_in_query = f"{base_sold_in_soql} ORDER BY LastModifiedDate ASC"
                     self.logger.info("Full OpportunityLineItem sync: no product sync point filter")
                 sold_in_response = await self._soql_query_paginated(api_version=api_version, q=soql_sold_in_query, queryAll=True)
-                sold_in_records = (sold_in_response.data or {}).get("records", [])
+                sold_in_records = [
+                    SalesforceLineItem.model_validate(r)
+                    for r in (sold_in_response.data or {}).get("records", [])
+                ]
                 self.logger.info("Fetched %s OpportunityLineItem records for soldIn edges", len(sold_in_records))
                 await self._sync_sold_in_edges(sold_in_records, api_version)
                 await self.records_sync_point.update_sync_point(
@@ -2583,15 +2645,15 @@ class SalesforceConnector(BaseConnector):
             raise
 
     def _parse_opportunities(
-        self, acc: Dict[str, Any]
+        self, acc: SalesforceAccount
     ) -> Tuple[Optional[int], bool]:
         """
-        Parse Opportunities subquery on an Account dict (already sorted by CloseDate ASC).
+        Parse Opportunities subquery on a SalesforceAccount (already sorted by CloseDate ASC).
         Returns (end_time_ms, active_customer):
         - end_time_ms: first won opportunity CloseDate (epoch ms), or None.
         - active_customer: True if any opportunity has IsClosed == False.
         """
-        opportunities = acc.get("Opportunities") or {}
+        opportunities = acc.Opportunities or {}
         records = opportunities.get("records") or []
         end_time_ms: Optional[int] = None
         active_customer = False
@@ -3248,7 +3310,7 @@ class SalesforceConnector(BaseConnector):
         self,
         api_version: str,
         files_last_ts_ms: Optional[int],
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SalesforceContentVersion]:
         """
         Fetch ContentVersion records for incremental sync.
 
@@ -3270,11 +3332,12 @@ class SalesforceConnector(BaseConnector):
             self.logger.info("Full files sync: no previous sync point")
 
         response = await self._soql_query_paginated(api_version=api_version, q=soql)
-        return (response.data or {}).get("records", [])
+        records = (response.data or {}).get("records", [])
+        return [SalesforceContentVersion.model_validate(r) for r in records]
 
     async def _get_updated_account(
         self, api_version: str, soql_datetime: str, soql_accounts_query: str
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SalesforceAccount]:
     
         # Accounts changed directly
         query_a = f"SELECT Id FROM Account WHERE SystemModstamp >= {soql_datetime}"
@@ -3301,7 +3364,7 @@ class SalesforceConnector(BaseConnector):
         # Step 2: Combine and fetch full records (batch IN clause; Salesforce limit 500)
         main_select = soql_accounts_query
         id_list = list(ids_from_accounts)
-        all_records: List[Dict[str, Any]] = []
+        all_records: List[SalesforceAccount] = []
         batch_size = 500
         for i in range(0, len(id_list), batch_size):
             batch_ids = id_list[i : i + batch_size]
@@ -3309,7 +3372,10 @@ class SalesforceConnector(BaseConnector):
             main_query = f"{main_select} WHERE Id IN ('{in_clause}')"
             response = await self._soql_query_paginated(api_version=api_version, q=main_query)
             if response.success and response.data:
-                all_records.extend(response.data.get("records") or [])
+                all_records.extend(
+                    SalesforceAccount.model_validate(r)
+                    for r in (response.data.get("records") or [])
+                )
         self.logger.info(
             "Incremental account sync: fetched %s accounts for %s changed IDs",
             len(all_records),
@@ -3317,7 +3383,7 @@ class SalesforceConnector(BaseConnector):
         )
         return all_records
 
-    async def _sync_accounts(self, account_records: List[Dict[str, Any]]) -> None:
+    async def _sync_accounts(self, account_records: List[SalesforceAccount]) -> None:
         """
         Fetch all Salesforce accounts, create org nodes (accountType=enterprise, isExternal=true) for each,
         create one record group per account (SALESFORCE_ORG), create prospect edges (registered org -> account org),
@@ -3338,14 +3404,14 @@ class SalesforceConnector(BaseConnector):
 
             for acc in account_records:
                 try:
-                    account_id = acc.get("Id")
+                    account_id = acc.Id
                     if not account_id:
                         continue
 
-                    acc_type = acc.get("Type")
-                    rating = acc.get("Rating")
-                    created_date = acc.get("CreatedDate")
-                    account_name = acc.get("Name") or ""
+                    acc_type = acc.Type
+                    rating = acc.Rating
+                    created_date = acc.CreatedDate
+                    account_name = acc.Name or ""
 
                     start_time_ms = _parse_salesforce_timestamp(created_date)
                     end_time_ms, active_customer = self._parse_opportunities(acc)
@@ -3355,13 +3421,13 @@ class SalesforceConnector(BaseConnector):
                         account_type="enterprise",
                         is_external=True,
                         is_active=True,
-                        website=acc.get("Website"),
-                        industry=acc.get("Industry"),
-                        ownership_type=acc.get("Ownership"),
-                        phone=acc.get("Phone"),
-                        duns_id=acc.get("DunsNumber"),
+                        website=acc.Website,
+                        industry=acc.Industry,
+                        ownership_type=acc.Ownership,
+                        phone=acc.Phone,
+                        duns_id=acc.DunsNumber,
                         source_created_at=_parse_salesforce_timestamp(created_date),
-                        source_updated_at=_parse_salesforce_timestamp(acc.get("LastModifiedDate"))
+                        source_updated_at=_parse_salesforce_timestamp(acc.LastModifiedDate)
                     )
 
                     record_group = RecordGroup(
@@ -3371,11 +3437,11 @@ class SalesforceConnector(BaseConnector):
                         connector_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_created_at=_parse_salesforce_timestamp(created_date),
-                        source_updated_at=_parse_salesforce_timestamp(acc.get("LastModifiedDate")),
+                        source_updated_at=_parse_salesforce_timestamp(acc.LastModifiedDate),
                     )
                     record_groups_with_perms.append((record_group, []))
 
-                    updated_time_ms = _parse_salesforce_timestamp(acc.get("LastModifiedDate"))
+                    updated_time_ms = _parse_salesforce_timestamp(acc.LastModifiedDate)
                     prospect_edge = {
                         "to_id": org_node.id,
                         "rating": rating,
@@ -3402,7 +3468,7 @@ class SalesforceConnector(BaseConnector):
                     orgs_with_edges.append((org_node, record_group, prospect_edge, customer_edge))
 
                 except Exception as e:
-                    self.logger.warning(f"Failed to process account {acc.get('Id')}: {e}")
+                    self.logger.warning(f"Failed to process account {acc.Id}: {e}")
                     continue
 
             if record_groups_with_perms:
@@ -3687,7 +3753,7 @@ class SalesforceConnector(BaseConnector):
             self.logger.error(f"Error syncing contacts and contact edges: {e}", exc_info=True)
             raise
 
-    async def _sync_leads(self, lead_records: List[Dict[str, Any]]) -> None:
+    async def _sync_leads(self, lead_records: List[SalesforceLead]) -> None:
         """
         Fetch all Salesforce Leads and create lead edges (registered org -> person).
 
@@ -3710,42 +3776,35 @@ class SalesforceConnector(BaseConnector):
 
             for lead in lead_records:
                 try:
-                    lead_id = lead.get("Id")
+                    lead_id = lead.Id
                     if not lead_id:
                         continue
 
-                    converted_contact_id = lead.get("ConvertedContactId")
+                    converted_contact_id = lead.ConvertedContactId
                     is_converted = bool(converted_contact_id)
 
                     # lead edge: startTime = CreatedDate, endTime = ConvertedDate if converted, otherwise None
-                    start_time_ms = _parse_salesforce_timestamp(lead.get("CreatedDate"))
+                    start_time_ms = _parse_salesforce_timestamp(lead.CreatedDate)
                     end_time_ms = None
                     if is_converted:
-                        end_time_ms = _parse_salesforce_timestamp(lead.get("ConvertedDate"))
-
-                    annual_revenue = lead.get("AnnualRevenue")
-                    if annual_revenue is not None:
-                        try:
-                            annual_revenue = float(annual_revenue)
-                        except (TypeError, ValueError):
-                            annual_revenue = None
+                        end_time_ms = _parse_salesforce_timestamp(lead.ConvertedDate)
 
                     edge_attrs = {
-                        "company": lead.get("Company"),
-                        "title": lead.get("Title"),
-                        "status": lead.get("Status"),
-                        "rating": lead.get("Rating"),
-                        "industry": lead.get("Industry"),
-                        "leadSource": lead.get("LeadSource"),
-                        "annualRevenue": annual_revenue,
+                        "company": lead.Company,
+                        "title": lead.Title,
+                        "status": lead.Status,
+                        "rating": lead.Rating,
+                        "industry": lead.Industry,
+                        "leadSource": lead.LeadSource,
+                        "annualRevenue": lead.AnnualRevenue,
                         "externalId": lead_id,
                         "startTime": start_time_ms,
                         "endTime": end_time_ms,
                         "createdAtTimestamp": start_time_ms,
-                        "updatedAtTimestamp": _parse_salesforce_timestamp(lead.get("LastModifiedDate")),
+                        "updatedAtTimestamp": _parse_salesforce_timestamp(lead.LastModifiedDate),
                     }
 
-                    lead_email = lead.get("Email")
+                    lead_email = lead.Email
                     if not lead_email:
                         self.logger.warning(
                             f"Skipping lead {lead_id}: missing email required for Person node"
@@ -3754,17 +3813,17 @@ class SalesforceConnector(BaseConnector):
 
                     person = Person(
                             email=lead_email,
-                            first_name=lead.get("FirstName"),
-                            last_name=lead.get("LastName"),
-                            phone=lead.get("Phone"),
-                            created_at=_parse_salesforce_timestamp(lead.get("CreatedDate")),
-                            updated_at=_parse_salesforce_timestamp(lead.get("LastModifiedDate")),
+                            first_name=lead.FirstName,
+                            last_name=lead.LastName,
+                            phone=lead.Phone,
+                            created_at=_parse_salesforce_timestamp(lead.CreatedDate),
+                            updated_at=_parse_salesforce_timestamp(lead.LastModifiedDate),
                         )
 
                     lead_with_edges.append((person, edge_attrs))
 
                 except Exception as e:
-                    self.logger.warning(f"Failed to process lead {lead.get('Id')}: {e}")
+                    self.logger.warning(f"Failed to process lead {lead.Id}: {e}")
                     continue
 
             if lead_with_edges:
@@ -4048,7 +4107,7 @@ class SalesforceConnector(BaseConnector):
             self.logger.error(f"Error syncing opportunities: {e}", exc_info=True)
             raise
 
-    async def _sync_sold_in_edges(self, line_item_records: List[Dict[str, Any]], api_version: str) -> None:
+    async def _sync_sold_in_edges(self, line_item_records: List[SalesforceLineItem], api_version: str) -> None:
         """
         Sync soldIn edges (Product -> Deal) from OpportunityLineItem records.
         For each unique (OpportunityId, Product2Id) pair found in line_item_records,
@@ -4063,9 +4122,9 @@ class SalesforceConnector(BaseConnector):
             # Collect unique (OpportunityId, Product2Id) pairs from the incoming batch
             unique_pairs: Set[Tuple[str, str]] = set()
             for sold_in in line_item_records:
-                product2 = sold_in.get("Product2") or {}
+                product2 = sold_in.Product2 or {}
                 product2_id = product2.get("Id")
-                opp_id = sold_in.get("OpportunityId")
+                opp_id = sold_in.OpportunityId
                 if product2_id and opp_id:
                     unique_pairs.add((opp_id, product2_id))
 
@@ -4427,7 +4486,7 @@ class SalesforceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def _sync_files(self, api_version: str, file_records: List[Dict[str, Any]]) -> None:
+    async def _sync_files(self, api_version: str, file_records: List[SalesforceContentVersion]) -> None:
         """
         Optimized sync of Salesforce Files.
         Reduces memory overhead by using generators and optimized lookups.
@@ -4459,8 +4518,7 @@ class SalesforceConnector(BaseConnector):
 
             # 2. Map Metadata and extract IDs efficiently
             files_by_doc_id: Dict[str, SalesforceContentVersion] = {}
-            for row in file_records:
-                cv = SalesforceContentVersion.model_validate(row)
+            for cv in file_records:
                 if cv.ContentDocumentId:
                     files_by_doc_id[cv.ContentDocumentId] = cv
             unique_doc_ids = list(files_by_doc_id.keys())
