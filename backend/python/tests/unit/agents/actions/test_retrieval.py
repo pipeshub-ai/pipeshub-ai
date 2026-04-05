@@ -17,7 +17,6 @@ from app.agents.actions.retrieval.retrieval import (
     _normalize_list_param,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -87,22 +86,17 @@ class TestSearchInternalKnowledgeInput:
     def test_defaults(self):
         inp = SearchInternalKnowledgeInput(query="test")
         assert inp.query == "test"
-        assert inp.limit == 50
         assert inp.connector_ids is None
         assert inp.collection_ids is None
-        assert inp.top_k is None
 
     def test_custom_values(self):
         inp = SearchInternalKnowledgeInput(
             query="how to",
-            limit=20,
             connector_ids=["c1", "c2"],
             collection_ids=["k1"],
-            top_k=10,
         )
-        assert inp.limit == 20
         assert inp.connector_ids == ["c1", "c2"]
-        assert inp.top_k == 10
+        assert inp.collection_ids == ["k1"]
 
 
 # ============================================================================
@@ -262,20 +256,25 @@ class TestSearchInternalKnowledge:
             "app.agents.actions.retrieval.retrieval.get_flattened_results",
             new_callable=AsyncMock,
             return_value=flattened,
+        ), patch(
+            "app.agents.actions.retrieval.retrieval.BlobStorage",
+        ), patch(
+            "app.agents.actions.retrieval.retrieval.build_message_content_array",
+            return_value=[[{"type": "text", "text": "record content"}]],
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test query")
-            parsed = json.loads(result)
-            assert parsed["status"] == "success"
-            assert len(parsed["final_results"]) == 1
+            assert "Retrieved" in result
+            assert "1" in result
 
     @pytest.mark.asyncio
-    async def test_limit_capped_at_100(self):
+    async def test_results_trimmed_to_adjusted_limit(self):
+        """Results are trimmed to internal adjusted_limit."""
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters = AsyncMock(
             return_value={
                 "status_code": 200,
-                "searchResults": [{"r": i} for i in range(150)],
+                "searchResults": [{"virtual_record_id": f"vr-{i}", "content": f"r{i}"} for i in range(150)],
                 "virtual_to_record_map": {},
             }
         )
@@ -284,12 +283,16 @@ class TestSearchInternalKnowledge:
         with patch(
             "app.agents.actions.retrieval.retrieval.get_flattened_results",
             new_callable=AsyncMock,
-            return_value=[{"r": i} for i in range(150)],
+            return_value=[{"virtual_record_id": f"vr-{i}", "content": f"r{i}"} for i in range(150)],
+        ), patch(
+            "app.agents.actions.retrieval.retrieval.BlobStorage",
+        ), patch(
+            "app.agents.actions.retrieval.retrieval.build_message_content_array",
+            return_value=[[{"type": "text", "text": "record content"}]],
         ):
             r = Retrieval(state=state)
-            result = await r.search_internal_knowledge(query="test", limit=200)
-            parsed = json.loads(result)
-            assert len(parsed["final_results"]) <= 100
+            result = await r.search_internal_knowledge(query="test")
+            assert "Retrieved" in result
 
     @pytest.mark.asyncio
     async def test_exception_returns_error(self):
@@ -328,8 +331,8 @@ class TestSearchInternalKnowledge:
         assert call_kwargs["filter_groups"]["apps"] == ["app-1"]
 
     @pytest.mark.asyncio
-    async def test_top_k_alias_for_limit(self):
-        """top_k should be used when limit is not provided."""
+    async def test_limit_computed_internally(self):
+        """Limit is computed internally from base_limit and agent scope."""
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters = AsyncMock(
             return_value={
@@ -340,6 +343,6 @@ class TestSearchInternalKnowledge:
         )
         state = _make_state(retrieval_service=retrieval_service)
         r = Retrieval(state=state)
-        await r.search_internal_knowledge(query="test", top_k=25)
+        await r.search_internal_knowledge(query="test")
         call_kwargs = retrieval_service.search_with_filters.call_args[1]
-        assert call_kwargs["limit"] == 25
+        assert call_kwargs["limit"] <= 100

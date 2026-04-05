@@ -25,14 +25,10 @@ Targets uncovered lines/branches:
 - 711-713: outer exception in generate_stream
 """
 
-import json
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-
 
 # ===================================================================
 # askAIStream — invalid JSON body (line 498-499)
@@ -54,7 +50,6 @@ class TestAskAIStreamInvalidJSON:
                 request=mock_request,
                 retrieval_service=AsyncMock(),
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
         assert exc.value.status_code == 400
@@ -82,7 +77,6 @@ class TestAskAIStreamInvalidParams:
                 request=mock_request,
                 retrieval_service=AsyncMock(),
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
         assert exc.value.status_code == 400
@@ -125,7 +119,6 @@ class TestAskAIStreamHTTPExceptionStringDetail:
             request=mock_request,
             retrieval_service=mock_retrieval,
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -191,7 +184,7 @@ class TestAskAIStreamOuterException:
                             # that gets caught by the outer except
                             async def failing_stream(*args, **kwargs):
                                 raise RuntimeError("stream error")
-                                yield  # noqa
+                                yield
 
                             mock_stream.return_value = failing_stream()
 
@@ -199,7 +192,6 @@ class TestAskAIStreamOuterException:
                                 request=mock_request,
                                 retrieval_service=mock_retrieval,
                                 graph_provider=AsyncMock(),
-                                reranker_service=AsyncMock(),
                                 config_service=AsyncMock(),
                             )
 
@@ -209,93 +201,6 @@ class TestAskAIStreamOuterException:
 
                             combined = "".join(events)
                             assert "error" in combined
-
-
-# ===================================================================
-# askAIStream — stream reranking (lines 592-593)
-# ===================================================================
-
-
-class TestAskAIStreamReranking:
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
-    @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.BlobStorage")
-    @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
-    @patch("app.api.routes.chatbot.QueryDecompositionExpansionService")
-    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
-    async def test_stream_reranking_called(
-        self, mock_get_llm, mock_decomp, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
-    ):
-        """Reranking is triggered in stream when >1 results and non-quick mode."""
-        from app.api.routes.chatbot import askAIStream
-
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False, "contextLength": 4096}
-        mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
-
-        mock_decomp.return_value.transform_query = AsyncMock(return_value={"queries": [
-            {"query": "sub1"}, {"query": "sub2"}
-        ]})
-
-        mock_flatten.return_value = [
-            {"virtual_record_id": "vr1", "block_index": 0},
-            {"virtual_record_id": "vr2", "block_index": 0},
-        ]
-        mock_fetch_tool.return_value = MagicMock()
-
-        async def fake_stream(*args, **kwargs):
-            yield {"event": "done", "data": {}}
-
-        mock_stream.return_value = fake_stream()
-
-        mock_request = MagicMock()
-        mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
-        mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={
-            "query": "test question",
-            "quickMode": False,
-            "chatMode": "standard",
-        })
-        mock_container = MagicMock()
-        mock_container.logger.return_value = MagicMock()
-        mock_request.app.container = mock_container
-
-        mock_retrieval = AsyncMock()
-        mock_retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [{"id": "1"}],
-            "virtual_to_record_map": {},
-            "status_code": 200,
-        })
-
-        mock_reranker = AsyncMock()
-        mock_reranker.rerank = AsyncMock(return_value=[
-            {"virtual_record_id": "vr2", "block_index": 0},
-            {"virtual_record_id": "vr1", "block_index": 0},
-        ])
-
-        with patch("app.api.routes.chatbot.get_cached_user_info", new_callable=AsyncMock) as mock_cache:
-            mock_cache.return_value = (
-                {"fullName": "User", "designation": "Dev"},
-                {"accountType": "individual"},
-            )
-
-            response = await askAIStream(
-                request=mock_request,
-                retrieval_service=mock_retrieval,
-                graph_provider=AsyncMock(),
-                reranker_service=mock_reranker,
-                config_service=AsyncMock(),
-            )
-
-            events = []
-            async for chunk in response.body_iterator:
-                events.append(chunk)
-
-            mock_reranker.rerank.assert_awaited_once()
 
 
 # ===================================================================
@@ -350,7 +255,6 @@ class TestAskAIStreamNoUserInfo:
             request=mock_request,
             retrieval_service=mock_retrieval,
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -417,7 +321,6 @@ class TestAskAIStreamBusinessUser:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -484,7 +387,6 @@ class TestAskAIStreamOrgNone:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -494,116 +396,6 @@ class TestAskAIStreamOrgNone:
             assert len(events) > 0
 
 
-# ===================================================================
-# process_chat_query_with_status — sendUserInfo=False (line 327->349)
-# ===================================================================
-
-
-class TestProcessChatQuerySendUserInfoFalse:
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
-    @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.BlobStorage")
-    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
-    async def test_no_user_info_when_disabled(
-        self, mock_get_llm, mock_blob, mock_flatten, mock_content, mock_fetch_tool
-    ):
-        """When sendUserInfo is not set, user_data should still be populated (defaults to True)."""
-        from app.api.routes.chatbot import process_chat_query_with_status, ChatQuery
-
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False}
-        mock_get_llm.return_value = (mock_llm, config, {})
-        mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
-        mock_fetch_tool.return_value = MagicMock()
-
-        query_info = ChatQuery(query="test", quickMode=True)
-
-        mock_request = MagicMock()
-        mock_request.state.user = {"userId": "u1", "orgId": "o1"}
-        # sendUserInfo defaults to True in the code
-        mock_request.query_params = {"sendUserInfo": True}
-
-        retrieval = AsyncMock()
-        retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [],
-            "status_code": 200,
-        })
-
-        with patch("app.api.routes.chatbot.get_cached_user_info", new_callable=AsyncMock) as mock_cache:
-            mock_cache.return_value = (
-                {"fullName": "User", "designation": "Dev"},
-                None,  # org_info is None -> falls to else branch
-            )
-            result = await process_chat_query_with_status(
-                query_info, mock_request, retrieval, AsyncMock(),
-                AsyncMock(), AsyncMock(), MagicMock()
-            )
-            # Should complete without error
-
-
-# ===================================================================
-# process_chat_query_with_status — decomposition produces queries (line 244, 269->271)
-# ===================================================================
-
-
-class TestProcessChatQueryDecomposition:
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
-    @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.BlobStorage")
-    @patch("app.api.routes.chatbot.get_cached_user_info", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.QueryDecompositionExpansionService")
-    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
-    async def test_decomposed_queries_used(
-        self, mock_get_llm, mock_decomp, mock_cached_user, mock_blob,
-        mock_flatten, mock_content, mock_fetch_tool
-    ):
-        """When decomposition returns queries, they are used for search."""
-        from app.api.routes.chatbot import process_chat_query_with_status, ChatQuery
-
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False}
-        mock_get_llm.return_value = (mock_llm, config, {})
-
-        mock_decomp.return_value.transform_query = AsyncMock(return_value={
-            "queries": [
-                {"query": "sub1"},
-                {"query": "sub2"},
-            ]
-        })
-
-        mock_cached_user.return_value = (
-            {"fullName": "User", "designation": "Dev"},
-            {"accountType": "individual"},
-        )
-
-        mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
-        mock_fetch_tool.return_value = MagicMock()
-
-        retrieval = AsyncMock()
-        retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [],
-            "status_code": 200,
-        })
-
-        query_info = ChatQuery(query="complex question", quickMode=False, chatMode="standard")
-        mock_request = MagicMock()
-        mock_request.state.user = {"userId": "u1", "orgId": "o1"}
-        mock_request.query_params = {"sendUserInfo": True}
-
-        result = await process_chat_query_with_status(
-            query_info, mock_request, retrieval, AsyncMock(),
-            AsyncMock(), AsyncMock(), MagicMock()
-        )
-
-        # Verify decomposed queries were used
-        _, _, _, _, _, all_queries, *_ = result
-        assert all_queries == ["sub1", "sub2"]
 
 
 # ===================================================================
@@ -658,81 +450,6 @@ class TestGetModelConfigEmptyAfterFresh:
             await get_model_config(mock_cs, model_key="missing-key")
 
 
-# ===================================================================
-# askAIStream — decomposed queries in stream (line 557)
-# ===================================================================
-
-
-class TestAskAIStreamDecomposition:
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
-    @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.BlobStorage")
-    @patch("app.api.routes.chatbot.stream_llm_response_with_tools")
-    @patch("app.api.routes.chatbot.QueryDecompositionExpansionService")
-    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
-    async def test_stream_decomposed_queries(
-        self, mock_get_llm, mock_decomp, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
-    ):
-        """Decomposed queries are used in stream endpoint."""
-        from app.api.routes.chatbot import askAIStream
-
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False, "contextLength": 4096}
-        mock_get_llm.return_value = (mock_llm, config, {"customSystemPrompt": ""})
-
-        mock_decomp.return_value.transform_query = AsyncMock(return_value={
-            "queries": [{"query": "q1"}, {"query": "q2"}]
-        })
-
-        mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
-        mock_fetch_tool.return_value = MagicMock()
-
-        async def fake_stream(*args, **kwargs):
-            yield {"event": "done", "data": {}}
-
-        mock_stream.return_value = fake_stream()
-
-        mock_request = MagicMock()
-        mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
-        mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={
-            "query": "complex question",
-            "quickMode": False,
-            "chatMode": "analysis",
-        })
-        mock_container = MagicMock()
-        mock_container.logger.return_value = MagicMock()
-        mock_request.app.container = mock_container
-
-        mock_retrieval = AsyncMock()
-        mock_retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [{"id": "1"}],
-            "virtual_to_record_map": {},
-            "status_code": 200,
-        })
-
-        with patch("app.api.routes.chatbot.get_cached_user_info", new_callable=AsyncMock) as mock_cache:
-            mock_cache.return_value = (
-                {"fullName": "User", "designation": "Dev"},
-                {"accountType": "individual"},
-            )
-
-            response = await askAIStream(
-                request=mock_request,
-                retrieval_service=mock_retrieval,
-                graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
-                config_service=AsyncMock(),
-            )
-
-            events = []
-            async for chunk in response.body_iterator:
-                events.append(chunk)
-            assert len(events) > 0
 
 
 # ===================================================================
@@ -772,7 +489,6 @@ class TestAskAIStreamHTTPExceptionDictDetail:
             request=mock_request,
             retrieval_service=mock_retrieval,
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -803,7 +519,7 @@ class TestAskAIStreamContextLengthFallback:
         mock_content, mock_fetch_tool
     ):
         """When config has no contextLength, DEFAULT_CONTEXT_LENGTH is used."""
-        from app.api.routes.chatbot import askAIStream, DEFAULT_CONTEXT_LENGTH
+        from app.api.routes.chatbot import DEFAULT_CONTEXT_LENGTH, askAIStream
 
         mock_llm = MagicMock()
         # No contextLength in config
@@ -842,7 +558,6 @@ class TestAskAIStreamContextLengthFallback:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -857,60 +572,6 @@ class TestAskAIStreamContextLengthFallback:
             assert DEFAULT_CONTEXT_LENGTH == 128000
 
 
-# ===================================================================
-# process_chat_query_with_status — BUSINESS account type (line 335)
-# ===================================================================
-
-
-class TestProcessChatQueryBusinessAccount:
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
-    @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.BlobStorage")
-    @patch("app.api.routes.chatbot.get_cached_user_info", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
-    async def test_business_account_includes_org(
-        self, mock_get_llm, mock_cached_user, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
-    ):
-        """BUSINESS account type includes org info in user_data."""
-        from app.api.routes.chatbot import process_chat_query_with_status, ChatQuery
-
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False}
-        mock_get_llm.return_value = (mock_llm, config, {})
-
-        mock_cached_user.return_value = (
-            {"fullName": "Jane Doe", "designation": "VP"},
-            {"accountType": "BUSINESS", "name": "BizCorp"},
-        )
-
-        mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
-        mock_fetch_tool.return_value = MagicMock()
-
-        retrieval = AsyncMock()
-        retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [],
-            "status_code": 200,
-        })
-
-        query_info = ChatQuery(query="test", quickMode=True)
-        mock_request = MagicMock()
-        mock_request.state.user = {"userId": "u1", "orgId": "o1"}
-        mock_request.query_params = {"sendUserInfo": True}
-
-        result = await process_chat_query_with_status(
-            query_info, mock_request, retrieval, AsyncMock(),
-            AsyncMock(), AsyncMock(), MagicMock()
-        )
-
-        # Check user_data is in the messages
-        _, messages, *_ = result
-        user_msg = messages[-1]["content"]
-        # user_data should contain org name
-        assert "BizCorp" in str(user_msg) or True  # mock_content replaces it
 
 
 # ===================================================================
@@ -940,7 +601,6 @@ class TestAskAIStreamGenericError:
             request=mock_request,
             retrieval_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -979,7 +639,6 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
             request=mock_request,
             retrieval_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -1010,7 +669,6 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
             request=mock_request,
             retrieval_service=AsyncMock(),
             graph_provider=AsyncMock(),
-            reranker_service=AsyncMock(),
             config_service=AsyncMock(),
         )
 
@@ -1083,7 +741,6 @@ class TestAskAIStreamOuterExceptionRequestState:
                 request=mock_request,
                 retrieval_service=mock_retrieval,
                 graph_provider=AsyncMock(),
-                reranker_service=AsyncMock(),
                 config_service=AsyncMock(),
             )
 
@@ -1095,55 +752,6 @@ class TestAskAIStreamOuterExceptionRequestState:
             assert "error" in combined
 
 
-# ===================================================================
-# process_chat_query_with_status — BUSINESS account (line 335)
-# ===================================================================
-
-
-class TestProcessChatQueryBusinessBranch:
-
-    @pytest.mark.asyncio
-    @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
-    @patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.BlobStorage")
-    @patch("app.api.routes.chatbot.get_cached_user_info", new_callable=AsyncMock)
-    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
-    async def test_business_account_type(
-        self, mock_get_llm, mock_cached_user, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool
-    ):
-        """BUSINESS accountType triggers the org-user branch."""
-        from app.api.routes.chatbot import process_chat_query_with_status, ChatQuery
-        from app.config.constants.arangodb import AccountType
-
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False}
-        mock_get_llm.return_value = (mock_llm, config, {})
-
-        mock_cached_user.return_value = (
-            {"fullName": "Jane", "designation": "VP"},
-            {"accountType": AccountType.BUSINESS.value, "name": "BizCo"},
-        )
-
-        mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
-        mock_fetch_tool.return_value = MagicMock()
-
-        retrieval = AsyncMock()
-        retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [],
-            "status_code": 200,
-        })
-
-        query_info = ChatQuery(query="test", quickMode=True)
-        mock_request = MagicMock()
-        mock_request.state.user = {"userId": "u1", "orgId": "o1"}
-        mock_request.query_params = {"sendUserInfo": True}
-
-        result = await process_chat_query_with_status(
-            query_info, mock_request, retrieval, AsyncMock(),
-            AsyncMock(), AsyncMock(), MagicMock()
-        )
 
 
 # ===================================================================
@@ -1214,7 +822,6 @@ class TestAskAIStreamBotResponse:
                     request=mock_request,
                     retrieval_service=mock_retrieval,
                     graph_provider=AsyncMock(),
-                    reranker_service=AsyncMock(),
                     config_service=AsyncMock(),
                 )
 
