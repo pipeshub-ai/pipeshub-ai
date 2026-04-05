@@ -1,8 +1,9 @@
 import asyncio
 import json
 from logging import Logger
-from typing import Any, Dict, Optional
+from typing import Optional, override
 
+from pydantic import JsonValue
 from redis.asyncio import Redis
 
 from app.services.messaging.config import RedisStreamsConfig
@@ -19,6 +20,7 @@ class RedisStreamsProducer(IMessagingProducer):
         self.redis: Optional[Redis] = None
         self._lock = asyncio.Lock()
 
+    @override
     async def initialize(self) -> None:
         if self.redis is not None:
             return
@@ -37,41 +39,47 @@ class RedisStreamsProducer(IMessagingProducer):
                 )
                 await self.redis.ping()
                 self.logger.info(
-                    f"Redis Streams producer initialized at {self.config.host}:{self.config.port}"
+                    "Redis Streams producer initialized at %s:%s",
+                    self.config.host,
+                    self.config.port,
                 )
             except Exception as e:
                 self.redis = None
-                self.logger.error(f"Failed to initialize Redis Streams producer: {str(e)}")
+                self.logger.error("Failed to initialize Redis Streams producer: %s", e)
                 raise
 
+    @override
     async def cleanup(self) -> None:
         async with self._lock:
             if self.redis:
                 try:
-                    await self.redis.close()
+                    await self.redis.aclose()
                     self.redis = None
                     self.logger.info("Redis Streams producer stopped successfully")
                 except Exception as e:
-                    self.logger.error(f"Error stopping Redis Streams producer: {str(e)}")
+                    self.logger.error("Error stopping Redis Streams producer: %s", e)
 
+    @override
     async def start(self) -> None:
         if self.redis is None:
             await self.initialize()
 
+    @override
     async def stop(self) -> None:
         await self.cleanup()
 
+    @override
     async def send_message(
         self,
         topic: str,
-        message: Dict[str, Any],
+        message: dict[str, JsonValue],
         key: Optional[str] = None,
     ) -> bool:
         try:
             if self.redis is None:
                 await self.initialize()
 
-            fields = {
+            fields: dict[str, str] = {
                 "value": json.dumps(message),
             }
             if key:
@@ -84,33 +92,31 @@ class RedisStreamsProducer(IMessagingProducer):
                 approximate=True,
             )
 
-            self.logger.info(f"Message successfully published to Redis stream {topic}")
+            self.logger.info("Message successfully published to Redis stream %s", topic)
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to send message to Redis stream: {str(e)}")
-            return False
+            self.logger.error("Failed to send message to Redis stream: %s", e)
+            raise
 
+    @override
     async def send_event(
         self,
         topic: str,
         event_type: str,
-        payload: Dict[str, Any],
+        payload: dict[str, JsonValue],
         key: Optional[str] = None,
     ) -> bool:
-        try:
-            message = {
-                "eventType": event_type,
-                "payload": payload,
-                "timestamp": get_epoch_timestamp_in_ms(),
-            }
+        message: dict[str, JsonValue] = {
+            "eventType": event_type,
+            "payload": payload,
+            "timestamp": get_epoch_timestamp_in_ms(),
+        }
 
-            await self.send_message(topic=topic, message=message, key=key)
-            self.logger.info(
-                f"Successfully sent event with type: {event_type} to topic: {topic}"
-            )
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error sending event: {str(e)}")
-            return False
+        await self.send_message(topic=topic, message=message, key=key)
+        self.logger.info(
+            "Successfully sent event with type: %s to topic: %s",
+            event_type,
+            topic,
+        )
+        return True

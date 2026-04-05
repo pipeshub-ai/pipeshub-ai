@@ -4,16 +4,17 @@ import hashlib
 import os
 import threading
 import time
-from typing import List, Optional, Union
+from typing import Optional
 
 import dotenv
 from cachetools import LRUCache
 
 from app.config.constants.service import config_node_constants
 from app.config.key_value_store import KeyValueStore
+from app.services.messaging.config import RedisConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
-dotenv.load_dotenv()
+_ = dotenv.load_dotenv()
 
 
 
@@ -57,7 +58,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = True) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first
@@ -87,7 +88,7 @@ class ConfigurationService:
                 return env_fallback
             return default
 
-    def _get_env_fallback(self, key: str) -> Union[dict, None]:
+    def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
         if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
@@ -287,7 +288,7 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Failed to clear cache: %s", str(e))
 
-    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def set_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Set configuration value with optional encryption"""
         try:
             self.logger.info("📝 set_config called for key: %s (store type: %s)", key, type(self.store).__name__)
@@ -315,7 +316,7 @@ class ConfigurationService:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
 
-    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def update_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Update configuration value with optional encryption"""
         try:
             # Check if key exists
@@ -416,6 +417,16 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def get_redis_config(self) -> RedisConfig:
+        """Get typed Redis connection configuration."""
+        raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        return RedisConfig(
+            host=raw.get("host", os.getenv("REDIS_HOST", "localhost")),
+            port=int(raw.get("port", os.getenv("REDIS_PORT", "6379"))),
+            password=raw.get("password", os.getenv("REDIS_PASSWORD")) or None,
+            db=int(raw.get("db", os.getenv("REDIS_DB", "0"))),
+        )
+
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         """List all keys in a directory"""
         return await self.store.list_keys_in_directory(directory)

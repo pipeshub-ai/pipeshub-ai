@@ -11,9 +11,8 @@ import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import {
-  getMessageBrokerType,
+  resolveMessageBrokerConfig,
   createMessageProducer,
-  buildRedisBrokerConfig,
 } from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
@@ -77,13 +76,8 @@ export class TokenManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerType = getMessageBrokerType();
-      const messageProducer = createMessageProducer(
-        brokerType,
-        brokerType === 'kafka' ? config.kafka : undefined,
-        brokerType === 'redis' ? buildRedisBrokerConfig(config.redis) : undefined,
-        container.get('Logger'),
-      );
+      const brokerConfig = resolveMessageBrokerConfig(config);
+      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container

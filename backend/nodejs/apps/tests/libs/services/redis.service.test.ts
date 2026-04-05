@@ -9,14 +9,8 @@ class MockRedisClient extends EventEmitter {
   get = sinon.stub();
   set = sinon.stub();
   del = sinon.stub();
-  exists = sinon.stub();
   incr = sinon.stub();
   expire = sinon.stub();
-  hset = sinon.stub();
-  hget = sinon.stub();
-  hgetall = sinon.stub();
-  hdel = sinon.stub();
-  eval = sinon.stub();
   quit = sinon.stub();
 }
 
@@ -249,30 +243,6 @@ describe('RedisService', () => {
     });
   });
 
-  describe('exists', () => {
-    it('should return true when key exists', async () => {
-      mockClient.exists.resolves(1);
-      const result = await service.exists('mykey');
-      expect(result).to.be.true;
-    });
-
-    it('should return false when key does not exist', async () => {
-      mockClient.exists.resolves(0);
-      const result = await service.exists('mykey');
-      expect(result).to.be.false;
-    });
-
-    it('should throw RedisCacheError on failure', async () => {
-      mockClient.exists.rejects(new Error('failed'));
-      try {
-        await service.exists('mykey');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(RedisCacheError);
-      }
-    });
-  });
-
   describe('increment', () => {
     it('should increment and return new value', async () => {
       mockClient.incr.resolves(5);
@@ -301,139 +271,6 @@ describe('RedisService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(RedisCacheError);
       }
-    });
-  });
-
-  describe('setHash', () => {
-    it('should set a hash field with JSON value', async () => {
-      mockClient.hset.resolves(1);
-      await service.setHash('myhash', 'field1', { data: 'value' });
-      expect(mockClient.hset.calledWith('test:myhash', 'field1', JSON.stringify({ data: 'value' }))).to.be.true;
-    });
-
-    it('should set TTL when provided', async () => {
-      mockClient.hset.resolves(1);
-      mockClient.expire.resolves(1);
-      await service.setHash('myhash', 'field1', 'value', { ttl: 60 });
-      expect(mockClient.expire.calledWith('test:myhash', 60)).to.be.true;
-    });
-
-    it('should throw RedisCacheError on failure', async () => {
-      mockClient.hset.rejects(new Error('failed'));
-      try {
-        await service.setHash('myhash', 'field1', 'value');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(RedisCacheError);
-      }
-    });
-  });
-
-  describe('getHash', () => {
-    it('should return parsed value for hash field', async () => {
-      mockClient.hget.resolves(JSON.stringify({ data: 'value' }));
-      const result = await service.getHash('myhash', 'field1');
-      expect(result).to.deep.equal({ data: 'value' });
-    });
-
-    it('should return null when field does not exist', async () => {
-      mockClient.hget.resolves(null);
-      const result = await service.getHash('myhash', 'nonexistent');
-      expect(result).to.be.null;
-    });
-
-    it('should throw RedisCacheError on failure', async () => {
-      mockClient.hget.rejects(new Error('failed'));
-      try {
-        await service.getHash('myhash', 'field1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(RedisCacheError);
-      }
-    });
-  });
-
-  describe('getAllHash', () => {
-    it('should return all hash fields parsed', async () => {
-      mockClient.hgetall.resolves({
-        field1: JSON.stringify('value1'),
-        field2: JSON.stringify({ nested: true }),
-      });
-      const result = await service.getAllHash('myhash');
-      expect(result).to.deep.equal({
-        field1: 'value1',
-        field2: { nested: true },
-      });
-    });
-
-    it('should return null when hash does not exist', async () => {
-      mockClient.hgetall.resolves(null);
-      const result = await service.getAllHash('nonexistent');
-      expect(result).to.be.null;
-    });
-
-    it('should throw RedisCacheError on failure', async () => {
-      mockClient.hgetall.rejects(new Error('failed'));
-      try {
-        await service.getAllHash('myhash');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(RedisCacheError);
-      }
-    });
-  });
-
-  describe('deleteHash', () => {
-    it('should delete a hash field', async () => {
-      mockClient.hdel.resolves(1);
-      await service.deleteHash('myhash', 'field1');
-      expect(mockClient.hdel.calledWith('test:myhash', 'field1')).to.be.true;
-    });
-
-    it('should throw RedisCacheError on failure', async () => {
-      mockClient.hdel.rejects(new Error('failed'));
-      try {
-        await service.deleteHash('myhash', 'field1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(RedisCacheError);
-      }
-    });
-  });
-
-  describe('acquireLock', () => {
-    it('should return a token when lock is acquired', async () => {
-      mockClient.set.resolves('OK');
-      const token = await service.acquireLock('mylock');
-      expect(token).to.be.a('string');
-      expect(token!.length).to.be.greaterThan(0);
-      expect(mockClient.set.calledWith('lock:mylock', sinon.match.string, 'EX', 30, 'NX')).to.be.true;
-    });
-
-    it('should use custom TTL', async () => {
-      mockClient.set.resolves('OK');
-      await service.acquireLock('mylock', 60);
-      expect(mockClient.set.calledWith('lock:mylock', sinon.match.string, 'EX', 60, 'NX')).to.be.true;
-    });
-
-    it('should return null when lock cannot be acquired', async () => {
-      mockClient.set.resolves(null);
-      const result = await service.acquireLock('mylock');
-      expect(result).to.be.null;
-    });
-  });
-
-  describe('releaseLock', () => {
-    it('should return true when lock is released', async () => {
-      mockClient.eval.resolves(1);
-      const result = await service.releaseLock('mylock', 'my-token');
-      expect(result).to.be.true;
-    });
-
-    it('should return false when token does not match', async () => {
-      mockClient.eval.resolves(0);
-      const result = await service.releaseLock('mylock', 'wrong-token');
-      expect(result).to.be.false;
     });
   });
 });

@@ -87,11 +87,11 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
         consumers.append(("aiconfig", aiconfig_consumer))
         logger.info("✅ AI Config consumer started")
 
-        logger.info(f"✅ All {len(consumers)} Kafka consumers started successfully")
+        logger.info(f"✅ All {len(consumers)} message consumers started successfully")
         return consumers
 
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting message consumers: {str(e)}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -108,7 +108,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
     for name, consumer in consumers:
         try:
             await consumer.stop()
-            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+            logger.info(f"✅ {name.title()} message consumer stopped")
             return True
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
@@ -140,13 +140,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
-    # Start all Kafka consumers centrally
+    # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
         app_container.kafka_consumers = consumers
-        logger.info("✅ All Kafka consumers started successfully")
+        logger.info("✅ All message consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
     # Get all organizations
@@ -176,12 +176,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    # Stop all Kafka consumers
+    # Stop all message consumers
     try:
         await stop_kafka_consumers(app_container)
-        logger.info("✅ All Kafka consumers stopped")
+        logger.info("✅ All message consumers stopped")
     except Exception as e:
-        logger.error(f"❌ Error stopping Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error stopping message consumers: {str(e)}")
 
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:

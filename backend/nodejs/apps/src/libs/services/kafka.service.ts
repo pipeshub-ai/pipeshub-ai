@@ -1,5 +1,5 @@
 import { injectable, unmanaged } from 'inversify';
-import { Kafka, Producer, Consumer } from 'kafkajs';
+import { Kafka, Producer, Consumer, Message } from 'kafkajs';
 
 import { KafkaError } from '../errors/kafka.errors';
 import { Logger } from './logger.service';
@@ -138,7 +138,11 @@ export abstract class BaseKafkaProducerConnection
     }
   }
 
-  protected formatMessage<T>(message: StreamMessage<T>) {
+  protected formatMessage<T>(message: StreamMessage<T>): {
+    key: string;
+    value: string;
+    headers?: Record<string, string>;
+  } {
     return {
       key: message.key,
       value: JSON.stringify(message.value),
@@ -146,7 +150,7 @@ export abstract class BaseKafkaProducerConnection
     };
   }
 
-  private async sendToKafka(topic: string, messages: any[]): Promise<void> {
+  private async sendToKafka(topic: string, messages: Message[]): Promise<void> {
     try {
       await this.producer.send({
         topic,
@@ -176,12 +180,12 @@ export abstract class BaseKafkaConsumerConnection
   constructor(@unmanaged() config: KafkaConfig, @unmanaged() logger: Logger) {
     super(config, logger);
     this.consumer = this.kafka.consumer({
-      groupId: config.groupId || `${config.clientId}-group`,
+      groupId: config.groupId ?? `${config.clientId ?? 'default'}-group`,
       maxWaitTimeInMs: 5000,
       retry: {
-        initialRetryTime: config.initialRetryTime || 100,
-        maxRetryTime: config.maxRetryTime || 30000,
-        retries: config.maxRetries || 8,
+        initialRetryTime: config.initialRetryTime ?? 100,
+        maxRetryTime: config.maxRetryTime ?? 30000,
+        retries: config.maxRetries ?? 8,
       },
     });
   }
@@ -245,7 +249,7 @@ export abstract class BaseKafkaConsumerConnection
             }
 
             const parsedMessage: StreamMessage<T> = {
-              key: message.key?.toString() || '',
+              key: message.key?.toString() ?? '',
               value: JSON.parse(message.value.toString()),
             };
 

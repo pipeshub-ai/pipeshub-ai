@@ -1,5 +1,5 @@
 import ssl
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.config.constants.service import config_node_constants
@@ -8,6 +8,13 @@ from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import (
+    IndexingMessageHandler,
+    MessageHandler,
+    PipelineEvent,
+    StreamMessage,
+    Topic,
+)
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -69,13 +76,17 @@ class KafkaUtils:
     @staticmethod
     async def create_entity_kafka_consumer_config(app_container: ConnectorAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for entity events"""
-        return await KafkaUtils._create_base_consumer_config(app_container, "entity_consumer_client", "entity_consumer_group", ["entity-events"])
+        return await KafkaUtils._create_base_consumer_config(
+            app_container, "entity_consumer_client", "entity_consumer_group", [Topic.ENTITY_EVENTS.value]
+        )
 
 
     @staticmethod
     async def create_sync_kafka_consumer_config(app_container: ConnectorAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for sync events"""
-        return await KafkaUtils._create_base_consumer_config(app_container, "sync_consumer_client", "sync_consumer_group", ["sync-events"])
+        return await KafkaUtils._create_base_consumer_config(
+            app_container, "sync_consumer_client", "sync_consumer_group", [Topic.SYNC_EVENTS.value]
+        )
 
 
     @staticmethod
@@ -85,14 +96,16 @@ class KafkaUtils:
             app_container,
             "records_consumer_client",
             "records_consumer_group",
-            ["record-events"],
+            [Topic.RECORD_EVENTS.value],
         )
 
 
     @staticmethod
     async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for AI config events"""
-        return await KafkaUtils._create_base_consumer_config(app_container, "aiconfig_consumer_client", "aiconfig_consumer_group", ["entity-events"])
+        return await KafkaUtils._create_base_consumer_config(
+            app_container, "aiconfig_consumer_client", "aiconfig_consumer_group", [Topic.ENTITY_EVENTS.value]
+        )
 
 
     @staticmethod
@@ -122,26 +135,22 @@ class KafkaUtils:
         return config
 
     @staticmethod
-    async def create_entity_message_handler(app_container: ConnectorAppContainer, graph_provider: IGraphDBProvider) -> Callable[[dict[str, Any]], Awaitable[bool]]:
+    async def create_entity_message_handler(
+        app_container: ConnectorAppContainer, graph_provider: IGraphDBProvider
+    ) -> MessageHandler:
         """Create a message handler for entity events"""
         logger = app_container.logger()
-        # Use graph_provider passed as parameter (already resolved in lifespan)
 
-        # Create the entity event service
         entity_event_service = EntityEventService(
             logger=logger,
             graph_provider=graph_provider,
             app_container=app_container
         )
 
-        async def handle_entity_message(message: dict[str, Any]) -> bool:
-            """Handle incoming entity messages"""
+        async def handle_entity_message(message: StreamMessage) -> bool:
             try:
-                if message is None:  # pyright: ignore[reportUnnecessaryComparison]
-                    logger.warning("Received a None message, likely during shutdown. Skipping.")
-                    return True
-                event_type = message.get("eventType")
-                payload = message.get("payload")
+                event_type = message.eventType
+                payload = message.payload
 
                 if not event_type:
                     logger.error("Missing event_type in message")
@@ -161,41 +170,28 @@ class KafkaUtils:
         return handle_entity_message
 
     @staticmethod
-    async def create_record_message_handler(app_container: IndexingAppContainer) -> Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]:
+    async def create_record_message_handler(
+        app_container: IndexingAppContainer,
+    ) -> IndexingMessageHandler:
         """Create a message handler for record events.
 
-        Returns an async generator function that yields events during processing:
-        - 'parsing_complete': When document parsing is done
-        - 'indexing_complete': When indexing pipeline is done
+        Returns an async generator function that yields PipelineEvent during processing.
         """
         logger = app_container.logger()
-        # Use cached event_processor if available, otherwise resolve it
         event_processor = getattr(app_container, '_event_processor', None)
         if not event_processor:
             event_processor = await app_container.event_processor()
         config_service = app_container.config_service()
-        # Create the entity event service
         record_event_service = RecordEventHandler(
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
         )
 
-        async def handle_record_message(message: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
-            """Handle incoming record messages, yielding events during processing.
-
-            Yields:
-                Dict with 'event' key indicating phase completion:
-                - {'event': 'parsing_complete', 'data': {...}}
-                - {'event': 'indexing_complete', 'data': {...}}
-            """
+        async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
             try:
-                if message is None:  # pyright: ignore[reportUnnecessaryComparison]
-                    logger.warning("Received a None message, likely during shutdown. Skipping.")
-                    return
-
-                event_type = message.get("eventType")
-                payload = message.get("payload")
+                event_type = message.eventType
+                payload = message.payload
 
                 if not event_type:
                     logger.error("Missing event_type in message")
@@ -206,7 +202,6 @@ class KafkaUtils:
                     return
 
                 logger.info(f"Processing record event: {event_type}")
-                # Yield events from the record event service
                 async for event in record_event_service.process_event(event_type, payload):
                     yield event
 
@@ -217,19 +212,16 @@ class KafkaUtils:
         return handle_record_message
 
     @staticmethod
-    async def create_sync_message_handler(app_container: ConnectorAppContainer, graph_provider: IGraphDBProvider) -> Callable[[dict[str, Any]], Awaitable[bool]]:
+    async def create_sync_message_handler(
+        app_container: ConnectorAppContainer, graph_provider: IGraphDBProvider
+    ) -> MessageHandler:
         """Create a message handler for sync events"""
         logger = app_container.logger()
 
-        async def handle_sync_message(message: dict[str, Any]) -> bool:
-            """Handle incoming sync messages"""
+        async def handle_sync_message(message: StreamMessage) -> bool:
             try:
-
-                if message is None:  # pyright: ignore[reportUnnecessaryComparison]
-                    logger.warning("Received a None message, likely during shutdown. Skipping.")
-                    return True
-                event_type = message.get("eventType")
-                payload = message.get("payload", {})
+                event_type = message.eventType
+                payload = message.payload
 
                 if not event_type:
                     logger.error("Missing event_type in sync message")
@@ -262,29 +254,23 @@ class KafkaUtils:
         return handle_sync_message
 
     @staticmethod
-    async def create_aiconfig_message_handler(app_container: QueryAppContainer) -> Callable[[dict[str, Any]], Awaitable[bool]]:
+    async def create_aiconfig_message_handler(
+        app_container: QueryAppContainer,
+    ) -> MessageHandler:
         """Create a message handler for AI config events"""
         logger = app_container.logger()
 
-        # get the retrieval_service from your container
         retrieval_service = await app_container.retrieval_service()
 
-        # Create the AI config event service
         aiconfig_event_service = AiConfigEventService(
             logger=logger,
             retrieval_service=retrieval_service,
         )
 
-        async def handle_aiconfig_message(message: dict[str, Any]) -> bool:
-            """Handle incoming AI config messages"""
+        async def handle_aiconfig_message(message: StreamMessage) -> bool:
             try:
-
-                if message is None:  # pyright: ignore[reportUnnecessaryComparison]
-                    logger.warning("Received a None message, likely during shutdown. Skipping.")
-                    return True
-
-                event_type = message.get("eventType")
-                payload = message.get("payload", {})
+                event_type = message.eventType
+                payload = message.payload
 
                 if not event_type:
                     logger.error("Missing event_type in AI config message")
@@ -293,7 +279,7 @@ class KafkaUtils:
                 # Only process AI configuration events
                 if event_type not in ["llmConfigured", "embeddingModelConfigured"]:
                     logger.debug(f"Skipping non-AI config event: {event_type}")
-                    return True  # Return True to acknowledge the message without processing
+                    return True
 
                 logger.info(f"Processing AI config event: {event_type}")
                 return await aiconfig_event_service.process_event(event_type, payload)
