@@ -34,7 +34,7 @@ interface CitationData {
       categories: string[];
       webUrl?: string;
     };
-    chunkIndex?: string;
+    chunkIndex?: string | number;
   }
 }
 
@@ -82,6 +82,8 @@ const STREAM_FAILURE_MESSAGE =
 const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
+const INLINE_RECORD_CITATION_LINK_PATTERN =
+  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?)\)/g;
 
 // User info cache to avoid redundant API calls
 interface CachedUserInfo {
@@ -1468,6 +1470,64 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
 }
 
+function parseCitationNumber(rawValue: unknown): number | null {
+  if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue > 0) {
+    return rawValue;
+  }
+
+  if (typeof rawValue !== "string") {
+    return null;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function rewriteInlineRecordCitationsForSlack(
+  answerBody: string,
+  citations?: CitationData[],
+): string {
+  if (!answerBody) {
+    return "";
+  }
+
+  const citationNumberToFragmentWebUrl = new Map<number, string>();
+  for (const citation of citations || []) {
+    const citationNumber =
+      parseCitationNumber(citation.citationData.chunkIndex);
+    if (!citationNumber || citationNumberToFragmentWebUrl.has(citationNumber)) {
+      continue;
+    }
+
+    const citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    if (!citationWebUrl || !citationWebUrl.includes("#:~:text=")) {
+      continue;
+    }
+
+    citationNumberToFragmentWebUrl.set(citationNumber, citationWebUrl);
+  }
+  let citationCount = 1;
+  
+  return answerBody.replace(
+    INLINE_RECORD_CITATION_LINK_PATTERN,
+    (_matchedCitationLink, citationNumberText: string) => {
+      const citationNumber = Number.parseInt(citationNumberText, 10);
+      if (!Number.isInteger(citationNumber) || citationNumber <= 0) {
+        return "";
+      }
+      const citationWebUrl = citationNumberToFragmentWebUrl.get(citationNumber);
+      let res = citationWebUrl ? `[<${citationWebUrl}|${citationCount}>]` : "";
+      if (res) {
+        citationCount++;
+      }
+      return res;
+    },
+  );
+}
+
 function buildCitationSources(citations?: CitationData[]): any[]  {
 
   // Deduplicate by recordId, keeping the first occurrence per unique record
@@ -1837,7 +1897,7 @@ async function processSlackMessage(
         return;
       }
 
-      text = text.replace(/\[(\d+)\]\([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?\)/g, '');
+      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, '');
       if (text.length === 0) {
         return;
       }
@@ -2148,8 +2208,10 @@ async function processSlackMessage(
 
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
-    const answerBody = (botResponse.content || "")
-      .replace(/\[(\d+)\]\([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?\)/g, '');
+    const answerBody = rewriteInlineRecordCitationsForSlack(
+      botResponse.content || "",
+      botResponse.citations,
+    );
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
