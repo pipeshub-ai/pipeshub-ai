@@ -60,6 +60,7 @@ from app.connectors.sources.servicenow.servicenow.connector import ServiceNowCon
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
+from app.connectors.sources.salesforce.connector import SalesforceConnector
 
 
 class ConnectorFactory:
@@ -96,6 +97,7 @@ class ConnectorFactory:
         "notion": NotionConnector,
         "zammad": ZammadConnector,
         "zoom": ZoomConnector,
+        "salesforce": SalesforceConnector,
     }
 
     # Beta connector definitions - single source of truth

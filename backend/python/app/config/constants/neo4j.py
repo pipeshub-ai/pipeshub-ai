@@ -69,6 +69,10 @@ class Neo4jLabel(Enum):
     AGENT_TOOLSETS = "AgentToolset"
     AGENT_TOOLS = "AgentTool"
 
+    # Sales
+    DEALS = "Deals"
+    PRODUCTS = "Products"
+
 
 class Neo4jRelationshipType(Enum):
     """Neo4j relationship types mapped from ArangoDB edge collections"""
@@ -90,6 +94,15 @@ class Neo4jRelationshipType(Enum):
     AGENT_HAS_TOOLSET = "AGENT_HAS_TOOLSET"
     TOOLSET_HAS_TOOL = "TOOLSET_HAS_TOOL"
 
+    # Sales relationships
+    SOLD_IN = "SOLD_IN"
+    DEAL_OF = "DEAL_OF"
+    MEMBER_OF = "MEMBER_OF"
+    PROSPECT = "PROSPECT"
+    CUSTOMER = "CUSTOMER"
+    LEAD = "LEAD"
+    CONTACT = "CONTACT"
+    DEAL_INFO = "DEAL_INFO"
 
 # Mapping from ArangoDB CollectionNames to Neo4j Labels
 COLLECTION_TO_LABEL: dict[str, str] = {
@@ -114,6 +127,9 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.DRIVES.value: Neo4jLabel.DRIVES.value,
     CollectionNames.PAGE_TOKENS.value: Neo4jLabel.PAGE_TOKENS.value,
     CollectionNames.BLOCKS.value: Neo4jLabel.BLOCKS.value,
+    CollectionNames.DEALS.value: Neo4jLabel.DEALS.value,
+    CollectionNames.PRODUCTS.value: Neo4jLabel.PRODUCTS.value,
+
     # Tools collections (not in CollectionNames enum, using string names)
     "tools": Neo4jLabel.TOOLS.value,
     "tools_ctags": Neo4jLabel.TOOLS_CTAGS.value,
@@ -153,6 +169,14 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.AGENT_HAS_KNOWLEDGE.value: Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value,
     CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,
     CollectionNames.TOOLSET_HAS_TOOL.value: Neo4jRelationshipType.TOOLSET_HAS_TOOL.value,
+    CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
+    CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,
+    CollectionNames.MEMBER_OF.value: Neo4jRelationshipType.MEMBER_OF.value,
+    CollectionNames.PROSPECT.value: Neo4jRelationshipType.PROSPECT.value,
+    CollectionNames.CUSTOMER.value: Neo4jRelationshipType.CUSTOMER.value,
+    CollectionNames.LEAD.value: Neo4jRelationshipType.LEAD.value,
+    CollectionNames.CONTACT.value: Neo4jRelationshipType.CONTACT.value,
+    CollectionNames.DEAL_INFO.value: Neo4jRelationshipType.DEAL_INFO.value,
 }
 
 

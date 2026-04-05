@@ -21,6 +21,11 @@ def parse_timestamp(timestamp_str: str) -> int:
     # Convert seconds to milliseconds
     return timestamp * 1000
 
+def epoch_ms_to_iso(epoch_ms: int) -> str:
+    """Convert epoch milliseconds to an ISO 8601 UTC datetime string."""
+    dt = datetime.fromtimestamp(epoch_ms / 1000.0, tz=timezone.utc)
+    return dt.isoformat()
+
 def prepare_iso_timestamps(start_time: str, end_time: str) -> tuple[str, str]:
     """Converts start and end time strings to ISO 8601 formatted strings."""
     start_timestamp = parse_timestamp(start_time)

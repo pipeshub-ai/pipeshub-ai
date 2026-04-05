@@ -37,11 +37,13 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    DealRecord,
     FileRecord,
     LinkRecord,
     MailRecord,
     MeetingRecord,
     Person,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -70,6 +72,8 @@ from app.schema.arango.documents import (
     ticket_record_schema,
     user_schema,
     webpage_record_schema,
+    deal_record_schema,
+    product_record_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -81,6 +85,14 @@ from app.schema.arango.edges import (
     record_relations_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
+    deal_of_schema,
+    contact_schema,
+    customer_schema,
+    deal_info_schema,
+    lead_schema,
+    prospect_schema,
+    sold_in_schema,
+    member_of_schema,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
@@ -126,7 +138,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
-    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
+    (CollectionNames.PRODUCTS.value, product_record_schema),
+    (CollectionNames.DEALS.value, deal_record_schema),
 ]
 
 EDGE_COLLECTIONS = [
@@ -146,6 +160,14 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.PROSPECT.value, prospect_schema),
+    (CollectionNames.CUSTOMER.value, customer_schema),
+    (CollectionNames.LEAD.value, lead_schema),
+    (CollectionNames.CONTACT.value, contact_schema),
+    (CollectionNames.DEAL_INFO.value, deal_info_schema),
+    (CollectionNames.DEAL_OF.value, deal_of_schema),
+    (CollectionNames.SOLD_IN.value, sold_in_schema),
+    (CollectionNames.MEMBER_OF.value, member_of_schema),
 ]
 
 
@@ -637,6 +659,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return ProjectRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.MEETINGS.value:
                 return MeetingRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -3100,12 +3126,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return TicketRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.PROJECTS.value:
                 return ProjectRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.MEETINGS.value:
                 return MeetingRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -6581,6 +6611,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+                CollectionNames.DEALS.value,
+                CollectionNames.PRODUCTS.value,
+                CollectionNames.PROSPECT.value,
+                CollectionNames.CUSTOMER.value,
+                CollectionNames.LEAD.value,
+                CollectionNames.CONTACT.value,
+                CollectionNames.DEAL_INFO.value,
+                CollectionNames.DEAL_OF.value,
+                CollectionNames.SOLD_IN.value,
+                CollectionNames.MEMBER_OF.value,
             ]
 
             # Start transaction for node deletions only

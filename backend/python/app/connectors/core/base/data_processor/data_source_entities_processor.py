@@ -81,7 +81,10 @@ class DataSourceEntitiesProcessor:
         RecordType.SHAREPOINT_PAGE,
         RecordType.PROJECT,
         RecordType.LINK,
-        RecordType.TICKET
+        RecordType.TICKET,
+        RecordType.DEAL,
+        RecordType.CASE,
+        RecordType.TASK
     ]
 
     # Record relation types that connectors create for related external records
@@ -185,7 +188,7 @@ class DataSourceEntitiesProcessor:
             return WebpageRecord(**base_params)
         elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)
-        elif parent_record_type == RecordType.TICKET:
+        elif parent_record_type in [RecordType.TICKET, RecordType.CASE, RecordType.TASK]:
             return TicketRecord(**base_params)
         elif parent_record_type == RecordType.PROJECT:
             return ProjectRecord(**base_params)
@@ -1361,6 +1364,7 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_app_group(self, app_group: AppGroup) -> None:
         pass
+
 
 
     async def get_all_active_users(self) -> list[User]:

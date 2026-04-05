@@ -44,10 +44,13 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    DealRecord,
     FileRecord,
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    Person,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -1691,13 +1694,13 @@ class Neo4jProvider(IGraphDBProvider):
                 # Find collection name from label (reverse lookup)
                 from_collection = ""
                 to_collection = ""
-                for coll, lbl_enum in COLLECTION_TO_LABEL.items():
-                    if lbl_enum.value in from_labels:
+                for coll, lbl in COLLECTION_TO_LABEL.items():
+                    if lbl in from_labels:
                         from_collection = coll
                         break
 
-                for coll, lbl_enum in COLLECTION_TO_LABEL.items():
-                    if lbl_enum.value in to_labels:
+                for coll, lbl in COLLECTION_TO_LABEL.items():
+                    if lbl in to_labels:
                         to_collection = coll
                         break
 
@@ -2043,6 +2046,10 @@ class Neo4jProvider(IGraphDBProvider):
                 return LinkRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MEETINGS.value:
                 return MeetingRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -12078,12 +12085,20 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def batch_upsert_people(
         self,
-        people: list[dict],
-        collection: str,
+        people: list[Person],
         transaction: str | None = None
-    ) -> bool | None:
-        """Batch upsert people nodes."""
+    ) -> None:
+        """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
+            if not people:
+                return
+
+            collection = CollectionNames.PEOPLE.value
+            people_dicts = [
+                self._arango_to_neo4j_node(person.to_arango_person(), collection)
+                for person in people
+            ]
+
             label = collection_to_label(collection)
             query = f"""
             UNWIND $people AS person
@@ -12093,10 +12108,10 @@ class Neo4jProvider(IGraphDBProvider):
             """
             await self.client.execute_query(
                 query,
-                parameters={"people": people},
+                parameters={"people": people_dicts},
                 txn_id=transaction
             )
-            return True
+            self.logger.debug(f"Upserted {len(people)} people records")
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
             return False
