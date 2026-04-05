@@ -76,6 +76,14 @@ jobs:
         run: |
           zip -r coverage-report.zip coverage/
 
+      - name: Upload Node.js coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-coverage-report
+          path: backend/nodejs/apps/coverage-report.zip
+          retention-days: 7
+
   python-coverage-check:
     runs-on: ubuntu-latest
 
@@ -151,46 +159,127 @@ jobs:
             zip -r python-coverage-report.zip coverage/
           fi
 
-  send-email-report:
+      - name: Upload Python coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-report
+          path: backend/python/python-coverage-report.zip
+          retention-days: 7
+          if-no-files-found: ignore
+
+  slack-notify:
     runs-on: ubuntu-latest
     needs: [nodejs-coverage-check, python-coverage-check]
     if: always()
 
     steps:
-      - name: Send email report
-        uses: dawidd6/action-send-mail@v3
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
         with:
-          server_address: ${{ secrets.SMTP_HOST }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "Weekly Coverage — Node.js ${{ needs.nodejs-coverage-check.result }} / Python ${{ needs.python-coverage-check.result }} (${{ github.ref_name }})"
-          to: ${{ secrets.PIPESHUB_ENG_GROUP_EMAIL }}
-          from: PipesHub CI <${{ secrets.SMTP_FROM_EMAIL }}>
-          html_body: |
-            <h2>Weekly Coverage Report</h2>
-            <p>Summary of the scheduled unit test and coverage run.</p>
+          path: coverage-reports/
 
-            <h3>Run details</h3>
-            <ul>
-              <li><strong>Trigger:</strong> ${{ github.event_name == 'schedule' && 'Weekly schedule (Monday 06:00 UTC)' || 'Manual workflow dispatch' }}</li>
-              <li><strong>Branch:</strong> ${{ github.ref_name }}</li>
-              <li><strong>Commit:</strong> <code>${{ github.sha }}</code></li>
-              <li><strong>Actor:</strong> <a href="https://github.com/${{ github.actor }}">@${{ github.actor }}</a></li>
-            </ul>
+      - name: Send Slack report
+        id: slack-message
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CI_CHANNEL_ID }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ needs.nodejs-coverage-check.result == 'success' && needs.python-coverage-check.result == 'success' && ':large_green_circle:' || ':red_circle:' }} Weekly Coverage Report"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Trigger:*\n${{ github.event_name == 'schedule' && 'Weekly schedule (Mon 06:00 UTC)' || 'Manual dispatch' }}" },
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${{ github.ref_name }}`" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Node.js:* ${{ needs.nodejs-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 90%, stmts 90%, funcs 90%, branches 80%" },
+                    { "type": "mrkdwn", "text": "*Python:* ${{ needs.python-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 93%" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ needs.nodejs-coverage-check.result == 'success' && needs.python-coverage-check.result == 'success' && ':tada: All coverage thresholds met!' || ':warning: Coverage fell below threshold. Check the workflow run for details.' }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.sha }}` | Actor: <https://github.com/${{ github.actor }}|@${{ github.actor }}>" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Workflow Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
 
-            <h3>Node.js Coverage</h3>
-            <p><strong>Status:</strong> ${{ needs.nodejs-coverage-check.result }}</p>
-            <p>Thresholds (c8 <code>--check-coverage</code>): lines <strong>90%</strong>, statements <strong>90%</strong>, functions <strong>90%</strong>, branches <strong>80%</strong>.</p>
-            <p>${{ needs.nodejs-coverage-check.result == 'success' && '🎉 Node.js tests and coverage thresholds passed.' || '⚠️ Node.js tests failed or coverage fell below threshold. See the workflow log.' }}</p>
+      - name: Upload coverage zips to Slack
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
+          MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+        run: |
+          THREAD_TS=$(echo "$MESSAGE_RESPONSE" | jq -r '.ts // empty')
 
-            <h3>Python Coverage</h3>
-            <p><strong>Status:</strong> ${{ needs.python-coverage-check.result }}</p>
-            <p>Threshold: overall coverage <strong>50%</strong>.</p>
-            <p>${{ needs.python-coverage-check.result == 'success' && '🎉 Python tests and coverage threshold passed.' || '⚠️ Python tests failed or coverage fell below threshold. See the workflow log.' }}</p>
+          upload_file() {
+            local file_path="$1" title="$2"
+            if [ ! -f "$file_path" ]; then
+              echo "Skipping $title — file not found at $file_path"
+              return 0
+            fi
+            local file_size
+            file_size=$(stat -c%s "$file_path")
 
-            <p>
-              <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run on GitHub →</a>
-            </p>
+            local resp
+            resp=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -d "filename=$(basename "$file_path")" \
+              -d "length=$file_size")
+            if [ "$(echo "$resp" | jq -r '.ok')" != "true" ]; then
+              echo "::warning::Failed to get upload URL for $title: $resp"
+              return 0
+            fi
+            local upload_url file_id
+            upload_url=$(echo "$resp" | jq -r '.upload_url')
+            file_id=$(echo "$resp" | jq -r '.file_id')
 
-            <p style="color: #888; font-size: 12px;">This email was sent automatically by PipesHub CI.</p>
+            curl -s -X POST "$upload_url" -F "file=@$file_path"
+
+            local payload="{\"files\":[{\"id\":\"$file_id\",\"title\":\"$title\"}],\"channel_id\":\"$CHANNEL_ID\""
+            if [ -n "$THREAD_TS" ]; then
+              payload="$payload,\"thread_ts\":\"$THREAD_TS\""
+            fi
+            payload="$payload}"
+            curl -s -X POST "https://slack.com/api/files.completeUploadExternal" \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$payload"
+            echo "Uploaded $title"
+          }
+
+          upload_file "coverage-reports/nodejs-coverage-report/coverage-report.zip" "Node.js Coverage Report"
+          upload_file "coverage-reports/python-coverage-report/python-coverage-report.zip" "Python Coverage Report"
