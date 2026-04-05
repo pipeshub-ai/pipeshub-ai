@@ -119,9 +119,9 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=93
           coverage json -o coverage/coverage-summary.json
           coverage html -d coverage/htmlcov
+          coverage report --fail-under=93
 
       - name: Collect Python coverage summary for email
         id: python-coverage-email
