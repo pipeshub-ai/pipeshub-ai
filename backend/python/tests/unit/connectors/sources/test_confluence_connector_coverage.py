@@ -240,14 +240,6 @@ class TestMapConfluencePermission:
         c = _conn()
         assert c._map_confluence_permission("delete", "space") == PermissionType.OWNER
 
-    def test_create_comment(self):
-        c = _conn()
-        assert c._map_confluence_permission("create", "comment") == PermissionType.COMMENT
-
-    def test_delete_comment(self):
-        c = _conn()
-        assert c._map_confluence_permission("delete", "comment") == PermissionType.COMMENT
-
     def test_create_page(self):
         c = _conn()
         assert c._map_confluence_permission("create", "page") == PermissionType.WRITE
@@ -260,13 +252,13 @@ class TestMapConfluencePermission:
         c = _conn()
         assert c._map_confluence_permission("archive", "attachment") == PermissionType.WRITE
 
-    def test_restrict_content(self):
+    def test_restrict_content_uses_default_read(self):
         c = _conn()
-        assert c._map_confluence_permission("restrict_content", "space") == PermissionType.OTHER
+        assert c._map_confluence_permission("restrict_content", "space") == PermissionType.READ
 
-    def test_export(self):
+    def test_export_uses_default_read(self):
         c = _conn()
-        assert c._map_confluence_permission("export", "space") == PermissionType.OTHER
+        assert c._map_confluence_permission("export", "space") == PermissionType.READ
 
 
 # ===========================================================================
@@ -285,7 +277,7 @@ class TestMapPagePermission:
 
     def test_unknown(self):
         c = _conn()
-        assert c._map_page_permission("delete") == PermissionType.OTHER
+        assert c._map_page_permission("delete") == PermissionType.READ
 
 
 # ===========================================================================
@@ -532,104 +524,6 @@ class TestTransformToAttachmentFileRecord:
         }
         result = c._transform_to_attachment_file_record(data, "p", "s")
         assert result is not None
-
-
-# ===========================================================================
-# _transform_to_comment_record
-# ===========================================================================
-
-
-class TestTransformToCommentRecord:
-    def _comment_data(self, **overrides):
-        data = {
-            "id": "cmt-1",
-            "title": "A comment",
-            "version": {"authorId": "user-1", "createdAt": "2025-01-01T00:00:00.000Z", "number": 1},
-            "_links": {"webui": "/comment", "self": "https://company.atlassian.net/wiki/rest/api/content/cmt-1"},
-        }
-        data.update(overrides)
-        return data
-
-    def test_footer_comment(self):
-        c = _conn()
-        result = c._transform_to_comment_record(
-            self._comment_data(), "page-1", "space-1", "footer", None
-        )
-        assert result is not None
-        assert result.record_type == RecordType.COMMENT
-
-    def test_inline_comment(self):
-        c = _conn()
-        data = self._comment_data()
-        data["resolutionStatus"] = True
-        data["properties"] = {"inlineOriginalSelection": "some text"}
-        result = c._transform_to_comment_record(
-            data, "page-1", "space-1", "inline", None
-        )
-        assert result is not None
-        assert result.record_type == RecordType.INLINE_COMMENT
-        assert result.resolution_status == "resolved"
-        assert result.comment_selection == "some text"
-
-    def test_inline_unresolved(self):
-        c = _conn()
-        data = self._comment_data()
-        data["resolutionStatus"] = False
-        result = c._transform_to_comment_record(
-            data, "page-1", "space-1", "inline", None
-        )
-        assert result.resolution_status == "open"
-
-    def test_reply_comment(self):
-        c = _conn()
-        result = c._transform_to_comment_record(
-            self._comment_data(), "page-1", "space-1", "footer", "parent-cmt"
-        )
-        assert result.parent_external_record_id == "parent-cmt"
-        assert result.parent_record_type == RecordType.COMMENT
-
-    def test_missing_id(self):
-        c = _conn()
-        data = self._comment_data()
-        data["id"] = None
-        assert c._transform_to_comment_record(data, "p", "s", "footer", None) is None
-
-    def test_missing_author(self):
-        c = _conn()
-        data = self._comment_data()
-        data["version"] = {"number": 1}
-        assert c._transform_to_comment_record(data, "p", "s", "footer", None) is None
-
-    def test_with_base_url(self):
-        c = _conn()
-        data = self._comment_data()
-        result = c._transform_to_comment_record(
-            data, "page-1", "space-1", "footer", None, base_url="https://wiki.com"
-        )
-        assert result.weburl == "https://wiki.com/comment"
-
-    def test_existing_record_version_bump(self):
-        c = _conn()
-        existing = MagicMock()
-        existing.id = "ex-cmt"
-        existing.version = 0
-        existing.external_revision_id = "0"  # different from 1
-        result = c._transform_to_comment_record(
-            self._comment_data(), "p", "s", "footer", None, existing_record=existing
-        )
-        assert result.id == "ex-cmt"
-        assert result.version == 1
-
-    def test_existing_record_no_change(self):
-        c = _conn()
-        existing = MagicMock()
-        existing.id = "ex-cmt"
-        existing.version = 3
-        existing.external_revision_id = "1"  # same version
-        result = c._transform_to_comment_record(
-            self._comment_data(), "p", "s", "footer", None, existing_record=existing
-        )
-        assert result.version == 3
 
 
 # ===========================================================================
@@ -1214,29 +1108,12 @@ class TestStreamRecord:
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "Test"
-        c._fetch_page_content = AsyncMock(return_value="<p>Hello</p>")
-        result = await c.stream_record(record)
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_stream_comment(self):
-        c = _conn()
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "c1"
-        record.record_name = "Comment"
-        c._fetch_comment_content = AsyncMock(return_value="<p>Comment</p>")
-        result = await c.stream_record(record)
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_stream_inline_comment(self):
-        c = _conn()
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "ic1"
-        record.record_name = "Inline"
-        c._fetch_comment_content = AsyncMock(return_value="<p>Inline</p>")
+        record.weburl = "http://example.com"
+        record.id = "rec-1"
+        record.external_record_group_id = "space-1"
+        c._fetch_page_data_with_adf = AsyncMock(return_value={"id": "p1", "body": {"atlas_doc_format": {"value": "{}"}}})
+        c._process_page_attachments_for_children = AsyncMock(return_value={})
+        c._parse_confluence_page_to_blocks = AsyncMock(return_value=MagicMock(model_dump_json=MagicMock(return_value="{}")))
         result = await c.stream_record(record)
         assert result is not None
 
@@ -1339,77 +1216,6 @@ class TestFetchPageContent:
 
 
 # ===========================================================================
-# _fetch_comment_content
-# ===========================================================================
-
-
-class TestFetchCommentContent:
-    @pytest.mark.asyncio
-    async def test_footer_comment(self):
-        c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_footer_comment_by_id = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
-        }))
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "123"
-        result = await c._fetch_comment_content(record)
-        assert result == "<p>Footer</p>"
-
-    @pytest.mark.asyncio
-    async def test_inline_comment(self):
-        c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_inline_comment_by_id = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
-        }))
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "456"
-        result = await c._fetch_comment_content(record)
-        assert result == "<p>Inline</p>"
-
-    @pytest.mark.asyncio
-    async def test_empty_body(self):
-        c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_footer_comment_by_id = AsyncMock(return_value=_resp(200, {"body": {}}))
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "789"
-        result = await c._fetch_comment_content(record)
-        assert "No content" in result
-
-    @pytest.mark.asyncio
-    async def test_api_failure(self):
-        c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_footer_comment_by_id = AsyncMock(return_value=_resp(404))
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "101"
-        with pytest.raises(HTTPException):
-            await c._fetch_comment_content(record)
-
-    @pytest.mark.asyncio
-    async def test_unsupported_type(self):
-        c = _conn()
-        mock_ds = MagicMock()
-        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.FILE
-        record.external_record_id = "102"
-        with pytest.raises(HTTPException) as exc_info:
-            await c._fetch_comment_content(record)
-        assert exc_info.value.status_code == 400
-
-
-# ===========================================================================
 # reindex_records
 # ===========================================================================
 
@@ -1480,15 +1286,6 @@ class TestCheckAndFetchUpdatedRecord:
         c._check_and_fetch_updated_blogpost = AsyncMock(return_value=None)
         await c._check_and_fetch_updated_record("org1", record)
         c._check_and_fetch_updated_blogpost.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_comment(self):
-        c = _conn()
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        c._check_and_fetch_updated_comment = AsyncMock(return_value=None)
-        await c._check_and_fetch_updated_record("org1", record)
-        c._check_and_fetch_updated_comment.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_file(self):
@@ -1864,10 +1661,10 @@ class TestMapConfluencePermissionEdgeCases:
         result = c._map_confluence_permission("archive", "page")
         assert result == PermissionType.WRITE
 
-    def test_unknown_returns_other(self):
+    def test_unknown_returns_read(self):
         c = _conn()
         result = c._map_confluence_permission("unknown_op", "unknown_target")
-        assert result == PermissionType.OTHER
+        assert result == PermissionType.READ
 
 
 # ===========================================================================
@@ -1877,12 +1674,12 @@ class TestMapPagePermissionEdgeCases:
     def test_delete_permission(self):
         c = _conn()
         result = c._map_page_permission("delete")
-        assert result == PermissionType.OTHER
+        assert result == PermissionType.READ
 
     def test_administer_permission(self):
         c = _conn()
         result = c._map_page_permission("administer")
-        assert result == PermissionType.OTHER
+        assert result == PermissionType.READ
 
 
 # ===========================================================================

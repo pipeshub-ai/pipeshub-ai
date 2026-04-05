@@ -400,7 +400,7 @@ class FileRecord(Record):
             connector_name=connector_name,
             connector_id=arango_base_record.get("connectorId"),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
-            weburl=arango_base_record["webUrl"],
+            weburl=arango_base_record.get("webUrl"),
             external_record_group_id=arango_base_record.get("externalGroupId"),
             record_group_id=arango_base_record.get("recordGroupId"),
             parent_external_record_id=arango_base_record.get("externalParentId"),
