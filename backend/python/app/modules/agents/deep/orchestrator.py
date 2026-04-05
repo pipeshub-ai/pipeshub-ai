@@ -27,6 +27,10 @@ from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
 )
+from app.modules.agents.deep.orchestrator_reflection import (
+    OrchestratorReflectionError,
+    run_orchestrator_with_reflection,
+)
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 
 if TYPE_CHECKING:
@@ -117,6 +121,18 @@ async def orchestrator_node(
         if conv_messages:
             messages.extend(conv_messages)
 
+        # Consume critic feedback whenever present. This must not depend on
+        # iteration index because critic-driven re-plan can happen while
+        # deep_iteration_count is still 0.
+        critic_feedback = state.get("critic_feedback", "")
+        if critic_feedback:
+            from app.modules.agents.deep.orchestrator_critic import (
+                inject_critic_feedback_into_messages,
+            )
+            messages = inject_critic_feedback_into_messages(messages, state)
+            state["critic_feedback"] = ""      # consume — don't re-inject next time
+            state["critic_issues"] = None
+
         # Add continue/retry context from previous iterations
         if iteration > 0:
             continue_ctx = _build_iteration_context(state, log)
@@ -139,20 +155,47 @@ async def orchestrator_node(
         messages.append(HumanMessage(content=user_content))
 
         # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
-        log.info("Requesting task plan from LLM...")
+        log.info("Requesting task plan from LLM (with reflection)...")
         keepalive_task = asyncio.create_task(
             send_keepalive(writer, config, "Planning tasks...")
         )
+    
+        # Build the set of domains that actually have tools so the validator
+        # can check domain references in the plan.
+        available_domains: set[str] = set(tool_groups.keys())
+        # Always allow 'retrieval' / 'knowledge' — these are virtual domains
+        # handled by the knowledge layer, not tool_groups.
+        available_domains.update({"retrieval", "knowledge"})
+        state["_critic_available_domains"] = sorted(available_domains)
+    
         try:
-            response = await llm.ainvoke(messages, config=get_opik_config())
+            plan = await run_orchestrator_with_reflection(
+                llm=llm,
+                messages=messages,
+                available_domains=available_domains,
+                log=log,
+                config=get_opik_config(),
+            )
+        except OrchestratorReflectionError as reflection_err:
+            # Retries exhausted — surface a real error to the user.
+            log.error(
+                "Orchestrator reflection exhausted all retries: %s", reflection_err
+            )
+            state["error"] = {
+                "status": "error",
+                "message": (
+                    "I was unable to build a valid plan for your request after "
+                    "multiple attempts. Please try rephrasing your query or "
+                    "contact support if this persists."
+                ),
+                "status_code": 500,
+                "detail": str(reflection_err),
+            }
+            return state
         finally:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
-        plan = _parse_orchestrator_response(
-            response.content if hasattr(response, "content") else str(response),
-            log,
-        )
 
         # Stream the orchestrator's reasoning to the user
         reasoning = plan.get("reasoning", "")
