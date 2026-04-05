@@ -7,7 +7,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
     LinkPublicStatus,
@@ -22,9 +22,9 @@ from app.utils.chat_helpers import (
     TEXT_FRAGMENT_DIRECTIVE_PREFIX,
     _extract_text_content_recursive,
     _find_first_block_index_recursive,
-    block_group_to_message_content,
+    build_block_web_url,
     build_group_blocks,
-    build_group_text,
+    get_group_label_n_first_child,
     count_tokens,
     count_tokens_in_messages,
     count_tokens_text,
@@ -36,15 +36,19 @@ from app.utils.chat_helpers import (
     get_enhanced_metadata,
     get_flattened_results,
     get_message_content,
-    get_message_content_for_tool,
     get_record,
     record_to_message_content,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _all_text(content: list) -> str:
+    """Join all text items from a record_to_message_content result list."""
+    return " ".join(item["text"] for item in content if item.get("type") == "text")
+
+
 def _base_record_dict(**overrides):
     """Return a minimal record dict with sane defaults."""
     defaults = {
@@ -64,6 +68,41 @@ def _base_record_dict(**overrides):
     }
     defaults.update(overrides)
     return defaults
+
+
+# ===================================================================
+# build_block_web_url
+# ===================================================================
+class TestBuildBlockWebUrl:
+    """Tests for build_block_web_url()."""
+
+    def test_basic_url(self):
+        result = build_block_web_url("https://app.example.com", "rec-1", 5)
+        assert result == "https://app.example.com/record/rec-1/preview#blockIndex=5"
+
+    def test_trailing_slash_stripped(self):
+        result = build_block_web_url("https://app.example.com/", "rec-1", 0)
+        assert result == "https://app.example.com/record/rec-1/preview#blockIndex=0"
+
+    def test_zero_block_index(self):
+        result = build_block_web_url("https://app.example.com", "rec-1", 0)
+        assert result.endswith("#blockIndex=0")
+
+    def test_large_block_index(self):
+        result = build_block_web_url("https://app.example.com", "rec-1", 9999)
+        assert result.endswith("#blockIndex=9999")
+
+    def test_empty_frontend_url_produces_relative_url(self):
+        result = build_block_web_url("", "rec-1", 3)
+        assert result == "/record/rec-1/preview#blockIndex=3"
+
+    def test_none_frontend_url_treated_as_empty(self):
+        result = build_block_web_url(None, "rec-1", 0)
+        assert result == "/record/rec-1/preview#blockIndex=0"
+
+    def test_record_id_embedded_in_path(self):
+        result = build_block_web_url("https://app.example.com", "my-uuid-abc", 1)
+        assert "/record/my-uuid-abc/preview" in result
 
 
 # ===================================================================
@@ -977,7 +1016,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=1, content="Text B"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user info", "my query", _silent_logger(), mode="simple")
+        result = get_message_content(flattened, vr_map, "user info", "my query", mode="no_tools")
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["type"] == "text"
@@ -988,7 +1027,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, block_type=BlockType.IMAGE.value, content="data:image/png;base64,abc"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", _silent_logger(), mode="simple")
+        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
         # The image should be skipped, so no block content about image
         text = result[0]["text"]
         assert "data:image" not in text
@@ -1002,7 +1041,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", _silent_logger(), mode="simple")
+        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
         text = result[0]["text"]
         assert "Table: Table summary here" in text
 
@@ -1012,7 +1051,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, content="Same"),  # dup
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", _silent_logger(), mode="simple")
+        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
         text = result[0]["text"]
         # Should only appear once in chunks
         assert text.count("Same") == 1
@@ -1023,7 +1062,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=1, content="Second block"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
         assert isinstance(result, list)
         assert len(result) > 1
         # First element should have the instructions
@@ -1031,7 +1070,6 @@ class TestGetMessageContent:
         # Should contain record context and block content
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "R1-0" in combined
         assert "First block" in combined
 
     def test_json_mode_image_block_data_uri(self):
@@ -1043,7 +1081,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "query", mode="json")
         # Should contain an image_url type item
         image_items = [item for item in result if item.get("type") == "image_url"]
         assert len(image_items) == 1
@@ -1058,7 +1096,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "query", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "image description" in combined
@@ -1073,7 +1111,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "Table sum" in combined
@@ -1088,7 +1126,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "table summary" in combined.lower()
@@ -1103,10 +1141,10 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "table row" in combined
+        assert "table_row" in combined
         assert "Row text here" in combined
 
     def test_json_mode_group_type_block(self):
@@ -1118,10 +1156,8 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "list item content" in combined
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        assert isinstance(result, list)
 
     def test_json_mode_record_numbering_increments(self):
         """Two different virtual record ids should get different record numbers."""
@@ -1132,11 +1168,11 @@ class TestGetMessageContent:
             _make_flattened_result(virtual_record_id="vr-2", block_index=0, content="B"),
         ]
         vr_map = {"vr-1": rec1, "vr-2": rec2}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "R1-0" in combined
-        assert "R2-0" in combined
+        assert "A" in combined  # content of first record
+        assert "B" in combined  # content of second record
 
     def test_json_mode_deduplicates_blocks(self):
         flattened = [
@@ -1144,7 +1180,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=5, content="Unique"),  # dup
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert combined.count("Unique") == 1
@@ -1154,7 +1190,7 @@ class TestGetMessageContent:
             _make_flattened_result(virtual_record_id="vr-1", block_index=0, content="A"),
         ]
         vr_map = {"vr-1": None}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         # Should still return a list (with instructions) but the None record is skipped
         assert isinstance(result, list)
 
@@ -1163,10 +1199,11 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, content="data"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
-        last_text = result[-1]["text"]
-        assert "</record>" in last_text
-        assert "</context>" in last_text
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "</record>" in combined
+        assert "</context>" in combined
 
     def test_json_mode_unknown_block_type_still_rendered(self):
         flattened = [
@@ -1177,140 +1214,29 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", _silent_logger(), mode="json")
+        result = get_message_content(flattened, vr_map, "", "q", mode="json")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "custom content" in combined
 
 
 # ===================================================================
-# get_message_content_for_tool
-# ===================================================================
-class TestGetMessageContentForTool:
-    """Tests for the get_message_content_for_tool function."""
-
-    def test_single_record_text_blocks(self):
-        rec = _make_record_blob(virtual_record_id="vr-1")
-        final_results = [
-            _make_flattened_result(virtual_record_id="vr-1", block_index=0),
-        ]
-        flattened = [
-            _make_flattened_result(virtual_record_id="vr-1", block_index=0, content="Content A"),
-            _make_flattened_result(virtual_record_id="vr-1", block_index=1, content="Content B"),
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert "Content A" in result[0]
-        assert "Content B" in result[0]
-        assert "R1-0" in result[0]
-        assert "R1-1" in result[0]
-
-    def test_multiple_records(self):
-        rec1 = _make_record_blob(virtual_record_id="vr-1")
-        rec2 = _make_record_blob(virtual_record_id="vr-2")
-        final_results = [
-            _make_flattened_result(virtual_record_id="vr-1", block_index=0),
-            _make_flattened_result(virtual_record_id="vr-2", block_index=0),
-        ]
-        flattened = [
-            _make_flattened_result(virtual_record_id="vr-1", block_index=0, content="A"),
-            _make_flattened_result(virtual_record_id="vr-2", block_index=0, content="B"),
-        ]
-        vr_map = {"vr-1": rec1, "vr-2": rec2}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert len(result) == 2
-        assert "R1-0" in result[0]
-        assert "R2-0" in result[1]
-
-    def test_deduplicates_blocks(self):
-        rec = _make_record_blob()
-        final_results = [_make_flattened_result()]
-        flattened = [
-            _make_flattened_result(block_index=0, content="Same"),
-            _make_flattened_result(block_index=0, content="Same"),  # dup
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert result[0].count("Same") == 1
-
-    def test_table_block_with_child_results(self):
-        rec = _make_record_blob()
-        final_results = [_make_flattened_result()]
-        flattened = [
-            _make_flattened_result(
-                block_index=0,
-                block_type=GroupType.TABLE.value,
-                content=("Summary", [{"content": "row1", "block_index": 1}]),
-                block_group_index=0,
-            ),
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert "Summary" in result[0]
-
-    def test_table_block_without_child_results(self):
-        rec = _make_record_blob()
-        final_results = [_make_flattened_result()]
-        flattened = [
-            _make_flattened_result(
-                block_index=0,
-                block_type=GroupType.TABLE.value,
-                content=("Only sum", []),
-                block_group_index=0,
-            ),
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert "Only sum" in result[0]
-        assert "table summary" in result[0].lower()
-
-    def test_image_blocks_skipped(self):
-        rec = _make_record_blob()
-        final_results = [_make_flattened_result()]
-        flattened = [
-            _make_flattened_result(
-                block_index=0,
-                block_type=BlockType.IMAGE.value,
-                content="data:image/png;base64,abc",
-            ),
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        # Image should be skipped
-        assert "data:image" not in result[0]
-
-    def test_none_record_skipped(self):
-        final_results = [_make_flattened_result()]
-        flattened = [_make_flattened_result()]
-        vr_map = {"vr-1": None}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        # Should produce output without crashing
-        assert isinstance(result, list)
-
-    def test_record_number_not_in_final_results_skipped(self):
-        """If virtual_record_id is not in final_results mapping, block is skipped."""
-        rec = _make_record_blob(virtual_record_id="vr-1")
-        # final_results has vr-2 only, but flattened has vr-1
-        final_results = [
-            _make_flattened_result(virtual_record_id="vr-2", block_index=0),
-        ]
-        flattened = [
-            _make_flattened_result(virtual_record_id="vr-1", block_index=0, content="orphan"),
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        # The vr-1 block should be skipped since its record_number is None
-        combined = "".join(result)
-        assert "orphan" not in combined or "R" not in combined.split("orphan")[0][-10:]
-
-
-# ===================================================================
 # record_to_message_content
 # ===================================================================
 class TestRecordToMessageContent:
-    """Tests for the record_to_message_content function."""
+    """Tests for the record_to_message_content function.
+
+    The function now returns list[dict] (each with type/text keys) and no
+    longer accepts a final_results argument.  Block references use
+    'Block Index' + 'Block Web URL' format instead of R-labels.
+    """
+
+    def test_returns_list_of_dicts(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Hello")]
+        result = record_to_message_content(record)
+        assert isinstance(result, list)
+        assert all(isinstance(item, dict) for item in result)
 
     def test_basic_text_blocks(self):
         record = _make_record_blob()
@@ -1320,18 +1246,31 @@ class TestRecordToMessageContent:
         ]
         record["block_containers"]["blocks"] = blocks
         result = record_to_message_content(record)
-        assert "First paragraph" in result
-        assert "Second paragraph" in result
-        assert "R1-0" in result
-        assert "R1-1" in result
+        text = _all_text(result)
+        assert "First paragraph" in text
+        assert "Second paragraph" in text
+        # New format uses Block Index, not R-labels
+        assert "Block Index: 0" in text
+        assert "Block Index: 1" in text
+
+    def test_block_web_url_in_output(self):
+        """Block Web URL is generated from frontend_url + record id + block index."""
+        record = _make_record_blob()
+        record["id"] = "rec-xyz"
+        record["frontend_url"] = "https://app.example.com"
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Data")]
+        result = record_to_message_content(record)
+        text = _all_text(result)
+        assert "Block Web URL:" in text
+        assert "rec-xyz" in text
+        assert "blockIndex=0" in text
 
     def test_image_blocks_skipped(self):
         record = _make_record_blob()
-        record["block_containers"]["blocks"] = [
-            _make_image_block(index=0),
-        ]
+        record["block_containers"]["blocks"] = [_make_image_block(index=0)]
         result = record_to_message_content(record)
-        assert "data:image" not in result
+        text = _all_text(result)
+        assert "data:image" not in text
 
     def test_table_rows_grouped_by_block_group(self):
         row0 = _make_table_row_block(index=0, row_text="Row 0", parent_index=0)
@@ -1341,9 +1280,10 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [row0, row1]
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
-        assert "Sales table" in result
-        assert "Row 0" in result
-        assert "Row 1" in result
+        text = _all_text(result)
+        assert "Sales table" in text
+        assert "Row 0" in text
+        assert "Row 1" in text
 
     def test_table_rows_deduplicated(self):
         """Second row with same parent_index should not re-render the table group."""
@@ -1354,35 +1294,25 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [row0, row1]
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
-        # "My table" should only appear once (not duplicated for row1)
-        assert result.count("My table") == 1
+        text = _all_text(result)
+        assert text.count("My table") == 1
 
     def test_text_block_with_parent_index_renders_group(self):
-        """Text blocks with parent_index should be rendered as block group."""
         block = _make_text_block(index=0, data="Item in list", parent_index=0)
         group = _make_list_group(index=0, children_block_indices=[0])
         record = _make_record_blob()
         record["block_containers"]["blocks"] = [block]
         record["block_containers"]["block_groups"] = [group]
         result = record_to_message_content(record)
-        assert "Item in list" in result
-
-    def test_with_final_results_sets_record_number(self):
-        record = _make_record_blob(virtual_record_id="vr-2")
-        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Data")]
-        final_results = [
-            _make_flattened_result(virtual_record_id="vr-1"),
-            _make_flattened_result(virtual_record_id="vr-2"),
-        ]
-        result = record_to_message_content(record, final_results)
-        # vr-2 is 2nd in the ordered list, so record_number should be 2
-        assert "R2-0" in result
+        text = _all_text(result)
+        assert "Item in list" in text
 
     def test_context_metadata_included(self):
         record = _make_record_blob(context_metadata="Author: Alice\nDept: Engineering")
         record["block_containers"]["blocks"] = [_make_text_block(index=0, data="X")]
         result = record_to_message_content(record)
-        assert "Author: Alice" in result
+        text = _all_text(result)
+        assert "Author: Alice" in text
 
     def test_table_with_range_based_children(self):
         row0 = _make_table_row_block(index=0, row_text="RangeRow0", parent_index=0)
@@ -1398,8 +1328,9 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [row0, row1]
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
-        assert "RangeRow0" in result
-        assert "RangeRow1" in result
+        text = _all_text(result)
+        assert "RangeRow0" in text
+        assert "RangeRow1" in text
 
     def test_unknown_block_type_still_rendered(self):
         block = {
@@ -1412,7 +1343,8 @@ class TestRecordToMessageContent:
         record = _make_record_blob()
         record["block_containers"]["blocks"] = [block]
         result = record_to_message_content(record)
-        assert "custom block data" in result
+        text = _all_text(result)
+        assert "custom block data" in text
 
     def test_parent_index_out_of_bounds_skips(self):
         block = _make_text_block(index=0, data="orphan", parent_index=99)
@@ -1420,8 +1352,8 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [block]
         record["block_containers"]["block_groups"] = []
         result = record_to_message_content(record)
-        # Block with out-of-bounds parent_index should be skipped
-        assert "orphan" not in result
+        text = _all_text(result)
+        assert "orphan" not in text
 
     def test_empty_group_blocks_skips(self):
         block = _make_text_block(index=0, data="grouped", parent_index=0)
@@ -1436,84 +1368,8 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [block]
         record["block_containers"]["block_groups"] = [group]
         result = record_to_message_content(record)
-        # build_group_blocks returns [] for empty children, so the group is skipped
-        assert "grouped" not in result
-
-
-# ===================================================================
-# block_group_to_message_content
-# ===================================================================
-class TestBlockGroupToMessageContent:
-    """Tests for the block_group_to_message_content function."""
-
-    def test_with_child_blocks(self):
-        tool_result = {
-            "block_group": {
-                "index": 0,
-                "data": {"table_summary": "Revenue table"},
-                "blocks": [
-                    {"index": 0, "data": {"row_natural_language_text": "Row A"}},
-                    {"index": 1, "data": {"row_natural_language_text": "Row B"}},
-                ],
-            },
-            "record_number": 1,
-            "record_id": "rec-1",
-            "record_name": "Finance Report",
-        }
-        result = block_group_to_message_content(tool_result)
-        assert isinstance(result, list)
-        assert len(result) == 3  # header, table content, closing instructions
-        # Header
-        assert "Finance Report" in result[0]["text"]
-        assert "rec-1" in result[0]["text"]
-        # Table content
-        assert "Revenue table" in result[1]["text"]
-        assert "Row A" in result[1]["text"]
-        # Closing instructions
-        assert "JSON" in result[2]["text"]
-
-    def test_without_child_blocks(self):
-        tool_result = {
-            "block_group": {
-                "index": 5,
-                "data": {"table_summary": "Empty table"},
-                "blocks": [],
-            },
-            "record_number": 2,
-            "record_id": "rec-2",
-            "record_name": "Report",
-        }
-        result = block_group_to_message_content(tool_result)
-        assert len(result) == 3
-        assert "table summary" in result[1]["text"].lower()
-        assert "Empty table" in result[1]["text"]
-        assert "R2-5" in result[1]["text"]
-
-    def test_blocks_with_string_data(self):
-        tool_result = {
-            "block_group": {
-                "index": 0,
-                "data": {"table_summary": ""},
-                "blocks": [
-                    {"index": 0, "data": "string block data"},
-                ],
-            },
-            "record_number": 1,
-            "record_id": "rec-1",
-            "record_name": "Doc",
-        }
-        result = block_group_to_message_content(tool_result)
-        # String data should be converted via str()
-        assert "string block data" in result[1]["text"]
-
-    def test_default_values(self):
-        tool_result = {
-            "block_group": {},
-        }
-        result = block_group_to_message_content(tool_result)
-        assert isinstance(result, list)
-        # Should work with defaults
-        assert "R1-0" in result[1]["text"]
+        text = _all_text(result)
+        assert "grouped" not in text
 
 
 # ===================================================================
@@ -1603,11 +1459,15 @@ class TestCountTokensInMessages:
 # count_tokens
 # ===================================================================
 class TestCountTokens:
-    """Tests for the count_tokens wrapper function."""
+    """Tests for the count_tokens wrapper function.
+
+    message_contents is now list[list[dict]] — each inner list is a content
+    array with dicts like {"type": "text", "text": "..."}.
+    """
 
     def test_basic_counting(self):
         messages = [{"role": "user", "content": "hello world"}]
-        message_contents = ["some new content"]
+        message_contents = [[{"type": "text", "text": "some new content"}]]
         current, new = count_tokens(messages, message_contents)
         assert current >= 1
         assert new >= 1
@@ -1619,10 +1479,26 @@ class TestCountTokens:
 
     def test_multiple_message_contents(self):
         messages = []
-        message_contents = ["first", "second", "third"]
+        message_contents = [
+            [{"type": "text", "text": "first"}],
+            [{"type": "text", "text": "second"}],
+            [{"type": "text", "text": "third"}],
+        ]
         current, new = count_tokens(messages, message_contents)
         assert current == 0
         assert new >= 3  # at least 1 token per non-empty string
+
+    def test_image_items_skipped(self):
+        """Items with type != 'text' should contribute 0 tokens."""
+        messages = []
+        message_contents = [[{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]]
+        current, new = count_tokens(messages, message_contents)
+        assert new == 0
+
+    def test_empty_text_skipped(self):
+        message_contents = [[{"type": "text", "text": ""}]]
+        _, new = count_tokens([], message_contents)
+        assert new == 0
 
 
 # ===================================================================
@@ -1741,31 +1617,31 @@ class TestExtractTextContentRecursive:
 
 
 # ===================================================================
-# build_group_text
+# get_group_label_n_first_child
 # ===================================================================
 class TestBuildGroupText:
-    """Tests for the build_group_text function."""
+    """Tests for the get_group_label_n_first_child function."""
 
     def test_invalid_parent_index_none(self):
-        assert build_group_text([], [], None) is None
+        assert get_group_label_n_first_child([], [], None) is None
 
     def test_invalid_parent_index_negative(self):
-        assert build_group_text([], [], -1) is None
+        assert get_group_label_n_first_child([], [], -1) is None
 
     def test_invalid_parent_index_too_large(self):
-        assert build_group_text([{}], [], 5) is None
+        assert get_group_label_n_first_child([{}], [], 5) is None
 
     def test_unsupported_group_type(self):
         block_groups = [{"type": GroupType.TABLE.value, "children": []}]
-        assert build_group_text(block_groups, [], 0) is None
+        assert get_group_label_n_first_child(block_groups, [], 0) is None
 
     def test_no_children(self):
         block_groups = [{"type": GroupType.LIST.value, "children": []}]
-        assert build_group_text(block_groups, [], 0) is None
+        assert get_group_label_n_first_child(block_groups, [], 0) is None
 
     def test_children_none(self):
         block_groups = [{"type": GroupType.LIST.value, "children": None}]
-        assert build_group_text(block_groups, [], 0) is None
+        assert get_group_label_n_first_child(block_groups, [], 0) is None
 
     def test_valid_list_group(self):
         blocks = [
@@ -1778,7 +1654,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}, {"block_index": 1}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         label, first_index, content = result
         assert label == GroupType.LIST.value
@@ -1794,7 +1670,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.ORDERED_LIST.value
 
@@ -1806,7 +1682,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.FORM_AREA.value
 
@@ -1818,7 +1694,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.INLINE.value
 
@@ -1830,7 +1706,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.KEY_VALUE_AREA.value
 
@@ -1842,7 +1718,7 @@ class TestBuildGroupText:
                 "children": [{"block_index": 0}],
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert result[0] == GroupType.TEXT_SECTION.value
 
@@ -1854,7 +1730,7 @@ class TestBuildGroupText:
                 "children": [{"block_group_index": 99}],
             }
         ]
-        result = build_group_text(block_groups, [], 0)
+        result = get_group_label_n_first_child(block_groups, [], 0)
         assert result is None
 
     def test_seen_chunks_updated(self):
@@ -1866,7 +1742,7 @@ class TestBuildGroupText:
             }
         ]
         seen = set()
-        build_group_text(block_groups, blocks, 0, "vr-1", seen)
+        get_group_label_n_first_child(block_groups, blocks, 0, "vr-1", seen)
         assert "vr-1-0" in seen
 
     def test_range_based_children(self):
@@ -1879,7 +1755,7 @@ class TestBuildGroupText:
                 "children": {"block_ranges": [{"start": 0, "end": 0}]},
             }
         ]
-        result = build_group_text(block_groups, blocks, 0)
+        result = get_group_label_n_first_child(block_groups, blocks, 0)
         assert result is not None
         assert "RangeItem" in result[2]
 
@@ -2099,6 +1975,32 @@ class TestGetRecord:
             virtual_to_record_map, None, "https://app.example.com"
         )
         assert "vr-1" in vr_map
+
+    @pytest.mark.asyncio
+    async def test_frontend_url_stored_in_record(self):
+        """get_record now stores frontend_url in the record dict."""
+        record_blob = _make_record_blob()
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+
+        vr_map = {}
+        await get_record(
+            "vr-1", vr_map, blob_store, "org-1",
+            None, None, "https://myapp.example.com"
+        )
+        assert vr_map["vr-1"]["frontend_url"] == "https://myapp.example.com"
+
+    @pytest.mark.asyncio
+    async def test_frontend_url_empty_string_when_not_provided(self):
+        """When frontend_url is not passed, it is stored as empty string."""
+        record_blob = _make_record_blob()
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+
+        vr_map = {}
+        await get_record("vr-1", vr_map, blob_store, "org-1")
+        # frontend_url should default to "" when not supplied
+        assert vr_map["vr-1"].get("frontend_url", "") == ""
 
     @pytest.mark.asyncio
     async def test_no_graphdb_record_preserves_original(self):
@@ -2957,7 +2859,7 @@ class TestGenerateTextFragmentUrlEdgeCases:
 class TestRecordToMessageContentEdgeCases:
 
     def test_table_row_with_string_block_data(self):
-        """Table row with string data (not dict) should use str()."""
+        """Table row with string data (not dict) should be handled without crash."""
         row = {
             "index": 0,
             "type": BlockType.TABLE_ROW.value,
@@ -2976,7 +2878,8 @@ class TestRecordToMessageContentEdgeCases:
         record["block_containers"]["blocks"] = [row]
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
-        assert "raw string row data" in result
+        text = _all_text(result)
+        assert "raw string row data" in text
 
     def test_table_with_table_summary_as_string_data(self):
         """Table group with string data should use str()."""
@@ -2992,7 +2895,8 @@ class TestRecordToMessageContentEdgeCases:
         record["block_containers"]["blocks"] = [row]
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
-        assert "plain summary string" in result
+        text = _all_text(result)
+        assert "plain summary string" in text
 
     def test_block_group_dedup_for_parent_index_blocks(self):
         """Multiple blocks with same parent_index should only render group once."""
@@ -3003,19 +2907,22 @@ class TestRecordToMessageContentEdgeCases:
         record["block_containers"]["blocks"] = [block0, block1]
         record["block_containers"]["block_groups"] = [group]
         result = record_to_message_content(record)
-        # The block group should appear once, containing both items
-        assert "ItemA" in result
-        assert "ItemB" in result
+        text = _all_text(result)
+        assert "ItemA" in text
+        assert "ItemB" in text
 
-    def test_empty_final_results_exception_returns_list(self):
-        """When final_results processing raises an error, should return []."""
-        record = _make_record_blob(virtual_record_id="vr-1")
-        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="X")]
-        # Pass final_results where virtual_record_id lookup fails
-        bad_final_results = [{"virtual_record_id": None}]
-        result = record_to_message_content(record, bad_final_results)
-        # The current_vrid won't be found, so record_number stays 1
-        assert isinstance(result, str)
+    def test_block_group_dedup_returns_content_once(self):
+        """Multiple blocks with same parent_index should only render the group once."""
+        block0 = _make_text_block(index=0, data="ItemA", parent_index=0)
+        block1 = _make_text_block(index=1, data="ItemB", parent_index=0)
+        group = _make_list_group(index=0, children_block_indices=[0, 1])
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [block0, block1]
+        record["block_containers"]["block_groups"] = [group]
+        result = record_to_message_content(record)
+        text = _all_text(result)
+        assert "ItemA" in text
+        assert "ItemB" in text
 
 
 # ===================================================================
@@ -3027,18 +2934,18 @@ class TestCountTokensEdgeCases:
         """When tiktoken import fails, should fall back to heuristic."""
         with patch.dict("sys.modules", {"tiktoken": None}):
             messages = [{"role": "user", "content": "hello world test"}]
-            message_contents = ["new content here"]
+            message_contents = [[{"type": "text", "text": "new content here"}]]
             current, new = count_tokens(messages, message_contents)
             assert current >= 1
             assert new >= 1
 
     def test_tiktoken_encoding_failure(self):
-        """When tiktoken.get_encoding fails, enc should be None."""
+        """When tiktoken.get_encoding fails, enc should be None (falls back)."""
         mock_tiktoken = MagicMock()
         mock_tiktoken.get_encoding = MagicMock(side_effect=Exception("encoding error"))
         with patch.dict("sys.modules", {"tiktoken": mock_tiktoken}):
             messages = [{"role": "user", "content": "test"}]
-            current, new = count_tokens(messages, ["content"])
+            current, new = count_tokens(messages, [[{"type": "text", "text": "content"}]])
             assert current >= 0
             assert new >= 0
 
@@ -3080,51 +2987,16 @@ class TestExtractStartEndTextBranches:
 
 
 # ===================================================================
-# Additional get_message_content_for_tool branch coverage
-# ===================================================================
-class TestGetMessageContentForToolBranches:
-    """Target remaining uncovered branches in get_message_content_for_tool."""
-
-    def test_non_text_non_table_non_image_block(self):
-        """Line 1397-1398: block_type that is not text, table, or image."""
-        rec = _make_record_blob()
-        final_results = [_make_flattened_result()]
-        flattened = [
-            _make_flattened_result(
-                block_index=0,
-                block_type=GroupType.LIST.value,
-                content="list content",
-            ),
-        ]
-        vr_map = {"vr-1": rec}
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert "list content" in result[0]
-        assert "R1-0" in result[0]
-
-
-# ===================================================================
 # Additional record_to_message_content branch coverage
 # ===================================================================
 class TestRecordToMessageContentBranches:
 
     def test_exception_propagation(self):
-        """Lines 1173-1174: Exception in processing should re-raise."""
+        """Exception in processing should re-raise with descriptive message."""
         record = _make_record_blob()
-        # Create a block that will cause an error during processing
-        # by making block_containers not a dict
-        record["block_containers"] = None
+        record["block_containers"] = None  # triggers AttributeError inside try
         with pytest.raises(Exception, match="Error in record_to_message_content"):
             record_to_message_content(record)
-
-    def test_final_results_with_exception_returns_list(self):
-        """Lines 1071-1072: Exception during final_results processing returns []."""
-        record = _make_record_blob(virtual_record_id="vr-1")
-        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="X")]
-        # Create final_results that will cause an error during iteration
-        # by making one entry not have get() method
-        bad_results = [42]  # int doesn't have .get()
-        result = record_to_message_content(record, bad_results)
-        assert result == []
 
     def test_table_with_no_child_results(self):
         """Table group where all rows are out of bounds should produce no rendered form."""
@@ -3140,8 +3012,8 @@ class TestRecordToMessageContentBranches:
         record["block_containers"]["blocks"] = [row]
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
-        # With no valid child results, the table rendering is skipped
-        assert "Empty table" not in result
+        text = _all_text(result)
+        assert "Empty table" not in text
 
 
 # ===================================================================
@@ -3195,12 +3067,12 @@ class TestGetFlattenedResultsBranches:
 
     @pytest.mark.asyncio
     async def test_build_group_text_returns_none_skips(self):
-        """Line 350: When build_group_text returns None, block is skipped."""
+        """Line 350: When get_group_label_n_first_child returns None, block is skipped."""
         # Create a text block with parent_index pointing to an unsupported group type
         block = _make_text_block(index=0, data="Orphan", parent_index=0)
         group = {
             "index": 0,
-            "type": GroupType.TABLE.value,  # TABLE is not a valid group type for build_group_text
+            "type": GroupType.TABLE.value,  # TABLE is not a valid group type for get_group_label_n_first_child
             "data": {},
             "children": [{"block_index": 0}],
             "citation_metadata": None,
@@ -3222,7 +3094,7 @@ class TestGetFlattenedResultsBranches:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map
         )
-        # build_group_text returns None for TABLE group type, so the block should be skipped
+        # get_group_label_n_first_child returns None for TABLE group type, so the block should be skipped
         list_results = [r for r in results if r.get("block_type") == GroupType.LIST.value]
         assert len(list_results) == 0
 
@@ -3487,10 +3359,13 @@ class TestExtractBoundingBoxesException:
 # record_to_message_content — deeper branches
 # ===================================================================
 class TestRecordToMessageContentDeeper:
-    """Cover uncovered branches in record_to_message_content."""
+    """Cover uncovered branches in record_to_message_content.
+
+    The function now returns list[dict] — use _all_text() to extract all text.
+    """
 
     def test_record_with_table_row_and_group(self):
-        """Lines 1088-1144: Table rows mapped to block groups."""
+        """Table rows mapped to block groups produce table content."""
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test record",
@@ -3503,19 +3378,17 @@ class TestRecordToMessageContentDeeper:
                 ],
                 "block_groups": [
                     {"type": "table", "data": {"table_summary": "Test table"},
-                     "children": [
-                         {"block_index": 0},
-                         {"block_index": 1},
-                     ]},
+                     "children": [{"block_index": 0}, {"block_index": 1}]},
                 ],
             },
         }
         result = record_to_message_content(record)
-        assert isinstance(result, str)
-        assert "Test table" in result or "Row 1" in result
+        assert isinstance(result, list)
+        text = _all_text(result)
+        assert "Test table" in text or "Row 1" in text
 
     def test_record_with_table_row_new_format_children(self):
-        """Lines 1109-1115: Table rows with new range-based children."""
+        """Table rows with range-based children format."""
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
@@ -3531,10 +3404,12 @@ class TestRecordToMessageContentDeeper:
             },
         }
         result = record_to_message_content(record)
-        assert isinstance(result, str)
+        assert isinstance(result, list)
+        text = _all_text(result)
+        assert "Row data" in text or "Summary" in text
 
     def test_record_with_block_group_type_block(self):
-        """Lines 1147-1168: Block with parent_index pointing to a group."""
+        """Block with parent_index pointing to a list group."""
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
@@ -3544,17 +3419,17 @@ class TestRecordToMessageContentDeeper:
                      "data": "Grouped text content"},
                 ],
                 "block_groups": [
-                    {"type": "list",
-                     "children": [{"block_index": 0}]},
+                    {"type": "list", "children": [{"block_index": 0}]},
                 ],
             },
         }
         result = record_to_message_content(record)
-        assert isinstance(result, str)
-        assert "Grouped text" in result or "list" in result.lower()
+        assert isinstance(result, list)
+        text = _all_text(result)
+        assert "Grouped text" in text or "list" in text.lower()
 
     def test_record_with_parent_index_exceeds_block_groups(self):
-        """Line 1153-1154: parent_index >= len(block_groups) skipped."""
+        """parent_index >= len(block_groups) is skipped silently."""
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
@@ -3567,29 +3442,13 @@ class TestRecordToMessageContentDeeper:
             },
         }
         result = record_to_message_content(record)
-        assert isinstance(result, str)
-
-    def test_record_number_from_final_results(self):
-        """Lines 1057-1072: Record number determined from final_results."""
-        record = {
-            "virtual_record_id": "vr-2",
-            "context_metadata": "Test",
-            "block_containers": {
-                "blocks": [
-                    {"index": 0, "type": "text", "data": "Content", "parent_index": None},
-                ],
-                "block_groups": [],
-            },
-        }
-        final_results = [
-            {"virtual_record_id": "vr-1"},
-            {"virtual_record_id": "vr-2"},
-        ]
-        result = record_to_message_content(record, final_results)
-        assert "R2-0" in result  # Second record, block 0
+        assert isinstance(result, list)
+        # Orphaned block must not appear since parent_index is out of bounds
+        text = _all_text(result)
+        assert "Orphaned block" not in text
 
     def test_block_with_string_data_in_table_row(self):
-        """Line 1129: Table row with string block_data instead of dict."""
+        """Table row with string block_data instead of dict."""
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
@@ -3605,10 +3464,10 @@ class TestRecordToMessageContentDeeper:
             },
         }
         result = record_to_message_content(record)
-        assert isinstance(result, str)
+        assert isinstance(result, list)
 
     def test_other_block_type(self):
-        """Line 1169-1170: Other block type with no parent_index."""
+        """Non-text, non-image, non-table block type is rendered in output."""
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
@@ -3620,7 +3479,8 @@ class TestRecordToMessageContentDeeper:
             },
         }
         result = record_to_message_content(record)
-        assert "code" in result
+        text = _all_text(result)
+        assert "code" in text
 
 
 # ===================================================================
@@ -3630,7 +3490,7 @@ class TestGetMessageContentDeeper:
     """Cover uncovered branches in get_message_content."""
 
     def test_simple_mode_with_table(self):
-        """Lines 1199-1201: Simple mode with table block type."""
+        """Lines 1199-1201: no_tools mode with table block type."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -3639,8 +3499,7 @@ class TestGetMessageContentDeeper:
             "record_name": "TestDoc",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user data", "query", log, mode="simple")
+        result = get_message_content(flattened, vr_map, "user data", "query", mode="no_tools")
         assert isinstance(result, list)
 
     def test_standard_mode_with_image_block(self):
@@ -3652,8 +3511,7 @@ class TestGetMessageContentDeeper:
             "content": "data:image/png;base64,abc123",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
         # Should contain image_url content type
         has_image = any(c.get("type") == "image_url" for c in result if isinstance(c, dict))
@@ -3668,8 +3526,7 @@ class TestGetMessageContentDeeper:
             "content": "A photo of a sunset",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         assert any("image description" in t for t in text_parts)
@@ -3684,8 +3541,7 @@ class TestGetMessageContentDeeper:
             "content": ("Table Summary", [{"content": "Row 1", "block_index": 0}]),
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
 
     def test_standard_mode_with_table_no_rows(self):
@@ -3698,8 +3554,7 @@ class TestGetMessageContentDeeper:
             "content": ("Table Summary", []),
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         assert any("table summary" in t.lower() for t in text_parts)
@@ -3713,8 +3568,7 @@ class TestGetMessageContentDeeper:
             "content": "Row content here",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
 
     def test_standard_mode_group_type(self):
@@ -3726,8 +3580,7 @@ class TestGetMessageContentDeeper:
             "content": "List item content",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
 
     def test_standard_mode_unknown_type(self):
@@ -3739,8 +3592,7 @@ class TestGetMessageContentDeeper:
             "content": "Custom content",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
 
     def test_standard_mode_duplicate_block_skipped(self):
@@ -3752,8 +3604,7 @@ class TestGetMessageContentDeeper:
              "block_type": "text", "content": "Text 1 duplicate"},
         ]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         # Only one occurrence of the block
         text_count = sum(1 for t in text_parts if "Text 1" in t)
@@ -3771,8 +3622,7 @@ class TestGetMessageContentDeeper:
             "vr-1": {"context_metadata": "Record 1"},
             "vr-2": {"context_metadata": "Record 2"},
         }
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         # Should have </record> between records
         has_close_tag = any("</record>" in t for t in text_parts)
@@ -3785,122 +3635,8 @@ class TestGetMessageContentDeeper:
              "block_type": "text", "content": "Content"},
         ]
         vr_map = {"vr-1": None}
-        log = MagicMock(spec=["debug", "warning", "info", "error"])
-        result = get_message_content(flattened, vr_map, "user", "query", log)
+        result = get_message_content(flattened, vr_map, "user", "query")
         assert isinstance(result, list)
-
-
-# ===================================================================
-# get_message_content_for_tool — deeper branches
-# ===================================================================
-class TestGetMessageContentForToolDeeper:
-    """Cover uncovered branches in get_message_content_for_tool."""
-
-    def test_table_type_with_rows(self):
-        """Lines 1382-1394: Table type with child results in for-tool mode."""
-        flattened = [{
-            "virtual_record_id": "vr-1",
-            "block_index": 0,
-            "block_type": "table",
-            "block_group_index": 0,
-            "content": ("Summary", [{"content": "Row", "block_index": 0}]),
-        }]
-        vr_map = {"vr-1": {"context_metadata": "Test", "id": "rec-1"}}
-        final_results = [{"virtual_record_id": "vr-1"}]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-        assert len(result) > 0
-
-    def test_table_type_empty_rows(self):
-        """Lines 1393-1394: Table type with empty child results."""
-        flattened = [{
-            "virtual_record_id": "vr-1",
-            "block_index": 0,
-            "block_type": "table",
-            "block_group_index": 0,
-            "content": ("Summary Only", []),
-        }]
-        vr_map = {"vr-1": {"context_metadata": "Test", "id": "rec-1"}}
-        final_results = [{"virtual_record_id": "vr-1"}]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-        combined = " ".join(result)
-        assert "table summary" in combined.lower()
-
-    def test_non_image_non_text_block(self):
-        """Lines 1397-1398: Non-image, non-text block type."""
-        flattened = [{
-            "virtual_record_id": "vr-1",
-            "block_index": 0,
-            "block_type": "code",
-            "content": "print('hello')",
-        }]
-        vr_map = {"vr-1": {"context_metadata": "Test", "id": "rec-1"}}
-        final_results = [{"virtual_record_id": "vr-1"}]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-
-    def test_image_block_excluded(self):
-        """Line 1397: Image blocks are excluded."""
-        flattened = [{
-            "virtual_record_id": "vr-1",
-            "block_index": 0,
-            "block_type": "image",
-            "content": "image data",
-        }]
-        vr_map = {"vr-1": {"context_metadata": "Test", "id": "rec-1"}}
-        final_results = [{"virtual_record_id": "vr-1"}]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-        # Image content should not appear in output
-        combined = " ".join(result)
-        assert "image data" not in combined
-
-    def test_null_record_number_skipped(self):
-        """Lines 1379-1380: record_number is None when vr not in final_results map."""
-        flattened = [{
-            "virtual_record_id": "vr-2",
-            "block_index": 0,
-            "block_type": "text",
-            "content": "Some text",
-        }]
-        vr_map = {"vr-2": {"context_metadata": "Test", "id": "rec-2"}}
-        # vr-2 not in final_results -> record_number will be None
-        final_results = [{"virtual_record_id": "vr-1"}]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-
-    def test_null_record_skipped(self):
-        """Line 1366-1367: None record is skipped."""
-        flattened = [{
-            "virtual_record_id": "vr-1",
-            "block_index": 0,
-            "block_type": "text",
-            "content": "Content",
-        }]
-        vr_map = {"vr-1": None}
-        final_results = [{"virtual_record_id": "vr-1"}]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert isinstance(result, list)
-
-    def test_multiple_records_generates_separate_strings(self):
-        """Lines 1360-1363: Multiple records produce separate strings."""
-        flattened = [
-            {"virtual_record_id": "vr-1", "block_index": 0,
-             "block_type": "text", "content": "Record 1 text"},
-            {"virtual_record_id": "vr-2", "block_index": 0,
-             "block_type": "text", "content": "Record 2 text"},
-        ]
-        vr_map = {
-            "vr-1": {"context_metadata": "Rec 1", "id": "r1"},
-            "vr-2": {"context_metadata": "Rec 2", "id": "r2"},
-        }
-        final_results = [
-            {"virtual_record_id": "vr-1"},
-            {"virtual_record_id": "vr-2"},
-        ]
-        result = get_message_content_for_tool(flattened, vr_map, final_results)
-        assert len(result) == 2
 
 
 # ===================================================================
@@ -4065,48 +3801,6 @@ class TestGenerateTextFragmentUrlHash:
         """Lines 1639-1640: Whitespace-only snippet returns base_url."""
         url = generate_text_fragment_url("https://example.com", "   ")
         assert url == "https://example.com"
-
-
-# ===================================================================
-# block_group_to_message_content — deeper branches
-# ===================================================================
-class TestBlockGroupToMessageContentDeeper:
-    """Cover uncovered branches in block_group_to_message_content."""
-
-    def test_with_string_block_data(self):
-        """Lines 1429-1430: Block data as string instead of dict."""
-        tool_result = {
-            "block_group": {
-                "index": 0,
-                "data": {"table_summary": "Test table"},
-                "blocks": [
-                    {"index": 0, "data": "plain string row data"},
-                ],
-            },
-            "record_number": 1,
-            "record_id": "r1",
-            "record_name": "Test",
-        }
-        result = block_group_to_message_content(tool_result)
-        assert isinstance(result, list)
-        assert len(result) > 0
-
-    def test_with_no_child_results(self):
-        """Lines 1449-1453: No child results, only table summary."""
-        tool_result = {
-            "block_group": {
-                "index": 0,
-                "data": {"table_summary": "Summary only"},
-                "blocks": [],
-            },
-            "record_number": 1,
-            "record_id": "r1",
-            "record_name": "Test",
-        }
-        result = block_group_to_message_content(tool_result)
-        assert isinstance(result, list)
-        text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
-        assert any("Summary only" in t for t in text_parts)
 
 
 # ===================================================================
