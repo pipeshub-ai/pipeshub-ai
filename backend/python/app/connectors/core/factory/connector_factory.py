@@ -45,6 +45,9 @@ from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
+from app.connectors.sources.microsoft.outlook_individual.connector import (
+    OutlookIndividualConnector,
+)
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
@@ -57,6 +60,7 @@ from app.connectors.sources.servicenow.servicenow.connector import ServiceNowCon
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
+from app.connectors.sources.salesforce.connector import SalesforceConnector
 
 
 class ConnectorFactory:
@@ -67,6 +71,7 @@ class ConnectorFactory:
         "onedrive": OneDriveConnector,
         "sharepointonline": SharePointConnector,
         "outlook": OutlookConnector,
+        "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
         "box": BoxConnector,
@@ -92,6 +97,7 @@ class ConnectorFactory:
         "notion": NotionConnector,
         "zammad": ZammadConnector,
         "zoom": ZoomConnector,
+        "salesforce": SalesforceConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -150,6 +156,8 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs
     ) -> BaseConnector | None:
         """Create a connector instance"""
@@ -164,6 +172,8 @@ class ConnectorFactory:
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id=connector_id,
+                scope=scope,
+                created_by=created_by,
                 **kwargs
             )
             logger.info(f"Created {name} {connector_id} connector successfully")
@@ -180,6 +190,8 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs
     ) -> BaseConnector | None:
         """Create and initialize a connector"""
@@ -189,6 +201,8 @@ class ConnectorFactory:
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             **kwargs
         )
 
@@ -214,6 +228,8 @@ class ConnectorFactory:
         data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs
     ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
@@ -223,6 +239,8 @@ class ConnectorFactory:
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
             **kwargs
         )
 

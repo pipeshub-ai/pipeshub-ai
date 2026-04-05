@@ -91,7 +91,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_TOOLS.value == "AgentTool"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 38
+        assert len(Neo4jLabel) == 40
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ class TestNeo4jRelationshipType:
         assert Neo4jRelationshipType.TOOLSET_HAS_TOOL.value == "TOOLSET_HAS_TOOL"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jRelationshipType) == 15
+        assert len(Neo4jRelationshipType) == 23
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 36
+        assert len(COLLECTION_TO_LABEL) == 38
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():
@@ -211,7 +211,7 @@ class TestEdgeCollectionToRelationshipMapping:
             assert EDGE_COLLECTION_TO_RELATIONSHIP[arango_key] == neo4j_rel
 
     def test_mapping_size(self) -> None:
-        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 15
+        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 23
 
     def test_all_values_are_strings(self) -> None:
         for k, v in EDGE_COLLECTION_TO_RELATIONSHIP.items():

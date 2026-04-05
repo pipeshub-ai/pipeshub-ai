@@ -120,6 +120,8 @@ def dropbox_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="dbx-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -412,6 +414,118 @@ class TestDropboxPassExtensionFilter:
 # =============================================================================
 # Merged from test_dropbox_individual_coverage.py
 # =============================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _make_response(success=True, data=None, error=None):
+    r = MagicMock()
+    r.success = success
+    r.data = data
+    r.error = error
+    return r
+
+
+def _make_file_entry(name="doc.pdf", file_id="id:f1", path="/folder/doc.pdf",
+                     rev="0123456789abcdef", size=1024,
+                     server_modified=None, client_modified=None,
+                     content_hash="a" * 64):
+    mod_time = server_modified or datetime(2024, 6, 15, 10, 0, 0, tzinfo=timezone.utc)
+    cli_time = client_modified or mod_time
+    entry = FileMetadata(
+        name=name, id=file_id, client_modified=cli_time,
+        server_modified=mod_time, rev=rev, size=size
+    )
+    entry.path_lower = path.lower()
+    entry.path_display = path
+    entry.content_hash = content_hash
+    return entry
+
+
+def _make_folder_entry(name="folder", folder_id="id:d1", path="/folder"):
+    entry = FolderMetadata(name=name, id=folder_id, path_lower=path.lower())
+    entry.path_display = path
+    return entry
+
+
+def _make_deleted_entry(name="old.txt", path="/old.txt"):
+    entry = DeletedMetadata(name=name)
+    entry.path_lower = path.lower()
+    return entry
+
+
+def _make_mock_tx_store(existing_record=None):
+    tx = AsyncMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
+    return tx
+
+
+def _make_mock_data_store_provider(existing_record=None):
+    tx = _make_mock_tx_store(existing_record)
+    provider = MagicMock()
+
+    @asynccontextmanager
+    async def _transaction():
+        yield tx
+
+    provider.transaction = _transaction
+    provider._tx_store = tx
+    return provider
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def mock_logger():
+    return logging.getLogger("test.dropbox_ind.cov")
+
+
+@pytest.fixture()
+def mock_data_entities_processor():
+    proc = MagicMock()
+    proc.org_id = "org-dbx-cov"
+    proc.on_new_app_users = AsyncMock()
+    proc.on_new_record_groups = AsyncMock()
+    proc.on_new_records = AsyncMock()
+    proc.get_app_creator_user = AsyncMock(return_value=MagicMock(email="user@test.com"))
+    return proc
+
+
+@pytest.fixture()
+def mock_data_store_provider():
+    return _make_mock_data_store_provider()
+
+
+@pytest.fixture()
+def mock_config_service():
+    svc = AsyncMock()
+    svc.get_config = AsyncMock(return_value={
+        "credentials": {"access_token": "test_token", "refresh_token": "test_refresh"},
+        "auth": {"oauthConfigId": "oauth-1"},
+    })
+    return svc
+
+
+@pytest.fixture()
+def dropbox_connector(mock_logger, mock_data_entities_processor,
+                      mock_data_store_provider, mock_config_service):
+    with patch("app.connectors.sources.dropbox_individual.connector.DropboxIndividualApp"):
+        connector = DropboxIndividualConnector(
+            logger=mock_logger,
+            data_entities_processor=mock_data_entities_processor,
+            data_store_provider=mock_data_store_provider,
+            config_service=mock_config_service,
+            connector_id="dbx-cov-1",
+            scope="personal",
+            created_by="test-user-id",
+        )
+    return connector
+
+
+# ===========================================================================
+# Helper functions
+# ===========================================================================
 class TestDropboxHelpersCoverage:
     def test_get_parent_path_root(self):
         assert get_parent_path_from_path("/") is None

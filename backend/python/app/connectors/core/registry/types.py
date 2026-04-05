@@ -6,7 +6,21 @@ to avoid circular dependencies.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Literal, Optional
+
+
+class FieldType(str, Enum):
+    """Standard field types for authentication and configuration fields"""
+    TEXT = "TEXT"
+    PASSWORD = "PASSWORD"
+    CHECKBOX = "CHECKBOX"
+    SELECT = "SELECT"
+    MULTISELECT = "MULTISELECT"
+    TEXTAREA = "TEXTAREA"
+    NUMBER = "NUMBER"
+    URL = "URL"
+    EMAIL = "EMAIL"
 
 
 @dataclass

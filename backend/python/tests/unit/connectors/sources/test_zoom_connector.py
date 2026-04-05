@@ -33,6 +33,8 @@ def _make_connector() -> ZoomConnector:
         data_store_provider=dsp,
         config_service=config_service,
         connector_id="zoom-conn-1",
+        scope="personal",
+        created_by="test-user-1",
     )
 
 

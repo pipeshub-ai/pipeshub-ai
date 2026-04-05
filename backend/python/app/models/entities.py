@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -45,6 +46,12 @@ class RecordGroupType(str, Enum):
     BOOK = "BOOK"
     CHAPTER = "CHAPTER"
     RSS_FEED = "RSS_FEED"
+    SALESFORCE_FILE = "SALESFORCE_FILE"
+    PRODUCT = "PRODUCT"
+    DEAL = "DEAL"
+    CASE = "CASE"
+    TASK = "TASK"
+    SALESFORCE_ORG = "SALESFORCE_ORG"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -68,6 +75,10 @@ class RecordType(str, Enum):
     PROJECT = "PROJECT"
     PULL_REQUEST = "PULL_REQUEST"
     MEETING = "MEETING"
+    PRODUCT = "PRODUCT"
+    DEAL = "DEAL"
+    CASE = "CASE"
+    TASK = "TASK"
     OTHERS = "OTHERS"
 
 
@@ -1091,6 +1102,404 @@ class ProjectRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
+
+class ProductRecord(Record):
+    """Record class for products with Name, ProductCode, ProductFamily."""
+
+    product_code: str | None = Field(default=None, description="Product code")
+    product_family: str | None = Field(default=None, description="Product family")
+    is_active: bool | None = Field(default=None, description="Whether the product is active")
+    sku: str | None = Field(default=None, description="Stock keeping unit")
+    list_price: float | None = Field(default=None, description="Standard list price from pricebook")
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "productCode": self.product_code,
+            "productFamily": self.product_family,
+            "isActive": self.is_active,
+            "sku": self.sku,
+            "listPrice": self.list_price,
+        }
+
+    @staticmethod
+    def from_arango_record(product_doc: dict, record_doc: dict) -> "ProductRecord":
+        """Create ProductRecord from ArangoDB documents (records + products collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return ProductRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"], #required
+            record_name=record_doc["recordName"], #required
+            record_type=RecordType(record_doc["recordType"]), #required
+            external_record_id=record_doc["externalRecordId"], #required
+            external_revision_id=record_doc.get("externalRevisionId"),#optional
+            external_record_group_id=record_doc.get("externalGroupId"),#optional
+            record_group_id=record_doc.get("recordGroupId"),#optional
+            parent_external_record_id=record_doc.get("externalParentId"), #optional
+            version=record_doc["version"], #required
+            origin=OriginTypes(record_doc["origin"]), #required
+            connector_name=connector_name, #required
+            connector_id=record_doc.get("connectorId"), #required
+            mime_type=record_doc.get("mimeType", MimeTypes.MARKDOWN.value), #required use MimeTypes.MARKDOWN for markdown files
+            weburl=record_doc.get("webUrl"), #optional
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"), #optional, default is None
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"), #optional, default is None
+            virtual_record_id=record_doc.get("virtualRecordId"), #optional, default is None
+            preview_renderable=record_doc.get("previewRenderable", False), #optional, default is False
+            is_dependent_node=record_doc.get("isDependentNode", False), #optional, default is False
+            parent_node_id=record_doc.get("parentNodeId", None), #optional, default is None
+            product_code=product_doc.get("productCode"),
+            product_family=product_doc.get("productFamily"),
+            is_active=product_doc.get("isActive"),
+            sku=product_doc.get("sku"),
+            list_price=product_doc.get("listPrice"),
+        )
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "signedUrl": self.signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+    def to_llm_context(
+        self,
+        frontend_url: str | None = None,
+    ) -> str:
+        """Returns formatted product-specific metadata for LLM context."""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.product_code:
+            specific_lines.append(f"* Product Code: {self.product_code}")
+        if self.product_family:
+            specific_lines.append(f"* Product Family: {self.product_family}")
+        if self.is_active is not None:
+            specific_lines.append(f"* Active: {self.is_active}")
+        if self.sku:
+            specific_lines.append(f"* SKU: {self.sku}")
+        if self.list_price is not None:
+            specific_lines.append(f"* List Price: {self.list_price}")
+
+        if specific_lines:
+            lines.append("Product Information:")
+            lines.extend(specific_lines)
+        return "\n".join(lines)
+
+
+class DealRecord(Record):
+    """Record class for deals/opportunities with sales pipeline information."""
+
+    name: str | None = Field(default=None, description="Deal name")
+    amount: float | None = Field(default=None, description="Deal amount")
+    expected_revenue: float | None = Field(default=None, description="Expected revenue")
+    expected_close_date: str | None = Field(default=None, description="Expected close date")
+    conversion_probability: float | None = Field(default=None, description="Conversion probability")
+    type: str | None = Field(default=None, description="Deal type")
+    owner_id: str | None = Field(default=None, description="Owner ID")
+    is_won: bool | None = Field(default=None, description="Is deal won")
+    is_closed: bool | None = Field(default=None, description="Is deal closed")
+    created_date: str | None = Field(default=None, description="Created date")
+    close_date: str | None = Field(default=None, description="Close date")
+
+    @staticmethod
+    async def fetch_deal_info_edges_to_deal(graph_provider: Any, record_id: str) -> list[dict[str, Any]]:
+        """Load dealInfo edges whose graph target (_to) is this deal record (Org → Deal)."""
+        node_id = f"{CollectionNames.RECORDS.value}/{record_id}"
+        return await graph_provider.get_edges_to_node(
+            node_id=node_id,
+            edge_collection=CollectionNames.DEAL_INFO.value,
+        )
+
+    @staticmethod
+    async def fetch_sold_in_edges_with_products_to_deal(graph_provider: Any, record_id: str) -> list[dict[str, Any]]:
+        """Load soldIn edges to this deal and resolve each edge's _from product document."""
+        node_id = f"{CollectionNames.RECORDS.value}/{record_id}"
+        sold_in_edges = await graph_provider.get_edges_to_node(
+            node_id=node_id,
+            edge_collection=CollectionNames.SOLD_IN.value,
+        )
+
+        relations: list[dict[str, Any]] = []
+        for edge in sold_in_edges:
+            from_ref = edge.get("_from")
+            if not from_ref:
+                from_collection = edge.get("from_collection")
+                from_id = edge.get("from_id")
+                if from_collection and from_id:
+                    from_ref = f"{from_collection}/{from_id}"
+
+            product_doc = None
+            if from_ref and "/" in from_ref:
+                from_collection, from_key = from_ref.split("/", 1)
+                if from_collection == CollectionNames.RECORDS.value and from_key:
+                    try:
+                        product_doc = await graph_provider.get_document(
+                            document_key=from_key,
+                            collection=CollectionNames.RECORDS.value,
+                        )
+                    except (ValueError, TypeError, AttributeError):
+                        product_doc = None
+            relations.append({"edge": edge, "product": product_doc})
+
+        return relations
+
+    def _deal_info_edges_to_llm_lines(self, edges: list[dict[str, Any]]) -> list[str]:
+        """Format incoming dealInfo edge documents for LLM context (Arango _from/_to or Neo4j generic shape)."""
+        lines: list[str] = ["DealInfo relations (incoming to this deal, Org → Deal):"]
+        if not edges:
+            lines.append("* No incoming dealInfo edges.")
+            return lines
+        for i, edge in enumerate(edges, start=1):
+            from_ref = edge.get("_from")
+            if not from_ref:
+                fc, fid = edge.get("from_collection"), edge.get("from_id")
+                if fc and fid:
+                    from_ref = f"{fc}/{fid}"
+                elif fid:
+                    from_ref = str(fid)
+            parts: list[str] = []
+            if from_ref:
+                parts.append(f"from {from_ref}")
+            if edge.get("stage") is not None:
+                parts.append(f"stage: {edge['stage']}")
+            cat, uat = edge.get("createdAtTimestamp"), edge.get("updatedAtTimestamp")
+            if cat is not None:
+                parts.append(f"edge created: {self._format_timestamp(cat)}")
+            if uat is not None:
+                parts.append(f"edge updated: {self._format_timestamp(uat)}")
+            lines.append(f"* [{i}] " + ("; ".join(parts) if parts else "(no edge attributes)"))
+        return lines
+
+    def _sold_in_edges_products_to_llm_lines(self, relations: list[dict[str, Any]]) -> list[str]:
+        """Format soldIn edge + product data for LLM context.
+        Each individual line item is emitted as its own numbered instance."""
+        lines: list[str] = ["Products in this deal:"]
+        if not relations:
+            lines.append("* No products in this deal.")
+            return lines
+
+        counter = 1
+        for relation in relations:
+            edge = relation.get("edge", {}) or {}
+            product = relation.get("product", {}) or {}
+
+            from_ref = edge.get("_from")
+            if not from_ref:
+                fc, fid = edge.get("from_collection"), edge.get("from_id")
+                if fc and fid:
+                    from_ref = f"{fc}/{fid}"
+                elif fid:
+                    from_ref = str(fid)
+
+            product_name = product.get("recordName")
+            quantities = edge.get("quantities") or []
+            unit_prices = edge.get("unitPrices") or []
+            total_prices = edge.get("totalPrices") or []
+            is_deleted_flags = edge.get("isDeletedFlags") or []
+            cat, uat = edge.get("createdAtTimestamp"), edge.get("updatedAtTimestamp")
+
+            count = max(len(quantities), len(unit_prices), len(total_prices), len(is_deleted_flags))
+            for i in range(count):
+                parts = []
+                if from_ref:
+                    parts.append(f"from {from_ref}")
+                if product_name:
+                    parts.append(f"product: {product_name}")
+                q = quantities[i] if i < len(quantities) else None
+                up = unit_prices[i] if i < len(unit_prices) else None
+                tp = total_prices[i] if i < len(total_prices) else None
+                is_deleted = is_deleted_flags[i] if i < len(is_deleted_flags) else None
+                if q is not None:
+                    parts.append(f"qty: {q}")
+                if up is not None:
+                    parts.append(f"unitPrice: {up}")
+                if tp is not None:
+                    parts.append(f"totalPrice: {tp}")
+                if is_deleted is not None:
+                    parts.append(f"isDeleted: {is_deleted}")
+                if cat is not None:
+                    parts.append(f"edge created: {self._format_timestamp(cat)}")
+                if uat is not None:
+                    parts.append(f"edge updated: {self._format_timestamp(uat)}")
+                lines.append(f"* [{counter}] " + ("; ".join(parts) if parts else "(no attributes)"))
+                counter += 1
+
+        return lines
+
+    def to_llm_context(
+        self,
+        frontend_url: str | None = None,
+    ) -> str:
+        """Returns formatted deal/opportunity-specific metadata for LLM context."""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.name:
+            specific_lines.append(f"* Deal Name: {self.name}")
+        if self.amount is not None:
+            specific_lines.append(f"* Amount: {self.amount}")
+        if self.expected_revenue is not None:
+            specific_lines.append(f"* Expected Revenue: {self.expected_revenue}")
+        if self.expected_close_date:
+            specific_lines.append(f"* Expected Close Date: {self.expected_close_date}")
+        if self.conversion_probability is not None:
+            specific_lines.append(f"* Conversion Probability: {self.conversion_probability}")
+        if self.type:
+            specific_lines.append(f"* Deal Type: {self.type}")
+        if self.owner_id:
+            specific_lines.append(f"* Owner ID: {self.owner_id}")
+        if self.is_won is not None:
+            specific_lines.append(f"* Won: {self.is_won}")
+        if self.is_closed is not None:
+            specific_lines.append(f"* Closed: {self.is_closed}")
+        if self.created_date:
+            specific_lines.append(f"* Created Date: {self.created_date}")
+        if self.close_date:
+            specific_lines.append(f"* Close Date: {self.close_date}")
+
+        if specific_lines:
+            lines.append("Deal Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
+
+    async def to_llm_context_with_graph(
+        self,
+        frontend_url: str | None = None,
+        graph_provider: Any = None,
+    ) -> str:
+        """
+        Returns full deal LLM context including graph-edge data (sales deal
+        relationships and sold-in product links).  Callers that have a
+        graph_provider should use this method; callers without one can fall
+        back to the synchronous to_llm_context().
+        """
+        base_context = self.to_llm_context(frontend_url=frontend_url)
+        if not graph_provider:
+            return base_context
+
+        lines = [base_context]
+
+        try:
+            deal_info_edges = await self.fetch_deal_info_edges_to_deal(graph_provider, self.id)
+            if deal_info_edges is not None:
+                lines.extend(self._deal_info_edges_to_llm_lines(deal_info_edges))
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+        try:
+            sold_in_relations = await self.fetch_sold_in_edges_with_products_to_deal(graph_provider, self.id)
+            if sold_in_relations is not None:
+                lines.extend(self._sold_in_edges_products_to_llm_lines(sold_in_relations))
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+        return "\n".join(lines)
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.name,
+            "amount": self.amount,
+            "expectedRevenue": self.expected_revenue,
+            "expectedCloseDate": self.expected_close_date,
+            "conversionProbability": self.conversion_probability,
+            "type": self.type,
+            "ownerId": self.owner_id,
+            "isWon": self.is_won,
+            "isClosed": self.is_closed,
+            "createdDate": self.created_date,
+            "closeDate": self.close_date,
+        }
+
+    @staticmethod
+    def from_arango_record(deal_doc: dict, record_doc: dict) -> "DealRecord":
+        """Create DealRecord from ArangoDB documents (records + deals collections)."""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return DealRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.MARKDOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", False),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            name=deal_doc.get("name"),
+            amount=deal_doc.get("amount"),
+            expected_revenue=deal_doc.get("expectedRevenue"),
+            expected_close_date=deal_doc.get("expectedCloseDate"),
+            conversion_probability=deal_doc.get("conversionProbability"),
+            type=deal_doc.get("type"),
+            owner_id=deal_doc.get("ownerId"),
+            is_won=deal_doc.get("isWon"),
+            is_closed=deal_doc.get("isClosed"),
+            created_date=deal_doc.get("createdDate"),
+            close_date=deal_doc.get("closeDate"),
+        )
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "signedUrl": self.signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+
 class SharePointListRecord(Record):
     """Record class for SharePoint lists"""
 
@@ -1338,6 +1747,54 @@ class Org(BaseModel):
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the organization creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the organization update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
+    account_type: str | None = Field(default=None, description="Account type - individual or enterprise")
+    is_external: bool | None = Field(default=None, description="Whether the org is an external account (e.g. Salesforce account)")
+    is_active: bool | None = Field(default=None, description="Whether the organization is active")
+    website: str | None = Field(default=None, description="Organization website URL")
+    industry: str | None = Field(default=None, description="Industry sector")
+    ownership_type: str | None = Field(default=None, description="Ownership type: public, private, subsidiary, government, other")
+    phone: str | None = Field(default=None, description="Organization phone number")
+    duns_id: str | None = Field(default=None, description="DUNS number (Data Universal Numbering System)")
+
+    def to_arango_org(self) -> dict[str, Any]:
+        """Convert Org model to ArangoDB document format. Output matches orgs_schema (no extra fields)."""
+        return {
+            "_key": self.id,
+            "name": self.name,
+            "accountType": self.account_type if self.account_type is not None else "enterprise",
+            "isActive": self.is_active if self.is_active is not None else True,
+            "isExternal": self.is_external if self.is_external is not None else False,
+            "website": self.website,
+            "industry": self.industry,
+            "ownershipType": self.ownership_type,
+            "phone": self.phone,
+            "dunsId": self.duns_id,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+    @staticmethod
+    def from_arango_org(data: dict[str, Any]) -> 'Org':
+        """Create Org model from ArangoDB document."""
+        return Org(
+            id=data.get("id", data.get("_key")),
+            name=data.get("name", ""),
+            created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
+            updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            source_created_at=data.get("sourceCreatedAtTimestamp"),
+            source_updated_at=data.get("sourceLastModifiedTimestamp"),
+            org_id=data.get("orgId", ""),
+            account_type=data.get("accountType"),
+            is_external=data.get("isExternal", False),
+            is_active=data.get("isActive"),
+            website=data.get("website"),
+            industry=data.get("industry"),
+            ownership_type=data.get("ownershipType"),
+            phone=data.get("phone"),
+            duns_id=data.get("dunsId"),
+        )
 
 class Domain(BaseModel):
     id: str = Field(description="Unique identifier for the domain", default_factory=lambda: str(uuid4()))
@@ -1437,6 +1894,10 @@ class Person(BaseModel):
     email: str = Field(description="Email address")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Creation timestamp")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Update timestamp")
+    # Salesforce contact fields
+    first_name: str | None = Field(default=None, description="First name")
+    last_name: str | None = Field(default=None, description="Last name")
+    phone: str | None = Field(default=None, description="Phone number")
 
     def to_arango_person(self) -> dict[str, Any]:
         return {
@@ -1444,6 +1905,9 @@ class Person(BaseModel):
             "email": self.email,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            "firstName": self.first_name,
+            "lastName": self.last_name,
+            "phone": self.phone,
         }
 
     @staticmethod
@@ -1453,6 +1917,9 @@ class Person(BaseModel):
             email=data.get("email"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            first_name=data.get("firstName"),
+            last_name=data.get("lastName"),
+            phone=data.get("phone"),
         )
 
 
@@ -1555,6 +2022,7 @@ class AppRole(BaseModel):
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the role creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the role update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
+    parent_role_id: str | None = Field(default=None, description="ArangoDB ID of the parent role for role hierarchy")
 
     def to_arango_base_role(self) -> dict[str, Any]:
         """
@@ -1571,7 +2039,7 @@ class AppRole(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
-
+            "parentRoleId": self.parent_role_id if self.parent_role_id else None,
         }
 
     @staticmethod
@@ -1587,6 +2055,49 @@ class AppRole(BaseModel):
             updated_at=arango_doc["updatedAtTimestamp"],
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
+            parent_role_id=arango_doc.get("parentRoleId"),
+        )
+
+
+class AppMetadata(BaseModel):
+    """Represents an App/Connector document from the database."""
+    connector_id: str = Field(description="Unique identifier for the connector (_key)")
+    name: str = Field(description="Name of the app")
+    type: str = Field(description="Type of the app")
+    app_group: str = Field(description="App group")
+    auth_type: str | None = Field(default=None, description="Authentication type")
+    scope: str = Field(description="Connector scope (personal/team)")
+    is_active: bool = Field(default=True, description="Whether the app is active")
+    is_agent_active: bool = Field(default=False, description="Whether the agent is active")
+    is_configured: bool = Field(default=False, description="Whether the app is configured")
+    is_authenticated: bool = Field(default=False, description="Whether the app is authenticated")
+    created_by: str | None = Field(default=None, description="User ID who created the app")
+    updated_by: str | None = Field(default=None, description="User ID who last updated the app")
+    created_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app creation")
+    updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
+    status: str | None = Field(default=None, description="Current sync status")
+    is_locked: bool | None = Field(default=None, description="Whether the app is locked")
+
+    @staticmethod
+    def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
+        """Convert database document to AppMetadata model."""
+        return AppMetadata(
+            connector_id=doc.get("_key", ""),
+            name=doc.get("name", ""),
+            type=doc.get("type", ""),
+            app_group=doc.get("appGroup", ""),
+            auth_type=doc.get("authType"),
+            scope=doc.get("scope", "personal"),
+            is_active=doc.get("isActive", True),
+            is_agent_active=doc.get("isAgentActive", False),
+            is_configured=doc.get("isConfigured", False),
+            is_authenticated=doc.get("isAuthenticated", False),
+            created_by=doc.get("createdBy"),
+            updated_by=doc.get("updatedBy"),
+            created_at_timestamp=doc.get("createdAtTimestamp", 0),
+            updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
+            status=doc.get("status"),
+            is_locked=doc.get("isLocked"),
         )
 
 class MeetingRecord(Record):

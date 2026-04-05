@@ -783,7 +783,9 @@ class JiraConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             JiraApp(connector_id),
@@ -791,7 +793,9 @@ class JiraConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
         self.external_client: Optional[JiraClient] = None
         self.data_source: Optional[JiraDataSource] = None
@@ -4607,7 +4611,10 @@ class JiraConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create JiraConnector instance"""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -4622,5 +4629,7 @@ class JiraConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

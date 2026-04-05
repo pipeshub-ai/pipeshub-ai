@@ -167,6 +167,8 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="drive-team-cov",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.connector_name = Connectors.GOOGLE_DRIVE_WORKSPACE
         conn.sync_filters = FilterCollection()
@@ -3912,6 +3914,8 @@ class TestCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-drive-team",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert connector is not None
             MockDSEP.return_value.initialize.assert_called_once()

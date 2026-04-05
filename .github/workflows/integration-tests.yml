@@ -35,7 +35,7 @@ env:
 jobs:
   integration-tests:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 60
 
     environment:
@@ -281,54 +281,101 @@ jobs:
         working-directory: integration-tests
         run: zip -r reports.zip reports/
 
-      - name: Send email report
+      - name: Send Slack report
         if: always()
-        uses: dawidd6/action-send-mail@v3
+        id: slack-message
+        uses: slackapi/slack-github-action@v2.1.0
         with:
-          server_address: ${{ secrets.SMTP_HOST }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "IT Integration Testing Workflow - ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
-          to: ${{ secrets.PIPESHUB_ENG_GROUP_EMAIL }}
-          from: PipesHub CI <${{ secrets.SMTP_FROM_EMAIL }}>
-          attachments: integration-tests/reports.zip
-          html_body: |
-            <h2>Integration Test Report</h2>
-            <p>Here's a summary of the integration test run that just completed.</p>
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CI_CHANNEL_ID }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Author:*\n<https://github.com/${{ steps.test-results.outputs.AUTHOR }}|@${{ steps.test-results.outputs.AUTHOR }}>" },
+                    { "type": "mrkdwn", "text": "*Branch:*\n`${{ github.head_ref || github.ref_name }}`" },
+                    { "type": "mrkdwn", "text": "*Graph DB:*\n${{ steps.test-results.outputs.BACKENDS_RUN || 'N/A' }}" },
+                    { "type": "mrkdwn", "text": "*Connectors:*\n${{ github.event.inputs.connectors || 'integration (all)' }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Test Results*\n| Total | Passed | Failed | Errors | Skipped | Pass Rate |\n|---|---|---|---|---|---|\n| ${{ steps.test-results.outputs.TOTAL_TESTS }} | ${{ steps.test-results.outputs.TOTAL_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.TOTAL_FAILED }} :x: | ${{ steps.test-results.outputs.TOTAL_ERRORS }} :warning: | ${{ steps.test-results.outputs.TOTAL_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PASS_RATE }}% |"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':tada: All tests passed!' || ':warning: Some tests failed or had errors. Check the workflow run for details.' }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}`" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Workflow Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
 
-            <h3>Run Details</h3>
-            <ul>
-              <li><strong>Triggered by:</strong> ${{ steps.test-results.outputs.TRIGGER_LABEL }}</li>
-              <li><strong>Author:</strong> <a href="https://github.com/${{ steps.test-results.outputs.AUTHOR }}">@${{ steps.test-results.outputs.AUTHOR }}</a></li>
-              <li><strong>Graph DB Backend(s):</strong> ${{ steps.test-results.outputs.BACKENDS_RUN || 'N/A' }}</li>
-              <li><strong>Connectors Tested:</strong> ${{ github.event.inputs.connectors || 'integration (all)' }}</li>
-              <li><strong>Branch:</strong> ${{ github.head_ref || github.ref_name }}</li>
-              <li><strong>Commit:</strong> <code>${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}</code></li>
-              ${{ steps.test-results.outputs.PR_URL && format('<li><strong>PR:</strong> <a href="{0}">{1}</a></li>', steps.test-results.outputs.PR_URL, steps.test-results.outputs.PR_TITLE) || '' }}
-            </ul>
+      - name: Upload reports zip to Slack
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
+          MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+        working-directory: integration-tests
+        run: |
+          if [ ! -f reports.zip ]; then
+            echo "No reports.zip found, skipping upload"
+            exit 0
+          fi
+          THREAD_TS=$(echo "$MESSAGE_RESPONSE" | jq -r '.ts // empty')
+          FILE_SIZE=$(stat -c%s reports.zip)
 
-            <h3>Test Results</h3>
-            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse;">
-              <tr style="background-color: #f2f2f2;">
-                <th>Total</th><th>Passed ✅</th><th>Failed ❌</th><th>Errors ⚠️</th><th>Skipped ⏭️</th><th>Pass Rate</th>
-              </tr>
-              <tr>
-                <td align="center">${{ steps.test-results.outputs.TOTAL_TESTS }}</td>
-                <td align="center">${{ steps.test-results.outputs.TOTAL_PASSED }}</td>
-                <td align="center">${{ steps.test-results.outputs.TOTAL_FAILED }}</td>
-                <td align="center">${{ steps.test-results.outputs.TOTAL_ERRORS }}</td>
-                <td align="center">${{ steps.test-results.outputs.TOTAL_SKIPPED }}</td>
-                <td align="center">${{ steps.test-results.outputs.PASS_RATE }}%</td>
-              </tr>
-            </table>
+          RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -d "filename=integration-test-reports.zip" \
+            -d "length=$FILE_SIZE")
+          OK=$(echo "$RESPONSE" | jq -r '.ok')
+          if [ "$OK" != "true" ]; then
+            echo "::warning::Failed to get Slack upload URL: $RESPONSE"
+            exit 0
+          fi
+          UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url')
+          FILE_ID=$(echo "$RESPONSE" | jq -r '.file_id')
 
-            <p>${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && '🎉 All tests passed! Great job.' || '⚠️ Some tests failed or had errors. Please check the attached report for details.' }}</p>
+          curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
-            <p>The full HTML report(s) are attached as a zip file. Open the HTML file in your browser for a detailed breakdown including failure tracebacks, slowest tests, and re-run commands.</p>
-
-            <p>
-              <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run on GitHub →</a>
-            </p>
-
-            <p style="color: #888; font-size: 12px;">This email was sent automatically by PipesHub CI.</p>
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports\"}],\"channel_id\":\"$CHANNEL_ID\""
+          if [ -n "$THREAD_TS" ]; then
+            COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
+          fi
+          COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD}"
+          curl -s -X POST "https://slack.com/api/files.completeUploadExternal" \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$COMPLETE_PAYLOAD"

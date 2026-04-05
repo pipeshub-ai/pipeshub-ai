@@ -72,7 +72,9 @@ class KnowledgeBaseConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             KBApp(connector_id),
@@ -80,7 +82,9 @@ class KnowledgeBaseConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
         self.connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -274,7 +278,9 @@ class KnowledgeBaseConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "KnowledgeBaseConnector":
         """Factory method to create a KnowledgeBaseConnector instance"""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -282,7 +288,13 @@ class KnowledgeBaseConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return KnowledgeBaseConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )
 
     async def get_filter_options(

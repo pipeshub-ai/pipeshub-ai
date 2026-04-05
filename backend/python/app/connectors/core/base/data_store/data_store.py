@@ -288,6 +288,14 @@ class BaseDataStore(ABC):
         """
         pass
 
+    @abstractmethod
+    async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent. Used by TEAM-scope connectors.
+        """
+        pass
+
 
 class TransactionStore(BaseDataStore):
     """Abstract transaction-aware data store that operates within a transaction context"""

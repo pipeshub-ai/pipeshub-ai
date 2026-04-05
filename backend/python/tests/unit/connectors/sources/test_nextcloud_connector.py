@@ -91,6 +91,8 @@ def nextcloud_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="nc-conn-1",
+            scope="team",
+            created_by="test-user",
         )
     return connector
 
@@ -420,6 +422,8 @@ def nextcloud_connector(mock_logger_fullcov, mock_data_entities_processor_fullco
             data_store_provider=mock_data_store_provider_fullcov,
             config_service=mock_config_service,
             connector_id="nc-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -1130,7 +1134,9 @@ class TestCreateConnectorFactory:
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
-            conn = await NextcloudConnector.create_connector(logger, dsp, cs, "nc-factory")
+            conn = await NextcloudConnector.create_connector(
+                logger, dsp, cs, "nc-factory", "team", "test-user-id"
+            )
             assert isinstance(conn, NextcloudConnector)
 
 

@@ -189,6 +189,8 @@ class ServiceNowConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         """
         Initialize the ServiceNow KB Connector.
@@ -205,7 +207,9 @@ class ServiceNowConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         # ServiceNow API client instances
@@ -2909,7 +2913,10 @@ class ServiceNowConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
+        **kwargs,
     ) -> "ServiceNowConnector":
         """
         Factory method to create and initialize the connector.
@@ -2927,4 +2934,12 @@ class ServiceNowConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return cls(logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        return cls(
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
+        )

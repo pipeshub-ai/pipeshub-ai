@@ -121,6 +121,8 @@ def github_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="gh-cov-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -1381,5 +1383,7 @@ class TestCreateConnector:
                 data_store_provider=mock_data_store_provider,
                 config_service=mock_config_service,
                 connector_id="gh-test-1",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, GithubConnector)

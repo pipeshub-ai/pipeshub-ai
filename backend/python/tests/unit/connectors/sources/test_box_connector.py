@@ -134,6 +134,8 @@ def box_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="box-conn-1",
+            scope="team",
+            created_by="test-user",
         )
     connector.sync_filters = FilterCollection()
     connector.indexing_filters = FilterCollection()
@@ -1313,6 +1315,8 @@ def box_connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="box-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     connector.sync_filters = FilterCollection()
     connector.indexing_filters = FilterCollection()

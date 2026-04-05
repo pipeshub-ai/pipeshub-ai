@@ -13763,6 +13763,25 @@ class SalesforceDataSource:
             body=body,
             content_type="application/json"
         )
+    
+    async def soql_query_next(self, next_url: str) -> SalesforceResponse:
+        """Fetch the next page of a paginated SOQL query via nextRecordsUrl.
+
+        HTTP GET: {nextRecordsUrl} (e.g. /services/data/v59.0/query/01g...)
+
+        Args:
+            next_url: The nextRecordsUrl from the previous SOQL query response
+
+        Returns:
+            SalesforceResponse with success status and data/error
+        """
+        return await self._execute_request(
+            method="GET",
+            path=next_url,
+            params=None,
+            body=None,
+            content_type="application/json"
+        )
 
     async def query_with_limits(self, limit: str, data: Optional[Dict[str, Any]] = None) -> SalesforceResponse:
         """Use this API to query the Customer 360 Audiences data lake across data model, lake, unified, and linked objects. https://developer.salesforce.com/docs/atlas.en-us.c360a_api.meta/c360a_api/c360a_api...

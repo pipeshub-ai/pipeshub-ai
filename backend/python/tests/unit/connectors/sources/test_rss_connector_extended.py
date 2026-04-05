@@ -13,6 +13,8 @@ from app.models.permission import EntityType, PermissionType
 
 
 def _make_connector():
+    from app.models.entities import AppMetadata, User
+    
     logger = MagicMock()
     dep = MagicMock()
     dep.org_id = "org-1"
@@ -20,7 +22,36 @@ def _make_connector():
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="rss-conn-1",
+        name="RSS Feed",
+        type="rss",
+        app_group="RSS",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
+    
+    mock_user = User(
+        org_id="org-1",
+        email="user@test.com",
+        full_name="Test User",
+        is_active=True,
+        source_user_id="user-1",
+        id="user-1",
+        title=None,
+    )
+    dep.get_user_by_user_id = AsyncMock(return_value=mock_user)
+    
     ds_provider = MagicMock()
+    mock_tx = MagicMock()
+    mock_tx.ensure_team_app_edge = AsyncMock()
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    ds_provider.transaction.return_value = mock_tx
+    
     config_service = AsyncMock()
     return RSSConnector(
         logger=logger,
@@ -28,6 +59,8 @@ def _make_connector():
         data_store_provider=ds_provider,
         config_service=config_service,
         connector_id="rss-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
 
 
@@ -349,6 +382,9 @@ class TestRunSync:
     async def test_run_sync_processes_feeds(self):
         conn = _make_connector()
         conn.feed_urls = ["https://feed1.com/rss"]
+        conn.scope = "PERSONAL"
+        conn.created_by = "user-1"
+        conn.creator_email = "user@test.com"
         with patch.object(conn, "_process_feed", new_callable=AsyncMock, return_value=5):
             await conn.run_sync()
         conn.data_entities_processor.on_new_app_users.assert_called_once()
@@ -362,7 +398,9 @@ class TestRunSync:
 
     async def test_run_sync_exception_raises(self):
         conn = _make_connector()
-        conn.data_entities_processor.get_all_active_users = AsyncMock(
+        conn.scope = "PERSONAL"
+        conn.created_by = "user-1"
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("error")
         )
         with pytest.raises(Exception, match="error"):

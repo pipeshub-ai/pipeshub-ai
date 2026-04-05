@@ -178,7 +178,9 @@ class NotionConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         """Initialize the Notion connector."""
         super().__init__(
@@ -187,7 +189,9 @@ class NotionConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         # Client instances
@@ -630,7 +634,9 @@ class NotionConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "NotionConnector":
         """Factory method to create a Notion connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -646,7 +652,9 @@ class NotionConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
     # ==================== Main Sync Methods ====================
