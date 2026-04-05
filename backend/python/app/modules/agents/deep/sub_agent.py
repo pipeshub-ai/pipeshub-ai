@@ -1227,7 +1227,6 @@ def _wrap_tools_with_budget(
 
     return wrapped
 
-
 def _wrap_retrieval_tools_for_context_efficiency(
     tools: list,
     state: DeepAgentState,
@@ -1313,8 +1312,6 @@ def _wrap_retrieval_tools_for_context_efficiency(
             wrapped.append(tool)
 
     return wrapped
-
-
 def _make_budgeted_coro(
     orig_coro: Callable[..., Coroutine[Any, Any, str]] | None,
     orig_func: Callable[..., str] | None,

@@ -51,6 +51,40 @@ def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> 
     return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
 
 
+class CitationRefMapper:
+    """Builds a bidirectional mapping between tiny citation refs (ref1, ref2, ...) and full block web URLs.
+
+    get_or_create_ref() is idempotent — same URL always returns the same ref.
+    The mapper is designed to be shared as a single mutable instance across
+    retrieval tool calls, respond nodes, and tool execution hops.
+    """
+
+    def __init__(self):
+        self._counter: int = 0
+        self._url_to_ref: dict[str, str] = {}
+        self._ref_to_url: dict[str, str] = {}
+
+    def get_or_create_ref(self, full_url: str) -> str:
+        """Return existing ref if URL already mapped, else create a new one."""
+        if full_url in self._url_to_ref:
+            return self._url_to_ref[full_url]
+        self._counter += 1
+        ref = f"ref{self._counter}"
+        self._url_to_ref[full_url] = ref
+        self._ref_to_url[ref] = full_url
+        return ref
+
+    @property
+    def ref_to_url(self) -> dict[str, str]:
+        """Snapshot of ref→URL mapping (safe to pass downstream without exposing mutability)."""
+        return dict(self._ref_to_url)
+
+    @property
+    def url_to_ref(self) -> dict[str, str]:
+        """Snapshot of URL→ref mapping."""
+        return dict(self._url_to_ref)
+
+
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
@@ -1064,17 +1098,19 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     return child_results
 
 
-def record_to_message_content(record: dict[str, Any]) -> list[dict[str, Any]]:
+def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMapper | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
     Args:
         record: The record JSON object containing block_containers and other metadata
-        final_results: Optional list of final results for context
+        ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
 
     Returns:
-        String of message content in the same format as get_message_content
+        Tuple of (content list, ref_mapper)
     """
+    if ref_mapper is None:
+        ref_mapper = CitationRefMapper()
 
     try:
 
@@ -1099,6 +1135,7 @@ Record blocks (sorted):\n\n"""
             block_type = block.get("type")
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
+            ref = ref_mapper.get_or_create_ref(block_web_url)
             data = block.get("data", "")
 
             if block_type == BlockType.IMAGE.value:
@@ -1106,7 +1143,7 @@ Record blocks (sorted):\n\n"""
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                    "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
                 })
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
@@ -1145,10 +1182,12 @@ Record blocks (sorted):\n\n"""
                                 else:
                                     row_text = str(block_data)
 
+                                child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                 child_results.append({
                                     "content": row_text,
                                     "block_index": row_index,
-                                    "block_web_url": build_block_web_url(rec_frontend_url, rec_record_id, row_index),
+                                    "block_web_url": child_block_web_url,
+                                    "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
                                 })
 
                         if child_results:
@@ -1175,7 +1214,7 @@ Record blocks (sorted):\n\n"""
                 block_group_type = block_group.get("type")
                 if block_group_type not in valid_group_labels:
                     continue
-                
+
                 virtual_record_id = record.get("virtual_record_id", "")
                 group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,{})
 
@@ -1184,6 +1223,7 @@ Record blocks (sorted):\n\n"""
                 seen_block_groups.add(block_group_id)
                 for gb in group_blocks:
                     gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("block_index", 0))
+                    gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
                 rendered_form = template.render(
                     block_group_index=parent_index,
                     block_group_web_url="",
@@ -1197,12 +1237,14 @@ Record blocks (sorted):\n\n"""
             else:
                 continue
 
-        return content
+        return content, ref_mapper
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False) -> list[dict[str, Any]]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+    if ref_mapper is None:
+        ref_mapper = CitationRefMapper()
     content = []
     if mode == "no_tools":
         chunks = []
@@ -1226,6 +1268,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                 frontend_url = record.get("frontend_url", "")
                 record_id = record.get("id", "")
                 block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
+                citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
 
                 if block_type == GroupType.TABLE.value:
                     table_summary, _ = result.get("content")
@@ -1238,6 +1281,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                         "blockText": content_text,
                         "recordName": result.get("metadata", {}).get("recordName", ""),
                         "block_web_url": block_web_url,
+                        "citation_ref": citation_ref,
                     }
                 })
 
@@ -1253,7 +1297,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
             "text": rendered_form
         })
 
-        return content
+        return content, ref_mapper
     else:
         template = Template(qna_prompt_instructions_1)
         rendered_form = template.render(
@@ -1268,7 +1312,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     "text": rendered_form
                 })
 
-        message_content_array = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm)
+        message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
         message_content_array = [item for sublist in message_content_array for item in sublist]
 
         content.extend(message_content_array)
@@ -1280,9 +1324,11 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
             "type": "text",
             "text": f"</context>\n\n{rendered_instructions_2}"
         })
-        return content
+        return content, ref_mapper
 
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False) -> list[list[dict[str, Any]]]:
+def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+    if ref_mapper is None:
+        ref_mapper = CitationRefMapper()
     all_contents = []
     content = []
     seen_virtual_record_ids = set()
@@ -1323,11 +1369,13 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             block_index = result.get("block_index")
             block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
             result["block_web_url"] = block_web_url
+            ref = ref_mapper.get_or_create_ref(block_web_url)
+            result["citation_ref"] = ref
             if block_type == BlockType.IMAGE.value:
-                if result.get("content").startswith("data:image/") and is_multimodal_llm:
+                if result.get("content").startswith("data:image/") and is_multimodal_llm and not from_tool:
                     content.append({
                         "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content:"
+                        "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
                     })
                     content.append({
                         "type": "image_url",
@@ -1336,7 +1384,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 else:
                     content.append({
                         "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                        "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
                     })
             elif block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
@@ -1344,6 +1392,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 if child_results:
                     for child in child_results:
                         child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
+                        child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
                     template = Template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=block_group_index,
@@ -1358,7 +1407,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Index: {block_index}\n* Block Web URL: {block_web_url}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                    "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
                 })
             elif block_type in valid_group_labels:
                 block_group_index = result.get("block_group_index")
@@ -1367,6 +1416,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     continue
                 for gb in group_blocks:
                     gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("block_index", 0))
+                    gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
                 template = Template(block_group_prompt)
                 rendered_form = template.render(
                     block_group_index=block_group_index,
@@ -1390,7 +1440,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
         })
         all_contents.append(content)
 
-    return all_contents
+    return all_contents, ref_mapper
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """

@@ -32,7 +32,7 @@ response_system_prompt = """You are an expert AI assistant within an enterprise 
 You are responsible for:
 - **Synthesizing** data from internal knowledge blocks and tool execution results into coherent, comprehensive answers
 - **Formatting** responses professionally with proper Markdown
-- **Citing** internal knowledge sources accurately with inline markdown link citations [source](Block Web URL)
+- **Citing** internal knowledge sources accurately with inline markdown link citations [source](Citation ID)
 - **Presenting** information in a user-friendly, scannable format
 - **Answering directly** without describing your process or tools used
 </core_role>
@@ -89,39 +89,26 @@ You are responsible for:
 </answer_guidelines>
 
 <citation_rules>
-## Citation Guidelines
-
-Cite only the facts that directly answer the query and are significant enough to need a source. Use your judgment — the number of citations should match the complexity and length of the answer.
-
-### What to cite
-- Specific, verifiable claims that the reader would want to trace back to a source
-- Key figures, dates, names, statuses, and process steps drawn from a block
-- Do **NOT** cite every sentence, background prose, transitions, or general context
-
-### What NOT to cite
-- ❌ General descriptions or introductory sentences
-- ❌ The same fact twice with different links — reuse the same [source](Block Web URL)
-- ❌ Marginal supporting details when the primary claim is already cited
+**Cite key facts from internal knowledge immediately after the claim.**
 
 ### Citation Format Rules:
 
-1. **Use Block Web URLs as Markdown Links**: Each knowledge block has a "Block Web URL".
-   Embed the Block Web URL as a markdown link with [source] as the link text. Do NOT manually assign citation numbers — the system numbers them automatically.
-   **⚠️ CRITICAL: Copy the EXACT Block Web URL character-for-character from the context. Do NOT modify, fabricate, or regenerate any part of the URL — especially the record ID between /record/ and /preview. Use the URL exactly as provided.**
-   - ✅ CORRECT: [source](/record/abc123/preview#blockIndex=0) — copied verbatim from context
-   - ❌ WRONG: [source](/record/DIFFERENT_ID/preview#blockIndex=0) — modified record ID
-   - ❌ WRONG: [ceb988e7-c37c-4a5a-b8ef-59f37bbde594] (never use UUIDs)
-   - ❌ WRONG: [1], [2] (don't use bare numbers without the URL)
+1. **Use Citation IDs as Markdown Links**: Each knowledge block has a "Citation ID" (e.g., ref1, ref2).
+   Embed the Citation ID as a markdown link with [source] as the link text: [source](ref1).
+   Do NOT manually assign citation numbers — the system numbers them automatically.
+   - ✅ CORRECT: [source](ref1) — uses the exact Citation ID from the context
+   - ✅ CORRECT: [source](ref15) — uses the exact Citation ID from the context
+   - ❌ WRONG: [1], [2] (don't use bare numbers without the Citation ID)
 
-2. **Reuse Links**: If the same block is cited again later, reuse the same [source](Block Web URL) link.
+2. **Limit Citations**: Focus on the most important and specific claims — do NOT cite every sentence.
 
 3. **Inline After the Specific Claim**: Put the citation link immediately after the fact it supports, not at paragraph end.
 
-4. **One Citation Per Link**: Each citation is a separate markdown link
+4. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
 
-5. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
+5. **Use EXACT Citation IDs**: Use the Citation ID exactly as shown in the context. Do NOT invent or modify Citation IDs.
 
-6. **DO NOT ALTER URLs**: The Block Web URL must be copied exactly as it appears in the context. Never change the record ID, block index, or any other part of the URL. If you cannot find the exact URL, re-read the context to locate it.
+6. **WHEN UNSURE, OMIT**: If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 
 </citation_rules>
 
@@ -134,7 +121,7 @@ Cite only the facts that directly answer the query and are significant enough to
 
 ```json
 {{
-  "answer": "Your answer in markdown with citations as [source](Block Web URL) after each fact. The system assigns citation numbers automatically.",
+  "answer": "Your answer in markdown with citations as [source](Citation ID) after each fact. The system assigns citation numbers automatically.",
   "reason": "How you derived the answer from blocks",
   "confidence": "Very High | High | Medium | Low",
   "answerMatchType": "Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record",
@@ -160,7 +147,7 @@ Cite only the facts that directly answer the query and are significant enough to
 
 ### MODE 3: Combined — Internal Knowledge + API Tool Results (MANDATORY when BOTH are present)
 
-**When to use:** When you have BOTH internal knowledge blocks (with Block Web URLs) AND API tool results
+**When to use:** When you have BOTH internal knowledge blocks (with Citation IDs) AND API tool results
 
 ```json
 {{
@@ -253,10 +240,10 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 <source_prioritization>
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
-2. **Company Knowledge Questions**: Use internal knowledge blocks, cite the most relevant facts with [source](Block Web URL) inline
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite the most relevant facts with [source](Citation ID) inline
 3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
 4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
-   - Cite ALL relevant internal knowledge facts with inline [source](Block Web URL) citations
+   - Cite ALL relevant internal knowledge facts with inline [source](Citation ID) citations
    - Format ALL API results with links AND include them in `referenceData`
    - Weave both into one unified, coherent answer — do NOT skip citations just because API results exist
 </source_prioritization>
@@ -265,11 +252,12 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 **MOST CRITICAL RULES:**
 
 1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
-2. **CITE SELECTIVELY** — [source](Block Web URL) after each fact that directly answers the query. Prose, context, and repeated claims do not need citations
-3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
-4. **BE COMPREHENSIVE** — thorough, complete answers
-5. **Format Professionally** — clean markdown hierarchy
-6. **INCLUDE LINKS**
+2. **LIMIT CITATIONS** — Only cite the most important, non-obvious claims. Do NOT cite every sentence.
+3. **CITE INLINE** — [source](Citation ID) right after the specific fact it supports
+4. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
+5. **BE COMPREHENSIVE** — thorough, complete answers
+6. **Format Professionally** — clean markdown hierarchy
+7. **INCLUDE LINKS**
 </critical_reminders>
 
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
@@ -341,16 +329,18 @@ def build_response_prompt(state, max_iterations=30) -> str:
     # is available without duplicating the full context.
     if state.get("qna_message_content"):
         internal_context = (
-            "Internal knowledge (records, block indexes, block web URLs, and content) has been "
-            "retrieved and is provided in the user message. Each block has a Block Web URL. "
-            "Cite facts using markdown links: [source](Block Web URL). The system assigns citation numbers automatically. "
-            "CRITICAL: Copy the Block Web URL exactly as-is from the context — do NOT modify the record ID or any part of the URL."
+            "Internal knowledge (records and content) has been "
+            "retrieved and is provided in the user message. Each block has a Citation ID (e.g., ref1, ref2). "
+            "Cite key facts using markdown links: [source](ref1). Limit to most relevant citations — do NOT cite every sentence. "
+            "The system assigns citation numbers automatically. "
+            "Use the exact Citation ID from the context. If unsure, omit the citation."
         )
     elif final_results:
         internal_context = (
             f"{len(final_results)} knowledge blocks are available. "
-            "Cite each fact using its EXACT Block Web URL as a markdown link: [source](Block Web URL). The system assigns citation numbers automatically. "
-            "CRITICAL: Copy the Block Web URL exactly as-is — do NOT modify the record ID or any part of the URL."
+            "Cite key facts using the Citation ID as a markdown link: [source](ref1). Limit to most relevant citations — do NOT cite every sentence. "
+            "The system assigns citation numbers automatically. "
+            "Use the exact Citation ID from the context. If unsure, omit the citation."
         )
     else:
         internal_context = (
@@ -479,9 +469,9 @@ def create_response_messages(state) -> list[Any]:
 
         if has_knowledge or has_knowledge_tool:
             query_with_context += (
-                "\n\n**⚠️ Respond in JSON format. Cite each fact using its Block Web URL as a markdown link: "
-                "[source](Block Web URL). The system assigns citation numbers automatically. Use DIFFERENT block URLs for "
-                "DIFFERENT facts.**"
+                "\n\n**⚠️ Respond in JSON format. Cite key facts using the Citation ID as a markdown link: "
+                "[source](ref1). Limit to the most relevant citations. The system assigns citation numbers automatically. "
+                "Use DIFFERENT Citation IDs for DIFFERENT facts.**"
             )
 
         messages.append(HumanMessage(content=query_with_context))

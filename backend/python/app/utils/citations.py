@@ -9,6 +9,9 @@ from app.utils.logger import create_logger
 # Initialize logger
 logger = create_logger(__name__)
 
+# Regex that matches both tiny refs (ref1, ref2, ...) and legacy full block web URLs
+_MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|[^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
+
 
 @dataclass
 class ChatDocCitation:
@@ -63,21 +66,30 @@ def fix_json_string(json_str) -> str:
     return result
 
 
+def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
+    """Resolve a citation target — if it's a tiny ref and we have a mapping, return the full URL; otherwise return as-is."""
+    if ref_to_url and target in ref_to_url:
+        return ref_to_url[target]
+    return target
+
 
 def _renumber_citation_links(
     text: str,
     md_matches: list,
     url_to_citation_num: dict[str, int],
+    ref_to_url: dict[str, str] | None = None,
 ) -> str:
     """
     Replace citation numbers in markdown links with their new sequential numbers.
+    Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
     Processes matches in reverse order to preserve string positions.
     """
     for match in reversed(md_matches):
-        url = match.group(2).strip()
-        new_num = url_to_citation_num.get(url)
+        raw_target = match.group(2).strip()
+        full_url = _resolve_ref(raw_target, ref_to_url)
+        new_num = url_to_citation_num.get(full_url)
         if new_num is not None:
-            replacement = f"[{new_num}]({match.group(2)})"
+            replacement = f"[{new_num}]({full_url})"
         else:
             replacement = ""
         text = text[:match.start()] + replacement + text[match.end():]
@@ -128,32 +140,6 @@ def _is_url_resolvable_via_records(
                     for child in child_results:
                         if child.get("block_index") == block_index:
                             return True
-        # elif doc.get("block_type") in valid_group_labels and doc_record_id == record_id:
-        #     block_group_index = doc.get("block_group_index")
-        #     virtual_record_id = doc.get("virtual_record_id")
-        #     rec = None
-        #     if virtual_record_id and virtual_record_id_to_result:
-        #         rec = virtual_record_id_to_result.get(virtual_record_id)
-        #     if rec is None:
-        #         for r in records:
-        #             if r.get("id") == record_id:
-        #                 rec = r
-        #                 break
-        #     if rec is not None and block_group_index is not None:
-        #         block_groups = (rec.get("block_containers", {}) or {}).get("block_groups", []) or []
-        #         if 0 <= block_group_index < len(block_groups):
-        #             group = block_groups[block_group_index]
-        #             children = group.get("children", [])
-        #             if isinstance(children, dict) and "block_ranges" in children:
-        #                 for range_obj in children.get("block_ranges", []):
-        #                     start = range_obj.get("start")
-        #                     end = range_obj.get("end")
-        #                     if start is not None and end is not None and start <= block_index <= end:
-        #                         return True
-        #             elif isinstance(children, list):
-        #                 for child in children:
-        #                     if child.get("block_index") == block_index:
-        #                         return True
 
     for r in records:
         if r.get("id") == record_id:
@@ -175,62 +161,72 @@ def detect_hallucinated_citation_urls(
     records: list[dict[str, Any]] | None = None,
     flattened_final_results: list[dict[str, Any]] | None = None,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    ref_to_url: dict[str, str] | None = None,
 ) -> list[str]:
     """
-    Detect citation URLs in answer_text that don't match any known block_web_url.
+    Detect citation targets in answer_text that don't match any known block.
+
+    Handles both tiny refs (ref1, ref2) and legacy full URLs.
 
     Returns:
-            - hallucinated_urls: URLs found in answer that could not be resolved
+            - hallucinated: targets found in answer that could not be resolved
     """
     if records is None:
         records = []
     if flattened_final_results is None:
         flattened_final_results = []
 
-    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
-    md_matches = list(re.finditer(md_link_pattern, answer_text))
+    md_matches = list(re.finditer(_MD_LINK_PATTERN, answer_text))
     if not md_matches:
         return []
 
-    unique_urls = []
+    unique_targets = []
     seen = set()
     for match in md_matches:
-        url = match.group(2).strip()
-        if url not in seen:
-            unique_urls.append(url)
-            seen.add(url)
+        target = match.group(2).strip()
+        if target not in seen:
+            unique_targets.append(target)
+            seen.add(target)
 
     hallucinated = []
-    for url in unique_urls:
-        if _is_url_resolvable_via_records(
-            url, records, flattened_final_results,
-            virtual_record_id_to_result=virtual_record_id_to_result,
-        ):
-            continue
-        hallucinated.append(url)
+    for target in unique_targets:
+        # Tiny ref: valid iff it exists in the ref_to_url mapping
+        if re.match(r'^ref\d+$', target):
+            if ref_to_url and target in ref_to_url:
+                continue
+            hallucinated.append(target)
+        else:
+            # Full URL: use existing resolution logic
+            if _is_url_resolvable_via_records(
+                target, records, flattened_final_results,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+            ):
+                continue
+            hallucinated.append(target)
 
     return hallucinated
 
 
-def normalize_citations_and_chunks(answer_text: str, final_results: list[dict[str, Any]],records: list[dict[str, Any]]=None) -> tuple[str, list[dict[str, Any]]]:
+def normalize_citations_and_chunks(
+    answer_text: str,
+    final_results: list[dict[str, Any]],
+    records: list[dict[str, Any]] = None,
+    ref_to_url: dict[str, str] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping.
 
-    Supports two citation formats:
-    1. Markdown link citations: [N](url) where N is a sequential citation number and url contains /record/{id}/preview#blockIndex={n}
-    2. Legacy R-label citations: [R1-2], 【R1-2】
+    Supports both tiny refs (ref1, ref2) and legacy full URL citations.
     """
 
     if records is None:
         records = []
 
-    # First try markdown link citation pattern: [citation_number](url_with_blockIndex)
-    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
-    md_matches = list(re.finditer(md_link_pattern, answer_text))
+    md_matches = list(re.finditer(_MD_LINK_PATTERN, answer_text))
 
     if md_matches:
-        return _normalize_markdown_link_citations(answer_text, md_matches, final_results, records)
+        return _normalize_markdown_link_citations(answer_text, md_matches, final_results, records, ref_to_url=ref_to_url)
 
     return answer_text, []
 
@@ -240,10 +236,11 @@ def _normalize_markdown_link_citations(
     md_matches: list,
     final_results: list[dict[str, Any]],
     records: list[dict[str, Any]],
+    ref_to_url: dict[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
-    Normalize markdown link citations [text](url) where url contains block preview URLs.
-    Maps each citation URL to the corresponding block in final_results and renumbers sequentially.
+    Normalize markdown link citations [text](target) where target is a tiny ref or full URL.
+    Maps each citation to the corresponding block in final_results and renumbers sequentially.
     """
     url_to_doc_index = {}
     flattened_final_results = []
@@ -264,13 +261,15 @@ def _normalize_markdown_link_citations(
                 flattened_final_results.append(doc)
                 url_to_doc_index[doc_url] = len(flattened_final_results) - 1
 
+    # Collect unique citation targets, resolving refs to full URLs
     unique_urls = []
     seen_urls = set()
     for match in md_matches:
-        url = match.group(2).strip()
-        if url not in seen_urls:
-            unique_urls.append(url)
-            seen_urls.add(url)
+        raw_target = match.group(2).strip()
+        full_url = _resolve_ref(raw_target, ref_to_url)
+        if full_url not in seen_urls:
+            unique_urls.append(full_url)
+            seen_urls.add(full_url)
 
     url_to_citation_num = {}
     new_citations = []
@@ -285,7 +284,7 @@ def _normalize_markdown_link_citations(
                 content = content[0]
             elif not isinstance(content, str):
                 content = str(content)
-            
+
             if not content:
                 continue
 
@@ -328,7 +327,7 @@ def _normalize_markdown_link_citations(
                         break
 
 
-    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num)
+    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
 
     return answer_text, new_citations
 
@@ -337,28 +336,26 @@ def normalize_citations_and_chunks_for_agent(
     answer_text: str,
     final_results: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
-    records: list[dict[str, Any]] | None = None
+    records: list[dict[str, Any]] | None = None,
+    ref_to_url: dict[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping.
 
-    Supports two citation formats:
-    1. Markdown link citations: [N](url) where N is a sequential citation number and url contains /record/{id}/preview#blockIndex={n}
-    2. Legacy R-label citations: [R1-2], 【R1-2】
+    Supports both tiny refs (ref1, ref2) and legacy full URL citations.
     """
     if records is None:
         records = []
     if virtual_record_id_to_result is None:
         virtual_record_id_to_result = {}
 
-    # First try markdown link citation pattern: [citation_number](url_with_blockIndex)
-    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
-    md_matches = list(re.finditer(md_link_pattern, answer_text))
+    md_matches = list(re.finditer(_MD_LINK_PATTERN, answer_text))
 
     if md_matches:
         return _normalize_markdown_link_citations_for_agent(
-            answer_text, md_matches, final_results, virtual_record_id_to_result, records
+            answer_text, md_matches, final_results, virtual_record_id_to_result, records,
+            ref_to_url=ref_to_url,
         )
 
     return answer_text, []
@@ -369,10 +366,11 @@ def _normalize_markdown_link_citations_for_agent(
     final_results: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, dict[str, Any]],
     records: list[dict[str, Any]],
+    ref_to_url: dict[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize markdown link citations for agent workflow.
-    Maps each citation URL to the corresponding block and renumbers sequentially.
+    Maps each citation to the corresponding block and renumbers sequentially.
     Enhances metadata from virtual_record_id_to_result.
     """
     url_to_doc_index = {}
@@ -395,13 +393,15 @@ def _normalize_markdown_link_citations_for_agent(
                 flattened_final_results.append(doc)
                 url_to_doc_index[doc_url] = len(flattened_final_results) - 1
 
+    # Collect unique citation targets, resolving refs to full URLs
     unique_urls = []
     seen_urls = set()
     for match in md_matches:
-        url = match.group(2).strip()
-        if url not in seen_urls:
-            unique_urls.append(url)
-            seen_urls.add(url)
+        raw_target = match.group(2).strip()
+        full_url = _resolve_ref(raw_target, ref_to_url)
+        if full_url not in seen_urls:
+            unique_urls.append(full_url)
+            seen_urls.add(full_url)
 
     url_to_citation_num = {}
     new_citations = []
@@ -523,6 +523,6 @@ def _normalize_markdown_link_citations_for_agent(
     if not new_citations and unique_urls:
         logger.error(f"FAILED to create citations for URLs: {unique_urls}")
 
-    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num)
+    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
 
     return answer_text, new_citations

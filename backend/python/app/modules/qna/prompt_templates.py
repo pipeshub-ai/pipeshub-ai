@@ -23,21 +23,19 @@ class AnswerWithMetadataJSON(BaseModel):
 
 table_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: table
-* Block Group Web URL: {{block_group_web_url}}
 * Table Summary: {{ table_summary }}
 * Table Rows/Blocks:{% for row in table_rows %}
   - Block Index: {{row.block_index}}
-  - Block Web URL: {{row.block_web_url}}
+  - Citation ID: {{row.citation_ref}}
   - Block Content: {{row.content}}
 {% endfor %}
 """
 
 block_group_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: {{label}}
-* Block Group Web URL: {{block_group_web_url}}
-* Block Group Content:{% for block in blocks %}
+* Block Group Content/Blocks:{% for block in blocks %}
   - Block Index: {{block.block_index}}
-  - Block Web URL: {{block.block_web_url}}
+  - Citation ID: {{block.citation_ref}}
   - Block Content: {{block.content}}
 {% endfor %}
 """
@@ -50,11 +48,10 @@ qna_prompt_instructions_1 = """
   Ensure that document records only influence the current query and not subsequent unrelated follow-up queries.
   Rephrased queries are AI-generated to provide more context to what the user might mean.
 
-  Every entity is a resource with its own web URL that can be cited:
+  Every entity is a resource:
   - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
-  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section). Has a "Block Group Web URL".
-  - **Block**: The smallest unit of content within a record or block group. Has a "Block Web URL".
-  When citing these entities, embed the entity's web URL as a markdown link: [source](Web URL). The system automatically assigns citation numbers — do NOT number them yourself.
+  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section).
+  - **Block**: The smallest unit of content within a record or block group. Has a "Citation ID" (e.g., ref1, ref2) that can be cited. When citing blocks, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers — do NOT number them yourself.
 </task>
 
 <tools>
@@ -111,15 +108,15 @@ Answer the query clearly and comprehensively using relevant context.
 - For user-specific queries, prioritize information from the User Information section
 
 ### Citations
-- Cite only the facts that directly answer the query and are significant enough to need a source
-- Be selective: one citation per distinct claim. Do NOT cite every sentence, descriptive phrase, or background context
-- A fact needs a citation only if it is a specific claim that the reader would want to verify; general statements and prose transitions do not need citations
-- Reuse the same link when citing the same block more than once
-- Cite by embedding the entity’s VERBATIM web URL as a markdown link: [source](Block Web URL)
-- **VERBATIM means you MUST copy the EXACT Block Web URL character-for-character from the context. Do NOT modify, shorten, rearrange, or regenerate any part of the URL — especially the record ID between /record/ and /preview. The URL must be an exact copy.**
+- Cite key facts from internal knowledge sources — focus on the most important and specific claims, not every sentence
+- Cite by embedding the Citation ID as a markdown link: [source](Citation ID)
+- Each block has a unique Citation ID like ref1, ref2, etc. Use EXACTLY the Citation ID shown in the context.
 - Do NOT manually assign citation numbers — the system numbers them automatically
-- Prefer block web URL over block group web URL over record web URL when appropriate
-- Place citations immediately after the specific claim they support (not at paragraph end)
+- Place citations immediately after the claim (not at paragraph end)
+- If you are unsure which block a fact came from, omit the citation rather than guessing
+- Limit to the most relevant citations. Do NOT cite every sentence.
+
+
 
 ### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
 - **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details
@@ -139,24 +136,29 @@ Answer the query clearly and comprehensively using relevant context.
 
 <output_format>
   {% if mode == "json" %}
-  Output format:
+  **STRICT JSON OUTPUT (CRITICAL):**
+  Your ENTIRE response MUST be a single raw JSON object — no markdown fences (```json```), no preamble text, no trailing text. Start with { and end with }.
+  Required JSON structure:
   {
-    "answer": "<Answer the query in rich markdown format with citations like [1](Block Web URL) placed immediately after each relevant claim. If based only on user data, say 'User Information'>",
+    "answer": "<Answer the query in rich markdown format with citations like [source](ref1) placed immediately after each relevant claim. If based only on user data, say 'User Information'>",
     "reason": "<Explain how the answer was derived using the blocks/user information/tool results and reasoning>",
     "confidence": "<Very High | High | Medium | Low>",
-    "answerMatchType": "<Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record>",
+    "answerMatchType": "<Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record>"
   }
   <example>
-  ✅ Example Output:
-    {
-      "answer": "Security policies are regularly reviewed [1](http:<base_url>/record/12345/preview#blockIndex=2). Updates are implemented quarterly [2](http:<base_url>/record/12345/preview#blockIndex=5).",
-      "reason": "....",
-      "confidence": "High",
-    }
+  ✅ Correct Output (raw JSON, no wrapping):
+    {"answer": "Security policies are regularly reviewed [source](ref1). Updates are implemented quarterly [source](ref2).", "reason": "....", "confidence": "High", "answerMatchType": "Derived From Blocks"}
+  ❌ WRONG — Do NOT wrap in code fences:
+    ```json
+    {"answer": "..."}
+    ```
+  ❌ WRONG — Do NOT add text before/after the JSON:
+    Here is the answer:
+    {"answer": "..."}
   </example>
   {% else %}
   Provide your answer directly in rich markdown format.
-  For citations, embed the Block Web URL as a markdown link: [source](Block Web URL). The system automatically assigns citation numbers.
+  For citations, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers.
   Do NOT wrap your response in JSON. Simply provide the answer text directly.
   If the answer is based only on user data, mention 'User Information' in your response.
 
@@ -168,7 +170,7 @@ Answer the query clearly and comprehensively using relevant context.
   <example>
   ✅ Example Output:
 
-  Security policies are regularly reviewed [source](http:<base_url>/record/12345/preview#blockIndex=2). Updates are implemented quarterly [source](http:<base_url>/record/12345/preview#blockIndex=5).
+  Security policies are regularly reviewed [source](ref1). Updates are implemented quarterly [source](ref2).
 
   ---
   Confidence: High
@@ -195,19 +197,19 @@ Query: {{ query }}
 <context>
 {% for chunk in chunks %}
 - Record Name: {{ chunk.metadata.recordName }}
-- Block Web URL: {{ chunk.metadata.block_web_url }}
+- Citation ID: {{ chunk.metadata.citation_ref }}
 - Block Content: {{ chunk.metadata.blockText }}
 {% endfor %}
 </context>
 <instructions>
 - Use only the provided context to answer the query.
-- Every factual claim MUST include a citation.
-- Cite by embedding the block's EXACT web URL as a markdown link: [source](Block Web URL).
-- **Copy the Block Web URL exactly as it appears in the context — do NOT modify the record ID or any other part of the URL.**
+- Cite key facts using the Citation ID as a markdown link: [source](Citation ID). Focus on important claims, not every sentence.
+- Each block has a unique Citation ID like ref1, ref2. Use it exactly as shown.
+- Limit to the most relevant citations. Do NOT cite every sentence.
 - Place citations immediately after the relevant claim.
 - Reuse the same link if citing the same block again.
-- Do NOT number citations manually — just use [source](url) format.
-- Ensure your answer is clear, well-structured, and adheres to the instructions above.
+- Do NOT number citations manually — just use [source](refN) format.
+- If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 </instructions>
 Your answer: """
 

@@ -20,7 +20,7 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import build_message_content_array, get_flattened_results
+from app.utils.chat_helpers import CitationRefMapper, build_message_content_array, get_flattened_results
 
 logger = logging.getLogger(__name__)
 
@@ -340,9 +340,11 @@ class Retrieval:
                 final_results,
                 key=lambda x: (x.get("virtual_record_id", ""), x.get("block_index", 0))
             )
-            message_content_array = build_message_content_array(
-                sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm
+            ref_mapper = self.state.get("citation_ref_mapper") or CitationRefMapper()
+            message_content_array, ref_mapper = build_message_content_array(
+                sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True
             )
+            self.state["citation_ref_mapper"] = ref_mapper
 
             formatted_records = []
             for content in message_content_array:

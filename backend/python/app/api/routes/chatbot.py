@@ -17,7 +17,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
-from app.utils.chat_helpers import get_flattened_results, get_message_content
+from app.utils.chat_helpers import CitationRefMapper, get_flattened_results, get_message_content
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import (
@@ -131,6 +131,17 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
     return mode_configs.get(chat_mode, mode_configs["standard"])
 
 
+_CITATION_SYSTEM_RULES = (
+    "\n\n## Citation Rules\n"
+    "When the user message contains context blocks with Citation IDs (e.g., ref1, ref2), follow these rules:\n"
+    "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
+    "- Cite by embedding the block's Citation ID as a markdown link: [source](ref1).\n"
+    "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
+    "- Do NOT manually assign citation numbers — the system numbers them automatically.\n"
+    "- If you cannot find the Citation ID for a fact, omit the citation rather than guessing.\n"
+)
+
+
 def _build_chat_llm_messages(
     query_info: ChatQuery,
     ai_models_config: dict[str, Any],
@@ -139,7 +150,7 @@ def _build_chat_llm_messages(
     user_data: str,
     logger: Any,
     is_multimodal_llm: bool=False,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     mode_config = get_model_config_for_mode(query_info.chatMode)
     custom_system_prompt = ai_models_config.get("customSystemPrompt", "")
@@ -147,7 +158,11 @@ def _build_chat_llm_messages(
         logger.debug(f"Custom system prompt: {custom_system_prompt}")
         mode_config["system_prompt"] = custom_system_prompt
 
-    messages: list[dict[str, Any]] = [{"role": "system", "content": mode_config["system_prompt"]}]
+    system_prompt = mode_config["system_prompt"]
+    if final_results:
+        system_prompt += _CITATION_SYSTEM_RULES
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     for conversation in query_info.previousConversations:
         if conversation.get("role") == "user_query":
@@ -155,11 +170,11 @@ def _build_chat_llm_messages(
         elif conversation.get("role") == "bot_response":
             messages.append({"role": "assistant", "content": conversation.get("content")})
 
-    content = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm
+    content, ref_mapper = get_message_content(
+        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False
     )
     messages.append({"role": "user", "content": content})
-    return messages
+    return messages, ref_mapper
 
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -389,7 +404,7 @@ async def askAIStream(
                     graph_provider, user_id, org_id, send_user_info
                 )
 
-                messages = _build_chat_llm_messages(
+                messages, ref_mapper = _build_chat_llm_messages(
                     query_info,
                     ai_models_config,
                     final_results,
@@ -449,6 +464,7 @@ async def askAIStream(
                     tool_runtime_kwargs=tool_runtime_kwargs,
                     target_words_per_chunk=1,
                     mode=query_info.mode,
+                    ref_mapper=ref_mapper,
                 ):
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]

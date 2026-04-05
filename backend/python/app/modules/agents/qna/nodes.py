@@ -6299,9 +6299,12 @@ async def respond_node(
                     "Please provide accurate and relevant information."
                 )
 
-        qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False)
+        from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
+        _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
+        qna_content, _ref_mapper = _get_msg_content(
+            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper
         )
+        state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content
         log.debug("✅ Built qna_message_content via get_message_content() (chatbot-identical format)")
     else:
@@ -6452,6 +6455,7 @@ async def respond_node(
             conversation_id=state.get("conversation_id"),
             is_service_account=is_service_account,
             filter_groups=agent_filter_groups,
+            ref_mapper=state.get("citation_ref_mapper"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -6479,7 +6483,9 @@ async def respond_node(
                         from app.utils.citations import (
                             normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
-                        _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
+                        _ref_to_url = state.get("citation_ref_mapper")
+                        _ref_to_url = _ref_to_url.ref_to_url if _ref_to_url else None
+                        _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [], ref_to_url=_ref_to_url)
                         if _enriched:
                             log.info(
                                 "🔖 Citation enrichment (respond_node): "
@@ -6921,12 +6927,13 @@ def _build_tool_results_context(
         else:
             parts.append("\n## 📚 Internal Knowledge in Context\n\n")
             parts.append(
-                "Internal knowledge blocks (with Block Web URLs) are present "
+                "Internal knowledge blocks (with Citation IDs) are present "
                 "in the conversation above.\n"
             )
         parts.append(
-            "**MANDATORY**: Cite IMMEDIATELY after each fact from internal knowledge using markdown links: [source](Block Web URL). Use the EXACT Block Web URL from the context.\n"
+            "Cite key facts from internal knowledge using markdown links: [source](ref1). Use the EXACT Citation ID from the context. Limit to the most relevant citations — do NOT cite every sentence.\n"
             "Do NOT manually number citations — the system assigns numbers automatically.\n"
+            "If unsure of the exact Citation ID, omit the citation rather than guessing.\n"
         )
 
     if non_retrieval:
@@ -6963,20 +6970,20 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "**⚠️ MODE 3 — COMBINED RESPONSE (MANDATORY)**\n"
-            "You have BOTH internal knowledge blocks (with Block Web URLs) AND API tool results.\n"
+            "You have BOTH internal knowledge blocks (with Citation IDs) AND API tool results.\n"
             "This is the MOST ACCURATE mode — you have both indexed historical content AND live current data.\n"
             "You MUST:\n"
             "  1. Synthesize BOTH sources into ONE coherent, comprehensive answer\n"
             "  2. Use retrieval results for historical context, background, and comprehensive coverage\n"
             "  3. Use API results for current state, real-time data, and exact IDs/keys\n"
             "  4. When sources conflict, prioritize API results for current state, but mention historical context from retrieval\n"
-            "  5. Cite every fact from internal knowledge using markdown links: [source](Block Web URL). The system assigns citation numbers automatically.\n"
+            "  5. Cite key facts from internal knowledge using markdown links: [source](ref1). Limit to the most relevant citations — do NOT cite every sentence.\n"
             "  6. Format all API items as clickable links and include them in `referenceData`\n"
-            "  7. Combine insights: \"Based on our indexed knowledge [source](/record/abc/preview#blockIndex=0), and current live data, here's the complete picture...\"\n\n"
+            "  7. Combine insights: \"Based on our indexed knowledge [source](ref1), and current live data, here's the complete picture...\"\n\n"
         )
     elif has_retrieval:
         parts.append(
-            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](Block Web URL). The system assigns citation numbers automatically.\n"
+            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](ref1). The system assigns citation numbers automatically.\n"
         )
     else:
         parts.append(
@@ -7816,7 +7823,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 7. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
-   - For retrieval/internal knowledge: Include inline citations as markdown links [source](Block Web URL) after each fact. The system assigns citation numbers automatically.
+   - For retrieval/internal knowledge: Include inline citations as markdown links [source](ref1) after key facts. Limit to the most relevant citations — do NOT cite every sentence. The system assigns citation numbers automatically.
    - Store technical IDs in referenceData for follow-up queries.
 
 ## Execution Policy (MANDATORY)
@@ -7924,14 +7931,15 @@ to target. If unsure → search ALL sources.
 
     if has_retrieval:
         base_prompt += """
-## Citation Rules (CRITICAL)
+## Citation Rules
 
 When you have internal knowledge from retrieval tools:
-1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [source](/record/abc/preview#blockIndex=5)."
-2. Use the EXACT Block Web URL from the context as a markdown link: [source](Block Web URL). Do NOT manually number citations — the system assigns numbers automatically.
-3. One citation per markdown link. Do NOT club multiple URLs in one link.
-4. Include ALL cited blocks in your response
-5. Do NOT put citations at end of paragraph — inline after each fact
+1. Cite key facts inline: "Revenue grew 29% [source](ref5)." Focus on the most important claims — do NOT cite every sentence.
+2. Use the EXACT Citation ID from the context as a markdown link: [source](ref1). Do NOT manually number citations — the system assigns numbers automatically.
+3. One citation per markdown link. Do NOT club multiple Citation IDs in one link.
+4. Limit to the most relevant citations overall.
+5. Do NOT put citations at end of paragraph — inline after the specific fact
+6. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
@@ -7978,7 +7986,7 @@ Use this decision tree to choose the right approach:
 1. Call both tools (retrieval + service API).
 2. Analyze both results for overlapping and unique information.
 3. Present a unified answer that combines insights from both sources.
-4. Use citations as markdown links [source](Block Web URL) for retrieval-sourced facts. The system assigns citation numbers automatically.
+4. Use citations as markdown links [source](ref1) for key retrieval-sourced facts. Limit to the most relevant citations. The system assigns citation numbers automatically.
 5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
 

@@ -220,9 +220,12 @@ async def _deep_respond_impl(
                     "Please provide accurate and relevant information."
                 )
 
-        qna_content = _get_msg_content(
-            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False)
+        from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
+        _ref_mapper = state.get("citation_ref_mapper") or _CitationRefMapper()
+        qna_content, _ref_mapper = _get_msg_content(
+            final_results, virtual_record_map, user_data, query, "json",is_multimodal_llm=state.get("is_multimodal_llm", False), ref_mapper=_ref_mapper,
         )
+        state["citation_ref_mapper"] = _ref_mapper
         state["qna_message_content"] = qna_content
         log.debug("Built qna_message_content via get_message_content()")
     else:
@@ -434,6 +437,7 @@ async def _deep_respond_impl(
             mode="json",
             is_agent=True,
             conversation_id=state.get("conversation_id"),
+            ref_mapper=state.get("citation_ref_mapper"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -451,8 +455,11 @@ async def _deep_respond_impl(
                         from app.utils.citations import (
                             normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
+                        _ref_to_url_snap = state.get("citation_ref_mapper")
+                        _ref_to_url_snap = _ref_to_url_snap.ref_to_url if _ref_to_url_snap else None
                         _, _enriched = _ncc_agent(
-                            _raw_answer, final_results, virtual_record_map, []
+                            _raw_answer, final_results, virtual_record_map, [],
+                            ref_to_url=_ref_to_url_snap,
                         )
                         if _enriched:
                             log.info(
@@ -580,7 +587,6 @@ def _build_simple_retrieval_messages(
         "retrieval answer. Specifically:\n"
         "- Synthesize the sub-agent analyses to identify key themes, connections between "
         "sources, and deeper insights that a surface-level read would miss.\n"
-        "- Use the context block web urls for citations and exact quotes.\n"
         "- Provide detailed explanations with specifics, not brief summaries.\n"
         "- When multiple sources cover the same topic, synthesize them into a coherent "
         "narrative rather than listing them separately.\n"
@@ -596,6 +602,11 @@ def _build_simple_retrieval_messages(
         "analyses say about it and cite the source appropriately.\n"
         "- Answer EVERY part of the user's query. If one part is covered only in the "
         "analyses and another only in the blocks, combine both into a unified answer.\n\n"
+        "CITATION RULES:\n"
+        "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
+        "- Each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
+        "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
+        "- If you cannot find the Citation ID for a claim, omit the citation rather than guessing.\n\n"
     )
 
     messages.append(SystemMessage(content="\n\n".join(parts)))

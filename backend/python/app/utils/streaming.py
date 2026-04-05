@@ -35,6 +35,7 @@ from app.modules.qna.prompt_templates import (
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
+    CitationRefMapper,
     build_message_content_array,
     count_tokens,
     get_flattened_results,
@@ -72,31 +73,33 @@ MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 
 
+
+
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
 ) -> str:
-    """Build a reflection prompt telling the LLM to fix hallucinated citation URLs."""
+    """Build a reflection prompt telling the LLM to fix hallucinated citation URLs.
+
+    """
     bad_urls_str = "\n".join(f"  - {url}" for url in hallucinated_urls)
 
-    return (
-        "⚠️ CITATION ERROR — Your previous response contained fabricated or modified citation URLs "
+    parts = [
+        "⚠️ CITATION ERROR — Your previous response contained invalid citation references "
         "that do not correspond to any source block in the provided context.\n\n"
-        "The following citation URLs are INVALID and must NOT appear in your answer:\n"
-        f"{bad_urls_str}\n\n"
-        "Common mistakes that produce invalid URLs:\n"
-        "  • Inventing a record ID instead of copying it verbatim from the context\n"
-        "  • Using a blockIndex or blockGroupIndex value that does not exist in that record\n\n"
-        "HOW TO FIX:\n"
-        "  1. Look back at the source blocks in this conversation "
-        "Each block contains a 'Block Web URL:' field — "
-        "those are the ONLY valid citation URLs.\n"
-        "  2. Copy each URL character-by-character exactly as it appears — "
-        "do NOT alter the record ID, block index, or any other part of the path.\n"
-        "  3. If a fact cannot be matched to a block with a valid 'Block Web URL:', "
-        "omit the inline citation for that fact rather than inventing a URL.\n\n"
-        "Please rewrite your previous response now with all citation links corrected. "
-        "Every [source](URL) link must use an exact 'Block Web URL:' value from the context."
+        "The following citations are INVALID and must NOT appear in your answer:\n"
+        f"{bad_urls_str}\n",
+    ]
+
+    parts.append(
+        "\nHOW TO FIX:\n"
+        "  1. For each citation, find the fact in a source block and use that block's EXACT "
+        "Citation ID.\n"
+        "  2. If a fact cannot be matched to a valid Citation ID, omit the citation for that fact "
+        "rather than inventing one.\n\n"
+        "Please rewrite your previous response now with all citation links corrected."
     )
+
+    return "\n".join(parts)
 
 # TypeVar for generic schema types in structured output functions
 SchemaT = TypeVar('SchemaT', bound=BaseModel)
@@ -412,6 +415,7 @@ async def execute_tool_calls(
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,
     mode: str = "json",  # "json" for structured output, "simple" for raw text
+    ref_mapper: CitationRefMapper | None = None,
 ) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -457,8 +461,10 @@ async def execute_tool_calls(
                 final_results,
                 records=[],
                 target_words_per_chunk=target_words_per_chunk,
-                **{"original_llm":llm,
-                "is_agent":is_agent } if mode != "simple" else {}
+                original_llm=llm,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+                ref_to_url=ref_mapper.ref_to_url if ref_mapper else None,
+                **{"is_agent":is_agent } if mode != "simple" else {}
             ):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
@@ -617,7 +623,7 @@ async def execute_tool_calls(
         message_contents = []
 
         for record in records:
-            message_content = record_to_message_content(record)
+            message_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper)
             message_contents.append(message_content)
 
         current_message_tokens, new_tokens = count_tokens(messages,message_contents)
@@ -676,7 +682,7 @@ async def execute_tool_calls(
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
-                message_contents = build_message_content_array(final_tool_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm)
+                message_contents, ref_mapper = build_message_content_array(final_tool_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
 
                 logger.debug(
                     "execute_tool_calls: prepared message_contents=%d",
@@ -744,6 +750,7 @@ async def stream_llm_response(
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     records: list[dict[str, Any]] | None = None,
     citation_reflection_retry_count: int = 0,
+    ref_to_url: dict[str, str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Incrementally stream the answer portion of an LLM response.
@@ -808,7 +815,8 @@ async def stream_llm_response(
                                 continue
 
                             normalized, cites = normalize_citations_and_chunks_for_agent(
-                                current_raw, final_results, virtual_record_id_to_result, records
+                                current_raw, final_results, virtual_record_id_to_result, records,
+                                ref_to_url=ref_to_url,
                             )
 
                             # CRITICAL DEBUG: Log citation generation
@@ -839,6 +847,7 @@ async def stream_llm_response(
                     hallucinated = detect_hallucinated_citation_urls(
                         final_answer, records, final_results,
                         virtual_record_id_to_result=virtual_record_id_to_result,
+                        ref_to_url=ref_to_url,
                     )
                     if hallucinated:
                         logger.warning(
@@ -855,11 +864,12 @@ async def stream_llm_response(
                             llm, updated_messages, final_results, logger,
                             target_words_per_chunk, mode, virtual_record_id_to_result, records,
                             citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                            ref_to_url=ref_to_url,
                         ):
                             yield event
                         return
 
-                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result, records)
+                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
 
                 # CRITICAL DEBUG: Log final citation count
                 logger.info("📊 CITATION DEBUG - Final complete event:")
@@ -889,6 +899,7 @@ async def stream_llm_response(
                     hallucinated = detect_hallucinated_citation_urls(
                         fallback_answer, records, final_results,
                         virtual_record_id_to_result=virtual_record_id_to_result,
+                        ref_to_url=ref_to_url,
                     )
                     if hallucinated:
                         logger.warning(
@@ -905,11 +916,12 @@ async def stream_llm_response(
                             llm, updated_messages, final_results, logger,
                             target_words_per_chunk, mode, virtual_record_id_to_result, records,
                             citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                            ref_to_url=ref_to_url,
                         ):
                             yield event
                         return
 
-                normalized, c = normalize_citations_and_chunks_for_agent(fallback_answer, final_results, virtual_record_id_to_result, records)
+                normalized, c = normalize_citations_and_chunks_for_agent(fallback_answer, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
                 yield {
                     "event": "complete",
                     "data": {
@@ -956,7 +968,8 @@ async def stream_llm_response(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results, virtual_record_id_to_result, records
+                            current_raw, final_results, virtual_record_id_to_result, records,
+                            ref_to_url=ref_to_url,
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -976,6 +989,7 @@ async def stream_llm_response(
                 hallucinated = detect_hallucinated_citation_urls(
                     content_buf, records, final_results,
                     virtual_record_id_to_result=virtual_record_id_to_result,
+                    ref_to_url=ref_to_url,
                 )
                 if hallucinated:
                     logger.warning(
@@ -992,12 +1006,13 @@ async def stream_llm_response(
                         llm, updated_messages, final_results, logger,
                         target_words_per_chunk, mode, virtual_record_id_to_result, records,
                         citation_reflection_retry_count=citation_reflection_retry_count + 1,
+                        ref_to_url=ref_to_url,
                     ):
                         yield event
                     return
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
             yield {
                 "event": "complete",
                 "data": {
@@ -1075,6 +1090,7 @@ async def handle_json_mode(
     target_words_per_chunk: int = 1,
     is_agent: bool = False,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    ref_to_url: dict[str, str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Handle JSON mode streaming.
@@ -1113,7 +1129,7 @@ async def handle_json_mode(
                 confidence = None
                 reference_data = None
 
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records)
+            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url)
 
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
@@ -1160,6 +1176,7 @@ async def handle_json_mode(
             target_words_per_chunk,
             is_agent=is_agent,
             virtual_record_id_to_result=virtual_record_id_to_result,
+            ref_to_url=ref_to_url,
         ):
             yield token
     except Exception as exc:
@@ -1176,6 +1193,7 @@ async def handle_simple_mode(
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    ref_to_url: dict[str, str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
@@ -1194,7 +1212,7 @@ async def handle_simple_mode(
             if existing_ai_content:
                 logger.info("stream_llm_response_with_tools: detected existing AI message (simple mode), streaming directly")
                 clean_answer, confidence = parse_confidence_from_answer(existing_ai_content)
-                normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
+                normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records, ref_to_url=ref_to_url)
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -1226,7 +1244,8 @@ async def handle_simple_mode(
 
         async for event in call_aiter_llm_stream_simple(
             llm, messages, final_results, records, target_words_per_chunk,
-            virtual_record_id_to_result=virtual_record_id_to_result,
+            virtual_record_id_to_result=virtual_record_id_to_result,original_llm=llm,
+            ref_to_url=ref_to_url,
         ):
             yield event
 
@@ -1264,6 +1283,7 @@ async def stream_llm_response_with_tools(
     conversation_id: str | None = None,
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,
+    ref_mapper: CitationRefMapper | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1315,6 +1335,7 @@ async def stream_llm_response_with_tools(
                 is_service_account=is_service_account,
                 filter_groups=filter_groups,
                 mode=mode,
+                ref_mapper=ref_mapper,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":
@@ -1398,6 +1419,9 @@ async def stream_llm_response_with_tools(
             len(task_results), conversation_id,
         )
 
+    # Take a fresh snapshot of ref_to_url since ref_mapper may have grown during tool execution
+    _ref_to_url = ref_mapper.ref_to_url if ref_mapper else None
+
     # Stream the final answer with comprehensive error handling
     try:
         if mode == "json":
@@ -1410,6 +1434,7 @@ async def stream_llm_response_with_tools(
                 target_words_per_chunk,
                 is_agent=is_agent,
                 virtual_record_id_to_result=virtual_record_id_to_result,
+                ref_to_url=_ref_to_url,
             ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
@@ -1420,6 +1445,7 @@ async def stream_llm_response_with_tools(
             async for event in handle_simple_mode(
                 llm, messages, final_results, records, logger, target_words_per_chunk,
                 virtual_record_id_to_result=virtual_record_id_to_result,
+                ref_to_url=_ref_to_url,
             ):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
@@ -1469,6 +1495,8 @@ async def call_aiter_llm_stream_simple(
     target_words_per_chunk: int = 1,
     citation_reflection_retry_count: int = 0,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    original_llm: BaseChatModel | None = None,
+    ref_to_url: dict[str, str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response in simple (non-JSON) mode.
 
@@ -1508,7 +1536,7 @@ async def call_aiter_llm_stream_simple(
 
                     clean_answer, confidence = parse_confidence_from_answer(current_raw)
                     normalized, cites = normalize_citations_and_chunks(
-                        clean_answer, final_results, records
+                        clean_answer, final_results, records, ref_to_url=ref_to_url,
                     )
 
                     chunk_text = normalized[prev_norm_len:]
@@ -1548,6 +1576,7 @@ async def call_aiter_llm_stream_simple(
             hallucinated = detect_hallucinated_citation_urls(
                 clean_answer, records, final_results,
                 virtual_record_id_to_result=virtual_record_id_to_result,
+                ref_to_url=ref_to_url,
             )
             if hallucinated:
                 logger.warning(
@@ -1561,15 +1590,20 @@ async def call_aiter_llm_stream_simple(
                 updated_messages.append(AIMessage(content=clean_answer))
                 updated_messages.append(HumanMessage(content=reflection_content))
                 async for event in call_aiter_llm_stream_simple(
-                    llm, updated_messages, final_results, records,
-                    target_words_per_chunk,
+                    llm=original_llm,
+                    messages=updated_messages,
+                    final_results=final_results,
+                    records=records,
+                    target_words_per_chunk=target_words_per_chunk,
                     citation_reflection_retry_count=citation_reflection_retry_count + 1,
                     virtual_record_id_to_result=virtual_record_id_to_result,
+                    original_llm=original_llm,
+                    ref_to_url=ref_to_url,
                 ):
                     yield event
                 return
 
-        normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
+        normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records, ref_to_url=ref_to_url)
         yield {
             "event": "complete",
             "data": {
@@ -1596,6 +1630,7 @@ async def call_aiter_llm_stream(
     is_agent: bool = False,
     citation_reflection_retry_count: int = 0,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    ref_to_url: dict[str, str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
 
@@ -1635,7 +1670,7 @@ async def call_aiter_llm_stream(
 
                 state.emit_upto = len(safe_answer)
                 normalized, cites = normalize_citations_and_chunks(
-                            safe_answer, final_results, records
+                            safe_answer, final_results, records, ref_to_url=ref_to_url,
                         )
 
                 chunk_text = normalized[state.prev_norm_len:]
@@ -1703,7 +1738,7 @@ async def call_aiter_llm_stream(
                         state.words_in_chunk = 0
 
                         normalized, cites = normalize_citations_and_chunks(
-                            current_raw, final_results,records
+                            current_raw, final_results, records, ref_to_url=ref_to_url,
                         )
 
                         chunk_text = normalized[state.prev_norm_len:]
@@ -1800,6 +1835,7 @@ async def call_aiter_llm_stream(
                     is_agent=is_agent,
                     citation_reflection_retry_count=citation_reflection_retry_count,
                     virtual_record_id_to_result=virtual_record_id_to_result,
+                    ref_to_url=ref_to_url,
                 ):
                     yield event
                 return
@@ -1815,6 +1851,7 @@ async def call_aiter_llm_stream(
                         hallucinated = detect_hallucinated_citation_urls(
                             state.answer_buf, records, final_results,
                             virtual_record_id_to_result=virtual_record_id_to_result,
+                            ref_to_url=ref_to_url,
                         )
                         if hallucinated:
                             logger.warning(
@@ -1838,11 +1875,12 @@ async def call_aiter_llm_stream(
                                 original_llm=original_llm, is_agent=is_agent,
                                 citation_reflection_retry_count=citation_reflection_retry_count + 1,
                                 virtual_record_id_to_result=virtual_record_id_to_result,
+                                ref_to_url=ref_to_url,
                             ):
                                 yield event
                             return
 
-                    normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
+                    normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records, ref_to_url=ref_to_url)
                     yield {
                         "event": "complete",
                         "data": {
@@ -1869,6 +1907,7 @@ async def call_aiter_llm_stream(
             hallucinated = detect_hallucinated_citation_urls(
                 final_answer, records, final_results,
                 virtual_record_id_to_result=virtual_record_id_to_result,
+                ref_to_url=ref_to_url,
             )
             if hallucinated:
                 logger.warning(
@@ -1892,11 +1931,12 @@ async def call_aiter_llm_stream(
                     original_llm=original_llm, is_agent=is_agent,
                     citation_reflection_retry_count=citation_reflection_retry_count + 1,
                     virtual_record_id_to_result=virtual_record_id_to_result,
+                    ref_to_url=ref_to_url,
                 ):
                     yield event
                 return
 
-        normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
+        normalized, c = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url)
         complete_data = {
             "answer": normalized,
             "citations": c,
