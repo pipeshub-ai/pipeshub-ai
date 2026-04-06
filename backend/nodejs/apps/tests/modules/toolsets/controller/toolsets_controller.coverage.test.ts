@@ -4,16 +4,7 @@ import sinon from 'sinon'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   getRegistryToolsets,
-  getConfiguredToolsets,
   getToolsetSchema,
-  createToolset,
-  checkToolsetStatus,
-  getToolsetConfig,
-  saveToolsetConfig,
-  updateToolsetConfig,
-  deleteToolsetConfig,
-  reauthenticateToolset,
-  getOAuthAuthorizationUrl,
   handleOAuthCallback,
   getToolsetInstances,
   createToolsetInstance,

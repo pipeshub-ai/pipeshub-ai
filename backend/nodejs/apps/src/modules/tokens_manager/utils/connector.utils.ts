@@ -14,6 +14,8 @@ import {
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
+import { z } from 'zod';
+import { sendValidatedJson } from '../../../utils/response-validator';
 
 const logger = Logger.getInstance({
   service: 'Connector Utils',
@@ -119,4 +121,36 @@ export const handleConnectorResponse = (
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
   res.status(statusCode ?? 200).json(connectorsData);
+};
+
+/**
+ * Helper function to handle connector response with schema validation.
+ * Validates response data against a Zod schema before sending.
+ *
+ * @param connectorResponse - Response from connector backend
+ * @param res - Express response object
+ * @param operation - Operation name for error messages
+ * @param failureMessage - Message when data is missing
+ * @param schema - Zod schema to validate response against
+ */
+export const handleValidatedConnectorResponse = <T extends z.ZodTypeAny>(
+  connectorResponse: any,
+  res: Response,
+  operation: string,
+  failureMessage: string,
+  schema: T,
+): void => {
+  const statusCode = connectorResponse?.statusCode;
+  const isSuccess = statusCode >= 200 && statusCode < 300;
+
+  if (connectorResponse && !isSuccess) {
+    throw handleBackendError(connectorResponse, operation);
+  }
+
+  const connectorsData = connectorResponse.data;
+  if (!connectorsData) {
+    throw new NotFoundError(`${operation} failed: ${failureMessage}`);
+  }
+
+  sendValidatedJson(res, schema, connectorsData, statusCode ?? 200);
 };
