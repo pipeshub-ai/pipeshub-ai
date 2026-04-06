@@ -9,7 +9,12 @@ from typing import Optional
 import dotenv
 from cachetools import LRUCache
 
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import (
+    KVStoreType,
+    RedisDefaults,
+    RedisEnv,
+    config_node_constants,
+)
 from app.config.key_value_store import KeyValueStore
 from app.services.messaging.config import RedisConfig
 from app.utils.encryption.encryption_service import EncryptionService
@@ -47,7 +52,7 @@ class ConfigurationService:
         self.store = key_value_store
 
         # Determine store type from environment
-        self._kv_store_type = os.getenv("KV_STORE_TYPE", "etcd").lower()
+        self._kv_store_type = os.getenv(RedisEnv.KV_STORE_TYPE, KVStoreType.ETCD).lower()
         self.logger.debug("📋 KV store type: %s", self._kv_store_type)
 
         # Redis Pub/Sub subscription task (for Redis store)
@@ -124,12 +129,12 @@ class ConfigurationService:
                 }
         elif key == config_node_constants.REDIS.value:
             # Redis configuration fallback
-            redis_host = os.getenv("REDIS_HOST")
+            redis_host = os.getenv(RedisEnv.HOST)
             if redis_host:
-                redis_password = os.getenv("REDIS_PASSWORD", "")
+                redis_password = os.getenv(RedisEnv.PASSWORD, "")
                 return {
                     "host": redis_host,
-                    "port": int(os.getenv("REDIS_PORT", "6379")),
+                    "port": int(os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
                     "password": redis_password if redis_password and redis_password.strip() else None
                 }
         elif key == config_node_constants.QDRANT.value:
@@ -149,7 +154,7 @@ class ConfigurationService:
         For etcd: Uses etcd's native watch mechanism with prefix callback.
         For Redis: Uses Redis Pub/Sub for cross-process cache invalidation.
         """
-        if self._kv_store_type == "redis":
+        if self._kv_store_type == KVStoreType.REDIS:
             self._start_redis_pubsub()
         else:
             # TODO: Remove etcd watch when all deployments migrate to Redis KV store
@@ -376,7 +381,7 @@ class ConfigurationService:
         Only publishes when using Redis as the KV store.
         For etcd, the watch mechanism handles cross-process invalidation.
         """
-        if self._kv_store_type != "redis":
+        if self._kv_store_type != KVStoreType.REDIS:
             self.logger.debug("⏭️ Skipping cache invalidation publish: KV store type is '%s', not 'redis'", self._kv_store_type)
             return
 
@@ -421,10 +426,10 @@ class ConfigurationService:
         """Get typed Redis connection configuration."""
         raw = await self.get_config(config_node_constants.REDIS.value) or {}
         return RedisConfig(
-            host=raw.get("host", os.getenv("REDIS_HOST", "localhost")),
-            port=int(raw.get("port", os.getenv("REDIS_PORT", "6379"))),
-            password=raw.get("password", os.getenv("REDIS_PASSWORD")) or None,
-            db=int(raw.get("db", os.getenv("REDIS_DB", "0"))),
+            host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
+            port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
+            db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
         )
 
     async def list_keys_in_directory(self, directory: str) -> list[str]:

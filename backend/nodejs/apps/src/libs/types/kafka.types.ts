@@ -1,8 +1,8 @@
 import { SASLOptions } from 'kafkajs';
-import { StreamMessage } from './messaging.types';
+import { MessageBrokerType, StreamMessage } from './messaging.types';
 
 export interface KafkaConfig {
-  type: 'kafka';
+  type: MessageBrokerType.KAFKA;
   clientId?: string;
   brokers: string[];
   groupId?: string;

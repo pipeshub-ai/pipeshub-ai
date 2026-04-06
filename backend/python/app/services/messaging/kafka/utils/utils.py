@@ -2,7 +2,7 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
 from app.connectors.services.event_service import EventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
@@ -68,7 +68,7 @@ class KafkaUtils:
 
         return KafkaProducerConfig(
             bootstrap_servers=kafka_config["brokers"], # type: ignore
-            client_id="messaging_producer_client",
+            client_id=KafkaConstants.CLIENT_ID_MESSAGING_PRODUCER.value,
             ssl=kafka_config.get('ssl', False),
             sasl=kafka_config.get('sasl')
         )
@@ -77,7 +77,7 @@ class KafkaUtils:
     async def create_entity_kafka_consumer_config(app_container: ConnectorAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for entity events"""
         return await KafkaUtils._create_base_consumer_config(
-            app_container, "entity_consumer_client", "entity_consumer_group", [Topic.ENTITY_EVENTS.value]
+            app_container, KafkaConstants.CLIENT_ID_ENTITY_CONSUMER.value, KafkaConstants.GROUP_ID_ENTITY.value, [Topic.ENTITY_EVENTS.value]
         )
 
 
@@ -85,7 +85,7 @@ class KafkaUtils:
     async def create_sync_kafka_consumer_config(app_container: ConnectorAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for sync events"""
         return await KafkaUtils._create_base_consumer_config(
-            app_container, "sync_consumer_client", "sync_consumer_group", [Topic.SYNC_EVENTS.value]
+            app_container, KafkaConstants.CLIENT_ID_SYNC_CONSUMER.value, KafkaConstants.GROUP_ID_SYNC.value, [Topic.SYNC_EVENTS.value]
         )
 
 
@@ -94,8 +94,8 @@ class KafkaUtils:
         """Create Kafka configuration for record events"""
         return await KafkaUtils._create_base_consumer_config(
             app_container,
-            "records_consumer_client",
-            "records_consumer_group",
+            KafkaConstants.CLIENT_ID_RECORDS_CONSUMER.value,
+            KafkaConstants.GROUP_ID_RECORDS.value,
             [Topic.RECORD_EVENTS.value],
         )
 
@@ -104,7 +104,7 @@ class KafkaUtils:
     async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for AI config events"""
         return await KafkaUtils._create_base_consumer_config(
-            app_container, "aiconfig_consumer_client", "aiconfig_consumer_group", [Topic.ENTITY_EVENTS.value]
+            app_container, KafkaConstants.CLIENT_ID_AICONFIG_CONSUMER.value, KafkaConstants.GROUP_ID_AICONFIG.value, [Topic.ENTITY_EVENTS.value]
         )
 
 

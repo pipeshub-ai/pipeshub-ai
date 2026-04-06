@@ -21,23 +21,20 @@ import {
 } from './redis-streams.service';
 import { AppConfig } from '../../modules/tokens_manager/config/config';
 import { loadMessagingEnv } from '../config/messaging.env';
-import {
-  MESSAGING_ERRORS,
-  MESSAGE_BROKER_TYPES,
-} from '../constants/messaging.constants';
+import { MESSAGING_ERRORS } from '../constants/messaging.constants';
 
 export { REQUIRED_TOPICS } from './kafka-admin.service';
 
 export type ResolvedMessageBrokerConfig =
-  | { type: 'kafka'; kafka: KafkaConfig }
-  | { type: 'redis'; redis: RedisBrokerConfig };
+  | { type: MessageBrokerType.KAFKA; kafka: KafkaConfig }
+  | { type: MessageBrokerType.REDIS; redis: RedisBrokerConfig };
 
 export function getMessageBrokerType(): MessageBrokerType {
   const { messageBrokerRaw } = loadMessagingEnv();
   const brokerType = messageBrokerRaw.toLowerCase();
   if (
-    brokerType !== MESSAGE_BROKER_TYPES.kafka &&
-    brokerType !== MESSAGE_BROKER_TYPES.redis
+    brokerType !== MessageBrokerType.KAFKA &&
+    brokerType !== MessageBrokerType.REDIS
   ) {
     throw new Error(MESSAGING_ERRORS.unsupportedBrokerType(brokerType));
   }
@@ -58,7 +55,7 @@ function createMessageProducerByParts(
   redisConfig: RedisBrokerConfig | undefined,
   logger: Logger,
 ): IMessageProducer {
-  if (brokerType === 'kafka') {
+  if (brokerType === MessageBrokerType.KAFKA) {
     if (!kafkaConfig) {
       throw new Error(MESSAGING_ERRORS.kafkaConfigRequired);
     }
@@ -76,7 +73,7 @@ function createMessageConsumerByParts(
   redisConfig: RedisBrokerConfig | undefined,
   logger: Logger,
 ): IMessageConsumer {
-  if (brokerType === 'kafka') {
+  if (brokerType === MessageBrokerType.KAFKA) {
     if (!kafkaConfig) {
       throw new Error(MESSAGING_ERRORS.kafkaConfigRequired);
     }
@@ -94,7 +91,7 @@ function createMessageAdminByParts(
   redisConfig: RedisBrokerConfig | undefined,
   logger: Logger,
 ): IMessageAdmin {
-  if (brokerType === 'kafka') {
+  if (brokerType === MessageBrokerType.KAFKA) {
     if (!kafkaConfig) {
       throw new Error(MESSAGING_ERRORS.kafkaConfigRequired);
     }
@@ -110,21 +107,21 @@ export function resolveMessageBrokerConfig(
   appConfig: AppConfig,
 ): ResolvedMessageBrokerConfig {
   const brokerType = getMessageBrokerType();
-  if (brokerType === 'kafka') {
+  if (brokerType === MessageBrokerType.KAFKA) {
     if (appConfig.kafka.brokers.length === 0) {
       throw new Error(MESSAGING_ERRORS.kafkaBrokersRequired);
     }
     const kafka: KafkaConfig = {
-      type: 'kafka',
+      type: MessageBrokerType.KAFKA,
       ...appConfig.kafka,
     };
-    return { type: 'kafka', kafka };
+    return { type: MessageBrokerType.KAFKA, kafka };
   }
   if (appConfig.redis.host === '') {
     throw new Error(MESSAGING_ERRORS.redisHostRequired);
   }
   return {
-    type: 'redis',
+    type: MessageBrokerType.REDIS,
     redis: buildRedisBrokerConfig(appConfig.redis),
   };
 }
@@ -134,15 +131,15 @@ function resolvedToParts(resolved: ResolvedMessageBrokerConfig): {
   kafka: KafkaConfig | undefined;
   redis: RedisBrokerConfig | undefined;
 } {
-  if (resolved.type === 'kafka') {
+  if (resolved.type === MessageBrokerType.KAFKA) {
     return {
-      brokerType: 'kafka',
+      brokerType: MessageBrokerType.KAFKA,
       kafka: resolved.kafka,
       redis: undefined,
     };
   }
   return {
-    brokerType: 'redis',
+    brokerType: MessageBrokerType.REDIS,
     kafka: undefined,
     redis: resolved.redis,
   };
@@ -170,7 +167,7 @@ export function buildRedisBrokerConfig(
 ): RedisBrokerConfig {
   const env = loadMessagingEnv();
   return {
-    type: 'redis',
+    type: MessageBrokerType.REDIS,
     host: redisConfig.host,
     port: redisConfig.port,
     password: redisConfig.password,

@@ -1,15 +1,19 @@
-export type MessageBrokerType = 'kafka' | 'redis';
+export enum MessageBrokerType {
+  KAFKA = 'kafka',
+  REDIS = 'redis',
+}
 
 /**
  * Canonical broker topics used across Kafka and Redis Streams in this codebase.
  */
-export type BrokerTopic =
-  | 'record-events'
-  | 'entity-events'
-  | 'sync-events'
-  | 'health-check'
-  | 'token-events'
-  | 'notification';
+export enum BrokerTopic {
+  RECORD_EVENTS = 'record-events',
+  ENTITY_EVENTS = 'entity-events',
+  SYNC_EVENTS = 'sync-events',
+  HEALTH_CHECK = 'health-check',
+  TOKEN_EVENTS = 'token-events',
+  NOTIFICATION = 'notification',
+}
 
 /**
  * Topic -> payload mapping.
@@ -18,12 +22,12 @@ export type BrokerTopic =
  * - Token/notification payloads remain broad until all producers/consumers are migrated to shared event contracts.
  */
 export interface BrokerTopicPayloadMap {
-  'record-events': string;
-  'entity-events': string;
-  'sync-events': string;
-  'health-check': { type: string; timestamp: number };
-  'token-events': Record<string, unknown>;
-  notification: Record<string, unknown>;
+  [BrokerTopic.RECORD_EVENTS]: string;
+  [BrokerTopic.ENTITY_EVENTS]: string;
+  [BrokerTopic.SYNC_EVENTS]: string;
+  [BrokerTopic.HEALTH_CHECK]: { type: string; timestamp: number };
+  [BrokerTopic.TOKEN_EVENTS]: Record<string, unknown>;
+  [BrokerTopic.NOTIFICATION]: Record<string, unknown>;
 }
 
 export interface MessageBrokerConfig {
@@ -36,7 +40,7 @@ export interface MessageBrokerConfig {
 }
 
 export interface KafkaBrokerConfig extends MessageBrokerConfig {
-  type: 'kafka';
+  type: MessageBrokerType.KAFKA;
   brokers: string[];
   sasl?: {
     mechanism: string;
@@ -56,7 +60,7 @@ export interface RedisConfig {
 }
 
 export interface RedisBrokerConfig extends MessageBrokerConfig {
-  type: 'redis';
+  type: MessageBrokerType.REDIS;
   host: string;
   port: number;
   password?: string;

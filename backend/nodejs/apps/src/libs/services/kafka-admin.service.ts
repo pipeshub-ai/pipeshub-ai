@@ -2,6 +2,7 @@ import { Kafka, Admin, ITopicConfig, ITopicMetadata } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
 import { IMessageAdmin, TopicDefinition } from '../types/messaging.types';
 import { KAFKA_ADMIN_CLIENT_ID } from '../constants/messaging.constants';
+import { MessageBrokerType } from '../types/messaging.types';
 import { Logger } from './logger.service';
 
 // Required topics for the application
@@ -143,7 +144,7 @@ export async function ensureKafkaTopicsExist(
   topics?: TopicDefinition[],
 ): Promise<void> {
   const config: KafkaConfig = {
-    type: 'kafka',
+    type: MessageBrokerType.KAFKA,
     clientId: KAFKA_ADMIN_CLIENT_ID,
     brokers: kafkaConfig.brokers,
     ssl: kafkaConfig.ssl,

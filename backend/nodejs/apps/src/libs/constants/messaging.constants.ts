@@ -1,16 +1,13 @@
+import { MessageBrokerType } from '../types/messaging.types';
+
 /** Environment variable names (single place for messaging-related env keys). */
 export const ENV_MESSAGE_BROKER = 'MESSAGE_BROKER';
 export const ENV_REDIS_STREAMS_MAXLEN = 'REDIS_STREAMS_MAXLEN';
 export const ENV_REDIS_STREAMS_PREFIX = 'REDIS_STREAMS_PREFIX';
 
-export const DEFAULT_MESSAGE_BROKER = 'kafka';
+export const DEFAULT_MESSAGE_BROKER = MessageBrokerType.KAFKA;
 export const DEFAULT_REDIS_STREAMS_MAXLEN = 10000;
 export const DEFAULT_REDIS_STREAMS_PREFIX = '';
-
-export const MESSAGE_BROKER_TYPES = {
-  kafka: 'kafka',
-  redis: 'redis',
-} as const;
 
 /** Kafka client id used for admin / topic bootstrap operations. */
 export const KAFKA_ADMIN_CLIENT_ID = 'pipeshub-admin';
@@ -20,9 +17,9 @@ export const MESSAGE_BROKER_ERROR_CODE = 'MESSAGE_BROKER_ERROR' as const;
 
 export const MESSAGING_ERRORS = {
   unsupportedBrokerType: (brokerType: string) =>
-    `Unsupported ${ENV_MESSAGE_BROKER} type: ${brokerType}. Must be '${MESSAGE_BROKER_TYPES.kafka}' or '${MESSAGE_BROKER_TYPES.redis}'.`,
-  kafkaConfigRequired: `Kafka config is required when ${ENV_MESSAGE_BROKER}=${MESSAGE_BROKER_TYPES.kafka}`,
-  redisConfigRequired: `Redis config is required when ${ENV_MESSAGE_BROKER}=${MESSAGE_BROKER_TYPES.redis}`,
+    `Unsupported ${ENV_MESSAGE_BROKER} type: ${brokerType}. Must be '${MessageBrokerType.KAFKA}' or '${MessageBrokerType.REDIS}'.`,
+  kafkaConfigRequired: `Kafka config is required when ${ENV_MESSAGE_BROKER}=${MessageBrokerType.KAFKA}`,
+  redisConfigRequired: `Redis config is required when ${ENV_MESSAGE_BROKER}=${MessageBrokerType.REDIS}`,
   kafkaBrokersRequired: 'Kafka brokers are required in app configuration',
   redisHostRequired: 'Redis host is required in app configuration',
 } as const;
