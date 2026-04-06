@@ -1053,6 +1053,7 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
 
+# deprecated
 @router.post("/team/{team_id}/bulk-users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse:
     """Bulk add/remove users from a team -OWNER role"""
@@ -1134,6 +1135,7 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
         logger.error(f"Error in bulk_manage_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team users")
 
+# deprecated
 @router.get("/team/search", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def search_teams(request: Request) -> JSONResponse:
     """Search teams by name or description"""

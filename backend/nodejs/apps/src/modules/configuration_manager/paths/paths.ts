@@ -2,30 +2,6 @@ export const configPaths = {
   secretKeys: '/services/secretKeys',
   metricsCollection: '/services/metricsCollection',
   storageService: '/services/storage',
-  connectors: {
-    googleWorkspace: {
-      base: '/services/connectors/googleWorkspace/',
-      credentials: {
-        individual:
-          '/services/connectors/googleWorkspace/credentials/individual',
-        business: '/services/connectors/googleWorkspace/credentials/business',
-      },
-      config: '/services/connectors/googleWorkspace/oauth/config',
-    },
-    atlassian: {
-      base: '/services/connectors/atlassian/',
-      credentials: '/services/connectors/atlassian/credentials',
-      config: '/services/connectors/atlassian/config',
-    },
-    onedrive: {
-      base: '/services/connectors/onedrive/',
-      config: '/services/connectors/onedrive/config',
-    },
-    sharepoint: {
-      base: '/services/connectors/sharepoint/',
-      config: '/services/connectors/sharepoint/config',
-    },
-  },
   smtp: '/services/smtp',
   auth: {
     base: '/services/auth',

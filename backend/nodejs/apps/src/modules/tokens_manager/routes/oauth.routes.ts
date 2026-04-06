@@ -9,7 +9,6 @@
 
 import { Router } from 'express';
 import { Container } from 'inversify';
-import { z } from 'zod';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -27,95 +26,12 @@ import {
 } from '../controllers/oauth.controllers';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-
+import { oauthConfigRegistrySchema, getAllOAuthConfigsSchema, oauthConfigListSchema, createOAuthConfigSchema, oauthConfigIdSchema, updateOAuthConfigSchema, oauthConfigRegistryByTypeSchema } from '../validators/oauth.validator';
 // ============================================================================
 // Validation Schemas
 // ============================================================================
 
-/**
- * Schema for OAuth config registry query parameters
- */
-const oauthConfigRegistrySchema = z.object({
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-  }),
-});
 
-/**
- * Schema for getting all OAuth configs query parameters
- */
-const getAllOAuthConfigsSchema = z.object({
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for OAuth config list query parameters
- */
-const oauthConfigListSchema = z.object({
-  params: z.object({
-    connectorType: z.string().min(1, 'Connector type is required'),
-  }),
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for creating OAuth config
- */
-const createOAuthConfigSchema = z.object({
-  params: z.object({
-    connectorType: z.string().min(1, 'Connector type is required'),
-  }),
-  body: z.object({
-    oauthInstanceName: z.string().min(1, 'OAuth instance name is required'),
-    config: z.any(),
-  }),
-});
-
-/**
- * Schema for getting/deleting OAuth config
- */
-const oauthConfigIdSchema = z.object({
-  params: z.object({
-    connectorType: z.string().min(1, 'Connector type is required'),
-    configId: z.string().min(1, 'Config ID is required'),
-  }),
-});
-
-/**
- * Schema for updating OAuth config
- */
-const updateOAuthConfigSchema = z.object({
-  params: z.object({
-    connectorType: z.string().min(1, 'Connector type is required'),
-    configId: z.string().min(1, 'Config ID is required'),
-  }),
-  body: z.object({
-    oauthInstanceName: z.string().min(1, 'OAuth instance name is required').optional(),
-    config: z.any().optional(),
-  }),
-});
 
 // ============================================================================
 // Router Factory
@@ -147,7 +63,7 @@ export function createOAuthRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigRegistrySchema),
     getOAuthConfigRegistry(config)
-  );
+);
 
   /**
    * GET /registry/:connectorType
@@ -159,7 +75,7 @@ export function createOAuthRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(oauthConfigRegistrySchema),
+    ValidationMiddleware.validate(oauthConfigRegistryByTypeSchema),
     getOAuthConfigRegistryByType(config)
   );
 
@@ -244,4 +160,3 @@ export function createOAuthRouter(container: Container): Router {
 
   return router;
 }
-

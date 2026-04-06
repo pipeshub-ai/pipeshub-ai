@@ -9,6 +9,7 @@
  */
 
 import { NextFunction, Response } from 'express';
+import { ZodTypeAny } from 'zod';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -19,6 +20,16 @@ import { AppConfig } from '../config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
 import { isUserAdmin } from './connector.controllers';
+import {
+  getOAuthConfigRegistryResponseSchema,
+  getOAuthConfigRegistryByTypeResponseSchema,
+  getAllOAuthConfigsResponseSchema,
+  listOAuthConfigsResponseSchema,
+  createOAuthConfigResponseSchema,
+  getOAuthConfigResponseSchema,
+  updateOAuthConfigResponseSchema,
+  deleteOAuthConfigResponseSchema,
+} from '../validators/oauth.validator';
 
 const logger = Logger.getInstance({
   service: 'OAuth Controller',
@@ -49,6 +60,7 @@ const createOAuthApiHandler = (
   operationName: string,
   method: HttpMethod,
   notFoundMessage: string,
+  responseSchema?: ZodTypeAny,
 ) => {
   return async (
     req: AuthenticatedUserRequest,
@@ -94,6 +106,7 @@ const createOAuthApiHandler = (
         res,
         operationName,
         notFoundMessage,
+        responseSchema,
       );
     } catch (error: any) {
       logger.error(`Error ${operationName.toLowerCase()}`, {
@@ -135,11 +148,12 @@ export const getOAuthConfigRegistry = (appConfig: AppConfig) =>
   createOAuthApiHandler(
     appConfig,
     (req) => `/api/v1/oauth/registry${buildQueryString(req)}`,
-    () => {}, // No validation needed
-    () => null, // No payload
+    () => {},
+    () => null,
     'Getting OAuth config registry',
     HttpMethod.GET,
     'OAuth config registry not found',
+    getOAuthConfigRegistryResponseSchema,
   );
 
 /**
@@ -158,6 +172,7 @@ export const getOAuthConfigRegistryByType = (appConfig: AppConfig) =>
     'Getting OAuth config registry by type',
     HttpMethod.GET,
     'OAuth config registry not found',
+    getOAuthConfigRegistryByTypeResponseSchema,
   );
 
 /**
@@ -173,6 +188,7 @@ export const getAllOAuthConfigs = (appConfig: AppConfig) =>
     'Getting all OAuth configs',
     HttpMethod.GET,
     'OAuth configs not found',
+    getAllOAuthConfigsResponseSchema,
   );
 
 /**
@@ -191,6 +207,7 @@ export const listOAuthConfigs = (appConfig: AppConfig) =>
     'Listing OAuth configs',
     HttpMethod.GET,
     'OAuth configs not found',
+    listOAuthConfigsResponseSchema,
   );
 
 /**
@@ -224,6 +241,7 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
     'Creating OAuth config',
     HttpMethod.POST,
     'Failed to create OAuth config',
+    createOAuthConfigResponseSchema,
   );
 
 /**
@@ -245,6 +263,7 @@ export const getOAuthConfig = (appConfig: AppConfig) =>
     'Getting OAuth config',
     HttpMethod.GET,
     'OAuth config not found',
+    getOAuthConfigResponseSchema,
   );
 
 /**
@@ -288,6 +307,7 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
     'Updating OAuth config',
     HttpMethod.PUT,
     'OAuth config not found',
+    updateOAuthConfigResponseSchema,
   );
 
 /**
@@ -309,5 +329,6 @@ export const deleteOAuthConfig = (appConfig: AppConfig) =>
     'Deleting OAuth config',
     HttpMethod.DELETE,
     'OAuth config not found',
+    deleteOAuthConfigResponseSchema,
   );
 

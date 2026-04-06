@@ -384,7 +384,7 @@ export class ConnectorApiService {
     config: any
   ): Promise<any> {
     const response = await axios.post(`/api/v1/oauth/${connectorType}`, {
-      oauth_instance_name: oauthInstanceName,
+      oauthInstanceName,
       config,
       baseUrl: window.location.origin,
     });
@@ -413,7 +413,7 @@ export class ConnectorApiService {
     config: any
   ): Promise<any> {
     const response = await axios.put(`/api/v1/oauth/${connectorType}/${oauthConfigId}`, {
-      oauth_instance_name: oauthInstanceName,
+      oauthInstanceName,
       config,
       baseUrl: window.location.origin,
     });

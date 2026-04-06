@@ -15,20 +15,13 @@ import {
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import {
-  googleWorkspaceBusinessCredentialsSchema,
-  googleWorkspaceIndividualCredentialsSchema,
-} from '../validator/validators';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
-  aiModelRoute,
   AIServiceResponse,
-  googleWorkspaceTypes,
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { loadConfigurationManagerConfig } from '../config/config';
-import { Org } from '../../user_management/schema/org.schema';
 
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -36,17 +29,6 @@ import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken
 import { SamlController } from '../../auth/controller/saml.controller';
 import axios from 'axios';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
-import { ConfigService } from '../services/updateConfig.service';
-import {
-  ConnectorPublicUrlChangedEvent,
-  EntitiesEventProducer,
-  Event,
-  EventType,
-  GmailUpdatesDisabledEvent,
-  GmailUpdatesEnabledEvent,
-  LLMConfiguredEvent,
-  SyncEventProducer,
-} from '../services/kafka_events.service';
 import {
   AICommandOptions,
   AIServiceCommand,
@@ -55,10 +37,45 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
 import { AIModelsConfig } from '../types/ai-models.types';
+import {
+  aiModelMutationResponseSchema,
+  aiModelsAvailableByTypeResponseSchema,
+  aiModelsByTypeResponseSchema,
+  aiModelsConfigResponseSchema,
+  aiModelsProvidersResponseSchema,
+  arangoDbConfigResponseSchema,
+  availablePlatformFlagsResponseSchema,
+  azureAdAuthConfigResponseSchema,
+  cmMessageResponseSchema,
+  customSystemPromptResponseSchema,
+  customSystemPromptUpdateResponseSchema,
+  frontendPublicUrlResponseSchema,
+  googleAuthConfigResponseSchema,
+  kafkaConfigResponseSchema,
+  metricsCollectionResponseSchema,
+  microsoftAuthConfigResponseSchema,
+  mongoDbConfigResponseSchema,
+  oauthAuthConfigResponseSchema,
+  platformSettingsResponseSchema,
+  qdrantConfigResponseSchema,
+  redisConfigResponseSchema,
+  slackBotConfigDeleteResponseSchema,
+  slackBotConfigMutationResponseSchema,
+  slackBotConfigsResponseSchema,
+  smtpConfigResponseSchema,
+  ssoAuthConfigResponseSchema,
+  storageConfigResponseSchema,
+} from '../validator/validators';
+import { sendValidatedJson } from '../../../utils/response-validator';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
 });
+
+// =============================================================================
+// Types
+// =============================================================================
+
 type SlackBotConfigEntry = {
   id: string;
   name: string;
@@ -73,22 +90,38 @@ type SlackBotStore = {
   configs: SlackBotConfigEntry[];
 };
 
+// =============================================================================
+// Constants
+// =============================================================================
+
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+const AI_MODEL_TYPE_VALUES = [
+  'llm',
+  'embedding',
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal',
+] as const;
+type AIModelTypeValue = (typeof AI_MODEL_TYPE_VALUES)[number];
+
+// =============================================================================
+// Low-level helpers
+// =============================================================================
 
 const handleBackendError = (error: any, operation: string): Error => {
   if (
     (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-    (typeof error?.message === 'string' &&
-      error.message.includes('fetch failed'))
+    (typeof error?.message === 'string' && error.message.includes('fetch failed'))
   ) {
     return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
   }
 
   if (error.response) {
     const { status, data } = error.response;
-    const errorDetail =
-      data?.detail || data?.reason || data?.message || 'Unknown error';
+    const errorDetail = data?.detail || data?.reason || data?.message || 'Unknown error';
 
     logger.error(`Backend error during ${operation}`, {
       status,
@@ -101,18 +134,12 @@ const handleBackendError = (error: any, operation: string): Error => {
     }
 
     switch (status) {
-      case 400:
-        return new BadRequestError(errorDetail);
-      case 401:
-        return new UnauthorizedError(errorDetail);
-      case 403:
-        return new ForbiddenError(errorDetail);
-      case 404:
-        return new NotFoundError(errorDetail);
-      case 500:
-        return new InternalServerError(errorDetail);
-      default:
-        return new InternalServerError(`Backend error: ${errorDetail}`);
+      case 400: return new BadRequestError(errorDetail);
+      case 401: return new UnauthorizedError(errorDetail);
+      case 403: return new ForbiddenError(errorDetail);
+      case 404: return new NotFoundError(errorDetail);
+      case 500: return new InternalServerError(errorDetail);
+      default:  return new InternalServerError(`Backend error: ${errorDetail}`);
     }
   }
 
@@ -124,20 +151,83 @@ const handleBackendError = (error: any, operation: string): Error => {
   return new InternalServerError(`${operation} failed: ${error.message}`);
 };
 
-const normalizeUrl = (url: unknown): string => {
-  if (!url || typeof url !== 'string') return '';
-  const trimmed = String(url).trim();
-  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+const createEmptyAIModelsState = () => ({
+  ocr: [],
+  embedding: [],
+  slm: [],
+  llm: [],
+  reasoning: [],
+  multiModal: [],
+});
+
+const ensureAIModelsShape = (models: Record<string, any>): Record<string, any> => {
+  for (const type of AI_MODEL_TYPE_VALUES) {
+    if (!Array.isArray(models[type])) {
+      models[type] = [];
+    }
+  }
+  return models;
 };
 
-function getOrgIdFromRequest(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-): string | undefined {
-  return (
-    (req as AuthenticatedUserRequest).user?.orgId ||
-    (req as AuthenticatedServiceRequest).tokenPayload?.orgId
-  );
-}
+// =============================================================================
+// Encryption helpers
+// =============================================================================
+
+/** Serialize `data` to JSON and encrypt it. */
+const encryptConfig = (data: unknown): string => {
+  const { algorithm, secretKey } = loadConfigurationManagerConfig();
+  return EncryptionService.getInstance(algorithm, secretKey).encrypt(JSON.stringify(data));
+};
+
+/** Decrypt an encrypted string and deserialize it from JSON. */
+const decryptConfig = <T = unknown>(encrypted: string): T => {
+  const { algorithm, secretKey } = loadConfigurationManagerConfig();
+  return JSON.parse(
+    EncryptionService.getInstance(algorithm, secretKey).decrypt(encrypted),
+  ) as T;
+};
+
+// =============================================================================
+// AI Models store helpers
+// =============================================================================
+
+const loadAIModels = async (
+  keyValueStoreService: KeyValueStoreService,
+): Promise<Record<string, any> | null> => {
+  const encrypted = await keyValueStoreService.get<string>(configPaths.aiModels);
+  return encrypted ? decryptConfig<Record<string, any>>(encrypted) : null;
+};
+
+const saveAIModels = async (
+  keyValueStoreService: KeyValueStoreService,
+  aiModels: Record<string, any>,
+): Promise<void> => {
+  await keyValueStoreService.set<string>(configPaths.aiModels, encryptConfig(aiModels));
+};
+
+// =============================================================================
+// AI health-check response helper
+// =============================================================================
+
+/** Proxies an AI-service health-check failure response back to the client. */
+const replyAIHealthCheckFailure = (
+  res: Response,
+  aiResponseData: AIServiceResponse | undefined,
+  modelType: string,
+): void => {
+  const errData: any = aiResponseData?.data ?? {};
+  const reasonMessage =
+    errData?.message ??
+    errData?.error?.message ??
+    `Failed to do health check of ${modelType} configuration, check credentials again`;
+  res.status(aiResponseData?.statusCode ?? 500).json({
+    error: { status: 'error', message: reasonMessage, details: errData },
+  });
+};
+
+// =============================================================================
+// Storage
+// =============================================================================
 
 export const createStorageConfig =
   (
@@ -147,69 +237,48 @@ export const createStorageConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const storageType = req.body.storageType;
-      let config: Record<string, any> = {};
-      // config coming from file
-      config = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      // Process configuration based on storage type
+      const config = req.body;
+
       switch (storageType.toLowerCase()) {
         case storageTypes.S3.toLowerCase(): {
-          const s3Config = {
-            accessKeyId: config.s3AccessKeyId,
-            secretAccessKey: config.s3SecretAccessKey,
-            region: config.s3Region,
-            bucketName: config.s3BucketName,
-          };
-          const encryptedS3Config = EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).encrypt(JSON.stringify(s3Config));
-
           await keyValueStoreService.set<string>(
             configPaths.storageService,
             JSON.stringify({
               storageType: storageTypes.S3,
-              s3: encryptedS3Config,
+              s3: encryptConfig({
+                accessKeyId: config.s3AccessKeyId,
+                secretAccessKey: config.s3SecretAccessKey,
+                region: config.s3Region,
+                bucketName: config.s3BucketName,
+              }),
             }),
           );
-
           logger.info('S3 storage configuration saved successfully');
           break;
         }
 
         case storageTypes.AZURE_BLOB.toLowerCase(): {
           if (config.azureBlobConnectionString) {
-            const encryptedAzureBlobConnectionString =
-              EncryptionService.getInstance(
-                configManagerConfig.algorithm,
-                configManagerConfig.secretKey,
-              ).encrypt(config.azureBlobConnectionString);
-
+            // Store connection string JSON-encoded so decryptConfig can always be used on GET.
             await keyValueStoreService.set<string>(
               configPaths.storageService,
               JSON.stringify({
                 storageType: storageTypes.AZURE_BLOB,
-                azureBlob: encryptedAzureBlobConnectionString,
+                azureBlob: encryptConfig({ connectionString: config.azureBlobConnectionString }),
               }),
             );
           } else {
-            const azureBlobConfig = {
-              endpointProtocol: config.endpointProtocol || 'https',
-              accountName: config.accountName,
-              accountKey: config.accountKey,
-              endpointSuffix: config.endpointSuffix || 'core.windows.net',
-              containerName: config.containerName,
-            };
-            const encryptedAzureBlobConfig = EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).encrypt(JSON.stringify(azureBlobConfig));
-
             await keyValueStoreService.set<string>(
               configPaths.storageService,
               JSON.stringify({
                 storageType: storageTypes.AZURE_BLOB,
-                azureBlob: encryptedAzureBlobConfig,
+                azureBlob: encryptConfig({
+                  endpointProtocol: config.endpointProtocol || 'https',
+                  accountName: config.accountName,
+                  accountKey: config.accountKey,
+                  endpointSuffix: config.endpointSuffix || 'core.windows.net',
+                  containerName: config.containerName,
+                }),
               }),
             );
           }
@@ -218,18 +287,16 @@ export const createStorageConfig =
         }
 
         case storageTypes.LOCAL.toLowerCase(): {
-          const localConfig = {
-            mountName: config.mountName || 'PipesHub',
-            baseUrl: config.baseUrl || defaultConfig.endpoint,
-          };
           await keyValueStoreService.set<string>(
             configPaths.storageService,
             JSON.stringify({
               storageType: storageTypes.LOCAL,
-              local: JSON.stringify(localConfig),
+              local: JSON.stringify({
+                mountName: config.mountName || 'PipesHub',
+                baseUrl: config.baseUrl || defaultConfig.endpoint,
+              }),
             }),
           );
-
           logger.info('Local storage configuration saved successfully');
           break;
         }
@@ -237,9 +304,13 @@ export const createStorageConfig =
         default:
           throw new BadRequestError(`Unsupported storage type: ${storageType}`);
       }
-      res.status(200).json({
-        message: 'Storage configuration saved successfully',
-      });
+
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Storage configuration saved successfully' },
+        HTTP_STATUS.CREATED,
+      );
     } catch (error: any) {
       logger.error('Error creating storage config', { error });
       next(error);
@@ -254,98 +325,61 @@ export const getStorageConfig =
     next: NextFunction,
   ) => {
     try {
-      const storageConfig =
-        (await keyValueStoreService.get<string>(configPaths.storageService)) ||
-        '{}';
-
-      const parsedConfig = JSON.parse(storageConfig); // Parse JSON string
-
-      const storageType = parsedConfig.storageType;
+      const raw =
+        (await keyValueStoreService.get<string>(configPaths.storageService)) || '{}';
+      const parsedConfig = JSON.parse(raw);
+      const { storageType } = parsedConfig;
 
       if (!storageType) {
         throw new BadRequestError('Storage type not found');
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-
       if (storageType === storageTypes.S3) {
-        const encryptedS3Config = parsedConfig.s3;
-
-        if (encryptedS3Config) {
-          const s3Config = EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedS3Config);
-
-          const { accessKeyId, secretAccessKey, region, bucketName } =
-            JSON.parse(s3Config);
-          res
-            .status(200)
-            .json({
-              storageType,
-              accessKeyId,
-              secretAccessKey,
-              region,
-              bucketName,
-            })
-            .end();
-          return;
-        } else {
-          throw new BadRequestError('Storage config not found');
-        }
-      }
-
-      if (storageType === storageTypes.AZURE_BLOB) {
-        const encryptedAzureBlobConfig = parsedConfig.azureBlob;
-        if (encryptedAzureBlobConfig) {
-          const azureBlobConfig = JSON.parse(
-            EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).decrypt(encryptedAzureBlobConfig),
-          );
-
-          const {
-            endpointProtocol,
-            accountName,
-            accountKey,
-            endpointSuffix,
-            containerName,
-          } = azureBlobConfig;
-          res
-            .status(200)
-            .json({
-              storageType,
-              endpointProtocol,
-              accountName,
-              accountKey,
-              endpointSuffix,
-              containerName,
-            })
-            .end();
-          return;
-        } else {
-          throw new BadRequestError('Storage config not found');
-        }
-      }
-
-      if (storageType === storageTypes.LOCAL) {
-        const localConfig = parsedConfig.local;
-        res
-          .status(200)
-          .json(JSON.parse(localConfig || '{}'))
-          .end();
+        if (!parsedConfig.s3) throw new BadRequestError('Storage config not found');
+        const s3Config = decryptConfig<Record<string, string>>(parsedConfig.s3);
+        sendValidatedJson(
+          res,
+          storageConfigResponseSchema,
+          { storageType, ...s3Config },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
-      res.status(HTTP_STATUS.BAD_REQUEST).json({
-        message: 'Unsupported storage type',
-      });
+      if (storageType === storageTypes.AZURE_BLOB) {
+        if (!parsedConfig.azureBlob) throw new BadRequestError('Storage config not found');
+        const azureBlobConfig = decryptConfig<Record<string, string>>(parsedConfig.azureBlob);
+        sendValidatedJson(
+          res,
+          storageConfigResponseSchema,
+          { storageType, ...azureBlobConfig },
+          HTTP_STATUS.OK,
+        );
+        return;
+      }
+
+      if (storageType === storageTypes.LOCAL) {
+        // Merge storageType into the payload so the discriminatedUnion schema can validate it
+        const localConfig = JSON.parse(parsedConfig.local || '{}');
+        sendValidatedJson(
+          res,
+          storageConfigResponseSchema,
+          { storageType: storageTypes.LOCAL, ...localConfig },
+          HTTP_STATUS.OK,
+        );
+        return;
+      }
+
+      throw new BadRequestError(`Unsupported storage type: ${storageType}`);
     } catch (error: any) {
       logger.error('Error getting storage config', { error });
       next(error);
     }
   };
+
+// =============================================================================
+// SMTP
+// =============================================================================
 
 export const createSmtpConfig =
   (
@@ -358,34 +392,28 @@ export const createSmtpConfig =
       if (!req.user) {
         throw new UnauthorizedError('User not Found');
       }
-      const smtpConfig = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(smtpConfig));
-      await keyValueStoreService.set<string>(
-        configPaths.smtp,
-        encryptedSmtpConfig,
-      );
-      const config = {
+
+      await keyValueStoreService.set<string>(configPaths.smtp, encryptConfig(req.body));
+
+      const response = await axios({
         method: 'post' as const,
         url: `${communicationBackend}/api/v1/mail/updateSmtpConfig`,
         headers: {
           Authorization: `Bearer ${await generateFetchConfigAuthToken(req.user, scopedJwtSecret)}`,
           'Content-Type': 'application/json',
         },
-      };
+      });
 
-      const response = await axios(config);
-      if (response.status != 200) {
+      if (response.status !== 200) {
         throw new BadRequestError('Error setting smtp config');
       }
 
-      res
-        .status(200)
-        .json({ message: 'SMTP config created successfully' })
-        .end();
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'SMTP config created successfully' },
+        HTTP_STATUS.CREATED,
+      );
     } catch (error: any) {
       logger.error('Error creating smtp config', { error });
       next(error);
@@ -396,46 +424,30 @@ export const getSmtpConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = await keyValueStoreService.get<string>(
-        configPaths.smtp,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.smtp);
+      sendValidatedJson(
+        res,
+        smtpConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : {},
+        HTTP_STATUS.OK,
       );
-      if (encryptedSmtpConfig) {
-        const smtpConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSmtpConfig),
-        );
-        res.status(200).json(smtpConfig).end();
-        return;
-      }
-      res.status(200).json({}).end();
     } catch (error: any) {
       logger.error('Error getting smtp config', { error });
       next(error);
     }
   };
+
+// =============================================================================
+// Slack Bot
+// =============================================================================
+
 const SLACK_BOT_CAS_MAX_RETRIES = 5;
 
-const parseSlackBotStore = (
-  encrypted: string | null | undefined,
-  configManagerConfig: ReturnType<typeof loadConfigurationManagerConfig>,
-): SlackBotStore => {
-  if (!encrypted) {
-    return { configs: [] };
-  }
-
+const parseSlackBotStore = (encrypted: string | null | undefined): SlackBotStore => {
+  if (!encrypted) return { configs: [] };
   try {
-    const decrypted = EncryptionService.getInstance(
-      configManagerConfig.algorithm,
-      configManagerConfig.secretKey,
-    ).decrypt(encrypted);
-
-    const parsed = JSON.parse(decrypted) as Partial<SlackBotStore>;
-    return {
-      configs: Array.isArray(parsed.configs) ? parsed.configs : [],
-    };
+    const parsed = decryptConfig<Partial<SlackBotStore>>(encrypted);
+    return { configs: Array.isArray(parsed.configs) ? parsed.configs : [] };
   } catch (error) {
     logger.warn('Failed to parse slack bot settings, using empty config', { error });
     return { configs: [] };
@@ -445,36 +457,26 @@ const parseSlackBotStore = (
 export const getSlackBotStore = async (
   keyValueStoreService: KeyValueStoreService,
 ): Promise<SlackBotStore> => {
-  const configManagerConfig = loadConfigurationManagerConfig();
   const encrypted = await keyValueStoreService.get<string>(configPaths.slackBot);
-  return parseSlackBotStore(encrypted, configManagerConfig);
+  return parseSlackBotStore(encrypted);
 };
 
 const updateSlackBotStoreWithCAS = async <T>(
   keyValueStoreService: KeyValueStoreService,
   updater: (store: SlackBotStore) => T,
 ): Promise<T> => {
-  const configManagerConfig = loadConfigurationManagerConfig();
-
   for (let attempt = 0; attempt < SLACK_BOT_CAS_MAX_RETRIES; attempt++) {
     const encryptedCurrent = await keyValueStoreService.get<string>(configPaths.slackBot);
-    const store = parseSlackBotStore(encryptedCurrent, configManagerConfig);
+    const store = parseSlackBotStore(encryptedCurrent);
     const result = updater(store);
-
-    const encryptedUpdated = EncryptionService.getInstance(
-      configManagerConfig.algorithm,
-      configManagerConfig.secretKey,
-    ).encrypt(JSON.stringify(store));
 
     const casSuccess = await keyValueStoreService.compareAndSet<string>(
       configPaths.slackBot,
       encryptedCurrent ?? null,
-      encryptedUpdated,
+      encryptConfig(store),
     );
 
-    if (casSuccess) {
-      return result;
-    }
+    if (casSuccess) return result;
 
     if (attempt === SLACK_BOT_CAS_MAX_RETRIES - 1) {
       throw new Error(
@@ -503,13 +505,12 @@ export const getSlackBotConfigs =
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const store = await getSlackBotStore(keyValueStoreService);
-      res
-        .status(HTTP_STATUS.OK)
-        .json({
-          status: 'success',
-          configs: store.configs.map(slackBotConfig),
-        })
-        .end();
+      sendValidatedJson(
+        res,
+        slackBotConfigsResponseSchema,
+        { status: 'success', configs: store.configs.map(slackBotConfig) },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error getting slack bot configs', { error });
       next(error);
@@ -525,13 +526,12 @@ export const createSlackBotConfig =
         typeof agentId === 'string' && agentId.trim().length > 0
           ? agentId.trim()
           : undefined;
+
       const config = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
           if (normalizedAgentId) {
-            const duplicate = store.configs.find(
-              (configItem) => configItem.agentId === normalizedAgentId,
-            );
+            const duplicate = store.configs.find((c) => c.agentId === normalizedAgentId);
             if (duplicate) {
               throw new BadRequestError(
                 'Selected agent is already linked to another Slack Bot configuration',
@@ -555,13 +555,12 @@ export const createSlackBotConfig =
         },
       );
 
-      res
-        .status(HTTP_STATUS.OK)
-        .json({
-          status: 'success',
-          config: slackBotConfig(config),
-        })
-        .end();
+      sendValidatedJson(
+        res,
+        slackBotConfigMutationResponseSchema,
+        { status: 'success', config: slackBotConfig(config) },
+        HTTP_STATUS.CREATED,
+      );
     } catch (error: any) {
       logger.error('Error creating slack bot config', { error });
       next(error);
@@ -578,19 +577,18 @@ export const updateSlackBotConfig =
         typeof agentId === 'string' && agentId.trim().length > 0
           ? agentId.trim()
           : undefined;
+
       const updatedConfig = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
-          const configIndex = store.configs.findIndex((config) => config.id === configId);
-
+          const configIndex = store.configs.findIndex((c) => c.id === configId);
           if (configIndex === -1) {
             throw new NotFoundError('Slack Bot configuration not found');
           }
 
           if (normalizedAgentId) {
             const duplicate = store.configs.find(
-              (configItem) =>
-                configItem.agentId === normalizedAgentId && configItem.id !== configId,
+              (c) => c.agentId === normalizedAgentId && c.id !== configId,
             );
             if (duplicate) {
               throw new BadRequestError(
@@ -600,9 +598,8 @@ export const updateSlackBotConfig =
           }
 
           const previousConfig = store.configs[configIndex];
-          if (!previousConfig) {
-            throw new Error("Config not found");
-          }
+          if (!previousConfig) throw new Error('Config not found');
+
           const nextConfig: SlackBotConfigEntry = {
             ...previousConfig,
             name,
@@ -617,13 +614,12 @@ export const updateSlackBotConfig =
         },
       );
 
-      res
-        .status(HTTP_STATUS.OK)
-        .json({
-          status: 'success',
-          config: slackBotConfig(updatedConfig),
-        })
-        .end();
+      sendValidatedJson(
+        res,
+        slackBotConfigMutationResponseSchema,
+        { status: 'success', config: slackBotConfig(updatedConfig) },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error updating slack bot config', { error });
       next(error);
@@ -635,53 +631,50 @@ export const deleteSlackBotConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { configId } = req.params;
-      await updateSlackBotStoreWithCAS(keyValueStoreService, (store) => {
-        const configIndex = store.configs.findIndex((config) => config.id === configId);
 
+      await updateSlackBotStoreWithCAS(keyValueStoreService, (store) => {
+        const configIndex = store.configs.findIndex((c) => c.id === configId);
         if (configIndex === -1) {
           throw new NotFoundError('Slack Bot configuration not found');
         }
-
         store.configs.splice(configIndex, 1);
       });
 
-      res
-        .status(HTTP_STATUS.OK)
-        .json({
-          status: 'success',
-          message: 'Slack Bot configuration deleted',
-        })
-        .end();
+      sendValidatedJson(
+        res,
+        slackBotConfigDeleteResponseSchema,
+        { status: 'success', message: 'Slack Bot configuration deleted' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error deleting slack bot config', { error });
       next(error);
     }
   };
 
-// Platform settings
+// =============================================================================
+// Platform Settings
+// =============================================================================
+
 export const setPlatformSettings =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { fileUploadMaxSizeBytes, featureFlags } = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedPlatformSettings = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(
-        JSON.stringify({
+      await keyValueStoreService.set<string>(
+        configPaths.platform.settings,
+        encryptConfig({
           fileUploadMaxSizeBytes,
           featureFlags,
           updatedAt: new Date().toISOString(),
         }),
       );
-
-      await keyValueStoreService.set<string>(
-        configPaths.platform.settings,
-        encryptedPlatformSettings,
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Platform settings saved' },
+        HTTP_STATUS.OK,
       );
-
-      res.status(200).json({ message: 'Platform settings saved' }).end();
     } catch (error: any) {
       logger.error('Error setting platform settings', { error });
       next(error);
@@ -697,7 +690,7 @@ export const getPlatformSettings =
   ) => {
     try {
       const settings = await getPlatformSettingsFromStore(keyValueStoreService);
-      res.status(200).json(settings).end();
+      sendValidatedJson(res, platformSettingsResponseSchema, settings, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error getting platform settings', { error });
       next(error);
@@ -711,30 +704,29 @@ export const getAvailablePlatformFeatureFlags =
     res: Response,
     _next: NextFunction,
   ) => {
-    res.status(200).json({ flags: PLATFORM_FEATURE_FLAGS }).end();
+    sendValidatedJson(
+      res,
+      availablePlatformFlagsResponseSchema,
+      { flags: PLATFORM_FEATURE_FLAGS },
+      HTTP_STATUS.OK,
+    );
   };
+
+// =============================================================================
+// Auth Configs
+// =============================================================================
 
 export const getAzureAdAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.azureAD,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.auth.azureAD);
+      sendValidatedJson(
+        res,
+        azureAdAuthConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : {},
+        HTTP_STATUS.OK,
       );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
-        res.status(200).json(authConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
     } catch (error: any) {
       logger.error('Error getting auth config', { error });
       next(error);
@@ -745,52 +737,38 @@ export const setAzureAdAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
       const { clientId, tenantId, enableJit } = req.body;
       const authority = `https://login.microsoftonline.com/${tenantId}`;
-
-      const encryptedAuthConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
+      const encrypted = encryptConfig({ clientId, tenantId, authority, enableJit: enableJit ?? true });
 
       await keyValueStoreService.set<string>(
         configPaths.auth.azureAD,
-        encryptedAuthConfig,
+        encrypted,
       );
 
-      res
-        .status(200)
-        .json({ message: 'Azure AD config created successfully' })
-        .end();
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Azure AD config created successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
+      logger.error('Error creating Azure AD auth config', { error });
       next(error);
     }
   };
 
-export const getMicrosoftAuthConfig =
+  export const getMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.microsoft,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.auth.microsoft);
+      sendValidatedJson(
+        res,
+        microsoftAuthConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : {},
+        HTTP_STATUS.OK,
       );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
-        res.status(200).json(authConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
     } catch (error: any) {
       logger.error('Error getting auth config', { error });
       next(error);
@@ -801,27 +779,24 @@ export const setMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
       const { clientId, tenantId, enableJit } = req.body;
       const authority = `https://login.microsoftonline.com/${tenantId}`;
 
-      const encryptedAuthConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
+      const encrypted = encryptConfig({ clientId, tenantId, authority, enableJit: enableJit ?? true });
 
       await keyValueStoreService.set<string>(
         configPaths.auth.microsoft,
-        encryptedAuthConfig,
+        encrypted,
       );
 
-      res
-        .status(200)
-        .json({ message: 'Microsoft Auth config created successfully' })
-        .end();
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Microsoft Auth config created successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
+      logger.error('Error creating Microsoft Auth config', { error });
       next(error);
     }
   };
@@ -830,23 +805,13 @@ export const getGoogleAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.google,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.auth.google);
+      sendValidatedJson(
+        res,
+        googleAuthConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : {},
+        HTTP_STATUS.OK,
       );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
-        res.status(200).json(authConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
     } catch (error: any) {
       logger.error('Error getting auth config', { error });
       next(error);
@@ -857,74 +822,62 @@ export const setGoogleAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
       const { clientId, enableJit } = req.body;
-
-      const encryptedAuthConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, enableJit: enableJit ?? true }));
-
-      await keyValueStoreService.set<string>(
-        configPaths.auth.google,
-        encryptedAuthConfig,
+      const encrypted = encryptConfig({ clientId, enableJit: enableJit ?? true });
+      await keyValueStoreService.set<string>(configPaths.auth.google, encrypted);
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Google Auth config created successfully' },
+        HTTP_STATUS.OK,
       );
-
-      res
-        .status(200)
-        .json({ message: 'Google Auth config created successfully' })
-        .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
+      logger.error('Error creating Google Auth config', { error });
       next(error);
     }
   };
+
+  export const getSsoAuthConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const encrypted = await keyValueStoreService.get<string>(configPaths.auth.sso);
+      sendValidatedJson(
+        res,
+        ssoAuthConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : {},
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error getting SsoConfig', { error });
+      next(error);
+    }
+  };
+
 
 export const getOAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.oauth,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.auth.oauth);
+      sendValidatedJson(
+        res,
+        oauthAuthConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : {},
+        HTTP_STATUS.OK,
       );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
-        res.status(200).json(authConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
     } catch (error: any) {
       logger.error('Error getting OAuth config', { error });
       next(error);
     }
   };
 
-export const setOAuthConfig =
+
+  export const setOAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const {
-        providerName,
-        clientId,
-        clientSecret,
-        authorizationUrl,
-        tokenEndpoint,
-        userInfoEndpoint,
-        scope,
-        redirectUri,
-        enableJit,
-      } = req.body;
+      const { providerName, clientId, clientSecret, authorizationUrl, tokenEndpoint, userInfoEndpoint, scope, redirectUri, enableJit } = req.body;
 
       const oauthConfig = {
         providerName,
@@ -938,1042 +891,25 @@ export const setOAuthConfig =
         enableJit: enableJit ?? true,
       };
 
-      const encryptedAuthConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(oauthConfig));
+      const encrypted = encryptConfig(oauthConfig);
 
       await keyValueStoreService.set<string>(
         configPaths.auth.oauth,
-        encryptedAuthConfig,
+        encrypted,
       );
 
-      res
-        .status(200)
-        .json({ message: 'OAuth config created successfully' })
-        .end();
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'OAuth config created successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error creating OAuth config', { error });
       next(error);
     }
   };
 
-export const createArangoDbConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { url, username, password } = req.body;
-      const db = ARANGO_DB_NAME;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedArangoDBConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ url, username, password, db }));
-      await keyValueStoreService.set<string>(
-        configPaths.db.arangodb,
-        encryptedArangoDBConfig,
-      );
-
-      res
-        .status(200)
-        .json({
-          message: 'Arango DB config created successfully',
-        })
-        .end();
-    } catch (error: any) {
-      logger.error('Error creating db config', { error });
-      next(error);
-    }
-  };
-
-export const getArangoDbConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedArangoDBConfig = await keyValueStoreService.get<string>(
-        configPaths.db.arangodb,
-      );
-      if (encryptedArangoDBConfig) {
-        const arangoDBConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedArangoDBConfig),
-        );
-        res.status(200).json(arangoDBConfig).end();
-        return;
-      }
-      res.status(200).json({}).end();
-    } catch (error: any) {
-      logger.error('Error getting db config', { error });
-      next(error);
-    }
-  };
-
-export const createMongoDbConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { uri } = req.body;
-      const db = MONGO_DB_NAME;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedMongoDBConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ uri, db }));
-      await keyValueStoreService.set<string>(
-        configPaths.db.mongodb,
-        encryptedMongoDBConfig,
-      );
-
-      res
-        .status(200)
-        .json({
-          message: 'Mongo DB config created successfully',
-        })
-        .end();
-    } catch (error: any) {
-      logger.error('Error creating db config', { error });
-      next(error);
-    }
-  };
-
-export const getMongoDbConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedMongoDBConfig = await keyValueStoreService.get<string>(
-        configPaths.db.mongodb,
-      );
-      if (encryptedMongoDBConfig) {
-        const mongoDBConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedMongoDBConfig),
-        );
-
-        res.status(200).json(mongoDBConfig).end();
-        return;
-      }
-      res.status(200).json({}).end();
-    } catch (error: any) {
-      logger.error('Error getting db config', { error });
-      next(error);
-    }
-  };
-
-export const createRedisConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { host, port, password, tls } = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedRedisConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ host, port, password, tls }));
-      await keyValueStoreService.set<string>(
-        configPaths.keyValueStore.redis,
-        encryptedRedisConfig,
-      );
-      res.status(200).json({ message: 'Redis config created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating key value store config', { error });
-      next(error);
-    }
-  };
-
-export const getRedisConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedRedisConfig = await keyValueStoreService.get<string>(
-        configPaths.keyValueStore.redis,
-      );
-      if (encryptedRedisConfig) {
-        const redisConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedRedisConfig),
-        );
-
-        res.status(200).json(redisConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting key value store config', { error });
-      next(error);
-    }
-  };
-
-export const createKafkaConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { brokers, sasl } = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedKafkaConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ brokers, sasl }));
-      await keyValueStoreService.set<string>(
-        configPaths.broker.kafka,
-        encryptedKafkaConfig,
-      );
-      const warningMessage = res.getHeader('warning');
-      res
-        .status(200)
-        .json({ message: 'Kafka config created successfully', warningMessage })
-        .end();
-    } catch (error: any) {
-      logger.error('Error creating kafka config', { error });
-      next(error);
-    }
-  };
-
-export const getKafkaConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedKafkaConfig = await keyValueStoreService.get<string>(
-        configPaths.broker.kafka,
-      );
-      if (encryptedKafkaConfig) {
-        const kafkaConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedKafkaConfig),
-        );
-
-        res.status(200).json(kafkaConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting kafka config', { error });
-      next(error);
-    }
-  };
-
-export const createGoogleWorkspaceCredentials =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    userId: string,
-    orgId: string,
-    eventService: SyncEventProducer,
-  ) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
-      if (!org) {
-        throw new BadRequestError('Organisaton not found');
-      }
-      const userType = org.accountType;
-
-      let configData;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      let encryptedGoogleWorkspaceConfig: string;
-      switch (userType.toLowerCase()) {
-        case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
-          {
-            configData = req.body;
-
-            // validate config schema
-
-            const validationResult =
-              googleWorkspaceIndividualCredentialsSchema.safeParse(configData);
-            if (!validationResult.success) {
-              throw new BadRequestError(validationResult.error.message);
-            }
-            const enableRealTimeUpdates = req.body.enableRealTimeUpdates;
-            let topicName = '';
-            const realTimeUpdatesEnabled =
-              typeof enableRealTimeUpdates === 'string'
-                ? enableRealTimeUpdates.toLowerCase() === 'true'
-                : !!enableRealTimeUpdates;
-
-            if (realTimeUpdatesEnabled) {
-              if (!req.body.topicName) {
-                throw new BadRequestError(
-                  'Topic name is required when real-time updates are enabled',
-                );
-              }
-              topicName = req.body.topicName;
-            }
-            const {
-              access_token,
-              refresh_token,
-              access_token_expiry_time,
-              refresh_token_expiry_time,
-            } = configData;
-
-            encryptedGoogleWorkspaceConfig = EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).encrypt(
-              JSON.stringify({
-                access_token,
-                refresh_token,
-                access_token_expiry_time,
-                refresh_token_expiry_time,
-                enableRealTimeUpdates: realTimeUpdatesEnabled,
-                topicName,
-              }),
-            );
-          }
-          await keyValueStoreService.set<string>(
-            `${configPaths.connectors.googleWorkspace.credentials.individual}/${userId}`,
-            encryptedGoogleWorkspaceConfig,
-          );
-          break;
-        case googleWorkspaceTypes.BUSINESS.toLowerCase(): {
-          const fileChanged =
-            req.body.fileChanged === true || req.body.fileChanged === 'true';
-          let existingConfig = null;
-          // validate config schema
-          if (!fileChanged) {
-            try {
-              const encryptedExistingConfig =
-                await keyValueStoreService.get<string>(
-                  `${configPaths.connectors.googleWorkspace.credentials.business}/${orgId}`,
-                );
-
-              if (encryptedExistingConfig) {
-                existingConfig = JSON.parse(
-                  EncryptionService.getInstance(
-                    configManagerConfig.algorithm,
-                    configManagerConfig.secretKey,
-                  ).decrypt(encryptedExistingConfig),
-                );
-
-                // We'll use this existing config later
-                logger.debug('Using existing config, file not changed');
-              } else {
-                // No existing config found, need to validate the new file
-                throw new BadRequestError('File Not found');
-              }
-            } catch (error) {
-              throw error;
-            }
-          }
-
-          // Validate admin email regardless of whether file changed
-          if (!req.body.adminEmail) {
-            throw new BadRequestError(
-              'Google Workspace Admin Email is required',
-            );
-          }
-          const adminEmail = req.body.adminEmail;
-
-          // Process real-time updates settings
-          const enableRealTimeUpdates = req.body.enableRealTimeUpdates;
-          let topicName = '';
-          const realTimeUpdatesEnabled =
-            enableRealTimeUpdates === undefined
-              ? false
-              : typeof enableRealTimeUpdates === 'string'
-                ? enableRealTimeUpdates.toLowerCase() === 'true'
-                : Boolean(enableRealTimeUpdates);
-
-          if (realTimeUpdatesEnabled) {
-            if (!req.body.topicName) {
-              throw new BadRequestError(
-                'Topic name is required when real-time updates are enabled',
-              );
-            }
-            topicName = req.body.topicName;
-          }
-
-          logger.debug('enableRealTimeUpdates:', enableRealTimeUpdates);
-          logger.debug('realTimeUpdatesEnabled:', realTimeUpdatesEnabled);
-          logger.debug('topicName:', topicName);
-
-          let configData;
-
-          if (existingConfig) {
-            if (
-              existingConfig.topicName != topicName ||
-              existingConfig.enableRealTimeUpdates != realTimeUpdatesEnabled
-            ) {
-              if (realTimeUpdatesEnabled) {
-                await eventService.start();
-                const event: Event = {
-                  eventType: EventType.GmailUpdatesEnabledEvent,
-                  timestamp: Date.now(),
-                  payload: {
-                    orgId,
-                    topicName: req.body.topicName,
-                  } as GmailUpdatesEnabledEvent,
-                };
-                await eventService.publishEvent(event);
-                await eventService.stop();
-              } else {
-                await eventService.start();
-                const event: Event = {
-                  eventType: EventType.GmailUpdatesDisabledEvent,
-                  timestamp: Date.now(),
-                  payload: {
-                    orgId,
-                  } as GmailUpdatesDisabledEvent,
-                };
-                await eventService.publishEvent(event);
-                await eventService.stop();
-              }
-            }
-          } else {
-            if (realTimeUpdatesEnabled) {
-              await eventService.start();
-              const event: Event = {
-                eventType: EventType.GmailUpdatesEnabledEvent,
-                timestamp: Date.now(),
-                payload: {
-                  orgId,
-                  topicName: req.body.topicName,
-                } as GmailUpdatesEnabledEvent,
-              };
-              await eventService.publishEvent(event);
-              await eventService.stop();
-            }
-          }
-
-          if (fileChanged) {
-            // Only validate the file if it's changed
-            configData = req.body.fileContent;
-
-            const validationResult =
-              googleWorkspaceBusinessCredentialsSchema.safeParse(configData);
-
-            if (!validationResult.success) {
-              const formattedErrors = validationResult.error.errors
-                .map((err) => {
-                  const fieldName = err.path[0] || 'Unknown field';
-                  return `  • ${fieldName}: ${err.message}  `;
-                })
-                .join('');
-
-              const errorMessage = `Google Workspace validation failed:\n${formattedErrors}`;
-              throw new BadRequestError(errorMessage);
-            }
-          } else {
-            // Use existing file data but with updated settings
-            configData = {
-              type: existingConfig.type,
-              project_id: existingConfig.project_id,
-              private_key_id: existingConfig.private_key_id,
-              private_key: existingConfig.private_key,
-              client_email: existingConfig.client_email,
-              client_id: existingConfig.client_id,
-              auth_uri: existingConfig.auth_uri,
-              token_uri: existingConfig.token_uri,
-              auth_provider_x509_cert_url:
-                existingConfig.auth_provider_x509_cert_url,
-              client_x509_cert_url: existingConfig.client_x509_cert_url,
-              universe_domain: existingConfig.universe_domain,
-            };
-          }
-
-          // Combine file data with updated settings
-          const {
-            type,
-            project_id,
-            private_key_id,
-            private_key,
-            client_email,
-            client_id,
-            auth_uri,
-            token_uri,
-            auth_provider_x509_cert_url,
-            client_x509_cert_url,
-            universe_domain,
-          } = configData;
-
-          // Encrypt and store the updated config
-          encryptedGoogleWorkspaceConfig = EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).encrypt(
-            JSON.stringify({
-              type,
-              project_id,
-              private_key_id,
-              private_key,
-              client_email,
-              client_id,
-              auth_uri,
-              token_uri,
-              auth_provider_x509_cert_url,
-              client_x509_cert_url,
-              universe_domain,
-              adminEmail,
-              enableRealTimeUpdates: realTimeUpdatesEnabled,
-              topicName,
-            }),
-          );
-
-          await keyValueStoreService.set<string>(
-            `${configPaths.connectors.googleWorkspace.credentials.business}/${orgId}`,
-            encryptedGoogleWorkspaceConfig,
-          );
-          break;
-        }
-        default: {
-          throw new BadRequestError(
-            `Unsupported google workspace type: ${userType}`,
-          );
-        }
-      }
-      res.status(200).json({ message: 'Successfully updated' });
-    } catch (error: any) {
-      logger.error('Error creating google workspace credentials', { error });
-      next(error);
-    }
-  };
-
-export const getGoogleWorkspaceCredentials =
-  (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
-      if (!org) {
-        throw new BadRequestError('Organisaton not found');
-      }
-      const userType = org.accountType;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      let path;
-      let googleWorkspaceCredentials: any;
-      let encryptedGoogleWorkspaceCredentials;
-      switch (userType.toLowerCase()) {
-        case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
-          path = `${configPaths.connectors.googleWorkspace.credentials.individual}/${userId}`;
-          const oauthPath = `${configPaths.connectors.googleWorkspace.config}`;
-
-          encryptedGoogleWorkspaceCredentials =
-            await keyValueStoreService.get<string>(path);
-          const encryptedGoogleWorkspaceOauthConfig =
-            await keyValueStoreService.get<string>(oauthPath);
-
-          if (encryptedGoogleWorkspaceOauthConfig) {
-            const googleWorkspaceOauthConfig = JSON.parse(
-              EncryptionService.getInstance(
-                configManagerConfig.algorithm,
-                configManagerConfig.secretKey,
-              ).decrypt(encryptedGoogleWorkspaceOauthConfig),
-            );
-            if (encryptedGoogleWorkspaceCredentials) {
-              googleWorkspaceCredentials = JSON.parse(
-                EncryptionService.getInstance(
-                  configManagerConfig.algorithm,
-                  configManagerConfig.secretKey,
-                ).decrypt(encryptedGoogleWorkspaceCredentials),
-              );
-
-              const combinedResponse = {
-                ...googleWorkspaceCredentials,
-                ...googleWorkspaceOauthConfig,
-              };
-
-              res.status(200).json(combinedResponse).end();
-            } else {
-              res.status(200).json({}).end();
-            }
-          } else {
-            res.status(200).json({}).end();
-          }
-
-          break;
-
-        case googleWorkspaceTypes.BUSINESS.toLowerCase():
-          path = `${configPaths.connectors.googleWorkspace.credentials.business}/${orgId}`;
-          encryptedGoogleWorkspaceCredentials =
-            await keyValueStoreService.get<string>(path);
-          if (encryptedGoogleWorkspaceCredentials) {
-            googleWorkspaceCredentials = JSON.parse(
-              EncryptionService.getInstance(
-                configManagerConfig.algorithm,
-                configManagerConfig.secretKey,
-              ).decrypt(encryptedGoogleWorkspaceCredentials),
-            );
-            res.status(200).json(googleWorkspaceCredentials).end();
-          } else {
-            res.status(200).json({}).end();
-          }
-          break;
-
-        default:
-          throw new BadRequestError(
-            `Unsupported google workspace type: ${userType}`,
-          );
-      }
-    } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
-      next(error);
-    }
-  };
-
-export const getGoogleWorkspaceBusinessCredentials =
-  (keyValueStoreService: KeyValueStoreService, orgId: string) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      let path;
-      let googleWorkspaceConfig: any;
-      let encryptedGoogleWorkspaceConfig;
-
-      path = `${configPaths.connectors.googleWorkspace.credentials.business}/${orgId}`;
-      encryptedGoogleWorkspaceConfig =
-        await keyValueStoreService.get<string>(path);
-      if (encryptedGoogleWorkspaceConfig) {
-        googleWorkspaceConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedGoogleWorkspaceConfig),
-        );
-        res.status(200).json(googleWorkspaceConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
-      next(error);
-    }
-  };
-
-export const deleteGoogleWorkspaceCredentials =
-  (keyValueStoreService: KeyValueStoreService, orgId: string) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
-      if (!org) {
-        throw new BadRequestError('Organisaton not found');
-      }
-      const userType = org.accountType;
-      let path;
-      switch (userType.toLowerCase()) {
-        case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
-          throw new UnauthorizedError(
-            'Deleting credentials fro individual type not allowed',
-          );
-
-        case googleWorkspaceTypes.BUSINESS.toLowerCase():
-          path = `${configPaths.connectors.googleWorkspace.credentials.business}/${orgId}`;
-          await keyValueStoreService.delete(path);
-          res.status(200).json({}).end();
-          break;
-
-        default:
-          throw new BadRequestError(
-            `Unsupported google workspace type: ${userType}`,
-          );
-      }
-    } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
-      next(error);
-    }
-  };
-export const setGoogleWorkspaceOauthConfig =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    eventService: SyncEventProducer,
-    orgId: string,
-  ) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { clientId, clientSecret, enableRealTimeUpdates } = req.body;
-      let topicName = '';
-      const realTimeUpdatesEnabled =
-        enableRealTimeUpdates === undefined
-          ? false
-          : typeof enableRealTimeUpdates === 'string'
-            ? enableRealTimeUpdates.toLowerCase() === 'true'
-            : Boolean(enableRealTimeUpdates);
-
-      if (realTimeUpdatesEnabled) {
-        if (!req.body.topicName) {
-          throw new BadRequestError(
-            'Topic name is required when real-time updates are enabled',
-          );
-        }
-        topicName = req.body.topicName;
-      }
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const existingGoogleWorkSpaceConfig =
-        await keyValueStoreService.get<string>(
-          configPaths.connectors.googleWorkspace.config,
-        );
-      if (existingGoogleWorkSpaceConfig) {
-        const googleWorkSpaceConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(existingGoogleWorkSpaceConfig),
-        );
-        if (
-          googleWorkSpaceConfig.topicName != topicName ||
-          googleWorkSpaceConfig.enableRealTimeUpdates != realTimeUpdatesEnabled
-        ) {
-          if (realTimeUpdatesEnabled) {
-            await eventService.start();
-            const event: Event = {
-              eventType: EventType.GmailUpdatesEnabledEvent,
-              timestamp: Date.now(),
-              payload: {
-                orgId,
-                topicName: req.body.topicName,
-              } as GmailUpdatesEnabledEvent,
-            };
-            await eventService.publishEvent(event);
-            await eventService.stop();
-          } else {
-            await eventService.start();
-            const event: Event = {
-              eventType: EventType.GmailUpdatesDisabledEvent,
-              timestamp: Date.now(),
-              payload: {
-                orgId,
-              } as GmailUpdatesDisabledEvent,
-            };
-            await eventService.publishEvent(event);
-            await eventService.stop();
-          }
-        }
-      } else {
-        if (realTimeUpdatesEnabled) {
-          await eventService.start();
-          const event: Event = {
-            eventType: EventType.GmailUpdatesEnabledEvent,
-            timestamp: Date.now(),
-            payload: {
-              orgId,
-              topicName: req.body.topicName,
-            } as GmailUpdatesEnabledEvent,
-          };
-          await eventService.publishEvent(event);
-          await eventService.stop();
-        }
-      }
-
-      const encryptedGoogleWorkSpaceConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(
-        JSON.stringify({
-          clientId,
-          clientSecret,
-          enableRealTimeUpdates: realTimeUpdatesEnabled,
-          topicName,
-        }),
-      );
-      await keyValueStoreService.set<string>(
-        configPaths.connectors.googleWorkspace.config,
-        encryptedGoogleWorkSpaceConfig,
-      );
-
-      res
-        .status(200)
-        .json({ message: 'Google Workspace credentials created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating Google Workspace config', { error });
-      next(error);
-    }
-  };
-
-export const getGoogleWorkspaceOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedGoogleWorkSpaceConfig =
-        await keyValueStoreService.get<string>(
-          configPaths.connectors.googleWorkspace.config,
-        );
-      if (encryptedGoogleWorkSpaceConfig) {
-        const googleWorkSpaceConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedGoogleWorkSpaceConfig),
-        );
-        res.status(200).json(googleWorkSpaceConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting Google Workspace config', { error });
-      next(error);
-    }
-  };
-
-export const getAtlassianOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisaton not found');
-      }
-      const encryptedAtlassianConfig = await keyValueStoreService.get<string>(
-        `${configPaths.connectors.atlassian.config}/${orgId}`,
-      );
-      if (encryptedAtlassianConfig) {
-        const atlassianConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAtlassianConfig),
-        );
-        res.status(200).json(atlassianConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting Atlassian config', { error });
-      next(error);
-    }
-  };
-
-export const setAtlassianOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const oauthConfig = req.body;
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAtlassianConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(oauthConfig));
-      await keyValueStoreService.set<string>(
-        `${configPaths.connectors.atlassian.config}/${orgId}`,
-        encryptedAtlassianConfig,
-      );
-      res
-        .status(200)
-        .json({ message: 'Atlassian config created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating Atlassian config', { error });
-      next(error);
-    }
-  };
-
-export const getAtlassianCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      const encryptedAtlassianCredentials =
-        await keyValueStoreService.get<string>(
-          `${configPaths.connectors.atlassian.credentials}/${orgId}`,
-        );
-      if (encryptedAtlassianCredentials) {
-        const atlassianCredentials = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAtlassianCredentials),
-        );
-        res.status(200).json(atlassianCredentials).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting Atlassian credentials', { error });
-      next(error);
-    }
-  };
-
-export const setAtlassianCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const credentials = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      // Todo: Do a health check for the credentials
-      const encryptedAtlassianCredentials = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(credentials));
-      await keyValueStoreService.set<string>(
-        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
-        encryptedAtlassianCredentials,
-      );
-      res
-        .status(200)
-        .json({ message: 'Atlassian credentials created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating Atlassian credentials', { error });
-      next(error);
-    }
-  };
-
-export const getOneDriveCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      const encryptedOneDriveCredentials =
-        await keyValueStoreService.get<string>(
-          `${configPaths.connectors.onedrive.config}/${orgId}`,
-        );
-      if (encryptedOneDriveCredentials) {
-        const oneDriveCredentials = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedOneDriveCredentials),
-        );
-        res.status(200).json(oneDriveCredentials).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting OneDrive credentials', { error });
-      next(error);
-    }
-  };
-
-export const setOneDriveCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const credentials = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      // Todo: Do a health check for the credentials
-      const encryptedOneDriveCredentials = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(credentials));
-      await keyValueStoreService.set<string>(
-        `${configPaths.connectors.onedrive.config}/${orgId}`,
-        encryptedOneDriveCredentials,
-      );
-      res
-        .status(200)
-        .json({ message: 'OneDrive credentials created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating OneDrive credentials', { error });
-      next(error);
-    }
-  };
-
-export const getSharePointCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      const encryptedSharePointCredentials =
-        await keyValueStoreService.get<string>(
-          `${configPaths.connectors.sharepoint.config}/${orgId}`,
-        );
-      if (encryptedSharePointCredentials) {
-        const sharePointCredentials = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSharePointCredentials),
-        );
-        res.status(200).json(sharePointCredentials).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting SharePoint credentials', { error });
-      next(error);
-    }
-  };
-
-export const setSharePointCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const credentials = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = getOrgIdFromRequest(req);
-      if (!orgId) {
-        throw new BadRequestError('Organisation not found');
-      }
-      // Todo: Do a health check for the credentials
-      const encryptedSharePointCredentials = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(credentials));
-      await keyValueStoreService.set<string>(
-        `${configPaths.connectors.sharepoint.config}/${orgId}`,
-        encryptedSharePointCredentials,
-      );
-      res
-        .status(200)
-        .json({ message: 'SharePoint credentials created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating SharePoint credentials', { error });
-      next(error);
-    }
-  };
 
 export const setSsoAuthConfig =
   (
@@ -2000,45 +936,177 @@ export const setSsoAuthConfig =
         .replace(/-----END ERTIFICATE-----/g, '');
       // Step 3: Ensure the certificate content is clean
       certificate = certificate.trim();
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSsoConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true , samlPlatform }));
+
+      const encrypted = encryptConfig({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true , samlPlatform });
       await keyValueStoreService.set<string>(
         configPaths.auth.sso,
-        encryptedSsoConfig,
+        encrypted,
       );
       await samlController.updateSamlStrategiesWithCallback();
-      res.status(200).json({ message: 'Sso config created successfully' });
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Sso config created successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error creating Sso config', { error });
       next(error);
     }
   };
 
-export const getSsoAuthConfig =
+// =============================================================================
+// Legacy Database Configs (not exposed via cm_routes.ts)
+// =============================================================================
+
+export const createArangoDbConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { url, username, password } = req.body;
+      await keyValueStoreService.set<string>(
+        configPaths.db.arangodb,
+        encryptConfig({ url, username, password, db: ARANGO_DB_NAME }),
+      );
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Arango DB config created successfully' },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error creating ArangoDB config', { error });
+      next(error);
+    }
+  };
+
+export const getArangoDbConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSsoConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.sso,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.db.arangodb);
+      sendValidatedJson(
+        res,
+        arangoDbConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : { url: '', username: '', password: '', db: '' },
+        HTTP_STATUS.OK,
       );
-      if (encryptedSsoConfig) {
-        const ssoConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSsoConfig),
-        );
-        res.status(200).json(ssoConfig).end();
-        return;
-      } else {
-        res.status(200).json({}).end();
-      }
     } catch (error: any) {
-      logger.error('Error getting SsoConfig', { error });
+      logger.error('Error getting ArangoDB config', { error });
+      next(error);
+    }
+  };
+
+export const createMongoDbConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { uri } = req.body;
+      await keyValueStoreService.set<string>(
+        configPaths.db.mongodb,
+        encryptConfig({ uri, db: MONGO_DB_NAME }),
+      );
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Mongo DB config created successfully' },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error creating MongoDB config', { error });
+      next(error);
+    }
+  };
+
+export const getMongoDbConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const encrypted = await keyValueStoreService.get<string>(configPaths.db.mongodb);
+      sendValidatedJson(
+        res,
+        mongoDbConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : { uri: '', db: '' },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error getting MongoDB config', { error });
+      next(error);
+    }
+  };
+
+export const createRedisConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { host, port, password, tls } = req.body;
+      await keyValueStoreService.set<string>(
+        configPaths.keyValueStore.redis,
+        encryptConfig({ host, port, password, tls }),
+      );
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Redis config created successfully' },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error creating Redis config', { error });
+      next(error);
+    }
+  };
+
+export const getRedisConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const encrypted = await keyValueStoreService.get<string>(configPaths.keyValueStore.redis);
+      sendValidatedJson(
+        res,
+        redisConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : { host: '', port: 0, password: '', tls: false },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error getting Redis config', { error });
+      next(error);
+    }
+  };
+
+export const createKafkaConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { brokers, sasl } = req.body;
+      await keyValueStoreService.set<string>(
+        configPaths.broker.kafka,
+        encryptConfig({ brokers, sasl }),
+      );
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Kafka config created successfully', warningMessage: res.getHeader('warning') },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error creating Kafka config', { error });
+      next(error);
+    }
+  };
+
+export const getKafkaConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const encrypted = await keyValueStoreService.get<string>(configPaths.broker.kafka);
+      sendValidatedJson(
+        res,
+        kafkaConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : { brokers: [], sasl: {} },
+        HTTP_STATUS.OK,
+      );
+    } catch (error: any) {
+      logger.error('Error getting Kafka config', { error });
       next(error);
     }
   };
@@ -2048,22 +1116,18 @@ export const createQdrantConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { port, apiKey, host, grpcPort } = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedQdrantConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ port, apiKey, host, grpcPort }));
       await keyValueStoreService.set<string>(
         configPaths.db.qdrant,
-        encryptedQdrantConfig,
+        encryptConfig({ port, apiKey, host, grpcPort }),
       );
-      const warningMessage = res.getHeader('Warning');
-      res.status(200).json({
-        message: 'Qdrant config created successfully',
-        warningMessage,
-      });
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Qdrant config created successfully', warningMessage: res.getHeader('warning') },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
-      logger.error('Error creating Sso config', { error });
+      logger.error('Error creating Qdrant config', { error });
       next(error);
     }
   };
@@ -2072,28 +1136,20 @@ export const getQdrantConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedQdrantConfig = await keyValueStoreService.get<string>(
-        configPaths.db.qdrant,
+      const encrypted = await keyValueStoreService.get<string>(configPaths.db.qdrant);
+      sendValidatedJson(
+        res,
+        qdrantConfigResponseSchema,
+        encrypted ? decryptConfig(encrypted) : { port: 0, apiKey: '', host: '', grpcPort: 0 },
+        HTTP_STATUS.OK,
       );
-      if (encryptedQdrantConfig) {
-        const qdrantConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedQdrantConfig),
-        );
-        res.status(200).json(qdrantConfig).end();
-        return;
-      } else {
-        res.status(200).json({}).end();
-      }
     } catch (error: any) {
-      logger.error('Error getting SsoConfig', { error });
+      logger.error('Error getting Qdrant config', { error });
       next(error);
     }
   };
-export const getFrontendUrl =
+
+export const getFrontendPublicUrl =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -2101,13 +1157,19 @@ export const getFrontendUrl =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
       const parsedUrl = JSON.parse(url);
       if (parsedUrl?.frontend?.publicEndpoint) {
-        res
-          .status(200)
-          .json({ url: parsedUrl?.frontend?.publicEndpoint })
-          .end();
-        return;
+        sendValidatedJson(
+          res,
+          frontendPublicUrlResponseSchema,
+          { url: parsedUrl?.frontend?.publicEndpoint },
+          HTTP_STATUS.OK,
+        );
       } else {
-        res.status(200).json({}).end();
+        sendValidatedJson(
+          res,
+          frontendPublicUrlResponseSchema,
+          {},
+          HTTP_STATUS.OK,
+        );
       }
     } catch (error: any) {
       logger.error('Error getting Frontend Public Url', { error });
@@ -2115,140 +1177,10 @@ export const getFrontendUrl =
     }
   };
 
-export const setFrontendUrl =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    scopedJwtSecret: string,
-    configService: ConfigService,
-  ) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      if (!req.user) {
-        throw new NotFoundError('User not found');
-      }
-      const { url } = req.body;
-      const normalizedUrl = normalizeUrl(url);
-      if (!normalizedUrl) {
-        throw new BadRequestError('Invalid URL');
-      }
-      try {
-        new URL(normalizedUrl);
-      } catch (e) {
-        throw new BadRequestError(
-          'Invalid URL format. A protocol (e.g., http://) is required.',
-        );
-      }
-      const urls =
-        (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      let parsedUrls = JSON.parse(urls);
-      // Preserve existing `auth` object if it exists, otherwise create a new one
-      parsedUrls.frontend = {
-        ...parsedUrls.frontend,
-        publicEndpoint: normalizedUrl,
-      };
-      // Save the updated object back to configPaths.endpoint
-      await keyValueStoreService.set<string>(
-        configPaths.endpoint,
-        JSON.stringify(parsedUrls),
-      );
 
-      const scopedToken = await generateFetchConfigAuthToken(
-        req.user,
-        scopedJwtSecret,
-      );
-      const response = await configService.updateConfig(scopedToken);
-      if (response.statusCode != 200) {
-        throw new BadRequestError('Error updating configs');
-      }
-      res.status(200).json({
-        message: 'Frontend Url saved successfully',
-      });
-    } catch (error: any) {
-      logger.error('Error setting frontend url', { error });
-      next(error);
-    }
-  };
-
-export const getConnectorPublicUrl =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const url =
-        (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrl = JSON.parse(url);
-      if (parsedUrl?.connectors?.publicEndpoint) {
-        res
-          .status(200)
-          .json({ url: parsedUrl?.connectors?.publicEndpoint })
-          .end();
-        return;
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting Connector Public Url', { error });
-      next(error);
-    }
-  };
-
-export const setConnectorPublicUrl =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    eventService: SyncEventProducer,
-  ) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      if (!req.user) {
-        throw new NotFoundError('User not found');
-      }
-      const { url } = req.body;
-      const normalizedUrl = normalizeUrl(url);
-      if (!normalizedUrl) {
-        throw new BadRequestError('Invalid URL');
-      }
-      try {
-        new URL(normalizedUrl);
-      } catch (e) {
-        throw new BadRequestError(
-          'Invalid URL format. A protocol (e.g., http://) is required.',
-        );
-      }
-      const urls =
-        (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-
-      let parsedUrls = JSON.parse(urls);
-
-      // Preserve existing `auth` object if it exists, otherwise create a new one
-      parsedUrls.connectors = {
-        ...parsedUrls.connectors,
-        publicEndpoint: normalizedUrl,
-      };
-
-      // Save the updated object back to configPaths.endpoint
-      await keyValueStoreService.set<string>(
-        configPaths.endpoint,
-        JSON.stringify(parsedUrls),
-      );
-
-      await eventService.start();
-      let event: Event = {
-        eventType: EventType.ConnectorPublicUrlChangedEvent,
-        timestamp: Date.now(),
-        payload: {
-          url,
-          orgId: req.user.orgId,
-        } as ConnectorPublicUrlChangedEvent,
-      };
-      await eventService.publishEvent(event);
-
-      res.status(200).json({
-        message: 'Connector Url saved successfully',
-      });
-    } catch (error: any) {
-      logger.error('Error setting Connector url', { error });
-      next(error);
-    }
-  };
+// =============================================================================
+// Metrics Collection
+// =============================================================================
 
 export const toggleMetricsCollection =
   (keyValueStoreService: KeyValueStoreService) =>
@@ -2256,9 +1188,7 @@ export const toggleMetricsCollection =
     try {
       const { enableMetricCollection } = req.body;
       const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+        (await keyValueStoreService.get<string>(configPaths.metricsCollection)) || '{}',
       );
 
       if (enableMetricCollection !== metricsCollection.enableMetricCollection) {
@@ -2268,9 +1198,13 @@ export const toggleMetricsCollection =
           JSON.stringify(metricsCollection),
         );
       }
-      res
-        .status(200)
-        .json({ message: 'Metrics collection toggled successfully' });
+
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Metrics collection toggled successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error toggling metrics collection', { error });
       next(error);
@@ -2282,11 +1216,9 @@ export const getMetricsCollection =
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+        (await keyValueStoreService.get<string>(configPaths.metricsCollection)) || '{}',
       );
-      res.status(200).json(metricsCollection).end();
+      sendValidatedJson(res, metricsCollectionResponseSchema, metricsCollection, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error getting metrics collection', { error });
       next(error);
@@ -2298,11 +1230,8 @@ export const setMetricsCollectionPushInterval =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { pushIntervalMs } = req.body;
-
       const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+        (await keyValueStoreService.get<string>(configPaths.metricsCollection)) || '{}',
       );
 
       if (pushIntervalMs !== metricsCollection.pushIntervalMs) {
@@ -2312,9 +1241,13 @@ export const setMetricsCollectionPushInterval =
           JSON.stringify(metricsCollection),
         );
       }
-      res
-        .status(200)
-        .json({ message: 'Metrics collection push interval set successfully' });
+
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Metrics collection push interval set successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error setting metrics collection push interval', { error });
       next(error);
@@ -2327,10 +1260,9 @@ export const setMetricsCollectionRemoteServer =
     try {
       const { serverUrl } = req.body;
       const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+        (await keyValueStoreService.get<string>(configPaths.metricsCollection)) || '{}',
       );
+
       if (serverUrl !== metricsCollection.serverUrl) {
         metricsCollection.serverUrl = serverUrl;
         await keyValueStoreService.set<string>(
@@ -2338,29 +1270,26 @@ export const setMetricsCollectionRemoteServer =
           JSON.stringify(metricsCollection),
         );
       }
-      res
-        .status(200)
-        .json({ message: 'Metrics collection remote server set successfully' });
+
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'Metrics collection remote server set successfully' },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error setting metrics collection remote server', { error });
       next(error);
     }
   };
 
-async function sendEvent(eventService: EntitiesEventProducer, event: Event) {
-  try {
-    await eventService.start();
-    await eventService.publishEvent(event);
-    await eventService.stop();
-  } catch (error) {
-    logger.error('Error sending event', { error });
-  }
-}
+// =============================================================================
+// AI Models - Legacy
+// =============================================================================
 
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2370,7 +1299,6 @@ export const createAIModelsConfig =
         throw new BadRequestError('Invalid configuration passed');
       }
 
-      // Handle LLM health check
       if (aiConfig.llm.length > 0) {
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/llm-health-check`,
@@ -2381,10 +1309,8 @@ export const createAIModelsConfig =
 
         logger.debug('Health Check for AI llm Config API calling');
 
-        // Don't use nested try/catch with next() inside
         const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse;
+        const aiResponseData = (await aiServiceCommand.execute()) as AIServiceResponse;
 
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
           throw new InternalServerError(
@@ -2394,7 +1320,6 @@ export const createAIModelsConfig =
         }
       }
 
-      // Handle embedding health check
       if (aiConfig.embedding.length > 0) {
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/embedding-health-check`,
@@ -2405,10 +1330,8 @@ export const createAIModelsConfig =
 
         logger.debug('Health Check for AI embedding Config API calling');
 
-        // Don't use nested try/catch with next() inside
         const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse;
+        const aiResponseData = (await aiServiceCommand.execute()) as AIServiceResponse;
 
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
           throw new InternalServerError(
@@ -2420,8 +1343,7 @@ export const createAIModelsConfig =
 
       if (aiConfig.llm.length > 0) {
         aiConfig.llm.forEach((llm: any, index: number) => {
-          const modelKey = uuidv4();
-          llm.modelKey = modelKey;
+          llm.modelKey = uuidv4();
           llm.isMultimodal = false;
           llm.isReasoning = false;
           llm.isDefault = index === 0;
@@ -2430,37 +1352,20 @@ export const createAIModelsConfig =
 
       if (aiConfig.embedding.length > 0) {
         aiConfig.embedding.forEach((embedding: any, index: number) => {
-          const modelKey = uuidv4();
-          embedding.modelKey = modelKey;
+          embedding.modelKey = uuidv4();
           embedding.isMultimodal = false;
           embedding.isDefault = index === 0;
         });
       }
 
-      // Encrypt and store configuration
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiConfig));
+      await saveAIModels(keyValueStoreService, aiConfig);
 
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedAIConfig,
+      sendValidatedJson(
+        res,
+        cmMessageResponseSchema,
+        { message: 'AI config created successfully' },
+        HTTP_STATUS.OK,
       );
-
-      // Send event to notify other services about the new AI config
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
-
-      await sendEvent(eventService, event);
-
-      res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
       logger.error('Error creating ai models config', { error });
       next(error);
@@ -2471,83 +1376,42 @@ export const getAIModelsConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-      if (encryptedAIConfig) {
-        const decryptedAIConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAIConfig),
-        );
-        res.status(200).json(decryptedAIConfig).end();
-        return;
-      } else {
-        res.status(200).json({}).end();
-        return;
-      }
+      const aiModels = await loadAIModels(keyValueStoreService);
+      sendValidatedJson(res, aiModelsConfigResponseSchema, aiModels ?? {}, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error getting ai models config', { error });
       next(error);
     }
   };
 
-// AI Models Provider Management Functions (Direct Node.js Implementation)
+// =============================================================================
+// AI Models - Provider Management
+// =============================================================================
+
 export const getAIModelsProviders =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await loadAIModels(keyValueStoreService);
 
-      if (!encryptedAIConfig) {
-        res.status(200).json({
-          status: 'success',
-          models: {
-            ocr: [],
-            embedding: [],
-            slm: [],
-            llm: [],
-            reasoning: [],
-            multiModal: [],
-          },
-          message: 'No AI models found',
-        });
+      if (!aiModels) {
+        sendValidatedJson(
+          res,
+          aiModelsProvidersResponseSchema,
+          { status: 'success', models: createEmptyAIModelsState(), message: 'No AI models found' },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
+      ensureAIModelsShape(aiModels);
+
+      sendValidatedJson(
+        res,
+        aiModelsProvidersResponseSchema,
+        { status: 'success', models: aiModels, message: 'AI models retrieved successfully' },
+        HTTP_STATUS.OK,
       );
-
-      // Ensure all top-level keys exist
-      const defaultStructure = {
-        ocr: [],
-        embedding: [],
-        slm: [],
-        llm: [],
-        reasoning: [],
-        multiModal: [],
-      };
-
-      for (const key of Object.keys(defaultStructure)) {
-        if (!aiModels[key]) {
-          aiModels[key] = [];
-        }
-      }
-
-      res.status(200).json({
-        status: 'success',
-        models: aiModels,
-        message: 'AI models retrieved successfully',
-      });
     } catch (error: any) {
       logger.error('Error getting AI models providers', { error });
       next(error);
@@ -2558,64 +1422,27 @@ export const getModelsByType =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
+      // modelType is already validated by the Zod middleware (modelTypeSchema)
       const { modelType } = req.params;
-      if (!modelType) {
-        res.status(400).json({
-          status: 'error',
-          message: 'modelType is required',
-        });
+      const aiModels = await loadAIModels(keyValueStoreService);
+
+      if (!aiModels || !Array.isArray(aiModels[modelType as AIModelTypeValue])) {
+        sendValidatedJson(
+          res,
+          aiModelsByTypeResponseSchema,
+          { status: 'success', models: [], message: `No ${modelType} models found` },
+          HTTP_STATUS.OK,
+        );
         return;
       }
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-      ];
-      if (!validTypes.includes(modelType)) {
-        res.status(400).json({
-          status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
-        });
-        return;
-      }
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
+
+      const configs = aiModels[modelType as AIModelTypeValue];
+      sendValidatedJson(
+        res,
+        aiModelsByTypeResponseSchema,
+        { status: 'success', models: configs, message: `Found ${configs.length} ${modelType} models` },
+        HTTP_STATUS.OK,
       );
-
-      if (!encryptedAIConfig) {
-        res.status(200).json({
-          status: 'success',
-          models: [],
-          message: `No ${modelType} models found`,
-        });
-        return;
-      }
-
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      if (!aiModels[modelType]) {
-        res.status(200).json({
-          status: 'success',
-          models: [],
-          message: `No ${modelType} models found`,
-        });
-        return;
-      }
-      const configs = aiModels[modelType];
-      res.status(200).json({
-        status: 'success',
-        models: configs,
-        message: `Found ${configs.length} ${modelType} models`,
-      });
     } catch (error: any) {
       logger.error('Error getting models by type', { error });
       next(error);
@@ -2626,87 +1453,36 @@ export const getAvailableModelsByType =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
+      // modelType is already validated by the Zod middleware (modelTypeSchema)
       const { modelType } = req.params;
-      if (!modelType) {
-        res.status(400).json({
-          status: 'error',
-          message: 'modelType is required',
-        });
-        return;
-      }
-      // Validate model type
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-      ];
-      if (!validTypes.includes(modelType)) {
-        res.status(400).json({
-          status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
-        });
+      const aiModels = await loadAIModels(keyValueStoreService);
+
+      if (!aiModels || !Array.isArray(aiModels[modelType as AIModelTypeValue])) {
+        sendValidatedJson(
+          res,
+          aiModelsAvailableByTypeResponseSchema,
+          { status: 'success', models: [], message: `No ${modelType} models found` },
+          HTTP_STATUS.OK,
+        );
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-
-      if (!encryptedAIConfig) {
-        res.status(200).json({
-          status: 'success',
-          models: [],
-          message: `No ${modelType} models found`,
-        });
-        return;
-      }
-      logger.debug('encryptedAIConfig', encryptedAIConfig);
-
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      if (!aiModels[modelType]) {
-        res.status(200).json({
-          status: 'success',
-          models: [],
-          message: `No ${modelType} models found`,
-        });
-        return;
-      }
-
-      const configs = aiModels[modelType];
       const flattenedModels = [];
 
-      for (const config of configs) {
-        // Extract individual model names from comma-separated string
-        let modelNames = [];
-        if (config.configuration?.model) {
-          const modelString = config.configuration.model;
-          modelNames = modelString
-            .split(',')
-            .map((name: string) => name.trim())
-            .filter(Boolean);
-        }
+      for (const config of aiModels[modelType as AIModelTypeValue]) {
+        const modelNames: string[] = config.configuration?.model
+          ? config.configuration.model
+              .split(',')
+              .map((n: string) => n.trim())
+              .filter(Boolean)
+          : [];
 
-        // Create a flattened entry for each individual model
-        let markDefault = false;
-        if (config.isDefault) {
-          markDefault = true;
-        }
-
-        // Only include modelFriendlyName if there's a single model (not comma-separated)
+        // Only include modelFriendlyName when there is exactly one model name
         const shouldIncludeFriendlyName = modelNames.length === 1 && config.modelFriendlyName;
+        let markDefault = config.isDefault;
 
         for (const modelName of modelNames) {
-          const flattenedModel = {
+          flattenedModels.push({
             modelType,
             provider: config.provider,
             modelName,
@@ -2715,18 +1491,21 @@ export const getAvailableModelsByType =
             isReasoning: config.isReasoning || false,
             isDefault: markDefault,
             ...(shouldIncludeFriendlyName && { modelFriendlyName: config.modelFriendlyName }),
-          };
-          markDefault = false; // Only mark first model as default
-          flattenedModels.push(flattenedModel);
+          });
+          markDefault = false; // Only the first model in the entry is marked default
         }
       }
 
-      res.status(200).json({
-        status: 'success',
-        models: flattenedModels,
-        message: `Found ${flattenedModels.length} ${modelType} models`,
-      });
-      return;
+      sendValidatedJson(
+        res,
+        aiModelsAvailableByTypeResponseSchema,
+        {
+          status: 'success',
+          models: flattenedModels,
+          message: `Found ${flattenedModels.length} ${modelType} models`,
+        },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error getting available models by type', { error });
       next(error);
@@ -2736,7 +1515,6 @@ export const getAvailableModelsByType =
 export const addAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2751,117 +1529,44 @@ export const addAIModelProvider =
         contextLength,
       } = req.body;
 
-      // Validate required fields
-      if (!modelType || !provider || !configuration) {
-        res.status(400).json({
-          status: 'error',
-          message: 'modelType, provider, and configuration are required',
-        });
-        return;
-      }
-
-      // Validate model type
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-      ];
-      if (!validTypes.includes(modelType)) {
-        res.status(400).json({
-          status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
-        });
-        return;
-      }
-
-      const healthCheckPayload = {
-        provider,
-        configuration,
-        modelType,
-        isMultimodal,
-        isDefault,
-        isReasoning,
-        contextLength,
-      };
+      // modelType, provider, and configuration are guaranteed valid by Zod middleware
+      const modelTypeKey = modelType as AIModelTypeValue;
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: healthCheckPayload,
+        body: { provider, configuration, modelType, isMultimodal, isDefault, isReasoning, contextLength },
       };
 
-      logger.debug('Health Check for AI embedding Config API calling');
+      logger.debug('Health Check for AI model Config API calling');
 
-      // Don't use nested try/catch with next() inside
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponseData =
-        (await aiServiceCommand.execute()) as AIServiceResponse;
+      const aiResponseData = (await aiServiceCommand.execute()) as AIServiceResponse;
 
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-        const errData: any = aiResponseData?.data ?? {};
-        const reasonMessage =
-          (errData && (errData.message ?? errData.error?.message)) ??
-          `Failed to do health check of ${modelType} configuration, check credentials again`;
-
-        res.status(aiResponseData?.statusCode ?? 500).json({
-          error: {
-            status: 'error',
-            message: reasonMessage,
-            details: errData,
-          },
-        });
+        replyAIHealthCheckFailure(res, aiResponseData, modelType);
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-
-      let aiModels: any = {};
-      if (encryptedAIConfig) {
-        aiModels = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAIConfig),
-        );
-      }
-
-      // Ensure all top-level keys exist
-      const defaultStructure = {
-        ocr: [],
-        embedding: [],
-        slm: [],
-        llm: [],
-        reasoning: [],
-        multiModal: [],
-      };
-      for (const key of Object.keys(defaultStructure)) {
-        if (!(key in aiModels)) {
-          aiModels[key] = [];
-        }
-      }
+      const aiModels = (await loadAIModels(keyValueStoreService)) ?? {};
+      ensureAIModelsShape(aiModels);
 
       // Generate unique model key with collision check
       let modelKey: string;
-      let existingKeys: string[];
       do {
         modelKey = uuidv4();
-        existingKeys = aiModels[modelType].map(
-          (config: any) => config.modelKey,
-        );
-      } while (existingKeys.includes(modelKey));
+      } while (aiModels[modelTypeKey].some((c: any) => c.modelKey === modelKey));
 
-      // Extract modelFriendlyName from configuration if present
       const modelFriendlyName = configuration.modelFriendlyName;
 
-      // Prepare the new configuration
-      const newConfig = {
+      if (isDefault) {
+        for (const config of aiModels[modelTypeKey]) {
+          config.isDefault = false;
+        }
+      }
+
+      aiModels[modelTypeKey].push({
         provider,
         configuration,
         modelKey,
@@ -2870,61 +1575,36 @@ export const addAIModelProvider =
         isReasoning,
         contextLength,
         ...(modelFriendlyName && { modelFriendlyName }),
-      };
-
-      // If this is set as default, remove default flag from other models
-      if (isDefault) {
-        for (const config of aiModels[modelType]) {
-          config.isDefault = false;
-        }
-      }
-
-      // Add the new configuration
-      aiModels[modelType].push(newConfig);
-
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
-
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
-      await sendEvent(eventService, event);
-
-      res.status(200).json({
-        status: 'success',
-        message: `${modelType.toUpperCase()} provider added successfully`,
-        details: {
-          modelKey,
-          modelType,
-          provider,
-          model: configuration.model,
-          isDefault,
-          contextLength,
-        },
       });
+
+      await saveAIModels(keyValueStoreService, aiModels);
+
+      sendValidatedJson(
+        res,
+        aiModelMutationResponseSchema,
+        {
+          status: 'success',
+          message: `${modelTypeKey.toUpperCase()} provider added successfully`,
+          details: {
+            modelKey,
+            modelType: modelTypeKey,
+            provider,
+            model: configuration.model,
+            isDefault,
+            contextLength,
+          },
+        },
+        HTTP_STATUS.CREATED,
+      );
     } catch (error: any) {
       logger.error('Error adding AI model provider', { error });
-      const handleError = handleBackendError(error, 'add AI model provider');
-      next(handleError);
+      next(handleBackendError(error, 'add AI model provider'));
     }
   };
 
 export const updateAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2940,25 +1620,10 @@ export const updateAIModelProvider =
       } = req.body;
 
       logger.debug('updateAIModelProvider', {
-        modelType,
-        modelKey,
-        provider,
-        configuration,
-        isMultimodal,
-        isReasoning,
-        isDefault,
-        contextLength,
+        modelType, modelKey, provider, configuration, isMultimodal, isReasoning, isDefault, contextLength,
       });
 
-      // Validate required fields
-      if (!provider || !configuration) {
-        res.status(400).json({
-          status: 'error',
-          message: 'provider and configuration are required',
-        });
-        return;
-      }
-
+      // provider and configuration are guaranteed valid by Zod middleware
       const healthCheckPayload = {
         provider,
         configuration,
@@ -2976,58 +1641,29 @@ export const updateAIModelProvider =
         body: healthCheckPayload,
       };
 
-      logger.debug('Health Check for AI embedding Config API calling');
+      logger.debug('Health Check for AI model Config API calling');
 
-      // Don't use nested try/catch with next() inside
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponseData =
-        (await aiServiceCommand.execute()) as AIServiceResponse;
+      const aiResponseData = (await aiServiceCommand.execute()) as AIServiceResponse;
 
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-        const errData: any = aiResponseData?.data ?? {};
-        const reasonMessage =
-          (errData && (errData.message ?? errData.error?.message)) ??
-          `Failed to do health check of ${modelType} configuration, check credentials again`;
-
-        res.status(aiResponseData?.statusCode ?? 500).json({
-          error: {
-            status: 'error',
-            message: reasonMessage,
-            details: errData,
-          },
-        });
+        replyAIHealthCheckFailure(res, aiResponseData, modelType as string);
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-
-      if (!encryptedAIConfig) {
-        res.status(404).json({
-          status: 'error',
-          message: 'No AI models configuration found',
-        });
-        return;
+      const aiModels = await loadAIModels(keyValueStoreService);
+      if (!aiModels) {
+        throw new NotFoundError('No AI models configuration found');
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
+      let targetModel: any = null;
+      let targetModelType: string | null = null;
 
-      // Find the model with the specified key across all model types
-      let targetModel = null;
-      let targetModelType = null;
-
-      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
-        for (const config of modelConfigs as any[]) {
+      for (const [mType, mConfigs] of Object.entries(aiModels)) {
+        for (const config of mConfigs as any[]) {
           if (config.modelKey === modelKey) {
             targetModel = config;
-            targetModelType = modelTypeKey;
+            targetModelType = mType;
             break;
           }
         }
@@ -3035,26 +1671,19 @@ export const updateAIModelProvider =
       }
 
       if (!targetModel || !targetModelType) {
-        res.status(404).json({
-          status: 'error',
-          message: `Model with key '${modelKey}' not found or model type not found`,
-        });
-        return;
+        throw new NotFoundError(
+          `Model with key '${modelKey}' not found or model type not found`,
+        );
       }
 
-      // Verify the model type matches if provided
       if (modelType && targetModelType !== modelType) {
-        res.status(400).json({
-          status: 'error',
-          message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
-        });
-        return;
+        throw new BadRequestError(
+          `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        );
       }
 
-      // Extract modelFriendlyName from configuration if present
       const modelFriendlyName = configuration.modelFriendlyName;
 
-      // Update the model configuration
       targetModel.configuration = configuration;
       targetModel.isMultimodal = isMultimodal;
       targetModel.isDefault = isDefault;
@@ -3063,93 +1692,61 @@ export const updateAIModelProvider =
       if (modelFriendlyName !== undefined) {
         targetModel.modelFriendlyName = modelFriendlyName;
       }
-      // If this is set as default, remove default flag from other models of the same type
+
       if (isDefault) {
-        for (const config of aiModels[targetModelType]) {
-          if (config.modelKey !== modelKey) {
-            config.isDefault = false;
-          }
+        for (const config of aiModels[targetModelType as AIModelTypeValue]) {
+          if (config.modelKey !== modelKey) config.isDefault = false;
         }
       }
 
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
+      await saveAIModels(keyValueStoreService, aiModels);
 
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
-
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
-      await sendEvent(eventService, event);
-      res.status(200).json({
-        status: 'success',
-        message: `${targetModelType.toUpperCase()} provider updated successfully`,
-        details: {
-          modelKey,
-          modelType: targetModelType,
-          provider: targetModel.provider,
-          model: targetModel.configuration?.model,
-          contextLength: targetModel.contextLength,
-          isMultimodal: targetModel.isMultimodal,
-          isReasoning: targetModel.isReasoning,
+      sendValidatedJson(
+        res,
+        aiModelMutationResponseSchema,
+        {
+          status: 'success',
+          message: `${targetModelType.toUpperCase()} provider updated successfully`,
+          details: {
+            modelKey,
+            modelType: targetModelType,
+            provider: targetModel.provider,
+            model: targetModel.configuration?.model,
+            contextLength: targetModel.contextLength,
+            isMultimodal: targetModel.isMultimodal,
+            isReasoning: targetModel.isReasoning,
+            isDefault: targetModel.isDefault,
+          },
         },
-      });
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error updating AI model provider', { error });
-      const handleError = handleBackendError(error, 'update AI model provider');
-      next(handleError);
+      next(handleBackendError(error, 'update AI model provider'));
     }
   };
 
 export const deleteAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
-    appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-
-      if (!encryptedAIConfig) {
-        res.status(404).json({
-          status: 'error',
-          message: 'No AI models configuration found',
-        });
-        return;
+      const aiModels = await loadAIModels(keyValueStoreService);
+      if (!aiModels) {
+        throw new NotFoundError('No AI models configuration found');
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      // Find the model with the specified key across all model types
-      let deletedModel = null;
-      let targetModelType = null;
+      let deletedModel: any = null;
+      let targetModelType: string | null = null;
       let modelIndex = -1;
 
-      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
-        if (!Array.isArray(modelConfigs)) continue;
-        for (let i = 0; i < modelConfigs.length; i++) {
-          const config = modelConfigs[i];
+      for (const [mType, mConfigs] of Object.entries(aiModels)) {
+        if (!Array.isArray(mConfigs)) continue;
+        for (let i = 0; i < mConfigs.length; i++) {
+          const config = mConfigs[i];
           if (
             config &&
             typeof config === 'object' &&
@@ -3157,7 +1754,7 @@ export const deleteAIModelProvider =
             config.modelKey === modelKey
           ) {
             deletedModel = config;
-            targetModelType = modelTypeKey;
+            targetModelType = mType;
             modelIndex = i;
             break;
           }
@@ -3166,64 +1763,41 @@ export const deleteAIModelProvider =
       }
 
       if (!deletedModel || !targetModelType) {
-        res.status(404).json({
-          status: 'error',
-          message: `Model with key '${modelKey}' not found`,
-        });
-        return;
+        throw new NotFoundError(`Model with key '${modelKey}' not found`);
       }
 
-      // Verify the model type matches if provided
       if (modelType && targetModelType !== modelType) {
-        res.status(400).json({
-          status: 'error',
-          message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
-        });
-        return;
+        throw new BadRequestError(
+          `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        );
       }
 
       const wasDefault = deletedModel.isDefault || false;
+      aiModels[targetModelType as AIModelTypeValue].splice(modelIndex, 1);
 
-      // Remove the model from the configuration
-      aiModels[targetModelType].splice(modelIndex, 1);
-
-      // If the deleted model was default, set the first remaining model as default
-      if (wasDefault && aiModels[targetModelType].length > 0) {
+      if (wasDefault && aiModels[targetModelType as AIModelTypeValue].length > 0) {
         aiModels[targetModelType][0].isDefault = true;
       }
 
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
+      await saveAIModels(keyValueStoreService, aiModels);
 
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
-
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
-      await sendEvent(eventService, event);
-
-      res.status(200).json({
-        status: 'success',
-        message: `${targetModelType.toUpperCase()} provider deleted successfully`,
-        details: {
-          modelKey,
-          modelType: targetModelType,
-          provider: deletedModel.provider,
-          model: deletedModel.configuration?.model,
-          wasDefault,
-          contextLength: deletedModel.contextLength,
+      sendValidatedJson(
+        res,
+        aiModelMutationResponseSchema,
+        {
+          status: 'success',
+          message: `${targetModelType.toUpperCase()} provider deleted successfully`,
+          details: {
+            modelKey,
+            modelType: targetModelType,
+            provider: deletedModel.provider,
+            model: deletedModel.configuration?.model,
+            wasDefault,
+            contextLength: deletedModel.contextLength,
+          },
         },
-      });
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error deleting AI model provider', { error });
       next(error);
@@ -3233,42 +1807,24 @@ export const deleteAIModelProvider =
 export const updateDefaultAIModel =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
-    appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-
-      if (!encryptedAIConfig) {
-        res.status(404).json({
-          status: 'error',
-          message: 'No AI models configuration found',
-        });
-        return;
+      const aiModels = await loadAIModels(keyValueStoreService);
+      if (!aiModels) {
+        throw new NotFoundError('No AI models configuration found');
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
+      let targetModel: any = null;
+      let targetModelType: string | null = null;
 
-      // Find the model with the specified key across all model types
-      let targetModel = null;
-      let targetModelType = null;
-
-      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
-        for (const config of modelConfigs as any[]) {
+      for (const [mType, mConfigs] of Object.entries(aiModels)) {
+        for (const config of mConfigs as any[]) {
           if (config.modelKey === modelKey) {
             targetModel = config;
-            targetModelType = modelTypeKey;
+            targetModelType = mType;
             break;
           }
         }
@@ -3276,105 +1832,49 @@ export const updateDefaultAIModel =
       }
 
       if (!targetModel || !targetModelType) {
-        res.status(404).json({
-          status: 'error',
-          message: `Model with key '${modelKey}' not found`,
-        });
-        return;
+        throw new NotFoundError(`Model with key '${modelKey}' not found`);
       }
 
-      // Verify the model type matches if provided
       if (modelType && targetModelType !== modelType) {
-        res.status(400).json({
-          status: 'error',
-          message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
-        });
-        return;
+        throw new BadRequestError(
+          `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        );
       }
 
-      // Remove default flag from all models in this type
       for (const config of aiModels[targetModelType]) {
         config.isDefault = false;
       }
-
-      // Set the target model as default
       targetModel.isDefault = true;
 
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
+      await saveAIModels(keyValueStoreService, aiModels);
 
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
-
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
-      await sendEvent(eventService, event);
-
-      res.status(200).json({
-        status: 'success',
-        message: `Default ${targetModelType} model updated successfully`,
-        details: {
-          modelKey,
-          modelType: targetModelType,
-          provider: targetModel.provider,
-          model: targetModel.configuration?.model,
-          contextLength: targetModel.contextLength,
+      sendValidatedJson(
+        res,
+        aiModelMutationResponseSchema,
+        {
+          status: 'success',
+          message: `Default ${targetModelType} model updated successfully`,
+          details: {
+            modelKey,
+            modelType: targetModelType,
+            provider: targetModel.provider,
+            model: targetModel.configuration?.model,
+            contextLength: targetModel.contextLength,
+          },
         },
-      });
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error updating default AI model', { error });
       next(error);
     }
   };
 
-// Generic, parameterized connector config getter
-export const getConnectorConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (
-    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
-    try {
-      const { connector } = req.params as { connector: string };
-      if (!connector || typeof connector !== 'string') {
-        throw new BadRequestError('connector path parameter is required');
-      }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const key = `/services/connectors/${connector}/config`;
-      const encryptedConfig = await keyValueStoreService.get<string>(key);
+// =============================================================================
+// Custom System Prompt
+// =============================================================================
 
-      if (!encryptedConfig) {
-        res.status(200).json({}).end();
-        return;
-      }
-
-      const config = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedConfig),
-      );
-
-      res.status(200).json(config).end();
-    } catch (error: any) {
-      logger.error('Error getting connector config by name', { error });
-      next(error);
-    }
-  };
-
-// Custom System Prompt Management
 export const getCustomSystemPrompt =
   (keyValueStoreService: KeyValueStoreService) =>
   async (
@@ -3383,25 +1883,13 @@ export const getCustomSystemPrompt =
     next: NextFunction,
   ) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
+      const aiModels = (await loadAIModels(keyValueStoreService)) as AIModelsConfig | null;
+      sendValidatedJson(
+        res,
+        customSystemPromptResponseSchema,
+        { customSystemPrompt: aiModels?.customSystemPrompt ?? '' },
+        HTTP_STATUS.OK,
       );
-
-      if (!encryptedAIConfig) {
-        res.status(200).json({ customSystemPrompt: '' }).end();
-        return;
-      }
-
-      const aiModels: AIModelsConfig = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      const customSystemPrompt = aiModels.customSystemPrompt || '';
-      res.status(200).json({ customSystemPrompt }).end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
       next(error);
@@ -3418,65 +1906,49 @@ export const setCustomSystemPrompt =
         throw new BadRequestError('customSystemPrompt must be a string');
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      
       // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
       const MAX_RETRIES = 5;
       let success = false;
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        const encryptedAIConfig = await keyValueStoreService.get<string>(
-          configPaths.aiModels,
-        );
+        const encryptedAIConfig = await keyValueStoreService.get<string>(configPaths.aiModels);
 
-        let aiModels: AIModelsConfig = {};
-        if (encryptedAIConfig) {
-          aiModels = JSON.parse(
-            EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).decrypt(encryptedAIConfig),
-          );
-        }
+        const aiModels: AIModelsConfig = encryptedAIConfig
+          ? decryptConfig<AIModelsConfig>(encryptedAIConfig)
+          : {};
 
-        // Update only the customSystemPrompt field, keeping everything else intact
         aiModels.customSystemPrompt = customSystemPrompt;
 
-        // Encrypt the updated configuration
-        const encryptedUpdatedConfig = EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).encrypt(JSON.stringify(aiModels));
-
-        // Attempt atomic compare-and-set operation
         const casSuccess = await keyValueStoreService.compareAndSet<string>(
           configPaths.aiModels,
           encryptedAIConfig,
-          encryptedUpdatedConfig,
+          encryptConfig(aiModels),
         );
 
         if (casSuccess) {
           success = true;
           break;
-        } else if (attempt === MAX_RETRIES - 1) {
+        }
+
+        if (attempt === MAX_RETRIES - 1) {
           throw new Error(
             'Failed to update custom system prompt due to persistent concurrent modification. Please try again.',
           );
         }
-        // If CAS failed, retry with exponential backoff
+
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
 
       if (!success) {
-        throw new Error(
-          'Failed to update custom system prompt after maximum retries.',
-        );
+        throw new Error('Failed to update custom system prompt after maximum retries.');
       }
 
-      res.status(200).json({
-        message: 'Custom system prompt updated successfully',
-        customSystemPrompt,
-      });
+      sendValidatedJson(
+        res,
+        customSystemPromptUpdateResponseSchema,
+        { message: 'Custom system prompt updated successfully', customSystemPrompt },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error setting custom system prompt', { error });
       next(error);

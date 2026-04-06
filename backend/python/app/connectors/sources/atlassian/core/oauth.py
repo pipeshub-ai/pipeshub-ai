@@ -9,9 +9,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
 )
 
-OAUTH_CONFIG_PATH = "/services/connectors/atlassian/config"
-OAUTH_CONFLUENCE_CREDENTIALS_PATH = "/services/connectors/atlassian/confluence/credentials"
-OAUTH_JIRA_CREDENTIALS_PATH = "/services/connectors/jira/credentials"
+
 OAUTH_CONFLUENCE_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 OAUTH_JIRA_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 

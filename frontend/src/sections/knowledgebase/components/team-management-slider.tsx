@@ -150,18 +150,8 @@ const TeamManagementSlider: React.FC<TeamManagementSliderProps> = ({ open, onClo
         body.description = formData.description.trim();
       }
 
-      // Use new format with individual user roles if available
       if (formData.memberRoles && formData.memberRoles.length > 0) {
         body.userRoles = formData.memberRoles;
-      } else if (formData.members && formData.members.length > 0) {
-        // Legacy format: single role for all users
-        const validUserIds = formData.members
-          .map((u) => u._key || u.id || u._id)
-          .filter((id) => id != null && typeof id === 'string' && id.trim() !== '');
-        if (validUserIds.length > 0) {
-          body.userIds = validUserIds;
-          body.role = formData.role;
-        }
       }
 
       await axios.post('/api/v1/teams', body);
@@ -194,22 +184,11 @@ const TeamManagementSlider: React.FC<TeamManagementSliderProps> = ({ open, onClo
       // Prepare update body with name, description, and member changes
       const updateBody: any = {
         name: formData.name.trim(),
+        description: formData.description?.trim() ?? '',
       };
 
-      if (formData.description?.trim()) {
-        updateBody.description = formData.description.trim();
-      }
-
-      // Handle member additions with individual roles
-      if (toAdd.length > 0) {
-        if (formData.memberRoles && formData.memberRoles.length > 0) {
-          // Use new format: individual roles for new members
-          updateBody.addUserRoles = formData.memberRoles.filter((ur) => toAdd.includes(ur.userId));
-        } else {
-          // Legacy format: single role for all new members
-          updateBody.addUserIds = toAdd;
-          updateBody.role = formData.role;
-        }
+      if (toAdd.length > 0 && formData.memberRoles && formData.memberRoles.length > 0) {
+        updateBody.addUserRoles = formData.memberRoles.filter((ur) => toAdd.includes(ur.userId));
       }
 
       // Handle member removals
