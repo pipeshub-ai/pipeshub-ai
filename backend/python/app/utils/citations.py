@@ -111,6 +111,15 @@ def _extract_record_id_from_url(url: str) -> str | None:
     return None
 
 
+def _safe_stringify_content(value: Any) -> str:
+    """Convert citation content to string without raising."""
+    try:
+        return str(value)
+    except Exception as exc:
+        logger.warning("Failed to cast citation content to string: %s", exc)
+        return ""
+
+
 
 def _is_url_resolvable_via_records(
     url: str,
@@ -283,7 +292,7 @@ def _normalize_markdown_link_citations(
             if isinstance(content, tuple):
                 content = content[0]
             elif not isinstance(content, str):
-                content = str(content)
+                content = _safe_stringify_content(value=content)
 
             if not content:
                 continue
@@ -316,8 +325,11 @@ def _normalize_markdown_link_citations(
                                 data = data.get("uri", "")
                             if not data:
                                 continue
+                            citation_content = "Image" if isinstance(data, str) and data.startswith("data:image/") else _safe_stringify_content(value=data)
+                            if not citation_content:
+                                continue
                             new_citations.append({
-                                "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
+                                "content": citation_content,
                                 "chunkIndex": new_citation_num,
                                 "metadata": enhanced_metadata,
                                 "citationType": "vectordb|document",
@@ -437,7 +449,7 @@ def _normalize_markdown_link_citations_for_agent(
             if isinstance(content, tuple):
                 content = content[0]
             elif not isinstance(content, str):
-                content = str(content)
+                content = _safe_stringify_content(value=content)
 
             if not content:
                 continue
@@ -475,8 +487,11 @@ def _normalize_markdown_link_citations_for_agent(
                                 data = data.get("uri", "")
                             if not data:
                                 continue
+                            citation_content = "Image" if isinstance(data, str) and data.startswith("data:image/") else _safe_stringify_content(value=data)
+                            if not citation_content:
+                                continue
                             new_citations.append({
-                                "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
+                                "content": citation_content,
                                 "chunkIndex": new_citation_num,
                                 "metadata": enhanced_metadata,
                                 "citationType": "vectordb|document",
@@ -507,8 +522,11 @@ def _normalize_markdown_link_citations_for_agent(
                                     data = data.get("uri", "")
                                 if not data:
                                     continue
+                                citation_content = "Image" if isinstance(data, str) and data.startswith("data:image/") else _safe_stringify_content(value=data)
+                                if not citation_content:
+                                    continue
                                 new_citations.append({
-                                    "content": "Image" if isinstance(data, str) and data.startswith("data:image/") else str(data),
+                                    "content": citation_content,
                                     "chunkIndex": new_citation_num,
                                     "metadata": enhanced_metadata,
                                     "citationType": "vectordb|document",
