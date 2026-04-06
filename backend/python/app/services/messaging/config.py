@@ -152,6 +152,10 @@ class RedisStreamsConfig(RedisConfig):
     max_len: int = Field(default=10000, description="Max stream length for XADD")
     block_ms: int = Field(default=2000, description="XREADGROUP block timeout in ms")
     batch_size: int = Field(default=10, description="Messages per XREADGROUP call")
+    claim_min_idle_ms: int = Field(
+        default=30000,
+        description="Min idle time in ms before XAUTOCLAIM can steal a pending message",
+    )
     client_id: str = "pipeshub"
     group_id: str = "default_group"
     topics: list[str] = Field(default_factory=list)

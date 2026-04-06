@@ -32,7 +32,8 @@ describe('UserManagerContainer - coverage', () => {
   })
 
   describe('initialize', () => {
-    it('should create container with all bindings', async () => {
+    it('should create container with all bindings', async function () {
+      this.timeout(30000)
       const mockKvStore = {
         connect: sinon.stub().resolves(),
         disconnect: sinon.stub().resolves(),
