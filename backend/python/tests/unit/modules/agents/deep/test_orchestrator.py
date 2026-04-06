@@ -1518,7 +1518,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
     def test_kb_only_routing_block_present(self):
         """KB-only: routing block (Reason then Route) IS generated."""
         result = self._ctx([self._KB])
-        assert "Reason then Route" in result
+        assert "KB-only configuration" in result
 
     def test_kb_only_omit_guidance_when_no_ids(self):
         """KB-only without collection_ids: guidance says to omit filter."""
@@ -1530,7 +1530,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
     def test_single_connector_routing_block_present(self):
         """Single connector: routing block must appear."""
         result = self._ctx([self._J])
-        assert "Reason then Route" in result
+        assert "How to route retrieval" in result
 
     def test_single_connector_id_in_identity_table(self):
         """Single connector: connector_id appears in the identity table."""
@@ -1540,7 +1540,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
     def test_single_connector_routing_decision_shown(self):
         """Single connector: routing decision block must appear."""
         result = self._ctx([self._J])
-        assert "Routing decision" in result
+        assert "Step 2 — Route based on what Step 1 found" in result
 
     def test_single_connector_count_is_one(self):
         result = self._ctx([self._J])
@@ -1595,7 +1595,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
     def test_kb_and_single_connector_routing_block_present(self):
         """KB + connector: connector routing block must appear."""
         result = self._ctx([self._KB, self._J])
-        assert "Reason then Route" in result
+        assert "How to route retrieval" in result
 
     def test_kb_and_single_connector_connector_id_present(self):
         result = self._ctx([self._KB, self._J])
@@ -1617,7 +1617,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
 
     def test_kb_and_multi_connector_routing_block_present(self):
         result = self._ctx([self._KB, self._J, self._C])
-        assert "Reason then Route" in result
+        assert "How to route retrieval" in result
 
     def test_kb_and_multi_connector_all_example_present(self):
         result = self._ctx([self._KB, self._J, self._C])

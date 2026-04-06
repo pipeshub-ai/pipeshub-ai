@@ -1832,7 +1832,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         result = _build_knowledge_context(state, log)
         assert "KB Only" in result
-        assert "Reason then Route" in result
+        assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_non_dict_knowledge_items_skipped(self):
         """Non-dict items in agent_knowledge are skipped."""
@@ -2733,7 +2733,7 @@ class TestBuildToolResultsContextDeeper:
         final_results = [{"virtual_record_id": "doc1", "text": "content"}]
         result = _build_tool_results_context(tool_results, final_results)
         assert "MANDATORY" in result
-        assert "Cite IMMEDIATELY" in result
+        assert "Cite key facts" in result
         assert "INTERNAL KNOWLEDGE" in result
 
     def test_api_only_has_transform_instructions(self):
@@ -6287,7 +6287,7 @@ class TestBuildKnowledgeContextEdgeCases:
         }
         result = _build_knowledge_context(state, _mock_log())
         assert "Company Docs" in result
-        assert "Reason then Route" in result
+        assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_knowledge_without_display_name(self):
         """Knowledge entry without displayName uses fallback."""
@@ -8945,7 +8945,7 @@ class TestRespondNodeSuccessPath:
              patch("app.modules.agents.qna.nodes._generate_fast_api_response",
                    new_callable=AsyncMock, side_effect=RuntimeError("fast path boom")), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
 
@@ -9023,8 +9023,8 @@ class TestRespondNodeSuccessPath:
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "doc1"}), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="formatted content"), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "doc1"}, create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "formatted content"}], MagicMock())), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
 
@@ -9049,7 +9049,7 @@ class TestRespondNodeSuccessPath:
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
 
@@ -9075,7 +9075,7 @@ class TestRespondNodeSuccessPath:
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
 
@@ -9102,7 +9102,7 @@ class TestRespondNodeSuccessPath:
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
 
@@ -9130,16 +9130,16 @@ class TestRespondNodeSuccessPath:
 
         captured_user_data = {}
 
-        def mock_get_msg_content(final_results, vr_map, user_data, query, mode="json"):
+        def mock_get_msg_content(final_results, vr_map, user_data, query, mode="json", **kwargs):
             captured_user_data["value"] = user_data
-            return "formatted content"
+            return [{"type": "text", "text": "formatted content"}], MagicMock()
 
         async def mock_stream(*args, **kwargs):
             yield {"event": "complete", "data": {"answer": "Response", "citations": []}}
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.utils.chat_helpers.get_message_content", side_effect=mock_get_msg_content), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
@@ -9168,16 +9168,16 @@ class TestRespondNodeSuccessPath:
 
         captured_user_data = {}
 
-        def mock_get_msg_content(final_results, vr_map, user_data, query, mode="json"):
+        def mock_get_msg_content(final_results, vr_map, user_data, query, mode="json", **kwargs):
             captured_user_data["value"] = user_data
-            return "formatted content"
+            return [{"type": "text", "text": "formatted content"}], MagicMock()
 
         async def mock_stream(*args, **kwargs):
             yield {"event": "complete", "data": {"answer": "Response", "citations": []}}
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.utils.chat_helpers.get_message_content", side_effect=mock_get_msg_content), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
@@ -9271,7 +9271,7 @@ class TestRespondNodeSuccessPath:
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await respond_node(state, config, writer)
 
@@ -9301,8 +9301,8 @@ class TestRespondNodeSuccessPath:
 
         with patch("app.modules.agents.qna.nodes.safe_stream_write"), \
              patch("app.modules.agents.qna.nodes.create_response_messages", return_value=[HumanMessage(content="q")]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "doc1"}), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="formatted content"), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "doc1"}, create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "formatted content"}], MagicMock())), \
              patch("app.modules.agents.qna.nodes.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.utils.citations.normalize_citations_and_chunks_for_agent",
                    return_value=("cleaned", mock_enriched)):
@@ -12145,7 +12145,7 @@ class TestPlannerKnowledgeContextRoutingMatrix:
     def test_kb_only_routing_block_present(self):
         """KB-only: routing block IS generated (Reason then Route)."""
         result = self._ctx([self._KB])
-        assert "Reason then Route" in result
+        assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_kb_with_ids_shows_collection_ids(self):
         """KB with collection_ids: collection_ids appear in the routing block."""
@@ -12166,7 +12166,7 @@ class TestPlannerKnowledgeContextRoutingMatrix:
 
     def test_single_connector_no_kb_routing_block_present(self):
         result = self._ctx([self._J])
-        assert "Reason then Route" in result
+        assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_single_connector_id_in_identity_table(self):
         result = self._ctx([self._J])
@@ -12228,7 +12228,7 @@ class TestPlannerKnowledgeContextRoutingMatrix:
 
     def test_kb_and_single_connector_routing_block_present(self):
         result = self._ctx([self._KB, self._J])
-        assert "Reason then Route" in result
+        assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_kb_and_single_connector_connector_id_present(self):
         result = self._ctx([self._KB, self._J])
@@ -12249,7 +12249,7 @@ class TestPlannerKnowledgeContextRoutingMatrix:
 
     def test_kb_and_multi_connector_routing_block_present(self):
         result = self._ctx([self._KB, self._J, self._C])
-        assert "Reason then Route" in result
+        assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_kb_and_multi_connector_both_examples_present(self):
         result = self._ctx([self._KB, self._J, self._C])

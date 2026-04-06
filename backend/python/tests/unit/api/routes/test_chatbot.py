@@ -554,13 +554,16 @@ class TestBuildChatLlmMessages:
         defaults.update(overrides)
         return ChatQuery(**defaults)
 
-    @patch("app.api.routes.chatbot.get_message_content", return_value="formatted content")
+    @patch(
+        "app.api.routes.chatbot.get_message_content",
+        return_value=([{"type": "text", "text": "formatted content"}], MagicMock()),
+    )
     def test_basic_messages_structure(self, mock_gmc):
         from app.api.routes.chatbot import _build_chat_llm_messages
 
         query_info = self._make_query_info()
         ai_models_config = {}
-        messages = _build_chat_llm_messages(
+        messages, _ = _build_chat_llm_messages(
             query_info, ai_models_config, [], {}, "", MagicMock()
         )
         # system + user = 2 messages
@@ -568,18 +571,24 @@ class TestBuildChatLlmMessages:
         assert messages[0]["role"] == "system"
         assert messages[1]["role"] == "user"
 
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch(
+        "app.api.routes.chatbot.get_message_content",
+        return_value=([{"type": "text", "text": "content"}], MagicMock()),
+    )
     def test_custom_system_prompt_overrides(self, mock_gmc):
         from app.api.routes.chatbot import _build_chat_llm_messages
 
         query_info = self._make_query_info()
         ai_models_config = {"customSystemPrompt": "You are a custom bot."}
-        messages = _build_chat_llm_messages(
+        messages, _ = _build_chat_llm_messages(
             query_info, ai_models_config, [], {}, "", MagicMock()
         )
         assert messages[0]["content"] == "You are a custom bot."
 
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch(
+        "app.api.routes.chatbot.get_message_content",
+        return_value=([{"type": "text", "text": "content"}], MagicMock()),
+    )
     def test_conversation_history_mapped(self, mock_gmc):
         from app.api.routes.chatbot import _build_chat_llm_messages
 
@@ -589,7 +598,7 @@ class TestBuildChatLlmMessages:
                 {"role": "bot_response", "content": "hi there"},
             ]
         )
-        messages = _build_chat_llm_messages(
+        messages, _ = _build_chat_llm_messages(
             query_info, {}, [], {}, "", MagicMock()
         )
         # system + user_query + bot_response + current user = 4
@@ -599,7 +608,10 @@ class TestBuildChatLlmMessages:
         assert messages[2]["role"] == "assistant"
         assert messages[2]["content"] == "hi there"
 
-    @patch("app.api.routes.chatbot.get_message_content", return_value="content")
+    @patch(
+        "app.api.routes.chatbot.get_message_content",
+        return_value=([{"type": "text", "text": "content"}], MagicMock()),
+    )
     def test_mode_passed_to_get_message_content(self, mock_gmc):
         from app.api.routes.chatbot import _build_chat_llm_messages
 

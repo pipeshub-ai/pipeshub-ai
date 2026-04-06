@@ -488,7 +488,7 @@ class TestGetAgentToolsFetchRecordError:
             _cached_agent_tools=None,
         )
         with patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools", return_value=[]), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", side_effect=RuntimeError("boom")):
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", side_effect=RuntimeError("boom")):
             result = get_agent_tools(state)
         assert isinstance(result, list)
         state["logger"].warning.assert_called()

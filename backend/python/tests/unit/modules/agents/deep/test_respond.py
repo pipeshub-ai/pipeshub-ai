@@ -2261,7 +2261,7 @@ class TestDeepRespondImplExtended:
                  MagicMock(content="system prompt"),
                  MagicMock(content="user message"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2326,7 +2326,7 @@ class TestDeepRespondImplExtended:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2386,9 +2386,9 @@ class TestDeepRespondImplExtended:
 
         with patch("app.modules.agents.deep.respond.safe_stream_write"), \
              patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
-             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content"), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"], create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "R1: content"}], MagicMock())), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}, create=True), \
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
@@ -2505,7 +2505,7 @@ class TestDeepRespondImplFastPathRefData:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="system"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2568,9 +2568,9 @@ class TestDeepRespondImplUserDataBranches:
 
         with patch("app.modules.agents.deep.respond.safe_stream_write"), \
              patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
-             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content") as mock_gmc, \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"], create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "R1: content"}], MagicMock())) as mock_gmc, \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}, create=True), \
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
@@ -2648,7 +2648,7 @@ class TestDeepRespondImplContextBuilding:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), HumanMessage(content="user msg"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="API results context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2714,7 +2714,7 @@ class TestDeepRespondImplContextBuilding:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), HumanMessage(content="user message"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -2784,7 +2784,7 @@ class TestDeepRespondImplContextBuilding:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), last_msg,
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="API context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2854,7 +2854,7 @@ class TestDeepRespondImplBlobStorage:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", return_value=mock_blob):
@@ -2924,7 +2924,7 @@ class TestDeepRespondImplDecomposedQueries:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream) as mock_slr:
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -2989,7 +2989,7 @@ class TestDeepRespondImplDecomposedQueries:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3054,7 +3054,7 @@ class TestDeepRespondImplDecomposedQueries:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3119,9 +3119,9 @@ class TestDeepRespondImplCitationEnrichment:
 
         with patch("app.modules.agents.deep.respond.safe_stream_write"), \
              patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
-             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content"), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"], create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "R1: content"}], MagicMock())), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}, create=True), \
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
@@ -3193,7 +3193,7 @@ class TestDeepRespondImplEmptyResponse:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3263,7 +3263,7 @@ class TestDeepRespondImplEmptyResponse:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3340,7 +3340,7 @@ class TestDeepRespondImplReferenceData:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)

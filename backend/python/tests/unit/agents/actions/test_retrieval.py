@@ -16,6 +16,7 @@ from app.agents.actions.retrieval.retrieval import (
     SearchInternalKnowledgeInput,
     _normalize_list_param,
 )
+from app.utils.chat_helpers import CitationRefMapper
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -260,7 +261,7 @@ class TestSearchInternalKnowledge:
             "app.agents.actions.retrieval.retrieval.BlobStorage",
         ), patch(
             "app.agents.actions.retrieval.retrieval.build_message_content_array",
-            return_value=[[{"type": "text", "text": "record content"}]],
+            return_value=([[{"type": "text", "text": "record content"}]], CitationRefMapper()),
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test query")
@@ -288,7 +289,7 @@ class TestSearchInternalKnowledge:
             "app.agents.actions.retrieval.retrieval.BlobStorage",
         ), patch(
             "app.agents.actions.retrieval.retrieval.build_message_content_array",
-            return_value=[[{"type": "text", "text": "record content"}]],
+            return_value=([[{"type": "text", "text": "record content"}]], CitationRefMapper()),
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test")

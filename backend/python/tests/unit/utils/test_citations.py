@@ -487,7 +487,7 @@ class TestNormalizeCitationsAndChunks:
         assert citations[1]["content"] == "row2 data"
 
     def test_table_block_empty_children_uses_parent(self):
-        """TABLE block with no children: the parent doc is added to flattened."""
+        """TABLE block with no children: parent-only citation URL is not resolvable."""
         parent_url = _url(REC1, 4)
         table_doc = {
             "virtual_record_id": REC1,
@@ -501,9 +501,9 @@ class TestNormalizeCitationsAndChunks:
         }
         answer = f"See [1]({parent_url})."
         result_text, citations = normalize_citations_and_chunks(answer, [table_doc])
-        assert "[1]" in result_text
-        # Content is tuple; code extracts first element
-        assert citations[0]["content"] == "table summary text"
+        # Parent table URL is dropped because only child row URLs are indexed.
+        assert result_text == "See ."
+        assert citations == []
 
     def test_url_not_in_docs_falls_back_to_records(self):
         """URL not in flattened results but matches a record in records list."""

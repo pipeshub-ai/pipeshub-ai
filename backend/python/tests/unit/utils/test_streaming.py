@@ -4882,10 +4882,7 @@ class TestExecuteToolCallsNoToolCalls:
         ai_mock.tool_calls = []  # No tool calls
 
         # Mock call_aiter_llm_stream to yield a tool_calls event with an ai that has empty tool_calls
-        async def mock_call_aiter(llm, messages, final_results, records=None,
-                                   target_words_per_chunk=1, reflection_retry_count=0,
-                                   max_reflection_retries=2, original_llm=None,
-                                   is_agent=False):
+        async def mock_call_aiter(*args, **kwargs):
             yield {"event": "tool_calls", "data": {"ai": ai_mock}}
 
         with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=mock_call_aiter):
@@ -4931,10 +4928,7 @@ class TestExecuteToolCallsInvalidTool:
         ai_mock.content = ""
         ai_mock.tool_calls = [{"name": "invalid_tool", "args": {}, "id": "c1"}]
 
-        async def mock_call_aiter(llm, messages, final_results, records=None,
-                                   target_words_per_chunk=1, reflection_retry_count=0,
-                                   max_reflection_retries=2, original_llm=None,
-                                   is_agent=False):
+        async def mock_call_aiter(*args, **kwargs):
             yield {"event": "tool_calls", "data": {"ai": ai_mock}}
 
         # The tool exists as an object but with name different than requested
@@ -5059,7 +5053,7 @@ class TestExecuteToolCallsTokenThreshold:
         # Make count_tokens return high values to trigger the threshold path
         with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=mock_call_aiter), \
              patch("app.utils.streaming.bind_tools_for_llm", return_value=MagicMock()), \
-             patch("app.utils.streaming.record_to_message_content", return_value="content"), \
+             patch("app.utils.streaming.record_to_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock())), \
              patch("app.utils.streaming.count_tokens", return_value=(100000, 50000)), \
              patch("app.utils.streaming.get_vectorDb_limit", return_value=100):
 
@@ -5072,7 +5066,7 @@ class TestExecuteToolCallsTokenThreshold:
             with patch("app.utils.streaming.get_flattened_results", new_callable=AsyncMock, return_value=[
                 {"virtual_record_id": "vr1", "block_index": 0, "content": "test"}
             ]), \
-            patch("app.utils.streaming.build_message_content_array", return_value=[["content"]]):
+            patch("app.utils.streaming.build_message_content_array", return_value=([["content"]], MagicMock())):
 
                 events = []
                 async for event in execute_tool_calls(

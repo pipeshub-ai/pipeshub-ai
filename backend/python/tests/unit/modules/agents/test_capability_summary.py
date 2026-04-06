@@ -207,7 +207,7 @@ class TestBuildConnectorRoutingRulesKBOnly:
 
     def test_kb_only_routing_block_header(self):
         result = build_connector_routing_rules([], kb_sources=[_KB_WITH_IDS])
-        assert "Reason then Route" in result
+        assert "KB-only configuration" in result
 
     def test_kb_only_example_uses_collection_ids(self):
         result = build_connector_routing_rules([], kb_sources=[_KB_WITH_IDS],
@@ -238,7 +238,7 @@ class TestBuildConnectorRoutingRulesSingleConnector:
 
     def test_routing_decision_present(self):
         result = build_connector_routing_rules([_C_JIRA])
-        assert "Routing decision" in result
+        assert "How to route retrieval" in result
 
     def test_planner_example_uses_connector_ids(self):
         result = build_connector_routing_rules([_C_JIRA], call_format="planner")
@@ -276,11 +276,11 @@ class TestBuildConnectorRoutingRulesMultiConnector:
 
     def test_default_search_all_rule(self):
         result = build_connector_routing_rules([_C_JIRA, _C_CONF])
-        assert "Default when uncertain" in result
+        assert "Default when truly uncertain" in result
 
     def test_routing_decision_present(self):
         result = build_connector_routing_rules([_C_JIRA, _C_CONF])
-        assert "Routing decision" in result
+        assert "How to route retrieval" in result
 
 
 class TestBuildConnectorRoutingRulesMixed:
@@ -350,7 +350,7 @@ class TestGenericRoutingLanguage:
 
     def test_routing_default_search_all_present(self):
         result = build_connector_routing_rules([_C_JIRA, _C_CONF])
-        assert "Default when uncertain" in result
+        assert "Default when truly uncertain" in result
 
     def test_routing_no_keyword_signal_map_text(self):
         """The output must not contain hard-coded resource-noun signals."""
