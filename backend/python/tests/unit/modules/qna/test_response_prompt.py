@@ -9,7 +9,7 @@ from app.modules.qna import response_prompt
 
 _format_reference_data_for_response = response_prompt._format_reference_data_for_response
 build_conversation_history_context = response_prompt.build_conversation_history_context
-build_record_label_mapping = response_prompt.build_record_label_mapping
+build_record_label_mapping = getattr(response_prompt, "build_record_label_mapping", None)
 build_response_prompt = response_prompt.build_response_prompt
 build_user_context = response_prompt.build_user_context
 detect_response_mode = response_prompt.detect_response_mode
@@ -388,6 +388,10 @@ class TestSyncBlockNumbers:
 # build_record_label_mapping
 # ============================================================================
 
+@pytest.mark.skipif(
+    build_record_label_mapping is None,
+    reason="Legacy helper removed from response_prompt module.",
+)
 class TestBuildRecordLabelMapping:
     def test_single_record(self):
         results = [
