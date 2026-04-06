@@ -1,10 +1,10 @@
 import asyncio
-import re
 from collections import defaultdict
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
-
+import base64
+import re
 from jinja2 import Template
 
 from app.config.constants.service import config_node_constants
@@ -58,6 +58,69 @@ def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> 
     """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
     base = frontend_url.rstrip("/") if frontend_url else ""
     return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
+
+
+
+
+def is_base64_image(s: str) -> bool:
+    """
+    Check if a string is a valid base64-encoded image.
+    
+    Accepts both:
+    - Data URLs: "data:image/png;base64,iVBORw0KGgo..."
+    - Raw base64 strings: "iVBORw0KGgo..."
+    """
+    if not isinstance(s, str) or not s.strip():
+        return False
+
+    # Handle data URL format
+    data_url_pattern = r'^data:image/(png|jpeg|jpg|gif|webp|bmp|svg\+xml|tiff);base64,(.+)$'
+    match = re.match(data_url_pattern, s.strip(), re.IGNORECASE)
+    
+    if match:
+        b64_data = match.group(2)
+    else:
+        b64_data = s.strip()
+
+    # Validate base64 characters
+    if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', b64_data):
+        return False
+
+    # Check padding
+    if len(b64_data) % 4 != 0:
+        return False
+
+    # Try to decode
+    try:
+        decoded = base64.b64decode(b64_data)
+    except Exception:
+        return False
+
+    # Check for known image magic bytes
+    image_signatures = {
+        b'\x89PNG\r\n\x1a\n': 'PNG',
+        b'\xff\xd8\xff': 'JPEG',
+        b'GIF87a': 'GIF',
+        b'GIF89a': 'GIF',
+        b'RIFF': 'WEBP',  # WEBP starts with RIFF
+        b'BM': 'BMP',
+        b'II*\x00': 'TIFF',
+        b'MM\x00*': 'TIFF',
+    }
+
+    for signature, fmt in image_signatures.items():
+        if decoded.startswith(signature):
+            return True
+
+    # SVG is XML text — check for <svg tag after decoding
+    try:
+        text = decoded[:200].decode('utf-8', errors='ignore').lower().strip()
+        if '<svg' in text or '<?xml' in text:
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 class CitationRefMapper:
@@ -1416,7 +1479,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             ref = ref_mapper.get_or_create_ref(block_web_url)
             result["citation_ref"] = ref
             if block_type == BlockType.IMAGE.value:
-                if result.get("content").startswith("data:image/") and is_multimodal_llm and not from_tool:
+                if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
                     content.append({
                         "type": "text",
                         "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
