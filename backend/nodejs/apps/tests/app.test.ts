@@ -12,7 +12,7 @@ import { MigrationService } from '../src/modules/configuration_manager/services/
 import { NotificationService } from '../src/modules/notification/service/notification.service';
 import * as appConfigModule from '../src/modules/tokens_manager/config/config';
 import * as cmConfigModule from '../src/modules/configuration_manager/config/config';
-import * as kafkaAdminModule from '../src/libs/services/kafka-admin.service';
+import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -294,7 +294,7 @@ describe('Application', () => {
 
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(mockAppConfig);
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(mockCmConfig);
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
     });
 
     it('should initialize all containers and configure the app', async () => {
@@ -325,16 +325,15 @@ describe('Application', () => {
       expect(mockNotificationService.initialize.firstCall.args[0]).to.be.instanceOf(http.Server);
     });
 
-    it('should call ensureKafkaTopicsExist with the app Kafka config', async () => {
+    it('should call ensureMessageTopicsExist during initialization', async () => {
       const app = new Application();
       stubAllContainers(sandbox);
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       await app.initialize();
 
-      const stub = kafkaAdminModule.ensureKafkaTopicsExist as sinon.SinonStub;
+      const stub = messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
       expect(stub.calledOnce).to.be.true;
-      expect(stub.firstCall.args[0]).to.deep.equal(mockAppConfig.kafka);
     });
 
     it('should continue initialization even if Kafka topic creation fails', async () => {
@@ -342,7 +341,7 @@ describe('Application', () => {
       stubAllContainers(sandbox);
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
-      (kafkaAdminModule.ensureKafkaTopicsExist as sinon.SinonStub).rejects(
+      (messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub).rejects(
         new Error('Kafka broker unavailable'),
       );
 
@@ -473,7 +472,7 @@ describe('Application', () => {
       mockAppConfig = createMockAppConfig();
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(mockAppConfig);
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       app = new Application();
@@ -553,7 +552,7 @@ describe('Application', () => {
     beforeEach(async () => {
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       const app = new Application();
@@ -930,7 +929,7 @@ describe('Application', () => {
       try {
         sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
         sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -956,7 +955,7 @@ describe('Application', () => {
       try {
         sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
         sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1070,7 +1069,7 @@ describe('Application', () => {
     it('should mount API docs at /api/v1/docs after initialization', async () => {
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       const app = new Application();
@@ -1097,7 +1096,7 @@ describe('Application', () => {
       try {
         sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
         sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1121,7 +1120,7 @@ describe('Application', () => {
       try {
         sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
         sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1146,7 +1145,7 @@ describe('Application', () => {
     it('should register error handler as the last middleware before static/SPA', async () => {
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       const app = new Application();
@@ -1174,7 +1173,7 @@ describe('Application', () => {
 
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       const app = new Application();
@@ -1194,7 +1193,7 @@ describe('Application', () => {
     it('should set up Slack proxy before body-parsing middleware', async () => {
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-      sandbox.stub(kafkaAdminModule, 'ensureKafkaTopicsExist').resolves();
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       const app = new Application();

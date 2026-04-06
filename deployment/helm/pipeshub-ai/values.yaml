@@ -191,6 +191,11 @@ etcd:
       drop:
       - ALL
 
+# Message broker: "kafka" (default) or "redis" (uses Redis Streams)
+messageBroker:
+  type: kafka
+  redisStreamsMaxLen: "10000"
+
 zookeeper:
   image:
     repository: confluentinc/cp-zookeeper

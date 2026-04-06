@@ -75,7 +75,7 @@ class TestProcessMessageWrapper:
         consumer.message_handler = handler
         consumer.consumer = AsyncMock()
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"), offset=42)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=42)
         tp = _make_topic_partition()
 
         await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
@@ -88,7 +88,7 @@ class TestProcessMessageWrapper:
         consumer.message_handler = handler
         consumer.consumer = AsyncMock()
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"), offset=43)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=43)
         tp = _make_topic_partition()
 
         await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
@@ -104,7 +104,7 @@ class TestProcessMessageWrapper:
         # Acquire semaphore
         await consumer.semaphore.acquire()
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"), offset=44)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=44)
         tp = _make_topic_partition()
 
         # The wrapper will call __process_message which has its own error handling
@@ -122,7 +122,7 @@ class TestProcessMessageWrapper:
         consumer.message_handler = handler
         consumer.consumer = None
 
-        msg = _make_message(value=json.dumps({"key": "val"}).encode("utf-8"), offset=45)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=45)
         tp = _make_topic_partition()
 
         await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
@@ -216,7 +216,7 @@ class TestStopExtended:
 
     @pytest.mark.asyncio
     async def test_stop_with_handler_and_task(self, consumer):
-        """Stop calls handler with None and cancels task."""
+        """Stop cancels task; no longer calls handler with None."""
         handler = AsyncMock()
         consumer.message_handler = handler
         consumer.running = True
@@ -230,7 +230,7 @@ class TestStopExtended:
 
         await consumer.stop()
 
-        handler.assert_awaited_once_with(None)
+        handler.assert_not_awaited()
         assert consumer.running is False
 
     @pytest.mark.asyncio

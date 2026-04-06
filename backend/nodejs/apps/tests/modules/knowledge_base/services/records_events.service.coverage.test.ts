@@ -15,39 +15,52 @@ describe('RecordsEventProducer - coverage', () => {
   describe('start', () => {
     it('should call connect when not connected', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
-      instance.isConnected = sinon.stub().returns(false)
-      instance.connect = sinon.stub().resolves()
-      // The actual start() checks `this.isConnected` (not `this.isConnected()`)
-      // Looking at the code: `if (!this.isConnected)` - this checks the truthiness of the method itself
-      // which is always truthy. So `start` always calls `connect`.
-      // Actually re-reading: `if (!this.isConnected)` - isConnected is a boolean getter in the base class
-      // Let me check base class: `isConnected(): boolean { return this.isInitialized; }`
-      // In RecordsEventProducer: `if (!this.isConnected)` - this checks the METHOD reference, not the return value
-      // Since isConnected is a method, `!this.isConnected` is always false, so connect won't be called
-      // This means start() is essentially a no-op when isConnected method exists
+      const mockProducer = {
+        isConnected: sinon.stub().returns(false),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
 
       await instance.start()
-      // The method reference is truthy so connect is never called
+      expect(mockProducer.connect.calledOnce).to.be.true
     })
   })
 
   describe('stop', () => {
     it('should call disconnect when connected', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
-      instance.isConnected = sinon.stub().returns(true)
-      instance.disconnect = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
 
       await instance.stop()
-      expect(instance.disconnect.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
 
     it('should not call disconnect when not connected', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
-      instance.isConnected = sinon.stub().returns(false)
-      instance.disconnect = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(false),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
 
       await instance.stop()
-      expect(instance.disconnect.called).to.be.false
+      expect(mockProducer.disconnect.called).to.be.false
     })
   })
 
@@ -55,7 +68,15 @@ describe('RecordsEventProducer - coverage', () => {
     it('should publish event to records topic', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
       ;(instance as any).recordsTopic = 'record-events'
-      instance.publish = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
@@ -79,8 +100,8 @@ describe('RecordsEventProducer - coverage', () => {
 
       await instance.publishEvent(event)
 
-      expect(instance.publish.calledOnce).to.be.true
-      const [topic, message] = instance.publish.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('record-events')
       expect(message.key).to.equal(EventType.NewRecordEvent)
       expect(JSON.parse(message.value)).to.deep.include({ eventType: EventType.NewRecordEvent })
@@ -90,7 +111,15 @@ describe('RecordsEventProducer - coverage', () => {
     it('should log error when publish fails', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
       ;(instance as any).recordsTopic = 'record-events'
-      instance.publish = sinon.stub().rejects(new Error('Publish failed'))
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().rejects(new Error('Publish failed')),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
@@ -112,7 +141,15 @@ describe('RecordsEventProducer - coverage', () => {
     it('should publish UpdateRecordEvent', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
       ;(instance as any).recordsTopic = 'record-events'
-      instance.publish = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
@@ -131,14 +168,22 @@ describe('RecordsEventProducer - coverage', () => {
       }
 
       await instance.publishEvent(event)
-      expect(instance.publish.calledOnce).to.be.true
+      expect(mockProducer.publish.calledOnce).to.be.true
       expect(instance.logger.info.calledOnce).to.be.true
     })
 
     it('should publish ReindexRecordEvent', async () => {
       const instance = Object.create(RecordsEventProducer.prototype)
       ;(instance as any).recordsTopic = 'record-events'
-      instance.publish = sinon.stub().resolves()
+      const mockProducer = {
+        isConnected: sinon.stub().returns(true),
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        publish: sinon.stub().resolves(),
+        publishBatch: sinon.stub().resolves(),
+        healthCheck: sinon.stub().resolves(true),
+      }
+      ;(instance as any).producer = mockProducer
       instance.logger = { info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
@@ -160,7 +205,7 @@ describe('RecordsEventProducer - coverage', () => {
       }
 
       await instance.publishEvent(event)
-      expect(instance.publish.calledOnce).to.be.true
+      expect(mockProducer.publish.calledOnce).to.be.true
     })
   })
 })

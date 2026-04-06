@@ -7,12 +7,13 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class SinkOrchestrator(Transformer):
-    def __init__(self, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider) -> None:
+    def __init__(self, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider, logger) -> None:
         super().__init__()
         self.graphdb = graphdb
         self.blob_storage = blob_storage
         self.vector_store = vector_store
         self.graph_provider = graph_provider
+        self.logger = logger
 
     async def apply(self, ctx: TransformContext) -> None:
         await self.blob_storage.apply(ctx)

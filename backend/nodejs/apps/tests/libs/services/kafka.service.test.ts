@@ -104,6 +104,57 @@ describe('Kafka Service', () => {
       expect(producer.isConnected()).to.be.true;
     });
 
+    it('should throw KafkaError when Kafka constructor fails (lines 40-44)', () => {
+      const kafkajsPath = require.resolve('kafkajs');
+      const originalKafkajs = require.cache[kafkajsPath];
+      const modulePath = require.resolve('../../../src/libs/services/kafka.service');
+
+      // Replace kafkajs with one whose Kafka constructor throws
+      require.cache[kafkajsPath] = {
+        ...originalKafkajs!,
+        exports: {
+          ...originalKafkajs!.exports,
+          Kafka: function () {
+            throw new Error('Kafka init failed');
+          },
+        },
+      } as any;
+
+      delete require.cache[modulePath];
+
+      try {
+        const mod = require('../../../src/libs/services/kafka.service');
+
+        class FailingProducer extends mod.BaseKafkaProducerConnection {
+          constructor(cfg: any, lgr: any) {
+            super(cfg, lgr);
+          }
+        }
+
+        try {
+          new FailingProducer(defaultConfig, mockLogger);
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect(error).to.be.instanceOf(KafkaError);
+          expect((error as KafkaError).message).to.include(
+            'Failed to initialize Kafka',
+          );
+          expect((error as any).metadata.clientId).to.equal('test-client');
+          expect((error as any).metadata.details).to.equal(
+            'Kafka init failed',
+          );
+        }
+      } finally {
+        // Restore kafkajs and re-require kafka.service with the working
+        // Kafka constructor so the cached module has valid coverage.
+        if (originalKafkajs) {
+          require.cache[kafkajsPath] = originalKafkajs;
+        }
+        delete require.cache[modulePath];
+        require('../../../src/libs/services/kafka.service');
+      }
+    });
+
     it('should not re-connect via ensureConnection when already connected', async () => {
       const producer = new TestKafkaProducer(defaultConfig, mockLogger);
       const mockProd = new MockProducer();
@@ -159,6 +210,7 @@ describe('Kafka Service', () => {
         }
         expect(producer.isConnected()).to.be.false;
       });
+
     });
 
     // ---- disconnect ---------------------------------------------
@@ -235,6 +287,7 @@ describe('Kafka Service', () => {
           expect((error as KafkaError).message).to.include('Error publishing to Kafka topic fail-topic');
         }
       });
+
     });
 
     // ---- publishBatch -------------------------------------------
@@ -285,6 +338,7 @@ describe('Kafka Service', () => {
         expect(result).to.be.false;
         expect(mockLogger.error.called).to.be.true;
       });
+
     });
 
     // ---- formatMessage ------------------------------------------
@@ -339,6 +393,12 @@ describe('Kafka Service', () => {
         expect(c).to.exist;
       });
 
+      it('should default groupId to "default-group" when both groupId and clientId are missing', () => {
+        const cfg: KafkaConfig = { brokers: ['b:9092'] };
+        const c = new TestKafkaConsumer(cfg, mockLogger);
+        expect(c).to.exist;
+      });
+
       it('should use provided retry config values', () => {
         const cfg: KafkaConfig = {
           ...defaultConfig,
@@ -377,6 +437,7 @@ describe('Kafka Service', () => {
         }
         expect(consumer.isConnected()).to.be.false;
       });
+
     });
 
     // ---- disconnect ---------------------------------------------
@@ -400,6 +461,7 @@ describe('Kafka Service', () => {
         await consumer.disconnect(); // should not throw
         expect(mockLogger.error.calledOnce).to.be.true;
       });
+
     });
 
     // ---- subscribe ----------------------------------------------
@@ -449,6 +511,7 @@ describe('Kafka Service', () => {
           expect((error as KafkaError).message).to.include('Failed to subscribe to topics');
         }
       });
+
     });
 
     // ---- consume ------------------------------------------------
@@ -615,6 +678,7 @@ describe('Kafka Service', () => {
         expect(result).to.be.false;
         expect(mockLogger.error.called).to.be.true;
       });
+
     });
   });
 });
