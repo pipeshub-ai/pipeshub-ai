@@ -8,6 +8,7 @@ import {
   CreateDocumentSchema,
   UploadNextVersionSchema,
   DirectUploadSchema,
+  RollBackToPreviousVersionSchema,
 } from '../../../../src/modules/storage/validators/validators'
 
 describe('storage/validators/validators', () => {
@@ -123,6 +124,73 @@ describe('storage/validators/validators', () => {
         headers: { authorization: 'Bearer token' },
       }
       const result = CreateDocumentSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should accept valid customMetadata array', () => {
+      const data = {
+        body: {
+          documentName: 'test',
+          documentPath: '/path/to/doc',
+          extension: 'pdf',
+          customMetadata: [{ key: 'source', value: 'api' }],
+        },
+        query: {},
+        params: {},
+        headers: { authorization: 'Bearer token' },
+      }
+      const result = CreateDocumentSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid customMetadata shape', () => {
+      const data = {
+        body: {
+          documentName: 'test',
+          documentPath: '/path/to/doc',
+          extension: 'pdf',
+          customMetadata: [{ value: 'api' }],
+        },
+        query: {},
+        params: {},
+        headers: { authorization: 'Bearer token' },
+      }
+      const result = CreateDocumentSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('RollBackToPreviousVersionSchema', () => {
+    const baseData = {
+      body: { note: 'rollback' },
+      query: {},
+      params: { documentId: 'abc123' },
+      headers: { authorization: 'Bearer token' },
+    }
+
+    it('should accept request without body.version', () => {
+      const result = RollBackToPreviousVersionSchema.safeParse(baseData)
+      expect(result.success).to.be.true
+    })
+
+    it('should coerce string body.version to number', () => {
+      const data = {
+        ...baseData,
+        body: { ...baseData.body, version: '2' },
+      }
+      const result = RollBackToPreviousVersionSchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.version).to.equal(2)
+      }
+    })
+
+    it('should reject negative body.version', () => {
+      const data = {
+        ...baseData,
+        body: { ...baseData.body, version: '-1' },
+      }
+      const result = RollBackToPreviousVersionSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })
