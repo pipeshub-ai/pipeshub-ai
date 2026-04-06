@@ -435,7 +435,7 @@ describe('storage/utils/utils', () => {
   describe('createPlaceholderDocument', () => {
     it('should create document and return it', async () => {
       const savedDoc = { _id: 'doc-1', documentName: 'test' }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      const createStub = sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
       const next = sinon.stub()
 
       const req = {
@@ -446,6 +446,25 @@ describe('storage/utils/utils', () => {
       const result = await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
       expect(result).to.exist
       expect(result!.document).to.deep.equal(savedDoc)
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
+    })
+
+    it('should prefix org and PipesHub when documentPath is provided', async () => {
+      const savedDoc = { _id: 'doc-2', documentName: 'test' }
+      const createStub = sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      const next = sinon.stub()
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: { documentName: 'test', documentPath: 'folderA' },
+      } as any
+
+      const result = await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
+      expect(result).to.exist
+      expect(result!.document).to.deep.equal(savedDoc)
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/folderA')
     })
 
     it('should call next on validation error', async () => {

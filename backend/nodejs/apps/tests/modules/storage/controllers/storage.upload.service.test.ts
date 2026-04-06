@@ -389,4 +389,151 @@ describe('UploadDocumentService', () => {
       expect(result.statusCode).to.equal(200)
     })
   })
+
+  // -------------------------------------------------------------------------
+  // handleDocumentUpload - documentPath stored as fullDocumentPath
+  // -------------------------------------------------------------------------
+  describe('handleDocumentUpload - documentPath stored as fullDocumentPath', () => {
+    it('should save documentPath as orgId/PipesHub/path without docId appended', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      mockAdapter.uploadDocumentToStorageService.resolves({
+        statusCode: 200,
+        data: 'https://bucket.s3.amazonaws.com/org/PipesHub/custom/path/doc-1/test.pdf',
+      })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          documentPath: 'custom/path',
+          isVersionedFile: false,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(savedDoc.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/custom/path')
+      expect(savedDoc.documentPath).to.not.include('doc-1')
+    })
+
+    it('should save documentPath as orgId/PipesHub when no documentPath provided', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      mockAdapter.uploadDocumentToStorageService.resolves({
+        statusCode: 200,
+        data: 'https://bucket.s3.amazonaws.com/org/PipesHub/doc-1/test.pdf',
+      })
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          isVersionedFile: false,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(savedDoc.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // handleDocumentUpload - versionLocalPath fix for Local vendor
+  // -------------------------------------------------------------------------
+  describe('handleDocumentUpload - versionLocalPath fix for Local vendor', () => {
+    it('should use clone response path as localPath for version entry in Local storage', async () => {
+      const savedDoc = {
+        _id: 'doc-1',
+        documentPath: '',
+        versionHistory: [] as any[],
+        sizeInBytes: 4,
+        extension: '.pdf',
+        isVersionedFile: true,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+
+      mockAdapter.uploadDocumentToStorageService
+        .onFirstCall().resolves({
+          statusCode: 200,
+          data: 'file:///storage/current/test.pdf',
+        })
+        .onSecondCall().resolves({
+          statusCode: 200,
+          data: 'file:///storage/versions/v0/test.pdf',
+        })
+
+      mockKeyValueStoreService.get.resolves(JSON.stringify({
+        storage: { endpoint: 'http://localhost:3004' },
+      }))
+
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('test'), originalname: 'test.pdf', size: 4, mimetype: 'application/pdf' } as any,
+        StorageVendor.Local,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: {
+          documentName: 'test',
+          isVersionedFile: true,
+        },
+      } as any
+      const res = { json: sinon.stub(), status: sinon.stub().returnsThis() } as any
+
+      await service.handleDocumentUpload(req, res, () => ({
+        buffer: Buffer.from('test'),
+        mimeType: 'application/pdf',
+        originalName: 'test.pdf',
+        size: 4,
+      }))
+
+      expect(savedDoc.versionHistory.length).to.equal(1)
+      const versionEntry = savedDoc.versionHistory[0] as any
+      expect(versionEntry[StorageVendor.Local].localPath).to.equal('file:///storage/versions/v0/test.pdf')
+    })
+  })
 })

@@ -377,7 +377,7 @@ describe('AmazonS3Adapter', () => {
       expect(result.data).to.equal(testBuffer)
     })
 
-    it('should get buffer for version 0 (same as current)', async () => {
+    it('should get buffer for version 0 from versionHistory', async () => {
       const adapter = createAdapter()
       const testBuffer = Buffer.from('content')
       sinon.stub((adapter as any).s3, 'getObject').returns({
@@ -386,6 +386,9 @@ describe('AmazonS3Adapter', () => {
 
       const result = await adapter.getBufferFromStorageService({
         s3: { url: 'https://my-bucket.s3.us-east-1.amazonaws.com/file.pdf' },
+        versionHistory: [
+          { s3: { url: 'https://my-bucket.s3.us-east-1.amazonaws.com/v0.pdf' } },
+        ],
       } as any, 0)
 
       expect(result.statusCode).to.equal(200)
