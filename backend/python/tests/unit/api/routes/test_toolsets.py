@@ -7345,16 +7345,44 @@ class TestAgentScopedToolsets:
         config_service = AsyncMock()
         expected = {"status": "success", "toolsets": [], "pagination": {}, "filterCounts": {}}
 
-        with patch("app.api.routes.toolsets._resolve_agent_with_permission", new_callable=AsyncMock, return_value={"_key": "a1"}), \
+        agent_doc = {"_key": "a1", "can_edit": True}
+        with patch(
+            "app.api.routes.toolsets._resolve_agent_with_permission",
+            new_callable=AsyncMock,
+            return_value=agent_doc,
+        ), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
              patch("app.api.routes.toolsets._build_toolsets_list_response", new_callable=AsyncMock, return_value=expected) as mock_build:
             result = await get_agent_toolsets("a1", request, config_service=config_service)
 
         assert result == expected
+        assert mock_build.await_args.kwargs["expose_non_oauth_auth"] is True
         fetch_auth_fn = mock_build.await_args.kwargs["fetch_auth_for_instance"]
         config_service.get_config = AsyncMock(return_value={"isAuthenticated": True})
         await fetch_auth_fn("inst-99")
         config_service.get_config.assert_awaited_with("/services/toolsets/inst-99/a1", default=None)
+
+    @pytest.mark.asyncio
+    async def test_get_agent_toolsets_view_only_does_not_expose_auth_fields(self):
+        from app.api.routes.toolsets import get_agent_toolsets
+
+        request = _make_request()
+        request.app.state.toolset_registry = _make_registry("jira")
+        config_service = AsyncMock()
+        expected = {"status": "success", "toolsets": [], "pagination": {}, "filterCounts": {}}
+
+        agent_doc = {"_key": "a1", "can_edit": False}
+        with patch(
+            "app.api.routes.toolsets._resolve_agent_with_permission",
+            new_callable=AsyncMock,
+            return_value=agent_doc,
+        ), \
+             patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._build_toolsets_list_response", new_callable=AsyncMock, return_value=expected) as mock_build:
+            result = await get_agent_toolsets("a1", request, config_service=config_service)
+
+        assert result == expected
+        assert mock_build.await_args.kwargs["expose_non_oauth_auth"] is False
 
     @pytest.mark.asyncio
     async def test_authenticate_agent_toolset_rejects_oauth_instances(self):
