@@ -11,10 +11,27 @@ on:
         description: 'Connector markers to run (e.g. "s3", "gcs", "azure_blob", "azure_files", or "integration" for all)'
         required: true
         default: 'integration'
+        type: choice
+        options:
+          - integration
+          - s3
+          - gcs
+          - azure_blob
+          - azure_files
+          - messaging
       commit_hash:
         description: 'Commit hash to checkout (defaults to HEAD)'
         required: false
         default: ''
+      python_version:
+        description: 'Python version to use'
+        required: true
+        default: '3.12'
+        type: choice
+        options:
+          - '3.10'
+          - '3.11'
+          - '3.12'
       graph_db:
         description: 'Graph database backend to test against'
         required: true
@@ -56,6 +73,11 @@ jobs:
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml build
+
+      - name: Set up Python ${{ github.event.inputs.python_version || '3.12' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ github.event.inputs.python_version || '3.12' }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
