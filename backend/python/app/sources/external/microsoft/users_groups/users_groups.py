@@ -7851,17 +7851,22 @@ class UsersGroupsDataSource:
                     query_params.top = top
                 if skip is not None:
                     query_params.skip = skip
+                if search or filter:
+                    if hasattr(query_params, "count"):
+                        query_params.count = True
 
                 config = GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration()
                 config.query_parameters = query_params
-
+                # Kiota RequestConfiguration.headers must be HeadersCollection; assigning a dict breaks configure().
+                hcol = HeadersCollection()
                 if headers:
-                    config.headers = headers
-
-                if search:
-                    if not config.headers:
-                        config.headers = {}
-                    config.headers['ConsistencyLevel'] = 'eventual'
+                    for hk, hv in headers.items():
+                        if hv is not None:
+                            hcol.try_add(hk, str(hv))
+                if search or filter:
+                    if not hcol.try_get("consistencylevel"):
+                        hcol.try_add("ConsistencyLevel", "eventual")
+                config.headers = hcol
 
                 response = await self.client.groups.get(request_configuration=config)
 

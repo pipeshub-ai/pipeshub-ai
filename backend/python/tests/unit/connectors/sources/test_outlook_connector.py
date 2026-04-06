@@ -13,6 +13,7 @@ from app.connectors.sources.microsoft.outlook.connector import (
     OutlookCredentials,
 )
 from app.connectors.sources.microsoft.common.outlook_constants import (
+    OutlookAPIFields,
     OutlookFolders,
     OutlookThreadDetection,
 )
@@ -3469,13 +3470,27 @@ class TestGetGroupOptions:
         mock_client.groups_list_groups.assert_called_once()
         call_kwargs = mock_client.groups_list_groups.call_args.kwargs
         assert call_kwargs["top"] == 20
-        assert call_kwargs["skip"] == 0
+        assert "skip" not in call_kwargs
         assert call_kwargs["orderby"] == "displayName"
+        assert call_kwargs["select"] == OutlookAPIFields.GROUP_FILTER_SELECT_FIELDS
         assert call_kwargs["filter"] == "mailEnabled eq true"
-        assert call_kwargs["headers"] == {"ConsistencyLevel": "eventual"}
+        assert "headers" not in call_kwargs
 
     @pytest.mark.asyncio
-    async def test_second_page_no_search(self):
+    async def test_second_page_no_search_requires_cursor(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        result = await connector._get_group_options(2, 20, None)
+        assert result.success is True
+        assert result.options == []
+        assert result.has_more is False
+        assert "cursor" in result.message.lower()
+        mock_client.groups_list_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_second_page_no_search_with_cursor(self):
         connector = _make_connector()
         mock_client = AsyncMock()
         connector.external_users_client = mock_client
@@ -3487,10 +3502,11 @@ class TestGetGroupOptions:
             return_value=_make_graph_response(success=True, data=data)
         )
 
-        result = await connector._get_group_options(2, 20, None)
+        cursor_url = "https://graph.microsoft.com/v1.0/groups?$skiptoken=xyz"
+        result = await connector._get_group_options(2, 20, None, cursor=cursor_url)
         assert result.success is True
-        call_kwargs = mock_client.groups_list_groups.call_args.kwargs
-        assert call_kwargs["skip"] == 20
+        mock_client.groups_list_groups.assert_called_once()
+        assert mock_client.groups_list_groups.call_args.kwargs["next_url"] == cursor_url
 
     @pytest.mark.asyncio
     async def test_with_search_first_page(self):
@@ -3581,7 +3597,7 @@ class TestGetGroupOptions:
         mock_client = AsyncMock()
         connector.external_users_client = mock_client
 
-        next_link = "https://graph.microsoft.com/v1.0/groups?$skip=20"
+        next_link = "https://graph.microsoft.com/v1.0/groups?$skiptoken=abc"
         data = MagicMock()
         data.value = [_make_mock_group()]
         data.odata_next_link = next_link
@@ -3724,148 +3740,6 @@ class TestGetGroupOptions:
 # ===========================================================================
 # _resolve_group_member_emails
 # ===========================================================================
-
-
-class TestResolveGroupMemberEmails:
-
-    def _mock_group_lookup(self, group_id, group_mail):
-        """Build a mock response for groups_list_groups filter lookup."""
-        group = MagicMock()
-        group.id = group_id
-        group.mail = group_mail
-        data = MagicMock()
-        data.value = [group]
-        return _make_graph_response(success=True, data=data)
-
-    def _mock_member(self, mail, upn=None):
-        """Build a mock Graph User member object."""
-        member = MagicMock()
-        member.mail = mail
-        member.user_principal_name = upn or mail
-        return member
-
-    @pytest.mark.asyncio
-    async def test_no_client_returns_empty(self):
-        connector = _make_connector()
-        connector.external_users_client = None
-        result = await connector._resolve_group_member_emails(
-            ["eng@contoso.com"]
-        )
-        assert result == set()
-
-    @pytest.mark.asyncio
-    async def test_resolves_members_from_single_group(self):
-        connector = _make_connector()
-        mock_client = AsyncMock()
-        connector.external_users_client = mock_client
-
-        mock_client.groups_list_groups = AsyncMock(
-            return_value=self._mock_group_lookup("g-1", "eng@contoso.com")
-        )
-        connector._get_group_members = AsyncMock(return_value=[
-            self._mock_member("alice@contoso.com"),
-            self._mock_member("bob@contoso.com"),
-        ])
-
-        result = await connector._resolve_group_member_emails(
-            ["eng@contoso.com"]
-        )
-        assert result == {"alice@contoso.com", "bob@contoso.com"}
-
-    @pytest.mark.asyncio
-    async def test_resolves_members_from_multiple_groups(self):
-        connector = _make_connector()
-        mock_client = AsyncMock()
-        connector.external_users_client = mock_client
-
-        mock_client.groups_list_groups = AsyncMock(
-            side_effect=[
-                self._mock_group_lookup("g-1", "eng@contoso.com"),
-                self._mock_group_lookup("g-2", "sales@contoso.com"),
-            ]
-        )
-        connector._get_group_members = AsyncMock(side_effect=[
-            [self._mock_member("alice@contoso.com")],
-            [self._mock_member("carol@contoso.com")],
-        ])
-
-        result = await connector._resolve_group_member_emails(
-            ["eng@contoso.com", "sales@contoso.com"]
-        )
-        assert result == {"alice@contoso.com", "carol@contoso.com"}
-
-    @pytest.mark.asyncio
-    async def test_deduplicates_across_groups(self):
-        connector = _make_connector()
-        mock_client = AsyncMock()
-        connector.external_users_client = mock_client
-
-        mock_client.groups_list_groups = AsyncMock(
-            side_effect=[
-                self._mock_group_lookup("g-1", "eng@contoso.com"),
-                self._mock_group_lookup("g-2", "leads@contoso.com"),
-            ]
-        )
-        connector._get_group_members = AsyncMock(side_effect=[
-            [self._mock_member("alice@contoso.com")],
-            [self._mock_member("alice@contoso.com")],
-        ])
-
-        result = await connector._resolve_group_member_emails(
-            ["eng@contoso.com", "leads@contoso.com"]
-        )
-        assert result == {"alice@contoso.com"}
-
-    @pytest.mark.asyncio
-    async def test_group_not_found_skips(self):
-        connector = _make_connector()
-        mock_client = AsyncMock()
-        connector.external_users_client = mock_client
-
-        empty_data = MagicMock()
-        empty_data.value = []
-        mock_client.groups_list_groups = AsyncMock(
-            return_value=_make_graph_response(success=True, data=empty_data)
-        )
-
-        result = await connector._resolve_group_member_emails(
-            ["nonexistent@contoso.com"]
-        )
-        assert result == set()
-
-    @pytest.mark.asyncio
-    async def test_api_error_skips_group(self):
-        connector = _make_connector()
-        mock_client = AsyncMock()
-        connector.external_users_client = mock_client
-
-        mock_client.groups_list_groups = AsyncMock(
-            return_value=_make_graph_response(success=False, error="Err")
-        )
-
-        result = await connector._resolve_group_member_emails(
-            ["eng@contoso.com"]
-        )
-        assert result == set()
-
-    @pytest.mark.asyncio
-    async def test_member_without_mail_uses_upn(self):
-        connector = _make_connector()
-        mock_client = AsyncMock()
-        connector.external_users_client = mock_client
-
-        mock_client.groups_list_groups = AsyncMock(
-            return_value=self._mock_group_lookup("g-1", "eng@contoso.com")
-        )
-        member = MagicMock()
-        member.mail = None
-        member.user_principal_name = "dave@contoso.com"
-        connector._get_group_members = AsyncMock(return_value=[member])
-
-        result = await connector._resolve_group_member_emails(
-            ["eng@contoso.com"]
-        )
-        assert result == {"dave@contoso.com"}
 
 
 # ===========================================================================

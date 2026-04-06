@@ -58,6 +58,7 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
+    FilterOperator,
     FilterOption,
     FilterOptionsResponse,
     FilterType,
@@ -481,29 +482,17 @@ class OutlookConnector(BaseConnector):
                     user.source_user_id = email_to_source_id[user.email.lower()]
                     users_to_sync.append(user)
 
-            # Apply user filter and/or groups filter (union)
+            # Apply user filter
             users_filter = self.sync_filters.get(SyncFilterKey.USERS)
-            groups_filter = self.sync_filters.get(SyncFilterKey.GROUPS)
             has_users_filter = users_filter and not users_filter.is_empty()
-            has_groups_filter = groups_filter and not groups_filter.is_empty()
 
-            if has_users_filter or has_groups_filter:
+            if has_users_filter:
                 allowed_emails: set[str] = set()
 
-                if has_users_filter:
-                    selected_emails = users_filter.get_value()
-                    allowed_emails.update(
-                        e.lower() for e in selected_emails
-                    )
-
-                if has_groups_filter:
-                    selected_group_mails = groups_filter.get_value()
-                    group_member_emails = (
-                        await self._resolve_group_member_emails(
-                            selected_group_mails
-                        )
-                    )
-                    allowed_emails.update(group_member_emails)
+                selected_emails = users_filter.get_value()
+                allowed_emails.update(
+                    e.lower() for e in selected_emails
+                )
 
                 filtered_users = [
                     user for user in users_to_sync
@@ -511,7 +500,7 @@ class OutlookConnector(BaseConnector):
                     and user.email.lower() in allowed_emails
                 ]
                 self.logger.info(
-                    "Filter applied: %d users selected "
+                    "Users filter applied: %d users selected "
                     "out of %d active users",
                     len(filtered_users),
                     len(users_to_sync),
@@ -531,66 +520,6 @@ class OutlookConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error syncing users: {e}")
             raise
-
-    async def _resolve_group_member_emails(
-        self, group_mails: list[str]
-    ) -> set[str]:
-        """Resolve member emails for the given group mail addresses.
-
-        Looks up each group by its mail address via the Graph API,
-        fetches transitive members, and returns a set of lowercase
-        member emails.
-        """
-        member_emails: set[str] = set()
-
-        if not self.external_users_client:
-            return member_emails
-
-        for group_mail in group_mails:
-            try:
-                # Find group by mail address
-                escaped = group_mail.replace("'", "''")
-                filter_str = f"mail eq '{escaped}'"
-                response = await (
-                    self.external_users_client.groups_list_groups(
-                        filter=filter_str,
-                        select=["id", "mail"],
-                        headers={"ConsistencyLevel": "eventual"},
-                    )
-                )
-
-                if (
-                    not response.success
-                    or not response.data
-                    or not response.data.value
-                ):
-                    self.logger.warning(
-                        "Group not found for mail: %s", group_mail
-                    )
-                    continue
-
-                group_id = response.data.value[0].id
-                if not group_id:
-                    continue
-
-                # Fetch transitive members
-                members = await self._get_group_members(group_id)
-                for member in members:
-                    email = (
-                        member.mail or member.user_principal_name
-                    )
-                    if email:
-                        member_emails.add(email.lower())
-
-            except Exception as e:
-                self.logger.error(
-                    "Failed to resolve members for group %s: %s",
-                    group_mail,
-                    e,
-                )
-                continue
-
-        return member_emails
 
     async def _get_all_users_external(self) -> list[AppUser]:
         """Get all users using external Users Groups API with pagination."""
@@ -666,6 +595,29 @@ class OutlookConnector(BaseConnector):
                 return []
 
             self.logger.info(f"Found {len(groups)} Microsoft 365 groups to process")
+
+            # Apply groups filter (IN / NOT_IN) based on group mail address
+            groups_filter = self.sync_filters.get(SyncFilterKey.GROUPS)
+            if groups_filter and not groups_filter.is_empty():
+                total_before = len(groups)
+                selected_mails = {m.lower() for m in groups_filter.get_value()}
+                operator_str = groups_filter.get_operator().value
+
+                if operator_str == FilterOperator.IN:
+                    groups = [
+                        g for g in groups
+                        if g.mail and g.mail.lower() in selected_mails
+                    ]
+                elif operator_str == FilterOperator.NOT_IN:
+                    groups = [
+                        g for g in groups
+                        if not g.mail or g.mail.lower() not in selected_mails
+                    ]
+
+                self.logger.info(
+                    "Groups filter (%s) applied: %d groups selected out of %d",
+                    operator_str, len(groups), total_before,
+                )
 
             # Process groups in batches
             user_groups_batch: list[tuple[AppUserGroup, list[AppUser]]] = []
@@ -3014,10 +2966,10 @@ class OutlookConnector(BaseConnector):
     ) -> FilterOptionsResponse:
         """List Microsoft 365 groups for the filter UI with one Graph request per call.
 
-        Without a search term: uses ``$top`` / ``$skip`` for offset pagination.
-        With a search term: uses ``$search`` with OR clauses on displayName and mail
-        (``$count=true`` + ConsistencyLevel are set by the client).
-        Pagination uses ``@odata.nextLink`` only.
+        Graph ``GET /groups`` does not support ``$skip``; listing uses ``$top`` and
+        ``@odata.nextLink`` only (page > 1 requires ``cursor`` from the prior response).
+        With a search term: ``$search`` on displayName and mail (count + ConsistencyLevel
+        are set by the client). Search pagination is also nextLink-only.
         """
         try:
             if not self.external_users_client:
@@ -3058,15 +3010,26 @@ class OutlookConnector(BaseConnector):
                         headers={"ConsistencyLevel": "eventual"},
                     )
             else:
-                skip = (page - 1) * cap
-                response = await self.external_users_client.groups_list_groups(
-                    top=cap,
-                    skip=skip,
-                    filter="mailEnabled eq true",
-                    select=OutlookAPIFields.GROUP_FILTER_SELECT_FIELDS,
-                    orderby="displayName",
-                    headers={"ConsistencyLevel": "eventual"},
-                )
+                if page > 1 and not cursor:
+                    return FilterOptionsResponse(
+                        success=True,
+                        options=[],
+                        page=page,
+                        limit=cap,
+                        has_more=False,
+                        message="Paginated listing requires the cursor from the previous response.",
+                    )
+                if cursor:
+                    response = await self.external_users_client.groups_list_groups(
+                        next_url=cursor,
+                    )
+                else:
+                    response = await self.external_users_client.groups_list_groups(
+                        top=cap,
+                        filter="mailEnabled eq true",
+                        select=OutlookAPIFields.GROUP_FILTER_SELECT_FIELDS,
+                        orderby="displayName",
+                    )
 
             if not response.success or not response.data:
                 return FilterOptionsResponse(
