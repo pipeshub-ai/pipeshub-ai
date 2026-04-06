@@ -36,6 +36,32 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import {
+  createFolderResponseSchema,
+  createKBPermissionResponseSchema,
+  createKBResponseSchema,
+  deleteRecordResponseSchema,
+  getFolderChildrenResponseSchema,
+  getKBChildrenResponseSchema,
+  getKBResponseSchema,
+  getKnowledgeHubNodesResponseSchema,
+  getConnectorStatsResponseSchema,
+  getRecordByIdResponseSchema,
+  kbFolderSuccessResponseSchema,
+  kbSuccessResponseSchema,
+  listKBPermissionsResponseSchema,
+  listKnowledgeBasesResponseSchema,
+  moveRecordResponseSchema,
+  reindexFailedRecordsResponseSchema,
+  reindexRecordGroupResponseSchema,
+  reindexRecordResponseSchema,
+  removeKBPermissionResponseSchema,
+  resyncConnectorRecordsResponseSchema,
+  updateKBPermissionResponseSchema,
+  updateRecordResponseSchema,
+  uploadRecordsResponseSchema,
+} from '../validators/validators';
+import { sendValidatedJson } from '../../../utils/response-validator';
 import { NotificationService } from '../../notification/service/notification.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import {
@@ -125,6 +151,7 @@ export const getKnowledgeHubNodes =
         res,
         'Getting knowledge hub nodes',
         'Failed to get nodes',
+        getKnowledgeHubNodesResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting knowledge hub nodes', {
@@ -251,6 +278,7 @@ export const createKnowledgeBase =
         res,
         'Creating knowledge base',
         'Knowledge base creation failed',
+        createKBResponseSchema,
       );
       logger.info(`Knowledge base '${kbName}' created successfully`);
     } catch (error: any) {
@@ -288,6 +316,7 @@ export const getKnowledgeBase =
         res,
         'Getting knowledge base',
         'Knowledge base not found',
+        getKBResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting knowledge base', {
@@ -436,6 +465,7 @@ export const listKnowledgeBases =
         res,
         'Getting knowledge bases',
         'Knowledge bases not found',
+        listKnowledgeBasesResponseSchema,
       );
 
       // Log successful retrieval
@@ -489,6 +519,7 @@ export const updateKnowledgeBase =
         res,
         'Updating knowledge base',
         'Knowledge base not found',
+        kbSuccessResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error updating knowledge base', { error: error.message });
@@ -524,6 +555,7 @@ export const deleteKnowledgeBase =
         res,
         'Deleting knowledge base',
         'Knowledge base not found',
+        kbSuccessResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error deleting knowledge base', { error: error.message });
@@ -570,6 +602,7 @@ export const createRootFolder =
         res,
         'Creating folder',
         'Folder not found',
+        createFolderResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error creating folder for knowledge base', {
@@ -622,6 +655,7 @@ export const createNestedFolder =
         res,
         'Creating nested folder',
         'Folder not found',
+        createFolderResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error creating subfolder folder', {
@@ -671,6 +705,7 @@ export const updateFolder =
         res,
         'Updating folder',
         'Folder not found',
+        kbFolderSuccessResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error updating folder for knowledge base', {
@@ -713,6 +748,7 @@ export const deleteFolder =
         res,
         'Deleting folder',
         'Folder not found',
+        kbFolderSuccessResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error deleting folder for knowledge base', {
@@ -996,7 +1032,7 @@ export const uploadRecordsToKB =
 
       // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
       // Frontend can display these records immediately with a "processing" status
-      res.status(200).json({
+      sendValidatedJson(res, uploadRecordsResponseSchema, {
         message:
           failedFiles.length > 0
             ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
@@ -1033,7 +1069,7 @@ export const uploadRecordsToKB =
             webUrl: pr.fileRecord.webUrl,
           },
         })),
-      });
+      }, 200);
 
       // STEP 4: Process uploads and call Python service in background (non-blocking)
       // This runs after the response is sent - uploads sequentially, then calls Python
@@ -1340,7 +1376,7 @@ export const uploadRecordsToFolder =
 
       // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
       // Frontend can display these records immediately with a "processing" status
-      res.status(200).json({
+      sendValidatedJson(res, uploadRecordsResponseSchema, {
         message:
           failedFiles.length > 0
             ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
@@ -1377,7 +1413,7 @@ export const uploadRecordsToFolder =
             webUrl: pr.fileRecord.webUrl,
           },
         })),
-      });
+      }, 200);
 
       // STEP 4: Process uploads and call Python service in background (non-blocking)
       // This runs after the response is sent - uploads sequentially, then calls Python
@@ -1631,7 +1667,7 @@ export const updateRecord =
       });
 
       // Return the updated record
-      res.status(200).json({
+      sendValidatedJson(res, updateRecordResponseSchema, {
         message: fileUploaded
           ? 'Record updated with new file version'
           : 'Record updated successfully',
@@ -1641,7 +1677,7 @@ export const updateRecord =
           requestId: req.context?.requestId,
           timestamp: new Date().toISOString(),
         },
-      });
+      }, 200);
     } catch (error: any) {
       // Log the error for debugging
       logger.error('Error updating folder record', {
@@ -1838,6 +1874,7 @@ export const getKBContent =
         res,
         'Getting KB records',
         'KB records not found',
+        getKBChildrenResponseSchema,
       );
 
       // Log successful retrieval
@@ -2036,6 +2073,7 @@ export const getFolderContents =
         res,
         'Getting folder contents',
         'Folder contents not found',
+        getFolderChildrenResponseSchema,
       );
 
       // Log successful retrieval
@@ -2050,240 +2088,6 @@ export const getFolderContents =
         requestId: req.context?.requestId,
       });
       const handleError = handleBackendError(error, 'get KB records');
-      next(handleError);
-    }
-  };
-
-/**
- * Get all records accessible to user across all Knowledge Bases
- */
-export const getAllRecords =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      // Extract user from request
-      const { userId, orgId } = req.user || {};
-
-      // Validate user authentication
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
-      const search = req.query.search ? String(req.query.search) : undefined;
-
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(search, 'search parameter');
-          validateNoFormatSpecifiers(search, 'search parameter');
-
-          if (search.length > 1000) {
-            throw new BadRequestError(
-              'Search parameter too long (max 1000 characters)',
-            );
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message ||
-              'Search parameter contains potentially dangerous content',
-          );
-        }
-      }
-
-      const recordTypes = req.query.recordTypes
-        ? String(req.query.recordTypes).split(',')
-        : undefined;
-      const origins = req.query.origins
-        ? String(req.query.origins).split(',')
-        : undefined;
-      const connectors = req.query.connectors
-        ? String(req.query.connectors).split(',')
-        : undefined;
-      const permissions = req.query.permissions
-        ? String(req.query.permissions).split(',')
-        : undefined;
-      const indexingStatus = req.query.indexingStatus
-        ? String(req.query.indexingStatus).split(',')
-        : undefined;
-
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
-
-      // Sorting parameters
-      const sortBy = req.query.sortBy
-        ? String(req.query.sortBy)
-        : 'createdAtTimestamp';
-      const sortOrderParam = req.query.sortOrder
-        ? String(req.query.sortOrder)
-        : 'desc';
-      const sortOrder =
-        sortOrderParam === 'asc' || sortOrderParam === 'desc'
-          ? sortOrderParam
-          : 'desc';
-
-      // Parse source parameter
-      const source = req.query.source
-        ? ['all', 'local', 'connector'].includes(String(req.query.source))
-          ? (String(req.query.source) as 'all' | 'local' | 'connector')
-          : 'all'
-        : 'all';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
-
-      logger.debug('Getting all records for user', {
-        userId,
-        orgId,
-        page,
-        limit,
-        search,
-        recordTypes,
-        origins,
-        connectors,
-        permissions,
-        indexingStatus,
-        dateFrom,
-        dateTo,
-        sortBy,
-        sortOrder,
-        source,
-        requestId: req.context?.requestId,
-      });
-
-      const queryParams = new URLSearchParams();
-
-      if (page) {
-        queryParams.append('page', page.toString());
-      }
-      if (limit) {
-        queryParams.append('limit', limit.toString());
-      }
-      if (search) {
-        queryParams.append('search', search);
-      }
-      if (recordTypes) {
-        queryParams.append('record_types', recordTypes.join(','));
-      }
-      if (origins) {
-        queryParams.append('origins', origins.join(','));
-      }
-      if (connectors) {
-        queryParams.append('connectors', connectors.join(','));
-      }
-      if (permissions) {
-        queryParams.append('permissions', permissions.join(','));
-      }
-      if (indexingStatus) {
-        queryParams.append('indexing_status', indexingStatus.join(','));
-      }
-      if (dateFrom) {
-        queryParams.append('date_from', dateFrom.toString());
-      }
-      if (dateTo) {
-        queryParams.append('date_to', dateTo.toString());
-      }
-      if (sortBy) {
-        queryParams.append('sort_by', sortBy);
-      }
-      if (sortOrder) {
-        queryParams.append('sort_order', sortOrder);
-      }
-      if (source) {
-        queryParams.append('source', source);
-      }
-
-      // Call the Python service to get all records
-      const response = await executeConnectorCommand(
-        // `${appConfig.connectorBackend}/api/v1/kb/records/user/${userId}/org/${orgId}`,
-        `${appConfig.connectorBackend}/api/v1/records?${queryParams.toString()}`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-
-      if (response.statusCode !== 200) {
-        throw new InternalServerError('Failed to get all records');
-      }
-
-      const result = response.data as any;
-
-      // Log successful retrieval
-      logger.debug('All records retrieved successfully', {
-        totalRecords: result.pagination?.totalCount || 0,
-        page: result.pagination?.page || page,
-        userId,
-        orgId,
-        source,
-        requestId: req.context?.requestId,
-      });
-
-      // Send response
-      res.status(200).json({
-        records: result.records || [],
-        pagination: {
-          page: result.pagination?.page || page,
-          limit: result.pagination?.limit || limit,
-          totalCount: result.pagination?.totalCount || 0,
-          totalPages: result.pagination?.totalPages || 0,
-        },
-        filters: {
-          applied: {
-            search,
-            recordTypes,
-            origins,
-            connectors,
-            permissions,
-            indexingStatus,
-            source: source !== 'all' ? source : null,
-            dateRange:
-              dateFrom || dateTo ? { from: dateFrom, to: dateTo } : null,
-            sortBy,
-            sortOrder,
-          },
-          available: result.filters?.available || {},
-        },
-      });
-    } catch (error: any) {
-      // Handle permission errors
-      if (
-        error instanceof Error &&
-        (error.message.includes('does not have permission') ||
-          error.message.includes('does not have the required permissions'))
-      ) {
-        throw new UnauthorizedError(
-          'You do not have permission to access these records',
-        );
-      }
-
-      // Log and forward any other errors
-      logger.error('Error getting all records', {
-        userId: req.user?.userId,
-        orgId: req.user?.orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined,
-        requestId: req.context?.requestId,
-      });
-      const handleError = handleBackendError(error, 'get all records');
       next(handleError);
     }
   };
@@ -2314,6 +2118,7 @@ export const getRecordById =
         res,
         'Getting record by id',
         'Record not found',
+        getRecordByIdResponseSchema,
       );
 
       // Log successful retrieval
@@ -2357,6 +2162,7 @@ export const reindexRecord =
         res,
         'Record not found',
         'Record not reindexed',
+        reindexRecordResponseSchema,
       );
 
       // Log successful reindex
@@ -2400,6 +2206,7 @@ export const reindexRecordGroup =
         res,
         'Record group not found',
         'Record group not reindexed',
+        reindexRecordGroupResponseSchema,
       );
 
       // Log successful reindex
@@ -2445,6 +2252,7 @@ export const deleteRecord =
         res,
         'Deleting record',
         'Record not deleted',
+        deleteRecordResponseSchema,
       );
 
       // Log successful retrieval
@@ -2528,10 +2336,7 @@ export const createKBPermission =
         throw new NotFoundError('Failed to create permissions');
       }
 
-      res.status(201).json({
-        kbId: kbId,
-        permissionResult,
-      });
+      sendValidatedJson(res, createKBPermissionResponseSchema, { kbId, permissionResult }, 201);
     } catch (error: any) {
       logger.error('Error creating KB permissions', {
         error: error.message,
@@ -2599,12 +2404,12 @@ export const updateKBPermission =
 
       const updateResult = response.data as any;
 
-      res.status(200).json({
-        kbId: kbId,
+      sendValidatedJson(res, updateKBPermissionResponseSchema, {
+        kbId,
         userIds: updateResult.userIds,
         teamIds: updateResult.teamIds,
         newRole: updateResult.newRole,
-      });
+      }, 200);
     } catch (error: any) {
       logger.error('Error updating KB permission', {
         error: error.message,
@@ -2653,11 +2458,11 @@ export const removeKBPermission =
 
       const removeResult = response.data as any;
 
-      res.status(200).json({
-        kbId: kbId,
+      sendValidatedJson(res, removeKBPermissionResponseSchema, {
+        kbId,
         userIds: removeResult.userIds,
         teamIds: removeResult.teamIds,
-      });
+      }, 200);
     } catch (error: any) {
       logger.error('Error removing KB permission', {
         error: error.message,
@@ -2695,11 +2500,11 @@ export const listKBPermissions =
 
       const listResult = response.data as any;
 
-      res.status(200).json({
-        kbId: kbId,
+      sendValidatedJson(res, listKBPermissionsResponseSchema, {
+        kbId,
         permissions: listResult.permissions,
         totalCount: listResult.totalCount,
-      });
+      }, 200);
     } catch (error: any) {
       logger.error('Error listing KB permissions', {
         error: error.message,
@@ -2756,7 +2561,7 @@ export const getConnectorStats =
         });
 
         // Send response
-        res.status(200).json(result);
+        sendValidatedJson(res, getConnectorStatsResponseSchema, result, 200);
       } catch (pythonServiceError: any) {
         logger.error('Error calling Python service for record', {
           userId,
@@ -2929,9 +2734,7 @@ export const reindexFailedRecords =
       const reindexResponse =
         await recordRelationService.reindexFailedRecords(reindexPayload);
 
-      res.status(200).json({
-        reindexResponse,
-      });
+      sendValidatedJson(res, reindexFailedRecordsResponseSchema, { reindexResponse }, 200);
 
       return; // Added return statement
     } catch (error: any) {
@@ -2981,9 +2784,7 @@ export const resyncConnectorRecords =
           resyncConnectorPayload,
         );
 
-      res.status(200).json({
-        resyncConnectorResponse,
-      });
+      sendValidatedJson(res, resyncConnectorRecordsResponseSchema, { resyncConnectorResponse }, 200);
 
       return; // Added return statement
     } catch (error: any) {
@@ -3030,6 +2831,7 @@ export const moveRecord =
         res,
         'Moving record',
         'Record not found',
+        moveRecordResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error moving record', {

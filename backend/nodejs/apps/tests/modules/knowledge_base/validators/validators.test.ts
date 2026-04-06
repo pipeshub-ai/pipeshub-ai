@@ -12,7 +12,6 @@ import {
   getConnectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllRecordsSchema,
   getAllKBRecordsSchema,
   createKBSchema,
   getKBSchema,
@@ -248,128 +247,6 @@ describe('knowledge_base/validators/validators', () => {
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: '' },
       }
       const result = uploadRecordsToFolderSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllRecordsSchema
-  // -----------------------------------------------------------------------
-  describe('getAllRecordsSchema', () => {
-    it('should accept empty query', () => {
-      const data = { query: {} }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject page 0', () => {
-      const data = { query: { page: '0' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject limit 0', () => {
-      const data = { query: { limit: '0' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject limit over 100', () => {
-      const data = { query: { limit: '101' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject XSS in search', () => {
-      const data = { query: { search: '<script>alert(1)</script>' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject HTML tags in search', () => {
-      const data = { query: { search: '<img src=x>' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject format specifiers in search', () => {
-      const data = { query: { search: '%1$s' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid search', () => {
-      const data = { query: { search: 'hello world' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should accept valid sortBy field', () => {
-      const data = { query: { sortBy: 'createdAtTimestamp' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid sortBy field', () => {
-      const data = { query: { sortBy: 'invalidField' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid sortOrder', () => {
-      const data = { query: { sortOrder: 'desc' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid sortOrder', () => {
-      const data = { query: { sortOrder: 'random' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid source filter', () => {
-      const data = { query: { source: 'local' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid source filter', () => {
-      const data = { query: { source: 'invalid' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject unknown query parameters', () => {
-      const data = { query: { unknown: 'val' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid dateFrom', () => {
-      const data = { query: { dateFrom: '1234567890' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid dateFrom', () => {
-      const data = { query: { dateFrom: 'not-a-number' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should transform comma-separated recordTypes', () => {
-      const data = { query: { recordTypes: 'FILE,FOLDER' } }
-      const result = getAllRecordsSchema.safeParse(data)
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.recordTypes).to.deep.equal(['FILE', 'FOLDER'])
-      }
-    })
-
-    it('should reject javascript: protocol in search', () => {
-      const data = { query: { search: 'javascript:alert(1)' } }
-      const result = getAllRecordsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

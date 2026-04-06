@@ -6,6 +6,7 @@ import {
   PlaceholderResultWithMetadata,
   uploadFileToSignedUrl,
 } from '../../../../src/modules/knowledge_base/utils/utils'
+import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
 
 describe('Knowledge Base Utils - coverage', () => {
   afterEach(() => {
@@ -231,77 +232,80 @@ describe('Knowledge Base Utils - coverage', () => {
     })
 
     it('should handle successful direct upload (no uploadPromise)', async () => {
-      // The direct upload path: uploadPromise is undefined, so file was uploaded directly
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {},
+        msg: 'OK',
+      })
+
       const results = [
-        createPlaceholderResult(), // no uploadPromise
+        createPlaceholderResult(), // no uploadPromise — direct upload path
       ]
 
-      // This test will try to create ConnectorServiceCommand which may fail,
-      // but the "else" branch (no uploadPromise) for the upload loop is covered
-      try {
-        await processUploadsInBackground(
-          results,
-          'org-1', 'user-1', Date.now(),
-          'http://python/api/v1/kb/kb1/records',
-          {},
-          mockLogger,
-          mockNotificationService,
-          'kb1',
-        )
-      } catch {
-        // ConnectorServiceCommand may throw due to network, but upload logic is covered
-      }
+      await processUploadsInBackground(
+        results,
+        'org-1', 'user-1', Date.now(),
+        'http://python/api/v1/kb/kb1/records',
+        {},
+        mockLogger,
+        mockNotificationService,
+        'kb1',
+      )
 
-      // The file was counted as successful since no uploadPromise
+      // File was counted as successful (else branch), Python service called
       expect(mockLogger.info.called).to.be.true
     })
 
     it('should handle successful upload promise', async () => {
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {},
+        msg: 'OK',
+      })
+
       const results = [
         createPlaceholderResult({
           uploadPromise: Promise.resolve(),
         }),
       ]
 
-      try {
-        await processUploadsInBackground(
-          results,
-          'org-1', 'user-1', Date.now(),
-          'http://python/api/v1/kb/kb1/records',
-          {},
-          mockLogger,
-          mockNotificationService,
-        )
-      } catch {
-        // ConnectorServiceCommand may throw
-      }
+      await processUploadsInBackground(
+        results,
+        'org-1', 'user-1', Date.now(),
+        'http://python/api/v1/kb/kb1/records',
+        {},
+        mockLogger,
+        mockNotificationService,
+      )
 
       expect(mockLogger.debug.called).to.be.true
     })
 
     it('should handle mixed successful and failed uploads', async () => {
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {},
+        msg: 'OK',
+      })
+
       const results = [
         createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1' }),
         createPlaceholderResult({ uploadPromise: Promise.reject(new Error('fail')), key: 'fail-1' }),
         createPlaceholderResult({ key: 'direct-1' }), // direct upload, no promise
       ]
 
-      try {
-        await processUploadsInBackground(
-          results,
-          'org-1', 'user-1', Date.now(),
-          'http://python/api/v1/kb/kb1/records',
-          {},
-          mockLogger,
-          mockNotificationService,
-          'kb1',
-          'folder1',
-        )
-      } catch {
-        // Connector may throw
-      }
+      await processUploadsInBackground(
+        results,
+        'org-1', 'user-1', Date.now(),
+        'http://python/api/v1/kb/kb1/records',
+        {},
+        mockLogger,
+        mockNotificationService,
+        'kb1',
+        'folder1',
+      )
 
-      // Should have logged both success and failure
+      // Resolved promise + direct upload → successfulResults; rejected promise → failedResults
       expect(mockLogger.info.called).to.be.true
       expect(mockLogger.error.called).to.be.true
     })
