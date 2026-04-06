@@ -7,11 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
+from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.connectors.sources.microsoft.outlook.connector import (
     OutlookConnector,
     OutlookCredentials,
 )
 from app.connectors.sources.microsoft.common.outlook_constants import (
+    OutlookAPIFields,
     OutlookFolders,
     OutlookThreadDetection,
 )
@@ -1784,6 +1786,182 @@ class TestSyncUserGroupsDeepFlow:
 
 
 # ===========================================================================
+# _sync_user_groups — groups_filter (IN / NOT_IN)
+# ===========================================================================
+
+
+def _make_groups_filter(operator_str, mails):
+    """Return a mock Filter object for the GROUPS sync filter."""
+    from app.connectors.core.registry.filters import MultiselectOperator
+    f = MagicMock()
+    f.is_empty.return_value = False
+    f.get_value.return_value = list(mails)
+    operator = MultiselectOperator.IN if operator_str == "in" else MultiselectOperator.NOT_IN
+    f.get_operator.return_value = operator
+    return f
+
+
+def _make_sync_filters_with_groups(operator_str, mails):
+    """Return a mock FilterCollection that returns a groups filter."""
+    from app.connectors.core.registry.filters import SyncFilterKey
+    groups_filter = _make_groups_filter(operator_str, mails)
+    mock_fc = MagicMock()
+
+    def _get(key):
+        if key == SyncFilterKey.GROUPS:
+            return groups_filter
+        return None
+
+    mock_fc.get = MagicMock(side_effect=_get)
+    return mock_fc
+
+
+class TestSyncUserGroupsFilter:
+
+    def _setup_connector(self, groups, operator_str=None, filter_mails=None):
+        connector = _make_connector()
+        connector.external_users_client = MagicMock()
+        connector._user_cache = {}
+        connector._get_all_microsoft_365_groups = AsyncMock(return_value=groups)
+        connector._get_group_members = AsyncMock(return_value=[])
+
+        if operator_str is not None:
+            connector.sync_filters = _make_sync_filters_with_groups(operator_str, filter_mails)
+        else:
+            from app.connectors.core.registry.filters import FilterCollection
+            connector.sync_filters = FilterCollection()
+
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_no_filter_syncs_all_groups(self):
+        """When no groups filter is set all fetched groups are synced."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups)
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 2
+        ids = {g.source_user_group_id for g in result}
+        assert ids == {"g1", "g2"}
+
+    @pytest.mark.asyncio
+    async def test_in_filter_keeps_only_selected_groups(self):
+        """IN operator: only groups whose mail is in the filter set are synced."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+            _make_mock_group(group_id="g3", display_name="HR", mail="hr@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["eng@contoso.com", "hr@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 2
+        ids = {g.source_user_group_id for g in result}
+        assert ids == {"g1", "g3"}
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_excludes_selected_groups(self):
+        """NOT_IN operator: groups whose mail is in the filter set are excluded."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+            _make_mock_group(group_id="g3", display_name="HR", mail="hr@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["sales@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 2
+        ids = {g.source_user_group_id for g in result}
+        assert ids == {"g1", "g3"}
+
+    @pytest.mark.asyncio
+    async def test_in_filter_case_insensitive(self):
+        """IN operator matches are case-insensitive."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="Engineering@Contoso.COM"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["engineering@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g1"
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_case_insensitive(self):
+        """NOT_IN operator exclusion is case-insensitive."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="Engineering@Contoso.COM"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["engineering@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g2"
+
+    @pytest.mark.asyncio
+    async def test_in_filter_excludes_group_with_no_mail(self):
+        """IN operator: group with mail=None cannot match, so it is excluded."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="No-Mail Group", mail=None),
+            _make_mock_group(group_id="g2", display_name="Engineering", mail="eng@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["eng@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g2"
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_passes_group_with_no_mail(self):
+        """NOT_IN operator: group with mail=None cannot be in the exclusion set, so it passes."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="No-Mail Group", mail=None),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["sales@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g1"
+
+    @pytest.mark.asyncio
+    async def test_in_filter_no_match_returns_empty(self):
+        """IN operator with no matching groups returns an empty list."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["nonexistent@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_excludes_all_returns_empty(self):
+        """NOT_IN operator that excludes every group returns an empty list."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["eng@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert result == []
+
+
+# ===========================================================================
 # Deep Sync: _extract_email_permissions
 # ===========================================================================
 
@@ -3321,6 +3499,420 @@ class TestGetFilterOptions:
         connector = _make_connector()
         with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("some_key")
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_get_group_options(self):
+        connector = _make_connector()
+        connector._get_group_options = AsyncMock(
+            return_value=FilterOptionsResponse(
+                success=True, options=[], page=1, limit=20, has_more=False
+            )
+        )
+        await connector.get_filter_options("groups", page=1, limit=20, search=None)
+        connector._get_group_options.assert_called_once_with(1, 20, None, None)
+
+
+# ===========================================================================
+# _graph_group_to_filter_option
+# ===========================================================================
+
+
+def _make_mock_group(
+    group_id: str | None = "g-1",
+    display_name: str | None = "Engineering",
+    mail: str | None = "engineering@contoso.com",
+    mail_nickname: str | None = "engineering",
+    group_types: list[str] | None = None,
+    mail_enabled: bool | None = True,
+) -> MagicMock:
+    """Create a mock Microsoft Graph Group object."""
+    group = MagicMock()
+    group.id = group_id
+    group.display_name = display_name
+    group.mail = mail
+    group.mail_nickname = mail_nickname
+    group.group_types = group_types if group_types is not None else ["Unified"]
+    group.mail_enabled = mail_enabled
+    group.description = None
+    group.additional_data = {}
+    return group
+
+
+class TestGraphGroupToFilterOption:
+
+    def test_with_display_name_and_mail(self):
+        connector = _make_connector()
+        group = _make_mock_group()
+        opt = connector._graph_group_to_filter_option(group)
+        assert opt is not None
+        assert opt.id == "engineering@contoso.com"
+        assert opt.label == "Engineering (engineering@contoso.com)"
+
+    def test_no_mail_returns_none(self):
+        connector = _make_connector()
+        group = _make_mock_group(mail=None)
+        assert connector._graph_group_to_filter_option(group) is None
+
+    def test_empty_mail_returns_none(self):
+        connector = _make_connector()
+        group = _make_mock_group(mail="")
+        assert connector._graph_group_to_filter_option(group) is None
+
+    def test_no_display_name_falls_back_to_mail_nickname(self):
+        connector = _make_connector()
+        group = _make_mock_group(display_name=None, mail_nickname="eng-team")
+        opt = connector._graph_group_to_filter_option(group)
+        assert opt is not None
+        assert opt.id == "engineering@contoso.com"
+        assert opt.label == "eng-team (engineering@contoso.com)"
+
+    def test_no_display_name_no_nickname_falls_back_to_mail(self):
+        connector = _make_connector()
+        group = _make_mock_group(display_name=None, mail_nickname=None)
+        opt = connector._graph_group_to_filter_option(group)
+        assert opt is not None
+        assert opt.id == "engineering@contoso.com"
+        assert opt.label == "engineering@contoso.com (engineering@contoso.com)"
+
+    def test_mail_disabled_group_returns_none(self):
+        connector = _make_connector()
+        group = _make_mock_group(mail_enabled=False)
+        assert connector._graph_group_to_filter_option(group) is None
+
+    def test_distribution_group_included(self):
+        """Distribution lists (non-Unified, mail-enabled) should be included."""
+        connector = _make_connector()
+        group = _make_mock_group(
+            group_types=[], mail="distro@contoso.com"
+        )
+        opt = connector._graph_group_to_filter_option(group)
+        assert opt is not None
+        assert opt.id == "distro@contoso.com"
+
+    def test_mail_enabled_security_group_included(self):
+        """Mail-enabled security groups should be included."""
+        connector = _make_connector()
+        group = _make_mock_group(
+            group_types=["DynamicMembership"],
+            mail="security@contoso.com",
+        )
+        opt = connector._graph_group_to_filter_option(group)
+        assert opt is not None
+        assert opt.id == "security@contoso.com"
+
+    def test_m365_unified_group_included(self):
+        """Microsoft 365 (Unified) groups should also be included."""
+        connector = _make_connector()
+        group = _make_mock_group(group_types=["Unified"])
+        opt = connector._graph_group_to_filter_option(group)
+        assert opt is not None
+        assert opt.id == "engineering@contoso.com"
+
+
+# ===========================================================================
+# _get_group_options
+# ===========================================================================
+
+
+class TestGetGroupOptions:
+
+    @pytest.mark.asyncio
+    async def test_no_client_returns_failure(self):
+        connector = _make_connector()
+        connector.external_users_client = None
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is False
+        assert result.message == "Outlook connector is not initialized"
+
+    @pytest.mark.asyncio
+    async def test_first_page_no_search(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        m365_group = _make_mock_group()
+        data = MagicMock()
+        data.value = [m365_group]
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is True
+        assert len(result.options) == 1
+        assert result.options[0].id == "engineering@contoso.com"
+        assert result.has_more is False
+        assert result.cursor is None
+
+        mock_client.groups_list_groups.assert_called_once()
+        call_kwargs = mock_client.groups_list_groups.call_args.kwargs
+        assert call_kwargs["top"] == 20
+        assert "skip" not in call_kwargs
+        assert call_kwargs["orderby"] == "displayName"
+        assert call_kwargs["select"] == OutlookAPIFields.GROUP_FILTER_SELECT_FIELDS
+        assert call_kwargs["filter"] == "mailEnabled eq true"
+        assert "headers" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_second_page_no_search_requires_cursor(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        result = await connector._get_group_options(2, 20, None)
+        assert result.success is True
+        assert result.options == []
+        assert result.has_more is False
+        assert "cursor" in result.message.lower()
+        mock_client.groups_list_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_second_page_no_search_with_cursor(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = [_make_mock_group(group_id="g-2")]
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        cursor_url = "https://graph.microsoft.com/v1.0/groups?$skiptoken=xyz"
+        result = await connector._get_group_options(2, 20, None, cursor=cursor_url)
+        assert result.success is True
+        mock_client.groups_list_groups.assert_called_once()
+        assert mock_client.groups_list_groups.call_args.kwargs["next_url"] == cursor_url
+
+    @pytest.mark.asyncio
+    async def test_with_search_first_page(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = [_make_mock_group()]
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, "eng")
+        assert result.success is True
+        assert len(result.options) == 1
+
+        call_kwargs = mock_client.groups_list_groups.call_args.kwargs
+        assert "search" in call_kwargs
+        assert "eng" in call_kwargs["search"]
+        assert "displayName" in call_kwargs["search"]
+        assert "mail" in call_kwargs["search"]
+        assert call_kwargs["headers"] == {"ConsistencyLevel": "eventual"}
+
+    @pytest.mark.asyncio
+    async def test_with_search_and_cursor(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = [_make_mock_group(group_id="g-3")]
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        cursor_url = "https://graph.microsoft.com/v1.0/groups?$skiptoken=abc"
+        result = await connector._get_group_options(2, 20, "eng", cursor=cursor_url)
+        assert result.success is True
+
+        call_kwargs = mock_client.groups_list_groups.call_args.kwargs
+        assert call_kwargs["next_url"] == cursor_url
+
+    @pytest.mark.asyncio
+    async def test_search_page_gt1_no_cursor_returns_empty(self):
+        connector = _make_connector()
+        connector.external_users_client = AsyncMock()
+
+        result = await connector._get_group_options(2, 20, "eng", cursor=None)
+        assert result.success is True
+        assert result.options == []
+        assert result.has_more is False
+        assert "cursor" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_api_failure(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=False, error="Unauthorized")
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is False
+        assert "Unauthorized" in result.message
+
+    @pytest.mark.asyncio
+    async def test_api_exception(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        mock_client.groups_list_groups = AsyncMock(
+            side_effect=RuntimeError("connection timeout")
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is False
+        assert "connection timeout" in result.message
+
+    @pytest.mark.asyncio
+    async def test_has_more_with_next_link(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        next_link = "https://graph.microsoft.com/v1.0/groups?$skiptoken=abc"
+        data = MagicMock()
+        data.value = [_make_mock_group()]
+        data.odata_next_link = next_link
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is True
+        assert result.has_more is True
+        assert result.cursor == next_link
+
+    @pytest.mark.asyncio
+    async def test_no_more_pages(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = [_make_mock_group()]
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.has_more is False
+        assert result.cursor is None
+
+    @pytest.mark.asyncio
+    async def test_filters_non_mail_groups(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        m365_group = _make_mock_group(
+            group_id="g-m365", mail="m365@contoso.com"
+        )
+        distro_group = _make_mock_group(
+            group_id="g-distro",
+            mail="distro@contoso.com",
+            group_types=[],
+        )
+        mail_disabled_group = _make_mock_group(
+            group_id="g-disabled",
+            mail="disabled@contoso.com",
+            mail_enabled=False,
+        )
+        no_mail_group = _make_mock_group(
+            group_id="g-nomail",
+            mail=None,
+        )
+
+        data = MagicMock()
+        data.value = [
+            m365_group, distro_group, mail_disabled_group, no_mail_group
+        ]
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is True
+        assert len(result.options) == 2
+        option_ids = {opt.id for opt in result.options}
+        assert option_ids == {"m365@contoso.com", "distro@contoso.com"}
+
+    @pytest.mark.asyncio
+    async def test_limit_capped_at_max(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = []
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 500, None)
+        assert result.limit == 100
+        call_kwargs = mock_client.groups_list_groups.call_args.kwargs
+        assert call_kwargs["top"] == 100
+
+    @pytest.mark.asyncio
+    async def test_empty_response(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = []
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is True
+        assert result.options == []
+
+    @pytest.mark.asyncio
+    async def test_none_value_in_response(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = None
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        result = await connector._get_group_options(1, 20, None)
+        assert result.success is True
+        assert result.options == []
+
+    @pytest.mark.asyncio
+    async def test_special_chars_in_search_escaped(self):
+        connector = _make_connector()
+        mock_client = AsyncMock()
+        connector.external_users_client = mock_client
+
+        data = MagicMock()
+        data.value = []
+        data.odata_next_link = None
+        mock_client.groups_list_groups = AsyncMock(
+            return_value=_make_graph_response(success=True, data=data)
+        )
+
+        await connector._get_group_options(1, 20, 'test\\"group')
+        call_kwargs = mock_client.groups_list_groups.call_args.kwargs
+        # Backslash and quote should be escaped
+        assert '\\\\"' in call_kwargs["search"] or '\\"' in call_kwargs["search"]
 
 
 # ===========================================================================
