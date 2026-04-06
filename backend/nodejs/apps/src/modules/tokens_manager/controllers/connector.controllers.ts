@@ -7,6 +7,7 @@
  */
 
 import { NextFunction, Response } from 'express';
+import { z } from 'zod';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -16,7 +17,30 @@ import {
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
-import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+  handleConnectorResponse,
+} from '../utils/connector.utils';
+import {
+  connectorRegistryResponseSchema,
+  connectorSchemaResponseSchema,
+  connectorInstancesResponseSchema,
+  connectorActiveInactiveResponseSchema,
+  connectorConfiguredResponseSchema,
+  connectorInstanceDetailResponseSchema,
+  connectorDeleteResponseSchema,
+  connectorToggleResponseSchema,
+  connectorInstanceConfigResponseSchema,
+  connectorAuthConfigUpdateResponseSchema,
+  connectorFiltersSyncConfigUpdateResponseSchema,
+  connectorNameUpdateResponseSchema,
+  connectorFilterFieldOptionsResponseSchema,
+  connectorOAuthAuthorizeResponseSchema,
+  connectorOAuthCallbackResponseSchema,
+  createConnectorResponseSchema,
+  connectorActiveAgentInstancesResponseSchema,
+} from '../validators/connector.validators';
 
 const logger = Logger.getInstance({
   service: 'Connector Controller',
@@ -32,14 +56,16 @@ const logger = Logger.getInstance({
  * @param validatePayload - Function to validate the request payload
  * @param createPayload - Function to create the payload from request body
  * @param operationName - Human-readable operation name for logging
+ * @param responseSchema - Zod schema for validating response
  * @returns Express route handler function
  */
-const createConnectorConfigUpdateHandler = (
+const createConnectorConfigUpdateHandler = <T extends z.ZodSchema>(
   appConfig: AppConfig,
   endpointPath: string,
   validatePayload: (body: any) => void,
   createPayload: (body: any) => any,
   operationName: string,
+  responseSchema: T,
 ) => {
   return async (
     req: AuthenticatedUserRequest,
@@ -82,6 +108,7 @@ const createConnectorConfigUpdateHandler = (
         res,
         operationName,
         'Connector instance not found',
+        responseSchema,
       );
     } catch (error: any) {
       logger.error(`Error ${operationName.toLowerCase()}`, {
@@ -168,7 +195,8 @@ export const getConnectorRegistry =
         connectorResponse,
         res,
         'Getting all connectors from registry',
-        'Connectors from registry not found'
+        'Connectors from registry not found',
+        connectorRegistryResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector registry', {
@@ -235,7 +263,8 @@ export const getConnectorInstances =
         connectorResponse,
         res,
         'Getting connector instances',
-        'Connector instances not found'
+        'Connector instances not found',
+        connectorInstancesResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instances', {
@@ -278,7 +307,8 @@ export const getActiveConnectorInstances =
         connectorResponse,
         res,
         'Getting all active connectors',
-        'Active connectors not found'
+        'Active connectors not found',
+        connectorActiveInactiveResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting active connector instances', {
@@ -324,7 +354,8 @@ export const getInactiveConnectorInstances =
         connectorResponse,
         res,
         'Getting all inactive connectors',
-        'Inactive connectors not found'
+        'Inactive connectors not found',
+        connectorActiveInactiveResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting inactive connector instances', {
@@ -391,8 +422,9 @@ export const getConfiguredConnectorInstances =
       handleConnectorResponse(
         connectorResponse,
         res,
-        'Getting connector config',
-        'Connector config not found'
+        'Getting configured connector instances',
+        'Configured connector instances not found',
+        connectorConfiguredResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting configured connector instances', {
@@ -460,7 +492,8 @@ export const createConnectorInstance =
         connectorResponse,
         res,
         'Creating connector instance',
-        'Connector config not found'
+        'Connector config not found',
+        createConnectorResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error creating connector instance', {
@@ -511,7 +544,8 @@ export const getConnectorInstance =
         connectorResponse,
         res,
         'Getting connector instance',
-        'Connector schema not found'
+        'Connector instance not found',
+        connectorInstanceDetailResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instance', {
@@ -561,7 +595,8 @@ export const getConnectorInstanceConfig =
         connectorResponse,
         res,
         'Getting connector instance config',
-        'Connector config and schema not found'
+        'Connector config and schema not found',
+        connectorInstanceConfigResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instance config', {
@@ -574,68 +609,6 @@ export const getConnectorInstanceConfig =
       const handledError = handleBackendError(
         error,
         'get connector instance config',
-      );
-      next(handledError);
-    }
-  };
-
-/**
- * Update connector instance configuration.
- */
-export const updateConnectorInstanceConfig =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-      const { auth, sync, filters, baseUrl } = req.body;
-
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      const config = {
-        auth,
-        sync,
-        filters,
-        baseUrl: baseUrl,
-      };
-
-      logger.info(`Updating connector instance config for ${connectorId}`);
-
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
-
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
-        HttpMethod.PUT,
-        headers,
-        config,
-      );
-
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Updating connector instance config',
-        'Connector instance not found',
-      );
-    } catch (error: any) {
-      logger.error('Error updating connector instance config', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'update connector instance config',
       );
       next(handledError);
     }
@@ -659,6 +632,7 @@ export const updateConnectorInstanceAuthConfig = (appConfig: AppConfig) =>
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance auth config',
+    connectorAuthConfigUpdateResponseSchema,
   );
 
 /**
@@ -680,6 +654,7 @@ export const updateConnectorInstanceFiltersSyncConfig = (appConfig: AppConfig) =
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance filters-sync config',
+    connectorFiltersSyncConfigUpdateResponseSchema,
   );
 
 /**
@@ -717,7 +692,8 @@ export const deleteConnectorInstance =
         connectorResponse,
         res,
         'Deleting connector instance',
-        'Connector instance not found'
+        'Connector instance not found',
+        connectorDeleteResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error deleting connector instance', {
@@ -773,7 +749,8 @@ export const updateConnectorInstanceName =
         connectorResponse,
         res,
         'Updating connector instance name',
-        'Connector instance not found'
+        'Connector instance not found',
+        connectorNameUpdateResponseSchema,
       );
     } catch (error: any) {
       const handledError = handleBackendError(
@@ -833,7 +810,8 @@ export const getOAuthAuthorizationUrl =
         connectorResponse,
         res,
         'Getting OAuth authorization URL',
-        'OAuth authorization URL not found'
+        'OAuth authorization URL not found',
+        connectorOAuthAuthorizeResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting OAuth authorization URL', {
@@ -890,7 +868,7 @@ export const handleOAuthCallback =
         headers,
       );
 
-      // Handle redirect responses
+      // Handle redirect responses (302 with location header)
       if (
         connectorResponse &&
         connectorResponse.statusCode === 302 &&
@@ -901,12 +879,19 @@ export const handleOAuthCallback =
         return;
       }
 
-      // Handle JSON responses with redirect URL
+      // Validate response data
       if (connectorResponse && connectorResponse.data) {
+        const validationResult = connectorOAuthCallbackResponseSchema.safeParse(connectorResponse.data);
+        if (!validationResult.success) {
+          logger.warn('OAuth callback response validation failed', {
+            errors: validationResult.error.errors,
+            data: connectorResponse.data,
+          });
+        }
+
+        // Transform snake_case to camelCase for frontend
         const responseData = connectorResponse.data as any;
-        const redirectUrlFromJson = responseData.redirect_url as
-          | string
-          | undefined;
+        const redirectUrlFromJson = responseData.redirect_url as string | undefined;
 
         if (redirectUrlFromJson) {
           res.status(200).json({ redirectUrl: redirectUrlFromJson });
@@ -914,12 +899,13 @@ export const handleOAuthCallback =
         }
       }
 
-      // Handle normal response
+      // Fallback - no redirect_url in response
       handleConnectorResponse(
         connectorResponse,
         res,
         'Handling OAuth callback',
-        'OAuth callback failed'
+        'OAuth callback failed',
+        connectorOAuthCallbackResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error handling OAuth callback', {
@@ -936,58 +922,6 @@ export const handleOAuthCallback =
 // ============================================================================
 // Filter Controllers
 // ============================================================================
-
-/**
- * Get filter options for a connector instance.
- */
-export const getConnectorInstanceFilterOptions =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      logger.info(`Getting filter options for instance ${connectorId}`);
-
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
-        HttpMethod.GET,
-        headers,
-      );
-
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Getting connector instance filter options',
-        'Connector instance filter options not found'
-      );
-    } catch (error: any) {
-      logger.error('Error getting connector instance filter options', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'get connector instance filter options',
-      );
-      next(handledError);
-    }
-  };
 
 /**
  * Get dynamic filter field options for a connector instance.
@@ -1041,7 +975,8 @@ export const getFilterFieldOptions =
         connectorResponse,
         res,
         'Getting filter field options',
-        'Filter field options not found'
+        'Filter field options not found',
+        connectorFilterFieldOptionsResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting filter field options', {
@@ -1055,64 +990,6 @@ export const getFilterFieldOptions =
       const handledError = handleBackendError(
         error,
         'get filter field options',
-      );
-      next(handledError);
-    }
-  };
-
-/**
- * Save filter options for a connector instance.
- */
-export const saveConnectorInstanceFilterOptions =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { connectorId } = req.params;
-      const { filters } = req.body;
-
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      if (!filters) {
-        throw new BadRequestError('Filters are required');
-      }
-
-      logger.info(`Saving filter options for instance ${connectorId}`);
-
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
-      const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
-        HttpMethod.POST,
-        headers,
-        { filters },
-      );
-
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'Saving connector instance filter options',
-        'Connector instance filter options not found'
-      );
-    } catch (error: any) {
-      logger.error('Error saving connector instance filter options', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handledError = handleBackendError(
-        error,
-        'save connector instance filter options',
       );
       next(handledError);
     }
@@ -1166,7 +1043,8 @@ export const toggleConnectorInstance =
         connectorResponse,
         res,
         'Toggling connector instance',
-        'Connector instance not found'
+        'Connector instance not found',
+        connectorToggleResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error toggling connector instance', {
@@ -1222,7 +1100,8 @@ export const getConnectorSchema =
         connectorResponse,
         res,
         'Getting connector schema',
-        'Connector schema not found'
+        'Connector schema not found',
+        connectorSchemaResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector schema', {
@@ -1289,6 +1168,7 @@ async (
       res,
       'Getting active agent instances',
       'Failed to get active agent instances',
+      connectorActiveAgentInstancesResponseSchema,
     );
   } catch (error: any) {
     logger.error('Error getting active agent instances', {

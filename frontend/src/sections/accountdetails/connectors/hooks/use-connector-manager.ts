@@ -33,7 +33,6 @@ interface UseConnectorManagerReturn {
   handleRefresh: () => void;
   handleDeleteInstance: () => Promise<void>;
   handleRenameInstance: (newName: string, currentName: string) => Promise<{ success: boolean; error?: string }>;
-  handleFilterSelection: (selectedFilters: any) => Promise<void>;
   handleFilterDialogClose: () => void;
   setError: (error: string | null) => void;
   setSuccess: (success: boolean) => void;
@@ -324,16 +323,6 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
               setConnectorConfig(refreshed);
               setIsAuthenticated(true);
 
-              //   // Get filter options in background (for future use)
-              //   try {
-              //     const { filterOptions: fetchedFilterOptions } = await ConnectorApiService.getConnectorFilterOptions(connector.name);
-              //     setFilterOptions(fetchedFilterOptions);
-              //     // Note: Not showing dialog for now, but keeping the data for future use
-              //   } catch (filterError) {
-              //     console.error('Failed to get filter options:', filterError);
-              //     // Continue with success flow even if filter options fail
-              //   }
-
               // Show success message
               setSuccessMessage('Authentication successful');
               setSuccess(true);
@@ -371,58 +360,6 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       setRefreshing(false);
     }
   }, [connector, connectorId]);
-
-  // Handle filter selection
-  const handleFilterSelection = useCallback(
-    async (selectedFilters: any) => {
-      // Update connector config with selected filters
-      if (connectorConfig) {
-        const updatedConfig = {
-          ...connectorConfig,
-          config: {
-            ...connectorConfig.config,
-            filters: {
-              ...connectorConfig.config.filters,
-              values: selectedFilters,
-            },
-          },
-        };
-
-        try {
-          // Save the updated config
-          await ConnectorApiService.updateConnectorInstanceConfig(
-            connector!. _key,
-            updatedConfig.config
-          );
-          setConnectorConfig(updatedConfig);
-
-          // Now enable the connector
-          const successResponse = await ConnectorApiService.toggleConnectorInstance(
-            connector!. _key,
-            'sync'
-          );
-
-          if (successResponse) {
-            // Update local state
-            setConnector((prev) => (prev ? { ...prev, isActive: true } : null));
-            setShowFilterDialog(false);
-            setIsEnablingWithFilters(false);
-            setSuccessMessage(`${connector!.name} enabled and filters configured successfully`);
-            setSuccess(true);
-            setTimeout(() => setSuccess(false), 4000);
-          } else {
-            setError('Failed to enable connector after configuring filters');
-            setIsEnablingWithFilters(false);
-          }
-        } catch (saveError) {
-          console.error('Error saving filters or enabling connector:', saveError);
-          setError('Failed to save filter configuration or enable connector');
-          setIsEnablingWithFilters(false);
-        }
-      }
-    },
-    [connector, connectorConfig]
-  );
 
   // Handle filter dialog close
   const handleFilterDialogClose = useCallback(() => {
@@ -627,7 +564,6 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     handleConfigClose,
     handleConfigSuccess,
     handleRefresh,
-    handleFilterSelection,
     handleDeleteInstance,
     handleRenameInstance,
     handleFilterDialogClose,

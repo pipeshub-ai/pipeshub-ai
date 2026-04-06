@@ -14,6 +14,8 @@ import {
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { Response } from 'express';
+import { z } from 'zod';
+import { sendValidatedJson } from '../../../utils/response-validator';
 
 const logger = Logger.getInstance({
   service: 'Connector Utils',
@@ -102,13 +104,15 @@ export const executeConnectorCommand = async (
   return await connectorCommand.execute();
 };
 
-// Helper function to handle common connector response logic
+// Helper function to handle common connector response logic.
+// When an optional schema is provided, validates the response before sending.
 export const handleConnectorResponse = (
   connectorResponse: any,
   res: Response,
   operation: string,
   failureMessage: string,
-) => {
+  schema?: z.ZodTypeAny,
+): void => {
   const statusCode = connectorResponse?.statusCode;
   const isSuccess = statusCode >= 200 && statusCode < 300;
   if (connectorResponse && !isSuccess) {
@@ -118,5 +122,9 @@ export const handleConnectorResponse = (
   if (!connectorsData) {
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
-  res.status(statusCode ?? 200).json(connectorsData);
+  if (schema) {
+    sendValidatedJson(res, schema, connectorsData, statusCode ?? 200);
+  } else {
+    res.status(statusCode ?? 200).json(connectorsData);
+  }
 };

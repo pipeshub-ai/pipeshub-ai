@@ -74,7 +74,6 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
     handleRefresh,
     handleDeleteInstance,
     handleRenameInstance,
-    handleFilterSelection,
     handleFilterDialogClose,
     setError,
     setSuccess,
@@ -526,7 +525,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
             connector={connector}
             filterOptions={filterOptions}
             onClose={handleFilterDialogClose}
-            onSave={handleFilterSelection}
+            onSave={handleFilterDialogClose}
             isEnabling={isEnablingWithFilters}
           />
         )}
