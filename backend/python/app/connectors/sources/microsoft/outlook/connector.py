@@ -208,7 +208,7 @@ from app.utils.time_conversion import (
             description="Select mail groups to sync. "
             "Supports distribution lists, mail-enabled "
             "security groups, and Microsoft 365 groups. "
-            "Leave empty to sync all users.",
+            "Leave empty to sync all groups.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
@@ -487,12 +487,8 @@ class OutlookConnector(BaseConnector):
             has_users_filter = users_filter and not users_filter.is_empty()
 
             if has_users_filter:
-                allowed_emails: set[str] = set()
-
                 selected_emails = users_filter.get_value()
-                allowed_emails.update(
-                    e.lower() for e in selected_emails
-                )
+                allowed_emails = {e.lower() for e in selected_emails}
 
                 filtered_users = [
                     user for user in users_to_sync
@@ -601,14 +597,14 @@ class OutlookConnector(BaseConnector):
             if groups_filter and not groups_filter.is_empty():
                 total_before = len(groups)
                 selected_mails = {m.lower() for m in groups_filter.get_value()}
-                operator_str = groups_filter.get_operator().value
+                operator = groups_filter.get_operator()
 
-                if operator_str == FilterOperator.IN:
+                if operator == FilterOperator.IN:
                     groups = [
                         g for g in groups
                         if g.mail and g.mail.lower() in selected_mails
                     ]
-                elif operator_str == FilterOperator.NOT_IN:
+                elif operator == FilterOperator.NOT_IN:
                     groups = [
                         g for g in groups
                         if not g.mail or g.mail.lower() not in selected_mails
@@ -616,7 +612,7 @@ class OutlookConnector(BaseConnector):
 
                 self.logger.info(
                     "Groups filter (%s) applied: %d groups selected out of %d",
-                    operator_str, len(groups), total_before,
+                    operator.value, len(groups), total_before,
                 )
 
             # Process groups in batches
