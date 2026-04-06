@@ -204,8 +204,10 @@ from app.utils.time_conversion import (
             display_name="Groups",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select Microsoft 365 groups to sync. "
-            "Leave empty to sync all groups.",
+            description="Select mail groups to sync. "
+            "Supports distribution lists, mail-enabled "
+            "security groups, and Microsoft 365 groups. "
+            "Leave empty to sync all users.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
@@ -479,20 +481,40 @@ class OutlookConnector(BaseConnector):
                     user.source_user_id = email_to_source_id[user.email.lower()]
                     users_to_sync.append(user)
 
-            # Apply user filter if specified
+            # Apply user filter and/or groups filter (union)
             users_filter = self.sync_filters.get(SyncFilterKey.USERS)
-            if users_filter and not users_filter.is_empty():
-                selected_emails = users_filter.get_value()
-                # Normalize to lowercase for comparison
-                selected_emails_lower = {email.lower() for email in selected_emails}
-                # Filter to only selected users
+            groups_filter = self.sync_filters.get(SyncFilterKey.GROUPS)
+            has_users_filter = users_filter and not users_filter.is_empty()
+            has_groups_filter = groups_filter and not groups_filter.is_empty()
+
+            if has_users_filter or has_groups_filter:
+                allowed_emails: set[str] = set()
+
+                if has_users_filter:
+                    selected_emails = users_filter.get_value()
+                    allowed_emails.update(
+                        e.lower() for e in selected_emails
+                    )
+
+                if has_groups_filter:
+                    selected_group_mails = groups_filter.get_value()
+                    group_member_emails = (
+                        await self._resolve_group_member_emails(
+                            selected_group_mails
+                        )
+                    )
+                    allowed_emails.update(group_member_emails)
+
                 filtered_users = [
                     user for user in users_to_sync
-                    if user.email and user.email.lower() in selected_emails_lower
+                    if user.email
+                    and user.email.lower() in allowed_emails
                 ]
                 self.logger.info(
-                    f"User filter applied: {len(filtered_users)} selected users "
-                    f"out of {len(users_to_sync)} active users"
+                    "Filter applied: %d users selected "
+                    "out of %d active users",
+                    len(filtered_users),
+                    len(users_to_sync),
                 )
                 users_to_sync = filtered_users
 
@@ -509,6 +531,66 @@ class OutlookConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error syncing users: {e}")
             raise
+
+    async def _resolve_group_member_emails(
+        self, group_mails: list[str]
+    ) -> set[str]:
+        """Resolve member emails for the given group mail addresses.
+
+        Looks up each group by its mail address via the Graph API,
+        fetches transitive members, and returns a set of lowercase
+        member emails.
+        """
+        member_emails: set[str] = set()
+
+        if not self.external_users_client:
+            return member_emails
+
+        for group_mail in group_mails:
+            try:
+                # Find group by mail address
+                escaped = group_mail.replace("'", "''")
+                filter_str = f"mail eq '{escaped}'"
+                response = await (
+                    self.external_users_client.groups_list_groups(
+                        filter=filter_str,
+                        select=["id", "mail"],
+                        headers={"ConsistencyLevel": "eventual"},
+                    )
+                )
+
+                if (
+                    not response.success
+                    or not response.data
+                    or not response.data.value
+                ):
+                    self.logger.warning(
+                        "Group not found for mail: %s", group_mail
+                    )
+                    continue
+
+                group_id = response.data.value[0].id
+                if not group_id:
+                    continue
+
+                # Fetch transitive members
+                members = await self._get_group_members(group_id)
+                for member in members:
+                    email = (
+                        member.mail or member.user_principal_name
+                    )
+                    if email:
+                        member_emails.add(email.lower())
+
+            except Exception as e:
+                self.logger.error(
+                    "Failed to resolve members for group %s: %s",
+                    group_mail,
+                    e,
+                )
+                continue
+
+        return member_emails
 
     async def _get_all_users_external(self) -> list[AppUser]:
         """Get all users using external Users Groups API with pagination."""
@@ -582,24 +664,6 @@ class OutlookConnector(BaseConnector):
             if not groups:
                 self.logger.info("No Microsoft 365 groups found")
                 return []
-
-            # Apply groups filter if specified
-            groups_filter = self.sync_filters.get(SyncFilterKey.GROUPS)
-            if groups_filter and not groups_filter.is_empty():
-                selected_mails = groups_filter.get_value()
-                selected_mails_lower = {
-                    m.lower() for m in selected_mails
-                }
-                filtered_groups = [
-                    g for g in groups
-                    if g.mail and g.mail.lower() in selected_mails_lower
-                ]
-                self.logger.info(
-                    "Groups filter applied: %d selected groups out of %d total groups",
-                    len(filtered_groups),
-                    len(groups),
-                )
-                groups = filtered_groups
 
             self.logger.info(f"Found {len(groups)} Microsoft 365 groups to process")
 
@@ -2923,12 +2987,11 @@ class OutlookConnector(BaseConnector):
     def _graph_group_to_filter_option(self, group: object) -> FilterOption | None:
         """Build a FilterOption from a Microsoft Graph Pydantic Group object.
 
-        Only includes mail-enabled Microsoft 365 (Unified) groups.
-        Returns None if the group has no mail or is not an M365 group.
+        Only includes mail-enabled groups (distribution lists,
+        mail-enabled security groups, Microsoft 365 groups, etc.).
+        Returns None if the group is not mail-enabled or has no mail.
         """
-        # Filter to Microsoft 365 (Unified) groups with a mailbox
-        group_types = group.group_types or []
-        if "Unified" not in group_types or not group.mail_enabled:
+        if not group.mail_enabled:
             return None
 
         mail = group.mail
@@ -2990,6 +3053,7 @@ class OutlookConnector(BaseConnector):
                     response = await self.external_users_client.groups_list_groups(
                         top=cap,
                         search=graph_search,
+                        filter="mailEnabled eq true",
                         select=OutlookAPIFields.GROUP_FILTER_SELECT_FIELDS,
                         headers={"ConsistencyLevel": "eventual"},
                     )
@@ -2998,8 +3062,10 @@ class OutlookConnector(BaseConnector):
                 response = await self.external_users_client.groups_list_groups(
                     top=cap,
                     skip=skip,
+                    filter="mailEnabled eq true",
                     select=OutlookAPIFields.GROUP_FILTER_SELECT_FIELDS,
                     orderby="displayName",
+                    headers={"ConsistencyLevel": "eventual"},
                 )
 
             if not response.success or not response.data:
