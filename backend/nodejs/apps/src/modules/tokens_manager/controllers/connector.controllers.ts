@@ -7,6 +7,7 @@
  */
 
 import { NextFunction, Response } from 'express';
+import { z } from 'zod';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -16,7 +17,30 @@ import {
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
-import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+  handleConnectorResponse,
+  handleValidatedConnectorResponse,
+} from '../utils/connector.utils';
+import {
+  connectorRegistryResponseSchema,
+  connectorSchemaResponseSchema,
+  connectorInstancesResponseSchema,
+  connectorActiveInactiveResponseSchema,
+  connectorConfiguredResponseSchema,
+  connectorInstanceDetailResponseSchema,
+  connectorDeleteResponseSchema,
+  connectorToggleResponseSchema,
+  connectorInstanceConfigResponseSchema,
+  connectorAuthConfigUpdateResponseSchema,
+  connectorFiltersSyncConfigUpdateResponseSchema,
+  connectorNameUpdateResponseSchema,
+  connectorFilterFieldOptionsResponseSchema,
+  connectorOAuthAuthorizeResponseSchema,
+  connectorOAuthCallbackResponseSchema,
+  createConnectorResponseSchema,
+} from '../validators/connector.validators';
 
 const logger = Logger.getInstance({
   service: 'Connector Controller',
@@ -32,14 +56,16 @@ const logger = Logger.getInstance({
  * @param validatePayload - Function to validate the request payload
  * @param createPayload - Function to create the payload from request body
  * @param operationName - Human-readable operation name for logging
+ * @param responseSchema - Zod schema for validating response
  * @returns Express route handler function
  */
-const createConnectorConfigUpdateHandler = (
+const createConnectorConfigUpdateHandler = <T extends z.ZodSchema>(
   appConfig: AppConfig,
   endpointPath: string,
   validatePayload: (body: any) => void,
   createPayload: (body: any) => any,
   operationName: string,
+  responseSchema: T,
 ) => {
   return async (
     req: AuthenticatedUserRequest,
@@ -76,12 +102,13 @@ const createConnectorConfigUpdateHandler = (
         config,
       );
 
-      // Handle response
-      handleConnectorResponse(
+      // Handle response with validation
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         operationName,
         'Connector instance not found',
+        responseSchema,
       );
     } catch (error: any) {
       logger.error(`Error ${operationName.toLowerCase()}`, {
@@ -164,11 +191,12 @@ export const getConnectorRegistry =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting all connectors from registry',
-        'Connectors from registry not found'
+        'Connectors from registry not found',
+        connectorRegistryResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector registry', {
@@ -231,11 +259,12 @@ export const getConnectorInstances =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting connector instances',
-        'Connector instances not found'
+        'Connector instances not found',
+        connectorInstancesResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instances', {
@@ -274,11 +303,12 @@ export const getActiveConnectorInstances =
         req.headers as Record<string, string>,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting all active connectors',
-        'Active connectors not found'
+        'Active connectors not found',
+        connectorActiveInactiveResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting active connector instances', {
@@ -320,11 +350,12 @@ export const getInactiveConnectorInstances =
         req.headers as Record<string, string>,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting all inactive connectors',
-        'Inactive connectors not found'
+        'Inactive connectors not found',
+        connectorActiveInactiveResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting inactive connector instances', {
@@ -388,11 +419,12 @@ export const getConfiguredConnectorInstances =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
-        'Getting connector config',
-        'Connector config not found'
+        'Getting configured connector instances',
+        'Configured connector instances not found',
+        connectorConfiguredResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting configured connector instances', {
@@ -456,11 +488,12 @@ export const createConnectorInstance =
         { connectorType, instanceName, config, baseUrl, scope, authType },
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Creating connector instance',
-        'Connector config not found'
+        'Connector config not found',
+        createConnectorResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error creating connector instance', {
@@ -507,11 +540,12 @@ export const getConnectorInstance =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting connector instance',
-        'Connector schema not found'
+        'Connector instance not found',
+        connectorInstanceDetailResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instance', {
@@ -557,11 +591,12 @@ export const getConnectorInstanceConfig =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting connector instance config',
-        'Connector config and schema not found'
+        'Connector config and schema not found',
+        connectorInstanceConfigResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instance config', {
@@ -659,6 +694,7 @@ export const updateConnectorInstanceAuthConfig = (appConfig: AppConfig) =>
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance auth config',
+    connectorAuthConfigUpdateResponseSchema,
   );
 
 /**
@@ -680,6 +716,7 @@ export const updateConnectorInstanceFiltersSyncConfig = (appConfig: AppConfig) =
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance filters-sync config',
+    connectorFiltersSyncConfigUpdateResponseSchema,
   );
 
 /**
@@ -713,11 +750,12 @@ export const deleteConnectorInstance =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Deleting connector instance',
-        'Connector instance not found'
+        'Connector instance not found',
+        connectorDeleteResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error deleting connector instance', {
@@ -769,11 +807,12 @@ export const updateConnectorInstanceName =
         { instanceName: instanceName },
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Updating connector instance name',
-        'Connector instance not found'
+        'Connector instance not found',
+        connectorNameUpdateResponseSchema,
       );
     } catch (error: any) {
       const handledError = handleBackendError(
@@ -829,11 +868,12 @@ export const getOAuthAuthorizationUrl =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting OAuth authorization URL',
-        'OAuth authorization URL not found'
+        'OAuth authorization URL not found',
+        connectorOAuthAuthorizeResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting OAuth authorization URL', {
@@ -890,7 +930,7 @@ export const handleOAuthCallback =
         headers,
       );
 
-      // Handle redirect responses
+      // Handle redirect responses (302 with location header)
       if (
         connectorResponse &&
         connectorResponse.statusCode === 302 &&
@@ -901,12 +941,19 @@ export const handleOAuthCallback =
         return;
       }
 
-      // Handle JSON responses with redirect URL
+      // Validate response data
       if (connectorResponse && connectorResponse.data) {
+        const validationResult = connectorOAuthCallbackResponseSchema.safeParse(connectorResponse.data);
+        if (!validationResult.success) {
+          logger.warn('OAuth callback response validation failed', {
+            errors: validationResult.error.errors,
+            data: connectorResponse.data,
+          });
+        }
+
+        // Transform snake_case to camelCase for frontend
         const responseData = connectorResponse.data as any;
-        const redirectUrlFromJson = responseData.redirect_url as
-          | string
-          | undefined;
+        const redirectUrlFromJson = responseData.redirect_url as string | undefined;
 
         if (redirectUrlFromJson) {
           res.status(200).json({ redirectUrl: redirectUrlFromJson });
@@ -914,12 +961,13 @@ export const handleOAuthCallback =
         }
       }
 
-      // Handle normal response
-      handleConnectorResponse(
+      // Fallback - no redirect_url in response
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Handling OAuth callback',
-        'OAuth callback failed'
+        'OAuth callback failed',
+        connectorOAuthCallbackResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error handling OAuth callback', {
@@ -1037,11 +1085,12 @@ export const getFilterFieldOptions =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting filter field options',
-        'Filter field options not found'
+        'Filter field options not found',
+        connectorFilterFieldOptionsResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting filter field options', {
@@ -1162,11 +1211,12 @@ export const toggleConnectorInstance =
         body,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Toggling connector instance',
-        'Connector instance not found'
+        'Connector instance not found',
+        connectorToggleResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error toggling connector instance', {
@@ -1218,11 +1268,12 @@ export const getConnectorSchema =
         headers,
       );
 
-      handleConnectorResponse(
+      handleValidatedConnectorResponse(
         connectorResponse,
         res,
         'Getting connector schema',
-        'Connector schema not found'
+        'Connector schema not found',
+        connectorSchemaResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector schema', {
