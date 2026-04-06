@@ -17718,6 +17718,53 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/internal/storageConfig:
+    get:
+      tags:
+        - Storage Configuration
+      summary: Get current storage configuration (internal)
+      description: Internal variant for services to retrieve storage configuration using a scoped token.
+      operationId: getStorageConfigInternal
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Storage configuration retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  storageType:
+                    type: string
+                    enum: [local, s3, azureBlob]
+                  mountName:
+                    type: string
+                  baseUrl:
+                    type: string
+                  accessKeyId:
+                    type: string
+                  secretAccessKey:
+                    type: string
+                  region:
+                    type: string
+                  bucketName:
+                    type: string
+                  containerName:
+                    type: string
+                  accountName:
+                    type: string
+                  accountKey:
+                    type: string
+                  endpointProtocol:
+                    type: string
+                  endpointSuffix:
+                    type: string
+        '404':
+          description: Storage configuration not found
+        '401':
+          description: Unauthorized
+
   # -------------------- SMTP Configuration --------------------
   /configurationManager/smtpConfig:
     post:
@@ -17854,6 +17901,25 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/internal/authConfig/azureAd:
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get Azure AD configuration (internal)
+      description: Internal variant for services to retrieve Azure AD config using a scoped token.
+      operationId: getAzureAdAuthConfigInternal
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Azure AD configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureAdAuthConfig'
+        '401':
+          description: Unauthorized
+
   /configurationManager/authConfig/microsoft:
     post:
       tags:
@@ -17890,6 +17956,25 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      responses:
+        '200':
+          description: Microsoft auth configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftAuthConfig'
+        '401':
+          description: Unauthorized
+
+  /configurationManager/internal/authConfig/microsoft:
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get Microsoft authentication configuration (internal)
+      description: Internal variant for services to retrieve Microsoft auth config using a scoped token.
+      operationId: getMicrosoftAuthConfigInternal
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: Microsoft auth configuration retrieved
@@ -17946,6 +18031,25 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/internal/authConfig/google:
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get Google authentication configuration (internal)
+      description: Internal variant for services to retrieve Google auth config using a scoped token.
+      operationId: getGoogleAuthConfigInternal
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Google auth configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleAuthConfig'
+        '401':
+          description: Unauthorized
+
   /configurationManager/authConfig/sso:
     post:
       tags:
@@ -17992,6 +18096,25 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/internal/authConfig/sso:
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get SAML SSO configuration (internal)
+      description: Internal variant for services to retrieve SSO config using a scoped token.
+      operationId: getSsoAuthConfigInternal
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: SSO configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SSOAuthConfig'
+        '401':
+          description: Unauthorized
+
   /configurationManager/authConfig/oauth:
     post:
       tags:
@@ -18028,6 +18151,25 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      responses:
+        '200':
+          description: OAuth configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericOAuthConfig'
+        '401':
+          description: Unauthorized
+
+  /configurationManager/internal/authConfig/oauth:
+    get:
+      tags:
+        - Authentication Configuration
+      summary: Get generic OAuth configuration (internal)
+      description: Internal variant for services to retrieve OAuth config using a scoped token.
+      operationId: getGenericOAuthConfigInternal
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -18606,12 +18748,35 @@ paths:
                   message:
                     type: string
                     example: "Metrics collection toggled successfully"
+  
+  /configurationManager/internal/metricsCollection/toggle:
+    post:
+      tags:
+        - Metrics Collection
+      summary: Enable or disable metrics collection (internal)
+      description: Internal variant for services to toggle metrics collection using a scoped token.
+      operationId: toggleMetricsCollectionInternal
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enableMetricCollection
+              properties:
+                enableMetricCollection:
+                  type: boolean
+      responses:
+        '200':
+          description: Metrics collection toggled successfully
         '400':
           description: Bad Request - Invalid request body
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin access required
+          description: Unauthorized
           # TODO: Cleanup:To remove all these apis from backend code as well
   # /configurationManager/connectors/atlassian/config:
   #   get:
