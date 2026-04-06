@@ -44,6 +44,15 @@ USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
 
+valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+        GroupType.TEXT_SECTION.value,
+    ]
+
 class RetrievalService:
     def __init__(
         self,
@@ -538,7 +547,7 @@ class RetrievalService:
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
-                    if block_type == GroupType.TABLE.value:
+                    if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
                         _, child_results = result.get("content")
                         for child in child_results:
                             final_search_results.append(child)

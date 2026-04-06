@@ -46,6 +46,14 @@ valid_group_labels = [
         GroupType.TEXT_SECTION.value,
     ]
 
+def _safe_stringify_content(value: Any) -> str:
+    """Convert citation content to string without raising."""
+    try:
+        return str(value)
+    except Exception as exc:
+        logger.warning("Failed to cast citation content to string: %s", exc)
+        return ""
+
 def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
     """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
     base = frontend_url.rstrip("/") if frontend_url else ""
@@ -1117,8 +1125,13 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     child_results = []
     meta = result.get("metadata", {})
     for block in result_blocks:
+        data = block.get("data")
+        if data:
+            data = _safe_stringify_content(data)
+        if not data:
+            continue
         child_results.append({
-            "content": block.get("data", ""),
+            "content": data,
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
             "block_index": block.get("index"),
