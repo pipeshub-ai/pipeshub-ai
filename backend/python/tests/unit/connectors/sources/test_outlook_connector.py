@@ -1786,6 +1786,182 @@ class TestSyncUserGroupsDeepFlow:
 
 
 # ===========================================================================
+# _sync_user_groups — groups_filter (IN / NOT_IN)
+# ===========================================================================
+
+
+def _make_groups_filter(operator_str, mails):
+    """Return a mock Filter object for the GROUPS sync filter."""
+    from app.connectors.core.registry.filters import MultiselectOperator
+    f = MagicMock()
+    f.is_empty.return_value = False
+    f.get_value.return_value = list(mails)
+    operator = MultiselectOperator.IN if operator_str == "in" else MultiselectOperator.NOT_IN
+    f.get_operator.return_value = operator
+    return f
+
+
+def _make_sync_filters_with_groups(operator_str, mails):
+    """Return a mock FilterCollection that returns a groups filter."""
+    from app.connectors.core.registry.filters import SyncFilterKey
+    groups_filter = _make_groups_filter(operator_str, mails)
+    mock_fc = MagicMock()
+
+    def _get(key):
+        if key == SyncFilterKey.GROUPS:
+            return groups_filter
+        return None
+
+    mock_fc.get = MagicMock(side_effect=_get)
+    return mock_fc
+
+
+class TestSyncUserGroupsFilter:
+
+    def _setup_connector(self, groups, operator_str=None, filter_mails=None):
+        connector = _make_connector()
+        connector.external_users_client = MagicMock()
+        connector._user_cache = {}
+        connector._get_all_microsoft_365_groups = AsyncMock(return_value=groups)
+        connector._get_group_members = AsyncMock(return_value=[])
+
+        if operator_str is not None:
+            connector.sync_filters = _make_sync_filters_with_groups(operator_str, filter_mails)
+        else:
+            from app.connectors.core.registry.filters import FilterCollection
+            connector.sync_filters = FilterCollection()
+
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_no_filter_syncs_all_groups(self):
+        """When no groups filter is set all fetched groups are synced."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups)
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 2
+        ids = {g.source_user_group_id for g in result}
+        assert ids == {"g1", "g2"}
+
+    @pytest.mark.asyncio
+    async def test_in_filter_keeps_only_selected_groups(self):
+        """IN operator: only groups whose mail is in the filter set are synced."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+            _make_mock_group(group_id="g3", display_name="HR", mail="hr@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["eng@contoso.com", "hr@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 2
+        ids = {g.source_user_group_id for g in result}
+        assert ids == {"g1", "g3"}
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_excludes_selected_groups(self):
+        """NOT_IN operator: groups whose mail is in the filter set are excluded."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+            _make_mock_group(group_id="g3", display_name="HR", mail="hr@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["sales@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 2
+        ids = {g.source_user_group_id for g in result}
+        assert ids == {"g1", "g3"}
+
+    @pytest.mark.asyncio
+    async def test_in_filter_case_insensitive(self):
+        """IN operator matches are case-insensitive."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="Engineering@Contoso.COM"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["engineering@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g1"
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_case_insensitive(self):
+        """NOT_IN operator exclusion is case-insensitive."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="Engineering@Contoso.COM"),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["engineering@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g2"
+
+    @pytest.mark.asyncio
+    async def test_in_filter_excludes_group_with_no_mail(self):
+        """IN operator: group with mail=None cannot match, so it is excluded."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="No-Mail Group", mail=None),
+            _make_mock_group(group_id="g2", display_name="Engineering", mail="eng@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["eng@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g2"
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_passes_group_with_no_mail(self):
+        """NOT_IN operator: group with mail=None cannot be in the exclusion set, so it passes."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="No-Mail Group", mail=None),
+            _make_mock_group(group_id="g2", display_name="Sales", mail="sales@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["sales@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert len(result) == 1
+        assert result[0].source_user_group_id == "g1"
+
+    @pytest.mark.asyncio
+    async def test_in_filter_no_match_returns_empty(self):
+        """IN operator with no matching groups returns an empty list."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "in", ["nonexistent@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_not_in_filter_excludes_all_returns_empty(self):
+        """NOT_IN operator that excludes every group returns an empty list."""
+        groups = [
+            _make_mock_group(group_id="g1", display_name="Engineering", mail="eng@contoso.com"),
+        ]
+        connector = self._setup_connector(groups, "not_in", ["eng@contoso.com"])
+
+        result = await connector._sync_user_groups()
+
+        assert result == []
+
+
+# ===========================================================================
 # Deep Sync: _extract_email_permissions
 # ===========================================================================
 
@@ -3357,6 +3533,8 @@ def _make_mock_group(
     group.mail_nickname = mail_nickname
     group.group_types = group_types if group_types is not None else ["Unified"]
     group.mail_enabled = mail_enabled
+    group.description = None
+    group.additional_data = {}
     return group
 
 
@@ -3735,11 +3913,6 @@ class TestGetGroupOptions:
         call_kwargs = mock_client.groups_list_groups.call_args.kwargs
         # Backslash and quote should be escaped
         assert '\\\\"' in call_kwargs["search"] or '\\"' in call_kwargs["search"]
-
-
-# ===========================================================================
-# _resolve_group_member_emails
-# ===========================================================================
 
 
 # ===========================================================================

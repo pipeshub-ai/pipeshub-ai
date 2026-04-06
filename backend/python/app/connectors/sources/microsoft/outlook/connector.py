@@ -599,12 +599,12 @@ class OutlookConnector(BaseConnector):
                 selected_mails = {m.lower() for m in groups_filter.get_value()}
                 operator = groups_filter.get_operator()
 
-                if operator == FilterOperator.IN:
+                if operator == MultiselectOperator.IN:
                     groups = [
                         g for g in groups
                         if g.mail and g.mail.lower() in selected_mails
                     ]
-                elif operator == FilterOperator.NOT_IN:
+                elif operator == MultiselectOperator.NOT_IN:
                     groups = [
                         g for g in groups
                         if not g.mail or g.mail.lower() not in selected_mails
@@ -2932,7 +2932,7 @@ class OutlookConnector(BaseConnector):
                 message=f"Error fetching users: {str(e)}",
             )
 
-    def _graph_group_to_filter_option(self, group: object) -> FilterOption | None:
+    def _graph_group_to_filter_option(self, group: Group) -> FilterOption | None:
         """Build a FilterOption from a Microsoft Graph Pydantic Group object.
 
         Only includes mail-enabled groups (distribution lists,
