@@ -407,7 +407,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                         else:
                             continue
                     else:
-                        if result.get("content") and result.get("content").startswith("data:image/"):
+                        if result.get("content") and is_base64_image(result.get("content")):
                             continue
 
                     adjacent_chunks[virtual_record_id].append(index-1)
@@ -1489,6 +1489,8 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "image_url": {"url": result.get("content")}
                     })
                 else:
+                    if is_base64_image(result.get("content")):
+                        continue
                     content.append({
                         "type": "text",
                         "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"

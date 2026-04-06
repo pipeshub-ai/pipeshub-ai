@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.blocks import BlockType, GroupType
-from app.utils.chat_helpers import get_enhanced_metadata, valid_group_labels
+from app.utils.chat_helpers import get_enhanced_metadata, is_base64_image, valid_group_labels
 from app.utils.logger import create_logger
 # Initialize logger
 logger = create_logger(__name__)
@@ -298,7 +298,7 @@ def _normalize_markdown_link_citations(
                 continue
 
             new_citations.append({
-                "content": "Image" if content.startswith("data:image/") else content,
+                "content": "Image" if is_base64_image(content) else content,
                 "chunkIndex": new_citation_num,  # Use new sequential number
                 "metadata": doc.get("metadata", {}),
                 "citationType": "vectordb|document",
@@ -325,7 +325,7 @@ def _normalize_markdown_link_citations(
                                 data = data.get("uri", "")
                             if not data:
                                 continue
-                            citation_content = "Image" if isinstance(data, str) and data.startswith("data:image/") else _safe_stringify_content(value=data)
+                            citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                             if not citation_content:
                                 continue
                             new_citations.append({
@@ -455,7 +455,7 @@ def _normalize_markdown_link_citations_for_agent(
                 continue
 
             new_citations.append({
-                "content": "Image" if content.startswith("data:image/") else content,
+                "content": "Image" if is_base64_image(content) else content,
                 "chunkIndex": new_citation_num,
                 "metadata": metadata,
                 "citationType": "vectordb|document",
@@ -487,7 +487,7 @@ def _normalize_markdown_link_citations_for_agent(
                                 data = data.get("uri", "")
                             if not data:
                                 continue
-                            citation_content = "Image" if isinstance(data, str) and data.startswith("data:image/") else _safe_stringify_content(value=data)
+                            citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                             if not citation_content:
                                 continue
                             new_citations.append({
@@ -522,7 +522,7 @@ def _normalize_markdown_link_citations_for_agent(
                                     data = data.get("uri", "")
                                 if not data:
                                     continue
-                                citation_content = "Image" if isinstance(data, str) and data.startswith("data:image/") else _safe_stringify_content(value=data)
+                                citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                                 if not citation_content:
                                     continue
                                 new_citations.append({
