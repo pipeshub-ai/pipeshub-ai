@@ -132,6 +132,17 @@ class OutlookAPIFields:
         "surname"
     ]
 
+    # Group filter options select fields (for filter UI)
+    GROUP_FILTER_SELECT_FIELDS: list[str] = [
+        "id",
+        "displayName",
+        "description",
+        "mail",
+        "mailNickname",
+        "groupTypes",
+        "mailEnabled",
+    ]
+
 
 class OutlookDefaults:
     """Fallback labels for records / folders."""

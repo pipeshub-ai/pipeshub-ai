@@ -242,6 +242,7 @@ class SyncFilterKey(str, Enum):
     OWNER_IDS = "owner_ids"
     CREATED_BY = "created_by"
     USERS = "users"
+    GROUPS = "groups"
 
 
 class IndexingFilterKey(str, Enum):
