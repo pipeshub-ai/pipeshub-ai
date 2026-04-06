@@ -10,167 +10,15 @@ permissions:
   contents: read
 
 jobs:
-  nodejs-coverage-check:
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [20]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-          cache-dependency-path: backend/nodejs/apps/package-lock.json
-
-      - name: Install dependencies
-        run: |
-          cd backend/nodejs/apps
-          npm ci
-
-      - name: Run unit tests with 90% coverage threshold
-        id: run-tests
-        run: |
-          cd backend/nodejs/apps
-          npm run test:coverage-check
-
-      - name: Collect coverage summary for email
-        id: coverage-email
-        if: always()
-        working-directory: backend/nodejs/apps
-        run: |
-          SUMMARY="coverage/coverage-summary.json"
-          if [ -f "$SUMMARY" ]; then
-            LINES_PCT=$(jq -r 'if .total.lines.pct != null then "\(.total.lines.pct)%" else "N/A" end' "$SUMMARY")
-            STMT_PCT=$(jq -r 'if .total.statements.pct != null then "\(.total.statements.pct)%" else "N/A" end' "$SUMMARY")
-            FUNC_PCT=$(jq -r 'if .total.functions.pct != null then "\(.total.functions.pct)%" else "N/A" end' "$SUMMARY")
-            BRANCH_PCT=$(jq -r 'if .total.branches.pct != null then "\(.total.branches.pct)%" else "N/A" end' "$SUMMARY")
-            echo "LINES_PCT=$LINES_PCT" >> "$GITHUB_OUTPUT"
-            echo "STMT_PCT=$STMT_PCT" >> "$GITHUB_OUTPUT"
-            echo "FUNC_PCT=$FUNC_PCT" >> "$GITHUB_OUTPUT"
-            echo "BRANCH_PCT=$BRANCH_PCT" >> "$GITHUB_OUTPUT"
-            {
-              echo "SUMMARY_NOTE<<EOF"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "LINES_PCT=N/A" >> "$GITHUB_OUTPUT"
-            echo "STMT_PCT=N/A" >> "$GITHUB_OUTPUT"
-            echo "FUNC_PCT=N/A" >> "$GITHUB_OUTPUT"
-            echo "BRANCH_PCT=N/A" >> "$GITHUB_OUTPUT"
-            {
-              echo "SUMMARY_NOTE<<EOF"
-              echo '<p><strong>Note:</strong> Coverage summary (<code>coverage/coverage-summary.json</code>) was not found; see the workflow log and any attachment below.</p>'
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Zip coverage folder
-        if: always()
-        working-directory: backend/nodejs/apps
-        run: |
-          zip -r coverage-report.zip coverage/
-
-      - name: Upload Node.js coverage artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-coverage-report
-          path: backend/nodejs/apps/coverage-report.zip
-          retention-days: 7
-
-  python-coverage-check:
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python-version: ['3.12']
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
-      - name: Install uv
-        run: pip install uv
-
-      - name: Install dependencies
-        run: |
-          cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout coverage
-          uv pip install --system -e .
-
-      - name: Run unit tests with coverage
-        id: run-python-tests
-        run: |
-          cd backend/python
-          coverage run -m pytest tests/unit -v
-          coverage json -o coverage/coverage-summary.json
-          coverage html -d coverage/htmlcov
-          coverage report --fail-under=92
-
-      - name: Collect Python coverage summary for email
-        id: python-coverage-email
-        if: always()
-        working-directory: backend/python
-        run: |
-          SUMMARY="coverage/coverage-summary.json"
-          if [ -f "$SUMMARY" ]; then
-            PY_STMT_PCT=$(jq -r 'if .totals.percent_covered != null then "\(.totals.percent_covered | . * 10 | round / 10)%" else "N/A" end' "$SUMMARY")
-            PY_MISSING=$(jq -r 'if .totals.missing_lines != null then .totals.missing_lines else "N/A" end' "$SUMMARY")
-            PY_BRANCHES_PCT=$(jq -r 'if .totals.percent_covered_display != null then "\(.totals.percent_covered_display)%" else "N/A" end' "$SUMMARY")
-            echo "PY_STMT_PCT=$PY_STMT_PCT" >> "$GITHUB_OUTPUT"
-            echo "PY_MISSING=$PY_MISSING" >> "$GITHUB_OUTPUT"
-            echo "PY_BRANCHES_PCT=$PY_BRANCHES_PCT" >> "$GITHUB_OUTPUT"
-            {
-              echo "PY_SUMMARY_NOTE<<EOF"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "PY_STMT_PCT=N/A" >> "$GITHUB_OUTPUT"
-            echo "PY_MISSING=N/A" >> "$GITHUB_OUTPUT"
-            echo "PY_BRANCHES_PCT=N/A" >> "$GITHUB_OUTPUT"
-            {
-              echo "PY_SUMMARY_NOTE<<EOF"
-              echo '<p><strong>Note:</strong> Python coverage summary was not found; see the workflow log below.</p>'
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Zip Python coverage folder
-        if: always()
-        working-directory: backend/python
-        run: |
-          if [ -d "coverage" ]; then
-            zip -r python-coverage-report.zip coverage/
-          fi
-
-      - name: Upload Python coverage artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-coverage-report
-          path: backend/python/python-coverage-report.zip
-          retention-days: 7
-          if-no-files-found: ignore
+  run-tests:
+    uses: ./.github/workflows/unit-test.yml
+    with:
+      python-coverage-threshold: 92
+      generate-coverage-reports: true
 
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [nodejs-coverage-check, python-coverage-check]
+    needs: [run-tests]
     if: always()
 
     steps:
@@ -193,7 +41,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ needs.nodejs-coverage-check.result == 'success' && needs.python-coverage-check.result == 'success' && ':large_green_circle:' || ':red_circle:' }} Weekly Coverage Report"
+                    "text": "${{ needs.run-tests.result == 'success' && ':large_green_circle:' || ':red_circle:' }} Weekly Coverage Report"
                   }
                 },
                 {
@@ -206,15 +54,15 @@ jobs:
                 {
                   "type": "section",
                   "fields": [
-                    { "type": "mrkdwn", "text": "*Node.js:* ${{ needs.nodejs-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 90%, stmts 90%, funcs 90%, branches 80%" },
-                    { "type": "mrkdwn", "text": "*Python:* ${{ needs.python-coverage-check.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 92%" }
+                    { "type": "mrkdwn", "text": "*Node.js (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 90%, stmts 90%, funcs 90%, branches 80%" },
+                    { "type": "mrkdwn", "text": "*Python 3.10–3.12 (Ubuntu + Windows):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 92%" }
                   ]
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ needs.nodejs-coverage-check.result == 'success' && needs.python-coverage-check.result == 'success' && ':tada: All coverage thresholds met!' || ':warning: Coverage fell below threshold. Check the workflow run for details.' }}"
+                    "text": "${{ needs.run-tests.result == 'success' && ':tada: All coverage thresholds met!' || ':warning: Coverage fell below threshold. Check the workflow run for details.' }}"
                   }
                 },
                 {
@@ -281,5 +129,11 @@ jobs:
             echo "Uploaded $title"
           }
 
-          upload_file "coverage-reports/nodejs-coverage-report/coverage-report.zip" "Node.js Coverage Report"
-          upload_file "coverage-reports/python-coverage-report/python-coverage-report.zip" "Python Coverage Report"
+          for dir in coverage-reports/nodejs-coverage-report-*/; do
+            os=$(basename "$dir" | sed 's/nodejs-coverage-report-//')
+            upload_file "${dir}coverage-report.zip" "Node.js ($os) Coverage Report"
+          done
+          for dir in coverage-reports/python-coverage-report-*/; do
+            label=$(basename "$dir" | sed 's/python-coverage-report-//')
+            upload_file "${dir}python-coverage-report.zip" "Python ($label) Coverage Report"
+          done
