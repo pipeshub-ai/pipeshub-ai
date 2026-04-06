@@ -15548,6 +15548,38 @@ paths:
         '404':
           description: Connector not found
 
+    put:
+      tags:
+        - Connector Configuration
+      summary: Update connector configuration
+      deprecated: true
+      description: |
+        <b>⚠️ Deprecated:</b> This endpoint has been removed. Use the dedicated endpoints instead:<br>
+        <ul>
+        <li><code>PUT /{connectorId}/config/auth</code> — update authentication configuration</li>
+        <li><code>PUT /{connectorId}/config/filters-sync</code> — update sync strategy and filter selections</li>
+        </ul>
+      operationId: updateConnectorConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConnectorConfigRequest'
+      responses:
+        '410':
+          description: Gone — endpoint removed, use /config/auth and /config/filters-sync instead
+
   /connectors/{connectorId}/config/auth:
     put:
       tags:
@@ -15826,6 +15858,58 @@ paths:
           description: Invalid or missing state parameter
 
   # -------------------- Connector Filters --------------------
+  /connectors/{connectorId}/filters:
+    get:
+      tags:
+        - Connector Filters
+      summary: Get filter options
+      deprecated: true
+      description: |
+        <b>⚠️ Deprecated:</b> This endpoint has been removed. Filter fields and their dynamic options
+        are now available via <code>GET /{connectorId}/filters/{filterKey}/options</code>.
+        Filter configuration is managed through <code>PUT /{connectorId}/config/filters-sync</code>.
+      operationId: getConnectorFilters
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '410':
+          description: Gone — endpoint removed
+
+    post:
+      tags:
+        - Connector Filters
+      summary: Save filter selections
+      deprecated: true
+      description: |
+        <b>⚠️ Deprecated:</b> This endpoint has been removed. Save filter selections
+        using <code>PUT /{connectorId}/config/filters-sync</code> instead.
+      operationId: saveConnectorFilters
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveConnectorFiltersRequest'
+      responses:
+        '410':
+          description: Gone — endpoint removed, use PUT /config/filters-sync instead
+
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
       tags:
