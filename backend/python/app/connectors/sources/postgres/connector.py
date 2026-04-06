@@ -44,6 +44,7 @@ from app.connectors.core.registry.filters import (
     FilterType,
     IndexingFilterKey,
     MultiselectOperator,
+    NumberOperator,
     OptionSourceType,
     load_connector_filters,
 )
@@ -70,6 +71,8 @@ from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+
+MAX_ROWS_PER_TABLE_LIMIT = 10000
 
 
 @dataclass
@@ -126,7 +129,7 @@ class SyncStats:
     .in_group("PostgreSQL")\
     .with_description("Sync schemas and tables from PostgreSQL")\
     .with_categories(["Database"])\
-    .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
         # Option 1: Individual connection fields
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([
@@ -209,7 +212,6 @@ class SyncStats:
             category=FilterCategory.SYNC,
             description="Select specific schemas to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
@@ -219,7 +221,6 @@ class SyncStats:
             category=FilterCategory.SYNC,
             description="Select specific tables to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
@@ -229,6 +230,15 @@ class SyncStats:
             category=FilterCategory.INDEXING,
             description="Enable indexing of tables",
             default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.MAX_ROWS_PER_TABLE.value,
+            display_name="Max Rows Per Table",
+            filter_type=FilterType.NUMBER,
+            category=FilterCategory.SYNC,
+            description="Maximum number of rows to index per table (max 10000)",
+            default_value=1000,
+            default_operator=NumberOperator.LESS_THAN_OR_EQUAL.value
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
@@ -360,7 +370,7 @@ class PostgreSQLConnector(BaseConnector):
                     return False
 
             self.database_name = database
-            self.connector_scope = config.get("scope", ConnectorScope.PERSONAL.value)
+            self.connector_scope = config.get("scope", ConnectorScope.TEAM.value)
             self.created_by = config.get("created_by")
 
             pg_config = PostgreSQLConfig(
@@ -375,9 +385,6 @@ class PostgreSQLConnector(BaseConnector):
             
             self.data_source = PostgreSQLDataSource(client)
 
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "postgresql", self.connector_id, self.logger
-            )
 
             self.logger.info("PostgreSQL connector initialized successfully")
             return True
@@ -764,7 +771,14 @@ class PostgreSQLConnector(BaseConnector):
                 if pks_response.success:
                     primary_keys = [pk.get("column_name", "") for pk in pks_response.data]
 
-                rows = await self.data_source.fetch_table_rows(schema, table)
+                sync_filters, _ = await load_connector_filters(
+                    self.config_service, "postgresql", self.connector_id, self.logger
+                )
+                max_rows = min(
+                    int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
+                    MAX_ROWS_PER_TABLE_LIMIT,
+                )
+                rows = await self.data_source.fetch_table_rows(schema, table, limit=max_rows)
                 
                 # Fetch DDL
                 ddl_response = await self.data_source.get_table_ddl(schema, table)

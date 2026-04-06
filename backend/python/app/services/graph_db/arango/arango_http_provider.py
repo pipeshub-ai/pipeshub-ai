@@ -52,6 +52,8 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    SQLTableRecord,
+    SQLViewRecord,
 )
 from app.schema.arango.documents import (
     agent_schema,
@@ -76,6 +78,8 @@ from app.schema.arango.documents import (
     artifact_record_schema,
     deal_record_schema,
     product_record_schema,
+    sql_table_record_schema,
+    sql_view_record_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -144,6 +148,8 @@ NODE_COLLECTIONS = [
     (CollectionNames.PRODUCTS.value, product_record_schema),
     (CollectionNames.DEALS.value, deal_record_schema),
     (CollectionNames.ARTIFACTS.value, artifact_record_schema),
+    (CollectionNames.SQL_TABLES.value, sql_table_record_schema),
+    (CollectionNames.SQL_VIEWS.value, sql_view_record_schema)
 ]
 
 EDGE_COLLECTIONS = [
@@ -722,6 +728,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return DealRecord.from_arango_record(type_doc, record_dict)
             if collection == CollectionNames.ARTIFACTS.value:
                 return ArtifactRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.SQL_TABLES.value:
+                return SQLTableRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.SQL_VIEWS.value:
+                return SQLViewRecord.from_arango_record(type_doc, record_dict)
             return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(
@@ -2143,34 +2153,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Query Operations ====================
 
-    async def get_connector_id_by_type(self, org_id: str, connector_type: str) -> Optional[str]:
-        """Get connector instance ID by connector type for an organization.
-        
-        Args:
-            org_id: Organization ID
-            connector_type: Connector type enum value (e.g., 'POSTGRESQL', 'SNOWFLAKE')
-            
-        Returns:
-            Connector instance ID (_key) if found, None otherwise
-        """
-        try:
-            query = f"""
-            FOR app IN OUTBOUND
-                '{CollectionNames.ORGS.value}/{org_id}'
-                {CollectionNames.ORG_APP_RELATION.value}
-            FILTER app.isActive == true
-            FILTER app.type == @connector_type
-            LIMIT 1
-            RETURN app._key
-            """
-            results = await self.http_client.execute_aql(
-                query, {"connector_type": connector_type}
-            )
-            return results[0] if results else None
-        except Exception as e:
-            self.logger.error(f"Failed to get connector ID by type: {str(e)}")
-            return None
-
     async def execute_query(
         self,
         query: str,
@@ -3434,6 +3416,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return DealRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.ARTIFACTS.value:
                 return ArtifactRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.SQL_TABLES.value:
+                return SQLTableRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.SQL_VIEWS.value:
+                return SQLViewRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)

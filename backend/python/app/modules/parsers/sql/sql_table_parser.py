@@ -28,8 +28,7 @@ class SQLTableParser:
     """Parser for SQL tables from JSON stream to BlocksContainer."""
 
     def __init__(self) -> None:
-        # Max row blocks to create per table (aligns with POSTGRES_TABLE_ROW_LIMIT / MAX_SQL_ROWS_TO_EMBED)
-        self.max_rows_for_llm = 1_000
+        pass
 
     def parse_stream(self, file_stream: BinaryIO) -> BlocksContainer:
         """
@@ -85,8 +84,8 @@ class SQLTableParser:
                 row_dict = {column_names[i]: row[i] if i < len(row) else None for i in range(len(column_names))}
                 row_dicts.append(row_dict)
 
-        # Limit row blocks to max_rows_for_llm so embedding stays bounded (e.g. 1M to match connector/vectorstore)
-        row_dicts = row_dicts[: self.max_rows_for_llm]
+
+        row_dicts = row_dicts
 
         for idx, row_dict in enumerate(row_dicts):
             row_text = generate_simple_row_text(row_dict)

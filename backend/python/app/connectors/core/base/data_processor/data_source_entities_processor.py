@@ -158,14 +158,24 @@ class DataSourceEntitiesProcessor:
         parent_external_id: str,
         parent_record_type: RecordType,
         record: Record,
+        record_name: Optional[str] = None,
+        record_group_type: Optional[str] = None,
+        external_record_group_id: Optional[str] = None,
     ) -> Record:
         """
-        Create a placeholder parent record based on the parent record type.
+        Create a placeholder parent/related record based on the record type.
 
         Args:
             parent_external_id: External ID of the parent record
             parent_record_type: Type of the parent record
             record: The child record (for context like connector info)
+            record_name: Optional name for the record. Defaults to parent_external_id.
+            record_group_type: Optional record group type. Pass the child record's
+                value for parent records; omit (None) for related records that may
+                belong to a different group (e.g. FK targets in SQL connectors).
+            external_record_group_id: Optional external record group ID. Pass the
+                child record's value for parent records; omit (None) for related
+                records that may belong to a different group.
 
         Returns:
             A placeholder Record instance of the appropriate type
@@ -173,13 +183,13 @@ class DataSourceEntitiesProcessor:
         base_params = {
             "org_id": self.org_id,
             "external_record_id": parent_external_id,
-            "record_name": parent_external_id,  # Will be updated when real parent is synced
+            "record_name": record_name or parent_external_id,
             "origin": OriginTypes.CONNECTOR.value,
             "connector_name": record.connector_name,
             "connector_id": record.connector_id,
             "record_type": parent_record_type,
-            "record_group_type": record.record_group_type,
-            "external_record_group_id": record.external_record_group_id,  # Inherit from child record
+            "record_group_type": record_group_type,
+            "external_record_group_id": external_record_group_id,
             "version": 0,
             "mime_type": MimeTypes.UNKNOWN.value,
             "source_created_at": 0,  # Will be updated when real parent is synced
@@ -234,89 +244,6 @@ class DataSourceEntitiesProcessor:
             raise ValueError(
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
             )
-    def _create_placeholder_related_record(
-        self,
-        parent_external_id: str,
-        parent_record_type: RecordType,
-        record: Record,
-        record_name: Optional[str] = None,
-    ) -> Record:
-        """
-        Create a placeholder related record based on the parent record type.
-        Unlike _create_placeholder_parent_record, this creates an orphan record
-        (no record group) since the related record may belong to a different group.
-
-        Args:
-            parent_external_id: External ID of the parent record
-            parent_record_type: Type of the parent record
-            record: The child record (for context like connector info)
-            record_name: Optional name for the record (e.g., table/view name for SQL types).
-                         Defaults to parent_external_id if not provided.
-
-        Returns:
-            A placeholder Record instance of the appropriate type
-        """
-        base_params = {
-            "org_id": self.org_id,
-            "external_record_id": parent_external_id,
-            "record_name": record_name or parent_external_id,
-            "origin": OriginTypes.CONNECTOR.value,
-            "connector_name": record.connector_name,
-            "connector_id": record.connector_id,
-            "record_type": parent_record_type,
-            "record_group_type": None,  
-            "external_record_group_id": None,  
-            "version": 0,
-            "mime_type": MimeTypes.UNKNOWN.value,
-            "source_created_at": 0,  
-            "source_updated_at": 0,  
-        }
-
-        # Map RecordType to appropriate Record class
-        if parent_record_type == RecordType.FILE:
-            file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
-            return FileRecord(
-                **file_params,
-                is_file=False,
-                extension=None,
-                mime_type=MimeTypes.FOLDER.value,
-                size_in_bytes=0,  # Folders have 0 size
-                weburl="",  # Will be updated when real directory is synced
-                path=None,  # Will be updated when real directory is synced
-            )
-        elif parent_record_type in [RecordType.WEBPAGE, RecordType.CONFLUENCE_PAGE,
-                                     RecordType.CONFLUENCE_BLOGPOST, RecordType.SHAREPOINT_PAGE]:
-            # All webpage-like types use WebpageRecord
-            return WebpageRecord(**base_params)
-        elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
-            return MailRecord(**base_params)
-        elif parent_record_type == RecordType.TICKET:
-            return TicketRecord(**base_params)
-        elif parent_record_type == RecordType.PROJECT:
-            return ProjectRecord(**base_params)
-        elif parent_record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
-            return CommentRecord(
-                **base_params,
-                author_source_id="",  # Will be updated when real parent is synced
-            )
-        elif parent_record_type == RecordType.LINK:
-            return LinkRecord(
-                **base_params,
-                url=parent_external_id,  # Use external_id as placeholder URL
-                title=None,
-                is_public=LinkPublicStatus.UNKNOWN,
-                linked_record_id=None,
-            )
-        elif parent_record_type == RecordType.SQL_TABLE:
-            # Placeholder for FK target table not yet synced; will be replaced when table is synced
-            return SQLTableRecord(**base_params)
-        elif parent_record_type == RecordType.SQL_VIEW:
-            # Placeholder for FK target view not yet synced; will be replaced when view is synced
-            return SQLViewRecord(**base_params)
-        else:
-            raise ValueError(
-                f"Unsupported parent record type: {parent_record_type.value}. for _create_placeholder_related_record"
-            )
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
 
@@ -341,6 +268,8 @@ class DataSourceEntitiesProcessor:
                     parent_external_id=record.parent_external_record_id,
                     parent_record_type=record.parent_record_type,
                     record=record,
+                    record_group_type=record.record_group_type,
+                    external_record_group_id=record.external_record_group_id,
                 )
                 self.logger.debug(f"parent_record: {parent_record}")
 
@@ -420,7 +349,7 @@ class DataSourceEntitiesProcessor:
             )
 
             if related_record is None and record_type:
-                related_record = self._create_placeholder_related_record(
+                related_record = self._create_placeholder_parent_record(
                     parent_external_id=external_record_id,
                     parent_record_type=record_type,
                     record=record,
@@ -881,6 +810,7 @@ class DataSourceEntitiesProcessor:
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            record.weburl = existing_record.weburl
             # pass
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:

@@ -59,6 +59,8 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    SQLTableRecord,
+    SQLViewRecord,
 )
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
@@ -2086,6 +2088,10 @@ class Neo4jProvider(IGraphDBProvider):
                 return DealRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.ARTIFACTS.value:
                 return ArtifactRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.SQL_TABLES.value:
+                return SQLTableRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.SQL_VIEWS.value:
+                return SQLViewRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -3045,34 +3051,6 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
             return []
-
-    async def get_connector_id_by_type(
-        self, org_id: str, connector_type: str
-    ) -> Optional[str]:
-        """Get connector instance ID by connector type for an organization.
-
-        Args:
-            org_id: Organization ID
-            connector_type: Connector type enum value (e.g., 'POSTGRESQL', 'SNOWFLAKE')
-
-        Returns:
-            Connector instance ID if found, None otherwise
-        """
-        try:
-            query = """
-            MATCH (o:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app:App)
-            WHERE app.isActive = true AND app.type = $connector_type
-            RETURN app.id AS app_id
-            LIMIT 1
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"org_id": org_id, "connector_type": connector_type}
-            )
-            return results[0]["app_id"] if results else None
-        except Exception as e:
-            self.logger.error(f"Failed to get connector ID by type: {str(e)}")
-            return None
 
     async def get_departments(
         self,

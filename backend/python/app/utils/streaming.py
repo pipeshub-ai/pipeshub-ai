@@ -1452,26 +1452,6 @@ async def stream_llm_response_with_tools(
                             current = tool_event["data"].get("answer", "") or ""
                             tool_event["data"]["answer"] = _append_task_markers(current, task_results)
                     yield tool_event
-                    # The LLM answered directly during tool execution (e.g., on hop 2
-                    # after a successful tool call). We still need to collect any
-                    # background conversation tasks (like CSV export) before closing.
-                    if conversation_id:
-                        from app.utils.conversation_tasks import await_and_collect_results
-
-                        logger.info(
-                            "stream_llm_response_with_tools: early-return path — awaiting conversation tasks for %s",
-                            conversation_id,
-                        )
-                        task_results = await await_and_collect_results(conversation_id)
-                        for task_result in task_results:
-                            logger.info(
-                                "stream_llm_response_with_tools: yielding conversation_task event: %s",
-                                task_result,
-                            )
-                            yield {
-                                "event": "conversation_task",
-                                "data": task_result,
-                            }
                     return
                 else:
                     yield tool_event
@@ -1541,30 +1521,6 @@ async def stream_llm_response_with_tools(
                         event["data"].get("answer", "") or "", task_results
                     )
                 yield event
-
-        # Await background conversation tasks (e.g. CSV export) and send
-        # their results *after* the complete event so the answer is not delayed.
-        if conversation_id:
-            from app.utils.conversation_tasks import await_and_collect_results
-
-            logger.info(
-                "stream_llm_response_with_tools: awaiting conversation tasks for %s",
-                conversation_id,
-            )
-            task_results = await await_and_collect_results(conversation_id)
-            logger.info(
-                "stream_llm_response_with_tools: got %d task results for %s",
-                len(task_results), conversation_id,
-            )
-            for task_result in task_results:
-                logger.info(
-                    "stream_llm_response_with_tools: yielding conversation_task event: %s",
-                    task_result,
-                )
-                yield {
-                    "event": "conversation_task",
-                    "data": task_result,
-                }
 
         logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
     except Exception as e:

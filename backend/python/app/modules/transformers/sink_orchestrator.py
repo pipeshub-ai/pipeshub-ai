@@ -102,8 +102,9 @@ class SinkOrchestrator(Transformer):
                 return
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
             self.logger.info(f"Saving reconciliation metadata for record {record_id}")
-            await self._save_reconciliation_metadata(ctx)
             await self.graphdb.apply(ctx)
+            await self._save_reconciliation_metadata(ctx)
+
 
         return
 
