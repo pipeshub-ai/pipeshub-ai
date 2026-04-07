@@ -4262,11 +4262,9 @@ async def handle_oauth_callback(
 
         try:
             token = await oauth_provider.handle_callback(code, original_state)
-        except Exception as e:
-            logger.error(f"Error during token exchange: {e}")
-            token = None
         finally:
             await oauth_provider.close()
+
         if not token or not token.access_token:
             logger.error(f"Invalid token received for instance {connector_id}")
             return {
