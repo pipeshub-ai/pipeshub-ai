@@ -11,12 +11,9 @@ from logging import Logger
 from typing import Any
 from urllib.parse import unquote
 
-import httpx
-from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from gitlab.v4.objects import (
     GroupMember,
-    Issue,
     Project,
     ProjectCommit,
     ProjectIssue,
@@ -90,6 +87,7 @@ from app.sources.client.gitlab.gitlab import (
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
 AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
 TOKEN_URL = "https://gitlab.com/oauth/token"
 
@@ -382,14 +380,14 @@ class GitLabConnector(BaseConnector):
         total_projects_skipped =0
         dict_member:dict[int,GroupMember] = {}
         if not groups_res.success:
-            self.logger.info(f"Error in fetching groups: {groups_res.error}, continuing with projects members")            
+            self.logger.error(f"Error in fetching groups: {groups_res.error}, continuing with projects members")
         if groups_res.success and groups_res.data:
             groups = groups_res.data
             for group in groups:
                 try:
                     group_id = getattr(group, 'id', None)
                     if group_id is None:
-                        self.logger.warning(f"Group missing ID, skipping ")
+                        self.logger.warning("Group missing ID, skipping ")
                         total_groups_skipped += 1
                         continue
                     self.logger.debug(f"syncing project wise users for group {group_id}")
@@ -415,11 +413,11 @@ class GitLabConnector(BaseConnector):
                 try:
                     project_id = getattr(project, 'id', None)
                     if project_id is None:
-                        self.logger.warning(f"Project missing ID, skipping ")
+                        self.logger.warning("Project missing ID, skipping ")
                         total_projects_skipped += 1
                         continue
                     members_res = self.data_source.list_project_members_all(project_id)
-                    
+
                     if not members_res.success :
                         self.logger.info(f"Error in fetching members for project {project_id}")
                         total_projects_skipped += 1
@@ -760,7 +758,7 @@ class GitLabConnector(BaseConnector):
             external_group_id = getattr(record,"external_record_group_id")
             project_id = external_group_id.split('-')[0]
             if not external_group_id:
-                raise Exception(f"❌❌ Project id not found.")
+                raise Exception("❌❌ Project id not found.")
 
             file_res = self.data_source.get_file_content(project_id,file_path)
             if not file_res.success :
@@ -783,7 +781,7 @@ class GitLabConnector(BaseConnector):
             1. Sync appUsers and Pseudo groups for each project with permissions.
             2.Sync issues with sync points
             3.Sync merge requests with sync points
-            4.Sync repo code files  
+            4.Sync repo code files
         """
         projects_res = self.data_source.list_projects(owned=True)
         if not projects_res.success:
@@ -858,7 +856,7 @@ class GitLabConnector(BaseConnector):
         # creating record group for issues to inherit permissions
         work_items_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
-            name = f"Work items",
+            name = "Work items",
             group_type=RecordGroupType.PROJECT.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -868,7 +866,7 @@ class GitLabConnector(BaseConnector):
         self.logger.info("Creating work items record group")
         merge_requests_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
-            name = f"Merge requests",
+            name = "Merge requests",
             group_type=RecordGroupType.PROJECT.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -877,7 +875,7 @@ class GitLabConnector(BaseConnector):
         )
         code_repo_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
-            name = f"Code repository",
+            name = "Code repository",
             group_type=RecordGroupType.PROJECT.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -1211,7 +1209,7 @@ class GitLabConnector(BaseConnector):
         external_group_id:str = getattr(record,"external_record_group_id")
         project_id = external_group_id.split('-')[0]
         if not external_group_id:
-            raise Exception(f"❌❌ Project id not found.")
+            raise Exception("❌❌ Project id not found.")
         issue_res = self.data_source.get_issue(
             project_id=project_id, issue_iid=issue_number
         )
@@ -1512,7 +1510,7 @@ class GitLabConnector(BaseConnector):
                 data = f"Existing file \n\n {file_content} \n\n Diff content \n\n {diff_content}"
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"
-            
+
             bg_n = BlockGroup(
                 index=block_group_number,
                 name=f"block for file {file_path}",
@@ -1717,7 +1715,7 @@ class GitLabConnector(BaseConnector):
         external_group_id = getattr(record,"external_record_group_id")
         project_id = external_group_id.split('-')[0]
         if not external_group_id:
-            raise Exception(f"❌❌ Project id not found.")
+            raise Exception("❌❌ Project id not found.")
         mr_res = self.data_source.get_merge_request(project_id=project_id, mr_iid=mr_number)
         if not mr_res.success:
             raise Exception(f"❌❌ Failed to fetch merge request details for record {record.external_record_id}: {mr_res.error}")

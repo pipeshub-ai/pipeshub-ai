@@ -69,7 +69,7 @@ class GitLabClientViaToken:
 
     def get_base_url(self) -> str:
         return self.url
-    
+
     def get_token(self) -> str:
         return self.token
 
@@ -108,7 +108,7 @@ class GitLabClient(IClient):
 
     def get_token(self) -> str:
         return self.client.get_token()
-    
+
     @classmethod
     def build_with_config(
         cls,
