@@ -585,6 +585,12 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
       return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
+    case 'answer_chunk':
+    case 'restreaming':
+    case 'tool_call':
+    case 'tool_success':
+    case 'tool_error':
+    case 'tool_execution_complete':
       return null;
     default:
       return 'Processing ...';
