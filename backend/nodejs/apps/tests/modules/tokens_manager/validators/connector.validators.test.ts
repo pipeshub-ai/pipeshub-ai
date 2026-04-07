@@ -1321,6 +1321,12 @@ describe('createConnectorResponseSchema', () => {
 // ============================================================================
 
 describe('connectorInstanceConfigResponseSchema', () => {
+  const minimalNestedStoredConfig = {
+    auth: {},
+    sync: {},
+    filters: {},
+  };
+
   const validConfig = {
     success: true,
     config: {
@@ -1338,6 +1344,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
       supportsSync: true,
       supportsAgent: true,
       iconPath: '/assets/icons/connectors/jira.svg',
+      config: minimalNestedStoredConfig,
       isActive: false,
       isConfigured: true,
       isAuthenticated: true,
@@ -1346,14 +1353,18 @@ describe('connectorInstanceConfigResponseSchema', () => {
     },
   };
 
-  it('should accept valid config response without stored config', () => {
+  it('should accept valid config response with default empty nested config (Python GET)', () => {
     expect(connectorInstanceConfigResponseSchema.safeParse(validConfig).success).to.be.true;
   });
 
   it('should accept config with null createdBy and updatedBy', () => {
     const result = connectorInstanceConfigResponseSchema.safeParse({
       success: true,
-      config: { ...validConfig.config, createdBy: null, updatedBy: null },
+      config: {
+        ...validConfig.config,
+        createdBy: null,
+        updatedBy: null,
+      },
     });
     expect(result.success).to.be.true;
   });
@@ -1378,6 +1389,49 @@ describe('connectorInstanceConfigResponseSchema', () => {
         config: {
           auth: { authType: 'OAUTH', connectorType: 'Jira', connectorScope: 'team' },
           sync: { selectedStrategy: 'MANUAL' },
+          filters: {},
+        },
+      },
+    });
+    expect(result.success).to.be.true;
+  });
+
+  it('should accept Outlook-style auth extras and empty sync/filters', () => {
+    const result = connectorInstanceConfigResponseSchema.safeParse({
+      success: true,
+      config: {
+        ...validConfig.config,
+        authType: 'OAUTH_ADMIN_CONSENT',
+        config: {
+          auth: {
+            clientId: '27cca42832e78c1f4bda1dfd4352225d',
+            clientSecret: '342fd312f8bf3c8971c94622e01e2423',
+            tenantId: 'WKFgWHzP7fjyDcHLN6sA12RcC5myRgVJ',
+            hasAdminConsent: true,
+            authType: 'OAUTH_ADMIN_CONSENT',
+            connectorType: 'Outlook',
+            connectorScope: 'team',
+          },
+          sync: {},
+          filters: {},
+        },
+      },
+    });
+    expect(result.success).to.be.true;
+  });
+
+  it('should accept stored scheduledConfig with only intervalMinutes and timezone', () => {
+    const result = connectorInstanceConfigResponseSchema.safeParse({
+      success: true,
+      config: {
+        ...validConfig.config,
+        config: {
+          auth: {},
+          sync: {
+            selectedStrategy: 'SCHEDULED',
+            scheduledConfig: { intervalMinutes: 30, timezone: 'UTC' },
+          },
+          filters: {},
         },
       },
     });
@@ -1406,6 +1460,31 @@ describe('connectorInstanceConfigResponseSchema', () => {
     const result = connectorInstanceConfigResponseSchema.safeParse({
       success: true,
       config: { ...validConfig.config, unknownField: true },
+    });
+    expect(result.success).to.be.false;
+  });
+
+  it('should reject extra top-level keys inside nested stored config (strict)', () => {
+    const result = connectorInstanceConfigResponseSchema.safeParse({
+      success: true,
+      config: {
+        ...validConfig.config,
+        config: {
+          auth: { authType: 'OAUTH', connectorType: 'Jira', connectorScope: 'team' },
+          sync: { selectedStrategy: 'MANUAL' },
+          filters: {},
+          legacyField: true,
+        },
+      },
+    });
+    expect(result.success).to.be.false;
+  });
+
+  it('should reject missing nested config object', () => {
+    const { config: _nested, ...rest } = validConfig.config;
+    const result = connectorInstanceConfigResponseSchema.safeParse({
+      success: true,
+      config: rest,
     });
     expect(result.success).to.be.false;
   });
@@ -1477,6 +1556,18 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
     });
     expect(result.success).to.be.false;
   });
+
+  it('should reject unknown keys inside config (strict)', () => {
+    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+      success: true,
+      config: {
+        ...validAuthUpdate.config,
+        unknownSection: {},
+      },
+      message: 'ok',
+    });
+    expect(result.success).to.be.false;
+  });
 });
 
 // ============================================================================
@@ -1529,6 +1620,14 @@ describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
     const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse({
       ...validFiltersSyncUpdate,
       extra: 'field',
+    });
+    expect(result.success).to.be.false;
+  });
+
+  it('should reject unknown keys inside config (strict)', () => {
+    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse({
+      ...validFiltersSyncUpdate,
+      config: { ...validFiltersSyncUpdate.config, legacyKey: true },
     });
     expect(result.success).to.be.false;
   });

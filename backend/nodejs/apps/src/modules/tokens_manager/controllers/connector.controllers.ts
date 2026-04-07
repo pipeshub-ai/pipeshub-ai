@@ -28,7 +28,7 @@ import {
   connectorInstancesResponseSchema,
   connectorActiveInactiveResponseSchema,
   connectorConfiguredResponseSchema,
-  connectorInstanceDetailResponseSchema,
+  // connectorInstanceDetailResponseSchema,
   connectorDeleteResponseSchema,
   connectorToggleResponseSchema,
   connectorInstanceConfigResponseSchema,
@@ -545,7 +545,7 @@ export const getConnectorInstance =
         res,
         'Getting connector instance',
         'Connector instance not found',
-        connectorInstanceDetailResponseSchema,
+        // connectorInstanceDetailResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting connector instance', {

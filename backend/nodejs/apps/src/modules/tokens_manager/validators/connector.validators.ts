@@ -257,17 +257,12 @@ export const scopeCountsResponseSchema = z.object({
 // Response Schemas - Config Building Blocks
 // ============================================================================
 
-/**
- * Field validation config schema
- */
+
 const fieldValidationSchema = z.object({
   minLength: z.number().optional(),
   maxLength: z.number().optional(),
 }).strict();
 
-/**
- * Auth field schema - used in auth schemas
- */
 const authFieldSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -281,9 +276,6 @@ const authFieldSchema = z.object({
   isSecret: z.boolean(),         // always set
 }).strict();
 
-/**
- * OAuth config schema
- */
 const oauthConfigSchema = z.object({
   authorizeUrl: z.string(),       // always set (lines 222-227 in connector_builder.py)
   tokenUrl: z.string(),           // always set
@@ -291,9 +283,6 @@ const oauthConfigSchema = z.object({
   redirectUri: z.string(),        // always set
 }).strict();
 
-/**
- * Auth schema entry
- */
 const authSchemaEntrySchema = z.object({
   fields: z.array(authFieldSchema),          // always set (initialized as [] then fields appended)
   redirectUri: z.string().optional(),        // only set when oauth_config.redirect_uri is truthy
@@ -313,9 +302,6 @@ const authConfigResponseSchema = z.object({
   conditionalDisplay: z.record(z.any()),   // always set (may be {})
 }).strict();
 
-/**
- * Webhook config schema
- */
 const webhookConfigSchema = z.object({
   supported: z.boolean(),
   webhookUrl: z.string().optional(),
@@ -324,9 +310,7 @@ const webhookConfigSchema = z.object({
   secretKey: z.string().optional(),
 }).strict();
 
-/**
- * Scheduled config schema
- */
+
 const scheduledConfigSchema = z.object({
   intervalMinutes: z.number(),   // always set (default 60)
   cronExpression: z.string(),    // always set (default "")
@@ -338,17 +322,12 @@ const scheduledConfigSchema = z.object({
   repetitionCount: z.number(),   // always set (default 0)
 }).strict();
 
-/**
- * Realtime config schema
- */
 const realtimeConfigSchema = z.object({
   supported: z.boolean(),
   connectionType: z.string(),    // always set (default "WEBSOCKET")
 }).strict();
 
-/**
- * Sync custom field schema
- */
+
 const syncCustomFieldSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -376,9 +355,7 @@ const syncConfigResponseSchema = z.object({
   values: z.record(z.any()),                 // always set (default {})
 }).strict();
 
-/**
- * Filter option schema - can be object with id/label or just a string
- */
+
 const filterOptionSchema = z.union([
   z.object({
     id: z.string(),
@@ -387,9 +364,6 @@ const filterOptionSchema = z.union([
   z.string(),
 ]);
 
-/**
- * Filter field schema (used in registry schema definitions)
- */
 const filterFieldSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -404,9 +378,6 @@ const filterFieldSchema = z.object({
   options: z.array(filterOptionSchema).optional(), // conditional: only if self.options is truthy
 }).strict();
 
-/**
- * Filter category schema (sync or indexing) - used in registry schema
- */
 const filterCategorySchema = z.object({
   schema: z.object({
     fields: z.array(filterFieldSchema),
@@ -463,24 +434,32 @@ const storedAuthConfigSchema = z.object({
   tokenUrl: z.string().optional(),
 }).passthrough();
 
-const scheduledSyncConfigSchema = z.object({
-  intervalMinutes: z.number(),  // always set when scheduledConfig exists
-  timezone: z.string(),         // always set when scheduledConfig exists
-}).passthrough();               // passthrough: Python may also store startTime, nextTime, cronExpression
 
-const storedSyncConfigSchema = z.object({
-  selectedStrategy: z.string().optional(),               // may be absent in older stored configs created before sync was configured
-  scheduledConfig: scheduledSyncConfigSchema.optional(), // only present when strategy is SCHEDULED
-}).passthrough();               // passthrough: connectors may have extra sync fields
+const scheduledSyncConfigSchema = z
+  .object({
+    intervalMinutes: z.number(),
+    timezone: z.string(),
+  })
+  .strict();
 
-/**
- * Used for GET /:connectorId/config endpoint
- */
-const storedConnectorConfigSchema = z.object({
-  auth: storedAuthConfigSchema.optional(),
-  sync: storedSyncConfigSchema.optional(),
-  filters: storedFiltersConfigSchema.optional(),
-}).passthrough();
+/** Stored sync section: may be `{}` until configured; passthrough allows registry fields (e.g. webhookConfig). */
+const storedSyncConfigSchema = z
+  .object({
+    selectedStrategy: z.string().optional(),
+    scheduledConfig: scheduledSyncConfigSchema.optional(),
+  })
+  .passthrough();
+
+/** GET /config always includes nested `config` with these three keys (Python defaults missing etcd to empty objects). */
+const emptyObjectSchema = z.object({}).strict();
+
+const storedConnectorConfigSchema = z
+  .object({
+    auth: z.union([emptyObjectSchema, storedAuthConfigSchema]),
+    sync: storedSyncConfigSchema,
+    filters: storedFiltersConfigSchema,
+  })
+  .strict();
 
 /**
  * GET /:connectorId/config response schema
@@ -493,20 +472,20 @@ export const connectorInstanceConfigResponseSchema = connectorSuccessSchema.exte
     appGroup: z.string(),
     authType: z.string(),                 // always present, authType required at creation
     scope: z.string(),
-    createdBy: z.string().nullable(),     // always present, null for system-created records
-    updatedBy: z.string().nullable(),     // always present, null until first update
+    createdBy: z.string(),     // always present, null for system-created records
+    updatedBy: z.string(),     // always present, null until first update
     appDescription: z.string(),
     appCategories: z.array(z.string()),
     supportsRealtime: z.boolean(),
     supportsSync: z.boolean(),
     supportsAgent: z.boolean(),
     iconPath: z.string(),
-    config: storedConnectorConfigSchema.optional(), // absent until connector is configured
+    config: storedConnectorConfigSchema,
     isActive: z.boolean(),
     isConfigured: z.boolean(),
     isAuthenticated: z.boolean(),
-    createdAtTimestamp: z.number().nullable(), // always present, null for legacy records
-    updatedAtTimestamp: z.number().nullable(), // always present, null until first update
+    createdAtTimestamp: z.number(),
+    updatedAtTimestamp: z.number(),
   }).strict(),
 }).strict();
 
@@ -528,14 +507,15 @@ const storedOAuthSchema = z.object({
   used_codes: z.array(z.string()).optional(),
 }).passthrough();
 
-
-const configUpdateResponseConfigSchema = z.object({
-  auth: storedAuthConfigSchema.optional(),
-  sync: storedSyncConfigSchema.optional(),
-  filters: storedFiltersConfigSchema.optional(),
-  credentials: storedCredentialsSchema.nullable().optional(), // always null in auth update; may be absent in filters-sync update if auth was never configured
-  oauth: storedOAuthSchema.nullable().optional(),             // same as credentials
-}).passthrough();
+const configUpdateResponseConfigSchema = z
+  .object({
+    auth: storedAuthConfigSchema.optional(),
+    sync: storedSyncConfigSchema.optional(),
+    filters: storedFiltersConfigSchema.optional(),
+    credentials: storedCredentialsSchema.nullable().optional(),
+    oauth: storedOAuthSchema.nullable().optional(),
+  })
+  .strict();
 
 /**
  * PUT /:connectorId/config/auth response schema
