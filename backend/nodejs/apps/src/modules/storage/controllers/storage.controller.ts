@@ -48,6 +48,8 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import { downloadDocumentSignedUrlResponseSchema } from '../validators/validators';
 
 // TODO: Remove these globals
 let storageConfig:
@@ -380,7 +382,12 @@ export class StorageController {
       if (document.storageVendor === StorageVendor.Local) {
         serveFileFromLocalStorage(document, res);
       } else {
-        res.status(200).json({ signedUrl: signedUrlResult.data });
+        sendValidatedJson(
+          res,
+          downloadDocumentSignedUrlResponseSchema,
+          { signedUrl: signedUrlResult.data },
+          HTTP_STATUS.OK,
+        );
       }
     } catch (error) {
       next(error);

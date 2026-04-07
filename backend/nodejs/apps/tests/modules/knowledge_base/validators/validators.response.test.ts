@@ -78,7 +78,7 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should accept with nullable connectorId as null', () => {
+    it('should reject null connectorId (list item requires non-null string)', () => {
       const data = {
         ...validData,
         knowledgeBases: [
@@ -89,7 +89,7 @@ describe('Response Schema Validation', () => {
         ],
       }
       const result = listKnowledgeBasesResponseSchema.safeParse(data)
-      expect(result.success).to.be.true
+      expect(result.success).to.be.false
     })
 
     it('should reject userRole as null (required string)', () => {
@@ -110,21 +110,30 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.false
     })
 
-    it('should accept folder without optional fields', () => {
-      const data = {
+    it('should reject folder missing createdAtTimestamp or webUrl (list KB always returns both)', () => {
+      const missingTs = listKnowledgeBasesResponseSchema.safeParse({
         ...validData,
         knowledgeBases: [
           {
             ...validData.knowledgeBases[0],
-            folders: [{ id: 'f-1', name: 'F' }],
+            folders: [{ id: 'f-1', name: 'F', webUrl: 'https://example.com/f' }],
           },
         ],
-      }
-      const result = listKnowledgeBasesResponseSchema.safeParse(data)
-      expect(result.success).to.be.true
+      })
+      const missingUrl = listKnowledgeBasesResponseSchema.safeParse({
+        ...validData,
+        knowledgeBases: [
+          {
+            ...validData.knowledgeBases[0],
+            folders: [{ id: 'f-1', name: 'F', createdAtTimestamp: TS }],
+          },
+        ],
+      })
+      expect(missingTs.success).to.be.false
+      expect(missingUrl.success).to.be.false
     })
 
-    it('should reject null for folder optional fields (optional not nullable)', () => {
+    it('should reject null createdAtTimestamp or webUrl on folder', () => {
       const data = {
         ...validData,
         knowledgeBases: [
@@ -136,6 +145,28 @@ describe('Response Schema Validation', () => {
       }
       const result = listKnowledgeBasesResponseSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+
+    it('should accept folder webUrl as relative path (connector list KB shape)', () => {
+      const data = {
+        ...validData,
+        knowledgeBases: [
+          {
+            ...validData.knowledgeBases[0],
+            connectorId: 'knowledgeBase_org-1',
+            folders: [
+              {
+                id: '3c5f7c05-3c9d-45c6-bd0e-ba305cd9715d',
+                name: 'djf',
+                createdAtTimestamp: 1775504506285,
+                webUrl: '/kb/e3c8032f-29e4-4cc0-910a-454ac0ad9531/folder/3c5f7c05-3c9d-45c6-bd0e-ba305cd9715d',
+              },
+            ],
+          },
+        ],
+      }
+      const result = listKnowledgeBasesResponseSchema.safeParse(data)
+      expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
@@ -263,7 +294,8 @@ describe('Response Schema Validation', () => {
       origin: 'UPLOAD',
       orgId: 'org-12345',
       externalRecordId: 'ext-rec-001',
-      connectorId: null,
+      connectorId: 'knowledgeBase_org-12345',
+      connectorName: 'KB',
       createdAtTimestamp: TS,
       updatedAtTimestamp: TS + 3000,
       version: 1,
@@ -419,13 +451,44 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should accept knowledgeBase with nullable name and optional orgId', () => {
+    it('should reject knowledgeBase with null name', () => {
       const data = {
         ...validData,
-        knowledgeBase: { id: 'kb-001', name: null },
+        knowledgeBase: {
+          id: 'kb-001',
+          name: null,
+          orgId: 'org-12345',
+        } as unknown as (typeof validData)['knowledgeBase'],
       }
       const result = getRecordByIdResponseSchema.safeParse(data)
-      expect(result.success).to.be.true
+      expect(result.success).to.be.false
+    })
+
+    it('should reject record with null connectorId', () => {
+      const data = {
+        ...validData,
+        record: { ...baseRecord, connectorId: null as unknown as string },
+      }
+      const result = getRecordByIdResponseSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject record with missing connectorName', () => {
+      const { connectorName: _cn, ...recordNoName } = baseRecord
+      const data = { ...validData, record: recordNoName }
+      const result = getRecordByIdResponseSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject record with null or empty connectorName', () => {
+      for (const connectorName of [null, ''] as const) {
+        const data = {
+          ...validData,
+          record: { ...baseRecord, connectorName: connectorName as unknown as string },
+        }
+        const result = getRecordByIdResponseSchema.safeParse(data)
+        expect(result.success).to.be.false
+      }
     })
 
     it('should reject missing required field', () => {
@@ -485,12 +548,11 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should accept with nullable fields as null', () => {
+    it('should accept with nullable optional fields as null (connectorId stays non-empty)', () => {
       const data = {
         ...validData,
         record: {
           ...validRecord,
-          connectorId: null,
           webUrl: null,
           mimeType: null,
           externalGroupId: null,
@@ -503,6 +565,33 @@ describe('Response Schema Validation', () => {
       }
       const result = updateRecordResponseSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    it('should reject update record response when connectorId is null', () => {
+      const data = {
+        ...validData,
+        record: { ...validRecord, connectorId: null as unknown as string },
+      }
+      const result = updateRecordResponseSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject update record response when connectorName is missing', () => {
+      const { connectorName: _cn, ...recordNoName } = validRecord
+      const data = { ...validData, record: recordNoName }
+      const result = updateRecordResponseSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject update record response when connectorName is null or empty', () => {
+      for (const connectorName of [null, ''] as const) {
+        const data = {
+          ...validData,
+          record: { ...validRecord, connectorName: connectorName as unknown as string },
+        }
+        const result = updateRecordResponseSchema.safeParse(data)
+        expect(result.success).to.be.false
+      }
     })
 
     it('should accept older doc without fields added later', () => {
@@ -720,8 +809,14 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should reject origin other than CONNECTOR', () => {
+    it('should accept non-CONNECTOR origin strings', () => {
       const data = { ...validData, data: { ...validData.data, origin: 'UPLOAD' } }
+      const result = getConnectorStatsResponseSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty origin', () => {
+      const data = { ...validData, data: { ...validData.data, origin: '' } }
       const result = getConnectorStatsResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
@@ -1120,8 +1215,13 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should reject status other than processing', () => {
+    it('should accept arbitrary non-empty status string', () => {
       const result = uploadRecordsResponseSchema.safeParse({ ...validData, status: 'completed' })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty status', () => {
+      const result = uploadRecordsResponseSchema.safeParse({ ...validData, status: '' })
       expect(result.success).to.be.false
     })
 
@@ -1266,13 +1366,39 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
+    it('should accept COLLECTION node with connector KB (connectorName from graph)', () => {
+      const kbRgItem = {
+        ...validKHNodeItem,
+        id: 'rg-kb-1',
+        name: 'Team KB',
+        nodeType: 'recordGroup',
+        origin: 'COLLECTION',
+        connector: 'KB',
+        recordGroupType: 'KB',
+        sharingStatus: 'private',
+      }
+      const result = getKnowledgeHubNodesResponseSchema.safeParse({
+        ...validKHResponse,
+        items: [kbRgItem],
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject node item with null connector', () => {
+      const result = getKnowledgeHubNodesResponseSchema.safeParse({
+        ...validKHResponse,
+        items: [{ ...validKHNodeItem, connector: null }],
+      })
+      expect(result.success).to.be.false
+    })
+
     it('should accept with currentNode and breadcrumbs for child browsing', () => {
       const data = {
         ...validKHResponse,
         id: 'app-123',
-        currentNode: { id: 'app-123', name: 'Drive', nodeType: 'app' },
+        currentNode: { id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'GOOGLE_DRIVE' },
         parentNode: null,
-        breadcrumbs: [{ id: 'app-123', name: 'Drive', nodeType: 'app' }],
+        breadcrumbs: [{ id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'GOOGLE_DRIVE' }],
       }
       const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
@@ -1346,14 +1472,31 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should accept currentNode with optional subType', () => {
+    it('should accept currentNode with subType (KB recordGroup uses COLLECTION from connector)', () => {
       const data = {
         ...validKHResponse,
         id: 'rg-1',
-        currentNode: { id: 'rg-1', name: 'KB', nodeType: 'recordGroup', subType: 'KB' },
+        currentNode: { id: 'rg-1', name: 'KB', nodeType: 'recordGroup', subType: 'COLLECTION' },
       }
       const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    it('should reject currentNode or breadcrumb missing subType', () => {
+      const noSubCurrent = getKnowledgeHubNodesResponseSchema.safeParse({
+        ...validKHResponse,
+        id: 'app-123',
+        currentNode: { id: 'app-123', name: 'Drive', nodeType: 'app' },
+        breadcrumbs: [{ id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'X' }],
+      })
+      const noSubCrumb = getKnowledgeHubNodesResponseSchema.safeParse({
+        ...validKHResponse,
+        id: 'app-123',
+        currentNode: { id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'GOOGLE_DRIVE' },
+        breadcrumbs: [{ id: 'app-123', name: 'Drive', nodeType: 'app' }],
+      })
+      expect(noSubCurrent.success).to.be.false
+      expect(noSubCrumb.success).to.be.false
     })
 
     it('should reject missing required field', () => {
@@ -1550,19 +1693,41 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should reject folder with wrong type literal', () => {
+    it('should accept folder item with arbitrary non-empty type string', () => {
       const data = {
         ...validKBChildrenResponse,
         folders: [{ ...validKBFolder, type: 'file' }],
       }
       const result = getKBChildrenResponseSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject folder item with empty type', () => {
+      const data = {
+        ...validKBChildrenResponse,
+        folders: [{ ...validKBFolder, type: '' }],
+      }
+      const result = getKBChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
-    it('should reject record with wrong type literal', () => {
-      const data = {
+    it('should accept record item with arbitrary non-empty type string', () => {
+      const fileType = getKBChildrenResponseSchema.safeParse({
+        ...validKBChildrenResponse,
+        records: [{ ...validKBRecord, type: 'file' }],
+      })
+      const folderLabel = getKBChildrenResponseSchema.safeParse({
         ...validKBChildrenResponse,
         records: [{ ...validKBRecord, type: 'folder' }],
+      })
+      expect(fileType.success).to.be.true
+      expect(folderLabel.success).to.be.true
+    })
+
+    it('should reject record item with empty type', () => {
+      const data = {
+        ...validKBChildrenResponse,
+        records: [{ ...validKBRecord, type: '' }],
       }
       const result = getKBChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
@@ -1744,10 +1909,19 @@ describe('Response Schema Validation', () => {
       expect(result.success).to.be.true
     })
 
-    it('should reject folder with wrong type literal', () => {
+    it('should accept folder item with arbitrary non-empty type string', () => {
       const data = {
         ...validFolderChildrenResponse,
         folders: [{ ...validFolderChildFolder, type: 'record' }],
+      }
+      const result = getFolderChildrenResponseSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject folder item with empty type', () => {
+      const data = {
+        ...validFolderChildrenResponse,
+        folders: [{ ...validFolderChildFolder, type: '' }],
       }
       const result = getFolderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false

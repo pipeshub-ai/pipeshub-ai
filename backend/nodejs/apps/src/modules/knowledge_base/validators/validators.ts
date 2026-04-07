@@ -641,21 +641,19 @@ export const getKnowledgeHubChildNodesSchema = z.object({
 // Response Schema - GET /knowledge-hub/nodes  &  GET /knowledge-hub/nodes/:parentType/:parentId
 // ============================================================================
 
-// Per-item permission — populated when include=permissions and user has item-level role
 const khItemPermissionSchema = z.object({
   role: z.string(),
   canEdit: z.boolean(),
   canDelete: z.boolean(),
 }).strict();
 
-// A single node in items[]
 const khNodeItemSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   nodeType: z.string(),               // "app" | "recordGroup" | "folder" | "record"
   parentId: z.string().nullable(),    // null for top-level nodes; "collection/id" format for children
   origin: z.string(),                 // "COLLECTION" | "CONNECTOR"
-  connector: z.string().nullable(),   // null for COLLECTION origin
+  connector: z.string(),
   recordType: z.string().nullable(),  // null for non-record nodeTypes
   recordGroupType: z.string().nullable(), // null for non-recordGroup nodeTypes
   indexingStatus: z.string().nullable(),  // null for non-record nodeTypes
@@ -668,27 +666,24 @@ const khNodeItemSchema = z.object({
   hasChildren: z.boolean(),
   previewRenderable: z.boolean().nullable(), // null for non-previewable nodes
   permission: khItemPermissionSchema.nullable(), // null unless include=permissions
-  sharingStatus: z.string().nullable(),      // null for non-app/kb nodes
+  sharingStatus: z.string().nullable(),      // null for folders
   isInternal: z.boolean(),
 }).strict();
 
-// currentNode / parentNode — null at root, present when browsing a specific node
 const khCurrentNodeSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   nodeType: z.string(),
-  subType: z.string().optional(),    // absent when null (exclude_none works for nested objects)
+  subType: z.string(),
 }).strict();
 
-// Breadcrumb trail items
 const khBreadcrumbItemSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   nodeType: z.string(),
-  subType: z.string().optional(),    // absent when null
+  subType: z.string(),
 }).strict();
 
-// Pagination block
 const khPaginationSchema = z.object({
   page: z.number().int().min(1),
   limit: z.number().int().min(1),
@@ -698,7 +693,6 @@ const khPaginationSchema = z.object({
   hasPrev: z.boolean(),
 }).strict();
 
-// A single option in filters.available.*[]
 const khFilterOptionSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -706,7 +700,6 @@ const khFilterOptionSchema = z.object({
   connectorType: z.string().nullable(), // set only for connector entries
 }).strict();
 
-// filters.available — present when include=availableFilters
 const khAvailableFiltersSchema = z.object({
   nodeTypes: z.array(khFilterOptionSchema),
   recordTypes: z.array(khFilterOptionSchema),
@@ -717,7 +710,6 @@ const khAvailableFiltersSchema = z.object({
   sortOrder: z.array(khFilterOptionSchema),
 }).strict();
 
-// filters.applied — filter fields are null when not applied; sortBy/sortOrder always set
 const khDateRangeSchema = z.object({
   gte: z.number().int().optional(),
   lte: z.number().int().optional(),
@@ -744,10 +736,9 @@ const khAppliedFiltersSchema = z.object({
 
 const khFiltersSchema = z.object({
   applied: khAppliedFiltersSchema,
-  available: khAvailableFiltersSchema.nullable(), // null unless include=availableFilters
+  available: khAvailableFiltersSchema.nullable(),
 }).strict();
 
-// counts — null unless include=counts
 const khCountItemSchema = z.object({
   label: z.string(),
   count: z.number().int().min(0),
@@ -758,7 +749,6 @@ const khCountsSchema = z.object({
   total: z.number().int().min(0),
 }).strict();
 
-// permissions — null unless include=permissions
 const khPermissionsSchema = z.object({
   role: z.string(),
   canUpload: z.boolean(),
@@ -798,17 +788,18 @@ const kbPaginationSchema = z.object({
 }).strict();
 
 
+// List KB folders: AQL uses RECORDS doc + belongs_to edge; create_folder always sets webUrl and edge timestamps.
 const kbFolderSchema = z.object({
   id: z.string(),
   name: z.string(),
-  createdAtTimestamp: z.number().int().optional(), // absent when null (exclude_none on nested Pydantic model)
-  webUrl: z.string().optional(),                   // absent when null (exclude_none on nested Pydantic model)
+  createdAtTimestamp: z.number().int(),
+  webUrl: z.string(),
 }).strict();
 
 const kbListItemSchema = z.object({
   id: z.string(),
   name: z.string(),
-  connectorId: z.string().nullable(),
+  connectorId: z.string(),
   createdAtTimestamp: z.number().int(),
   updatedAtTimestamp: z.number().int(),
   createdBy: z.string(),
@@ -939,7 +930,7 @@ const kbChildrenFolderSchema = z.object({
   parent_id: z.null(),
   webUrl: z.string(),
   recordGroupId: z.string(),
-  type: z.literal('folder'),
+  type: z.string().min(1),
   createdAtTimestamp: z.number().int(),
   updatedAtTimestamp: z.number().int(),
   counts: z.object({
@@ -967,7 +958,7 @@ const kbChildrenRecordSchema = z.object({
   sourceLastModifiedTimestamp: kbRecordNullableInt,
   webUrl: kbRecordNullableString,
   orgId: z.string(),
-  type: z.literal('record'),
+  type: z.string().min(1),
   fileRecord: kbChildrenFileRecordSchema.nullable(),
 }).strict();
 
@@ -980,7 +971,6 @@ const kbChildrenCountsSchema = z.object({
   totalRecords: z.number().int().min(0),
 }).strict();
 
-/** String arrays in availableFilters / filters.available. */
 const kbChildrenStringArrayFilters = z.object({
   recordTypes: z.array(z.string()),
   origins: z.array(z.string()),
@@ -988,7 +978,6 @@ const kbChildrenStringArrayFilters = z.object({
   indexingStatus: z.array(z.string()),
 }).strict();
 
-/** filters.applied — built with `if v is not None`; sort_by/sort_order always present (non-None defaults). */
 const kbChildrenAppliedFiltersSchema = z.object({
   search: z.string().optional(),
   record_types: z.array(z.string()).optional(),
@@ -999,7 +988,6 @@ const kbChildrenAppliedFiltersSchema = z.object({
   sort_order: z.string(), // always present — default "asc" is not None
 }).strict();
 
-/** userPermission added by kb_service based on user role. */
 const kbChildrenUserPermissionSchema = z.object({
   role: z.string(),
   canUpload: z.boolean(),
@@ -1009,7 +997,6 @@ const kbChildrenUserPermissionSchema = z.object({
   canManagePermissions: z.boolean(),
 }).strict();
 
-/** pagination added by kb_service. */
 const kbChildrenPaginationSchema = z.object({
   page: z.number().int().min(1),
   limit: z.number().int().min(1),
@@ -1048,7 +1035,7 @@ const folderChildrenFolderSchema = z.object({
   parent_id: z.string(),
   webUrl: z.string(),
   recordGroupId: z.string(),
-  type: z.literal('folder'),
+  type: z.string().min(1),
   createdAtTimestamp: z.number().int(),
   updatedAtTimestamp: z.number().int(),
   counts: z.object({
@@ -1186,7 +1173,7 @@ export const uploadRecordsResponseSchema = z.object({
   totalFiles: z.number().int().min(0),
   successfulFiles: z.number().int().min(0),
   failedFiles: z.number().int().min(0),
-  status: z.literal('processing'),
+  status: z.string().min(1),
   failedFilesDetails: z.array(uploadFailedFileDetailSchema),
   records: z.array(uploadRecordItemSchema),
 }).strict();
@@ -1317,8 +1304,8 @@ const getRecordByIdRecordSchema = z
     origin: z.string(),
     orgId: z.string(),
     externalRecordId: z.string(),
-    connectorId: z.string().nullable(),
-    connectorName: z.string().optional(),
+    connectorId: z.string().min(1),
+    connectorName: z.string().min(1),
     createdAtTimestamp: z.number(),
     updatedAtTimestamp: z.number(),
     version: z.number().int(),
@@ -1361,16 +1348,16 @@ const getRecordByIdRecordSchema = z
 
 const getRecordByIdKnowledgeBaseSchema = z
   .object({
-    id: z.string(),
-    name: z.string().nullable(),
-    orgId: z.string().nullable().optional(),
+    id: z.string().min(1),
+    name: z.string().min(1),
+    orgId: z.string().min(1),
   })
   .strict();
 
 const getRecordByIdFolderSchema = z
   .object({
-    id: z.string(),
-    name: z.string().nullable(),
+    id: z.string().min(1),
+    name: z.string().min(1),
   })
   .strict();
 
@@ -1407,8 +1394,8 @@ const updateRecordResponseRecordSchema = z
     origin: z.string(),
     orgId: z.string(),
     externalRecordId: z.string(),
-    connectorId: z.string().nullable(),
-    connectorName: z.string().optional(),
+    connectorId: z.string().min(1),
+    connectorName: z.string().min(1),
     createdAtTimestamp: z.number(),
     updatedAtTimestamp: z.number(),
     version: z.number().int(),
@@ -1534,7 +1521,7 @@ const connectorStatsDataSchema = z
   .object({
     orgId: z.string().min(1),
     connectorId: z.string().min(1),
-    origin: z.literal('CONNECTOR'),
+    origin: z.string().min(1),
     stats: z
       .object({
         total: z.number().int().min(0),

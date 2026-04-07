@@ -116,3 +116,17 @@ export const CreateDocumentSchema = z.object({
   params: z.object({}),
   headers: Headers,
 });
+
+// ============================================================================
+// Response schemas — GET /api/v1/document/:documentId/download (S3 / Azure)
+// Local storage streams application/octet-stream and does not use this schema.
+// ============================================================================
+export const downloadDocumentSignedUrlResponseSchema = z
+  .object({
+    signedUrl: z.string().url(),
+  })
+  .strict();
+
+export type DownloadDocumentSignedUrlResponse = z.infer<
+  typeof downloadDocumentSignedUrlResponseSchema
+>;
