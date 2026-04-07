@@ -6,7 +6,7 @@ from gitlab import Gitlab
 from typing import Dict, List, Optional, Tuple, Union, cast
 from datetime import datetime
 from app.sources.client.gitlab.gitlab import GitLabResponse
-
+from collections.abc import AsyncGenerator
 import httpx
 class GitLabDataSource:
     """
@@ -20,9 +20,13 @@ class GitLabDataSource:
         if hasattr(client_or_sdk, "get_sdk"):
             sdk_obj = getattr(client_or_sdk, "get_sdk")
             self._sdk: Gitlab = cast(Gitlab, sdk_obj())
+            token = getattr(client_or_sdk, "get_token", None)
+            if token:
+                self.token = token()
         else:
             self._sdk = cast(Gitlab, client_or_sdk)
-            
+            self.token = None
+
     def get_user(self) -> GitLabResponse:
         """Fetching GitLab user info."""
         try:    
@@ -892,11 +896,10 @@ class GitLabDataSource:
             items = p.repository_tree(**payload)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
-            print(f"error  :  {e}")
             return GitLabResponse(success=False, error=str(e))
     
     def get_file_content(self,project_id:Union[int,str],file_path:str,ref:str = "HEAD") -> GitLabResponse:
-        """Get file content."""
+        """Get code file content."""
         try:
             # p = self._project(project_id)
             p = self._sdk.projects.get(project_id)
@@ -910,31 +913,24 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
         
     #-----------------------GraphQL API--------------------------------#
-    async def get_repo_tree_g(self,token:str,project_id:Union[int,str],ref:Optional[str] = "HEAD",after_cursor:str = "")->GitLabResponse:
+    async def get_repo_tree_g(self,project_id:str,ref:str|None = "HEAD",after_cursor:str = "")->GitLabResponse:
         """Get repository tree using GraphQL API."""
             # take cursors as input and return the tree with pagination
         try:
             headers = {
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
             url = f"https://gitlab.com/api/graphql"
             query = """
-            query($fullPath:ID!,$branch:String!,$afterCursor:String!)
-            {
-            # queryComplexity {
-            #     score
-            #     limit
-            # }
-            # project(fullPath: "personal-ayush-group/password-vault")
-                project (fullPath: $fullPath)
-            {
+            query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
+            project(fullPath: $fullPath) {
                 name
                 repository {
                 rootRef
-                paginatedTree(recursive: true, ref: $branch) {
+                paginatedTree(recursive: true, ref: $branch, after: $afterCursor) {
                     nodes {
-                    trees(first: 5, after:$afterCursor) {
+                    trees {
                         nodes {
                         name
                         path
@@ -943,11 +939,11 @@ class GitLabDataSource:
                         webPath
                         webUrl
                         }
-                        pageInfo{
-                        endCursor
-                        hasNextPage
-                        }
                     }
+                    }
+                    pageInfo {
+                    endCursor
+                    hasNextPage
                     }
                 }
                 }
@@ -970,37 +966,29 @@ class GitLabDataSource:
                     tree_data = resp.content
                     print(f"Fetched file tree of {project_id} of content length : {len(tree_data)}")
                     return GitLabResponse(success=True, data=(tree_data))
-                    # return 
             except Exception as e:
                 print(f"Error fetching file tree of {project_id}: {e}")
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
         
-    async def get_file_tree_g(self,token:str,project_id:Union[int,str],ref:Optional[str] = None,after_cursor:str = "")->GitLabResponse:
+    async def get_file_tree_g(self,project_id:Union[int,str],ref:Optional[str] = None,after_cursor:str = "")->GitLabResponse:
         """Get file tree using GraphQL API."""
         try:
             headers = {
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
             url = f"https://gitlab.com/api/graphql"
             query = """
-            query($fullPath:ID!,$branch:String!,$afterCursor:String!)
-            {
-            # queryComplexity {
-            #     score
-            #     limit
-            # }
-            # project(fullPath: "personal-ayush-group/password-vault")
-                project (fullPath: $fullPath)
-            {
+            query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
+            project(fullPath: $fullPath) {
                 name
                 repository {
                 rootRef
-                paginatedTree(recursive: true, ref: $branch) {
+                paginatedTree(recursive: true, ref: $branch, after: $afterCursor) {
                     nodes {
-                    blobs(first: 10, after:$afterCursor) {
+                    blobs {
                         nodes {
                         name
                         path
@@ -1009,11 +997,11 @@ class GitLabDataSource:
                         webPath
                         webUrl
                         }
-                        pageInfo{
-                        endCursor
-                        hasNextPage
-                        }
                     }
+                    }
+                    pageInfo {
+                    endCursor
+                    hasNextPage
                     }
                 }
                 }
@@ -1036,10 +1024,61 @@ class GitLabDataSource:
                     tree_data = resp.content
                     print(f"Fetched files metadata of {project_id} of content length : {len(tree_data)}")
                     return GitLabResponse(success=True, data=(tree_data))
-                    # return 
             except Exception as e:
                 print(f"Error fetching files metadata of {project_id}: {e}")
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-                    
+    
+    #----------------------Other than SDK calls--------------------------------#
+    
+    async def get_img_bytes(self, image_url: str) -> bytes | None:
+        GITLAB_TOKEN = self.token
+        # self.logger.info(f"Fetching image from URL: {image_url}")
+        headers = {
+            "Authorization": f"Bearer {GITLAB_TOKEN}",
+            "Accept": "*/*",
+        }
+        try:
+            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+                resp = await client.get(image_url, headers=headers)
+                resp.raise_for_status()
+                img_data = resp.content
+                # self.logger.info(f"Fetched image of size: {len(img_data)} bytes")
+                return img_data
+        except httpx.HTTPStatusError as e:
+            return GitLabResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
+        except Exception as e:
+            return GitLabResponse(success=False, error=f"Error fetching image from {image_url}: {e}")
+    
+    async def get_attachment_files_content(self,weburl:str) -> AsyncGenerator[bytes,None]:
+        """Getting file content from weburl for attachments in binary format."""
+        # try:
+        #     headers = {
+        #         "Authorization": f"Bearer {self.token}",
+        #         "Accept": "application/octet-stream",
+        #     }
+        #     async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+        #         resp = await client.get(weburl, headers=headers)
+        #         resp.raise_for_status()
+        #         file_data = resp.content
+        #         return GitLabResponse(success=True, data=file_data)
+        # except httpx.HTTPStatusError as e:
+        #         return GitLabResponse(success=False, error=f"HTTP {e.response.status_code} fetching file content from {weburl}")
+        # except Exception as e:
+        #         return GitLabResponse(success=False, error=f"Error fetching file from {weburl}: {e}")
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/octet-stream",
+        }
+        async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+            async with client.stream(
+                "GET",
+                weburl,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=65536):
+                    yield chunk
+        
+        

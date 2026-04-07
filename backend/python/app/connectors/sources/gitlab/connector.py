@@ -89,7 +89,7 @@ from app.sources.client.gitlab.gitlab import (
 )
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
 from app.utils.streaming import create_stream_record_response
-
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
 TOKEN_URL = "https://gitlab.com/oauth/token"
 
@@ -206,10 +206,10 @@ class GitLabConnector(BaseConnector):
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
     async def init(self) -> bool:
-        """_summary_
-
+        """
+        Initialize the Gitlab client and data source.
         Returns:
-            bool: _description_
+            bool: True if initialization is successful, False otherwise.
         """
         try:
             # for client
@@ -227,10 +227,9 @@ class GitLabConnector(BaseConnector):
             return False
 
     async def test_connection_and_access(self) -> bool:
-        """_summary_
-
+        """ Test the connection and access to the Gitlab data source.
         Returns:
-            bool: _description_
+            bool: True if connection and access is successful, False otherwise.
         """
         if not self.data_source:
             return False
@@ -248,176 +247,207 @@ class GitLabConnector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
-        Docstring for stream_record
-
-        :param self: Description
-        :param record: Description
-        :type record: Record
-        :return: Description
-        :rtype: StreamingResponse
+        Stream a record from Gitlab(Ticket, Pull Request, File, Code File).
+        Args:
+            record: Record object containing file/message information
+        Returns:
+            StreamingResponse with file/message content
         """
-        if record.record_type == RecordType.TICKET:
-            self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
-            blocks_container = await self._build_ticket_blocks(record)
+        try:
+            if record.record_type == RecordType.TICKET:
+                self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
+                blocks_container = await self._build_ticket_blocks(record)
 
-            # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-            #     json_str = blocks_container.model_dump_json(indent=2)
-            #     chunk_size = 81920
-            #     encoded = json_str.encode("utf-8")
-            #     for i in range(0, len(encoded), chunk_size):
-            #         yield encoded[i : i + chunk_size]
+                # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
+                #     json_str = blocks_container.model_dump_json(indent=2)
+                #     chunk_size = 81920
+                #     encoded = json_str.encode("utf-8")
+                #     for i in range(0, len(encoded), chunk_size):
+                #         yield encoded[i : i + chunk_size]
 
-            return StreamingResponse(
-                content=iter([blocks_container]),
-                media_type=MimeTypes.BLOCKS.value,
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        elif record.record_type == RecordType.PULL_REQUEST:
-            self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
-            block_container = await self._build_pull_request_blocks(record)
-
-            # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-            #     json_str = block_container.model_dump_json(indent=2)
-            #     chunk_size = 81920
-            #     encoded = json_str.encode("utf-8")
-            #     for i in range(0, len(encoded), chunk_size):
-            #         yield encoded[i : i + chunk_size]
-
-            return StreamingResponse(
-                content=iter([block_container]),
-                media_type=MimeTypes.BLOCKS.value,
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        elif record.record_type == RecordType.FILE:
-            self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
-            filename = record.record_name or f"{record.external_record_id}"
-            return create_stream_record_response(
-                    self._fetch_attachment_content(record),
-                    filename=filename,
-                    mime_type=record.mime_type,
-                    fallback_filename=f"record_{record.id}"
+                return StreamingResponse(
+                    content=iter([blocks_container]),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={
+                        "Content-Disposition": f"attachment; filename={record.record_name}"
+                    },
                 )
-        elif record.record_type == RecordType.CODE_FILE:
-            self.logger.info("🟣🟣🟣 STREAM-CODE-FILE-MARKER 🟣🟣🟣")
-            filename = record.record_name or f"{record.external_record_id}"
-            self.logger.info(f"record form stream : {record}")
-            return create_stream_record_response(
-                    self._fetch_code_file_content(record),
-                    filename=filename,
-                    mime_type=record.mime_type,
-                    fallback_filename=f"record_{record.id}"
-                )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported record type for streaming: {record.record_type}",
-            )
+            elif record.record_type == RecordType.PULL_REQUEST:
+                self.logger.info("🟣🟣🟣 STREAM_MERGE_REQUEST_MARKER 🟣🟣🟣")
+                block_container = await self._build_pull_request_blocks(record)
 
+                # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
+                #     json_str = block_container.model_dump_json(indent=2)
+                #     chunk_size = 81920
+                #     encoded = json_str.encode("utf-8")
+                #     for i in range(0, len(encoded), chunk_size):
+                #         yield encoded[i : i + chunk_size]
+
+                return StreamingResponse(
+                    content=iter([block_container]),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={
+                        "Content-Disposition": f"attachment; filename={record.record_name}"
+                    },
+                )
+            elif record.record_type == RecordType.FILE:
+                self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
+                filename = record.record_name or f"{record.external_record_id}"
+                return create_stream_record_response(
+                        self._fetch_attachment_content(record),
+                        filename=filename,
+                        mime_type=record.mime_type,
+                        fallback_filename=f"record_{record.id}"
+                    )
+            elif record.record_type == RecordType.CODE_FILE:
+                self.logger.info("🟣🟣🟣 STREAM-CODE-FILE-MARKER 🟣🟣🟣")
+                filename = record.record_name or f"{record.external_record_id}"
+                return create_stream_record_response(
+                        self._fetch_code_file_content(record),
+                        filename=filename,
+                        mime_type=record.mime_type,
+                        fallback_filename=f"record_{record.id}"
+                    )
+            else:
+                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+        except Exception as e:
+            self.logger.error(f"Error streaming record {record.external_record_id}: {e}", exc_info=True)
+            raise
     #------------------Sync Points-----------------------------------#
     async def _get_issues_sync_checkpoint(self,project_id:int) -> int | None:
         """
         Get project issues sync checkpoint.
+        Returns: epoch last sync time in milliseconds
         """
         try:
-            sync_point_key = generate_record_sync_point_key("gitlab",project_id,"issues")
+            group_project_id = str(project_id) + "-work-items"
+            sync_point_key = generate_record_sync_point_key("gitlab",group_project_id,"")
             sync_point_data = await self.record_sync_point.read_sync_point(sync_point_key)
             return sync_point_data.get("last_sync_time") if sync_point_data else None
         except Exception:
             return None
 
-    async def _update_issues_sync_checkpoint(self, project_id:int, last_sync_time:str) -> None:
+    async def _update_issues_sync_checkpoint(self, project_id:str, last_sync_time:str) -> None:
         """
         Update project issues sync checkpoint.
         """
-        sync_point_key = generate_record_sync_point_key("gitlab",project_id,"issues")
+        sync_point_key = generate_record_sync_point_key("gitlab",project_id,"")
         sync_point_data = {"last_sync_time": last_sync_time}
         await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def _get_mr_sync_checkpoint(self,project_id:int) -> int | None:
         """
         Get project merge requests sync checkpoint.
+        Returns: epoch last sync time in milliseconds
         """
         try:
-            sync_point_key = generate_record_sync_point_key("gitlab",project_id,"merge_requests")
+            group_project_id = str(project_id) + "-merge-requests"
+            sync_point_key = generate_record_sync_point_key("gitlab",group_project_id,"")
             sync_point_data = await self.record_sync_point.read_sync_point(sync_point_key)
             return sync_point_data.get("last_sync_time") if sync_point_data else None
         except Exception:
             return None
 
-    async def _update_mrs_sync_checkpoint(self, project_id:int, last_sync_time:str) -> None:
+    async def _update_mrs_sync_checkpoint(self, project_id:str, last_sync_time:str) -> None:
         """
         Update project merge requests sync checkpoint.
         """
-        sync_point_key = generate_record_sync_point_key("gitlab",project_id,"merge_requests")
+        sync_point_key = generate_record_sync_point_key("gitlab",project_id,"")
         sync_point_data = {"last_sync_time": last_sync_time}
         await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def run_sync(self) -> None:
         """syncing various entities """
-        self.logger.info("⚒️⚒️ Starting GitLab sync")
-        self.logger.info("Syncing users")
-        await self._sync_users()
-        # TODO: sync members from user groups of gitlab if needed
-        # TODO: projects belonging to a specific group same as projects belonging to a user group
-        # TODO: what to consider these groups then link projects to these groups ?
-        self.logger.info("🕛🕛 Sync projects")
-        await self._sync_all_project()
+        try:
+            self.logger.info("⚒️⚒️ Starting GitLab sync")
+            self.logger.info("Starting sync of Gitlab users")
+            await self._sync_users()
+            # TODO: sync members from user groups of gitlab if needed
+            # TODO: projects belonging to a specific group same as projects belonging to a user group
+            # TODO: what to consider these groups then link projects to these groups ?
+            self.logger.info("🕛🕛 Starting sync of projects")
+            await self._sync_all_project()
+        except Exception as e:
+            self.logger.error(f"Error in GitLab sync: {e}", exc_info=True)
+            raise
 
     # ---------------------------Users Sync-----------------------------------#
     async def _sync_users(self) ->None:
-        """   Fetch all active Gitlab users project wise   """
-        """get all owned groups/or such
-             ->find projects of each group
-                 ->sync members of each owned proj.
-                 ->if no proj. found sync members of group as such """
-        self.logger.info("Syncing Gitlab AppMembers group wise then project wise")
+        """ Fetch all active Gitlab users of groups and projects. """
         groups_res = self.data_source.list_groups(owned=True)
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
-        total_synced =0
-        total_skipped =0
+        total_groups_synced =0
+        total_groups_skipped =0
+        total_projects_synced =0
+        total_projects_skipped =0
         dict_member:dict[int,GroupMember] = {}
+        if not groups_res.success:
+            self.logger.info(f"Error in fetching groups: {groups_res.error}, continuing with projects members")            
         if groups_res.success and groups_res.data:
             groups = groups_res.data
             for group in groups:
-                group_id = group.id
-                group_name = group.name
-                self.logger.info(f"syncing proj. wise users for group {group_name}")
-                members_res = self.data_source.list_group_members_all(group_id)
-                if not members_res.success or not members_res.data:
-                    self.logger.info(f"No members found for group {group_id} or error in fetching members")
+                try:
+                    group_id = getattr(group, 'id', None)
+                    if group_id is None:
+                        self.logger.warning(f"Group missing ID, skipping ")
+                        total_groups_skipped += 1
+                        continue
+                    self.logger.debug(f"syncing project wise users for group {group_id}")
+                    members_res = self.data_source.list_group_members_all(group_id)
+                    if not members_res.success :
+                        self.logger.info(f"Error in fetching members for group {group_id}")
+                        total_groups_skipped += 1
+                        continue
+                    members = members_res.data
+                    for member in members:
+                        dict_member[member.id] = member
+                    total_groups_synced += 1
+                except Exception as e:
+                    self.logger.error(f"Error in syncing users for group {group_id}: {e}", exc_info=True)
                     continue
-                members = members_res.data
-                for member in members:
-                    dict_member[member.id] = member
         # syncing from all projects
         projects_res = self.data_source.list_projects(owned=True)
+        if not projects_res.success:
+            self.logger.info(f"Error in fetching projects: {projects_res.error}")
         if projects_res.success and projects_res.data:
             projects = projects_res.data
             for project in projects:
-                project_id = project.id
-                # if project_id != int(TEST_GITLAB_PROJECT_ID):
-                #     continue
-                project_name = project.name
-                self.logger.info(f"syncing users for project {project_name}")
-                members_res = self.data_source.list_project_members_all(project_id)
-                if not members_res.success or not members_res.data:
-                    self.logger.info(f"No members found for project {project_id} or error in fetching members")
+                try:
+                    project_id = getattr(project, 'id', None)
+                    if project_id is None:
+                        self.logger.warning(f"Project missing ID, skipping ")
+                        total_projects_skipped += 1
+                        continue
+                    members_res = self.data_source.list_project_members_all(project_id)
+                    
+                    if not members_res.success :
+                        self.logger.info(f"Error in fetching members for project {project_id}")
+                        total_projects_skipped += 1
+                        continue
+                    members = members_res.data
+                    for member in members:
+                        dict_member[member.id] = member
+                    total_projects_synced += 1
+                except Exception as e:
+                    self.logger.error(f"Error in syncing users for project : {e}", exc_info=True)
                     continue
-                members = members_res.data
-                for member in members:
-                    dict_member[member.id] = member
+
         # TODO: for user_groups of gitlab bringing them as groups on our platform
+        self.logger.info(f"Total groups synced: {total_groups_synced}, Total groups skipped: {total_groups_skipped}")
+        self.logger.info(f"Total projects synced: {total_projects_synced}, Total projects skipped: {total_projects_skipped}")
+        await self._sync_users_from_projects_groups(dict_member)
+        self.logger.info("Users sync and migration of pseudo groups complete")
+
+    async def _sync_users_from_projects_groups(self,dict_member:dict[int,GroupMember]) -> None:
+        """ Create AppUsers from projects and groups. """
+        total_users_synced =0
+        total_users_skipped =0
         app_users:list[AppUser] = []
         for member_id, member in dict_member.items():
-            # print(f"Syncing user {member.username} with id {member_id}")
-            user_email =  member.public_email
+            user_email =  getattr(member,"public_email","") or ""
             if not user_email:
-                total_skipped+=1
-                self.logger.info(f"Email not found for user {member.username} with id {member_id}, skipping")
+                total_users_skipped+=1
+                self.logger.debug(f"Email not found for user {member.username} with id {member_id}, skipping")
             else:
                 app_user = AppUser(
                     app_name=self.connector_name,
@@ -431,7 +461,7 @@ class GitLabConnector(BaseConnector):
                 app_users.append(app_user)
         if app_users:
             await self.data_entities_processor.on_new_app_users(app_users)
-            total_synced+=len(app_users)
+            total_users_synced+=len(app_users)
             # for appuser migrate previously created pseudo group permissions to app users
             for user in app_users:
                 try:
@@ -441,45 +471,38 @@ class GitLabConnector(BaseConnector):
                         connector_id=self.connector_id
                     )
                 except Exception as e:
-                    # Log error but continue with other users
+                    # Log warning but continue with other users
                     self.logger.warning(
                         f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
                         exc_info=True
                     )
                     continue
-        self.logger.info(f"Total users synced: {total_synced}, Total users skipped: {total_skipped}")
-        self.logger.info("Users sync and migration of pseudo groups complete")
+        self.logger.info(f"Total users synced: {total_users_synced}, Total users skipped: {total_users_skipped}")
 
     # ---------------------------Project level Sync-----------------------------------#
     async def _sync_all_project(self) -> None:
         """
-        Docstring for _sync_all_repo_issue
-
-        :param self: Description
-        :param full_sync: Description
-        :type full_sync: bool
+        Sync all owned projects.
         """
         # TODO: check api is since is supported modify code acc. as sync point depends
-        current_timestamp = self._get_iso_time()
+        current_timestamp = get_epoch_timestamp_in_ms()
         gitlab_record_group_sync_key = generate_record_sync_point_key("gitlab","record_group","global")
         await self._sync_projects()
         await self.record_sync_point.update_sync_point(gitlab_record_group_sync_key, {"timestamp": current_timestamp})
 
     async def _sync_repo_main(self,project_id:int,project_path:str) -> None:
-        """Syncs default branch files code.
+        """ Sync default branch files code.
         PROCESS: 1. Sync all folders level wise via paginated graphql api.
                  2. Sync all code repo. files via paginated graphql api.
-        REASON:  both can  be in same api call but pagination to be seprate.
+        REASON:  both can be in same api call but pagination to be separate.
                  level wise files ordering not needed
         """
-        # tree_res = self.data_source.list_repo_tree(project_id,recursive=True)
         # fetching file tree
-        TOKEN = await self._get_api_token_()
         tree_list = []
         after_cursor = ""
         while True:
             try:
-                tree_res = await self.data_source.get_repo_tree_g(token=TOKEN,project_id=project_path,ref="HEAD",after_cursor=after_cursor)
+                tree_res = await self.data_source.get_repo_tree_g(project_id=project_path,ref="HEAD",after_cursor=after_cursor)
             except Exception as e:
                 self.logger.error(f"Error in fetching tree skipping repo code files sync for {project_id}: {e}")
                 return
@@ -487,7 +510,9 @@ class GitLabConnector(BaseConnector):
                 self.logger.info(f"No tree found for project {project_id}")
                 return
             data:dict[str,Any] = json.loads(tree_res.data)
-            project_nodes = data.get("data",{}).get("project",{}).get("repository",{}).get("paginatedTree",{}).get("nodes",[])
+            paginated_tree = data.get("data",{}).get("project",{}).get("repository",{}).get("paginatedTree",{})
+            project_nodes  = paginated_tree.get("nodes",[])
+            page_info = paginated_tree.get("pageInfo",{})
             if not project_nodes:
                 self.logger.info(f"No project nodes found for project {project_id}")
                 return
@@ -495,13 +520,12 @@ class GitLabConnector(BaseConnector):
             file_path_nodes:list[dict[str,Any]] = t_nodes.get("trees",{}).get("nodes",[])
             tree_list.extend(file_path_nodes)
             self.logger.debug(f"❗❗appended {len(file_path_nodes)} file path nodes via GQL")
-            if not t_nodes.get("trees",{}).get("pageInfo",{}).get("hasNextPage"):
+            if not page_info.get("hasNextPage"):
                 break
-            after_cursor = t_nodes.get("trees",{}).get("pageInfo",{}).get("endCursor","")
-            # self.logger.info(f"tree_res : {tree_res}")
+            after_cursor = page_info.get("endCursor","")
+            if not after_cursor:
+                break
 
-
-        # self.logger.info(f"at tree level  : {tree_list}")
         list_records_new:list[RecordUpdate] = []
         path_to_parent_external_id_dict:dict[str,str]={}
         level_wise_files:dict[int,list[dict[str,Any]]] = {}
@@ -512,8 +536,8 @@ class GitLabConnector(BaseConnector):
             if level_file not in level_wise_files:
                 level_wise_files[level_file] = []
             level_wise_files[level_file].append(item)
-        # self.logger.info(f"level_wise_files : {level_wise_files}")
 
+        external_group_id = f"{project_id}-code-repository"
         for _level,files in sorted(level_wise_files.items()):
             for file in files:
                 file_path = file.get("path")
@@ -523,9 +547,9 @@ class GitLabConnector(BaseConnector):
                 weburl = file.get("webUrl")
                 if file.get("type") == "tree":
                     parent_path = self.get_parent_path_from_path(file_path)
+                    # forming path till parent level
                     parent_path = "/".join(parent_path)
-                    # parent_path = f"{parent_path}" if parent_path else "/"
-                    self.logger.info(f"parent_path : {parent_path} for file path {file_path}")
+                    self.logger.debug(f"parent_path : {parent_path} for file path {file_path}")
                     parent_external_record_id = None
                     if parent_path == "" or not parent_path:
                         parent_external_record_id = None
@@ -536,27 +560,26 @@ class GitLabConnector(BaseConnector):
                             tmp_parent_path = parent_path.split("/")
                             async with self.data_store_provider.transaction() as tx_store:
                                 parent_record = await tx_store.get_record_by_path(
-                                    connector_id=f"apps/{self.connector_id}",
+                                    connector_id=f"{self.connector_id}",
                                     path=tmp_parent_path,
-                                    record_group_name=str(project_path),
+                                    record_group_id=external_group_id, # using group id as record group name is not unique
                                 )
                             if parent_record:
-                                self.logger.info(f"parent_record : {parent_record} for file path {file_path}")
+                                self.logger.debug(f"parent_record : {parent_record} for file path {file_path}")
                                 parent_external_record_id = parent_record.get("externalRecordId")
                                 path_to_parent_external_id_dict[parent_path] = parent_external_record_id
                             else:
-                                # shd not be a case if then level ordering is wrong
+                                # should not be a case, if then level ordering is wrong
                                 self.logger.debug(f"Parent path {parent_path} not found in DB or Cache for {file_name}")
                         except Exception as e:
                             self.logger.error(f"Error in fetching parent record {parent_path}: {e}")
                     existing_record = None
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id, external_id=f"{external_record_id}"
+                            connector_id=self.connector_id, external_id=external_record_id
                         )
                     is_new = existing_record is None
                     record_id = str(uuid.uuid4())
-
                     tree_record = FileRecord(
                         id = existing_record.id if existing_record else record_id,
                         org_id = self.data_entities_processor.org_id,
@@ -568,7 +591,7 @@ class GitLabConnector(BaseConnector):
                         version = 0,
                         origin = OriginTypes.CONNECTOR.value,
                         record_group_type = RecordGroupType.PROJECT.value,
-                        external_record_group_id = str(project_id),
+                        external_record_group_id = external_group_id,
                         mime_type=MimeTypes.FOLDER.value,
                         external_revision_id=str(file_hash),
                         preview_renderable=False,
@@ -576,6 +599,7 @@ class GitLabConnector(BaseConnector):
                         is_file=False,
                         inherit_permissions=True,
                         weburl = weburl,
+                        # no source time stamps might raise warnings
                     )
                     record_update = RecordUpdate(
                         record=tree_record,
@@ -586,19 +610,21 @@ class GitLabConnector(BaseConnector):
                         content_changed=False,
                         permissions_changed=False,
                         external_record_id=str(external_record_id),
+                        new_permissions=[],
+                        old_permissions=[],
                     )
                     list_records_new.append(record_update)
             if list_records_new:
                 await self._process_new_records(list_records_new)
-                self.logger.debug(f"❗❗after processing new records {len(list_records_new)} records")
+                self.logger.debug(f"❗❗After processing new records {len(list_records_new)} records")
                 list_records_new=[]
 
         # fetching code files
+        # processing as when recieved, as parent folders exist
         after_cursor = ""
-        # code_file_list = []
         while True:
             try:
-                tree_res = await self.data_source.get_file_tree_g(token=TOKEN,project_id=project_path,ref="HEAD",after_cursor=after_cursor)
+                tree_res = await self.data_source.get_file_tree_g(project_id=project_path,ref="HEAD",after_cursor=after_cursor)
             except Exception as e:
                 self.logger.error(f"Error in fetching file tree skipping repo code files sync for {project_id}: {e}")
                 return
@@ -613,27 +639,31 @@ class GitLabConnector(BaseConnector):
             except json.JSONDecodeError as e:
                 self.logger.error(f"❌ Failed to parse file tree JSON for {project_id}: {e}")
                 return
-            project_nodes = data.get("data",{}).get("project",{}).get("repository",{}).get("paginatedTree",{}).get("nodes",[])
+            paginated_tree = data.get("data",{}).get("project",{}).get("repository",{}).get("paginatedTree",{})
+            project_nodes = paginated_tree.get("nodes",[])
+            page_info = paginated_tree.get("pageInfo",{})
             if not project_nodes:
                 self.logger.info(f"No project nodes found for project {project_id}")
                 return
             t_nodes:dict[str,Any] = project_nodes[0]
             file_path_nodes:list[dict[str,Any]] = t_nodes.get("blobs",{}).get("nodes",[])
             if file_path_nodes:
-                self.logger.debug(f"❗❗ files fetched via GQL: {len(file_path_nodes)} : {file_path_nodes}")
+                self.logger.debug(f"❗❗ Files fetched via GQL: {len(file_path_nodes)} ")
                 await self.build_code_file_records(file_path_nodes,project_id,project_path)
-            if not t_nodes.get("blobs",{}).get("pageInfo",{}).get("hasNextPage"):
-                self.logger.info("✅✅ No more code file pages left exiting")
+            if not page_info.get("hasNextPage"):
+                self.logger.debug("✅✅ No more code file pages left, exiting")
                 break
-            after_cursor = t_nodes.get("blobs",{}).get("pageInfo",{}).get("endCursor","")
+            after_cursor = page_info.get("endCursor","")
             if not after_cursor:
-                self.logger.warning(f"⚠️ hasNextPage but no endCursor for {project_id}, stopping")
                 break
 
     async def build_code_file_records(self,code_file_list:list[dict[str,Any]],project_id:int,project_path:str)->None:
-        """Process code file records and push to processing"""
+        """ Process code file records and push to processing. """
 
         list_records_new:list[RecordUpdate] = []
+        path_to_parent_external_id_dict :dict[str,str] = {}
+        files_skipped = 0
+        external_group_id = f"{project_id}-code-repository"
         for file in code_file_list:
             file_path = file.get("path")
             file_name = file.get("name")
@@ -641,41 +671,43 @@ class GitLabConnector(BaseConnector):
             external_record_id = file.get("webPath")
             weburl = file.get("webUrl")
 
-            # getiing parent id code
+            # getting parent id code
             file_extension = file_name.split(".")[-1]
-            # file_extension_type = getattr(ExtensionTypes, file_extension.upper(),None)
-            file_mime = getattr(MimeTypes,file_extension.upper(),MimeTypes.TEXT).value
+            # skippable files includes file names starting with . (period)
+            if file_name.startswith("."):
+                files_skipped+=1
+                self.logger.info(f"⚠️⚠️ Skipping file {file_name} as it starts with . (period)")
+                continue
+            file_mime = getattr(MimeTypes,file_extension.upper(),MimeTypes.PLAIN_TEXT).value
             parent_path = self.get_parent_path_from_path(file_path)
             parent_path = "/".join(parent_path)
-            # parent_path = parent_path if parent_path else "/"
             parent_external_record_id = None
             if parent_path == "" or not parent_path:
                 parent_external_record_id = None
-            # elif parent_path in path_to_parent_external_id_dict:
-            #     parent_external_record_id = path_to_parent_external_id_dict[parent_path]
+            elif parent_path in path_to_parent_external_id_dict:
+                parent_external_record_id = path_to_parent_external_id_dict[parent_path]
             else:
                 try:
                     tmp_parent_path = parent_path.split("/")
                     async with self.data_store_provider.transaction() as tx_store:
                         parent_record = await tx_store.get_record_by_path(
-                            connector_id=f"apps/{self.connector_id}",
+                            connector_id=self.connector_id,
                             path=tmp_parent_path,
-                            record_group_name=str(project_path),
+                            record_group_id=external_group_id,
                         )
                     if parent_record:
                         self.logger.debug(f"✅✅ Parent_record : {parent_record} for file path {file_path}")
                         parent_external_record_id = parent_record.get("externalRecordId")
-                        # path_to_parent_external_id_dict[parent_path] = parent_external_record_id
+                        path_to_parent_external_id_dict[parent_path] = parent_external_record_id
                     else:
                         self.logger.debug(f"❗❗Parent path {parent_path} not found in DB or Cache for {file_name}")
+                        #TODO: do i need to skip file or raise if parent not found ?
                 except Exception as e:
                     self.logger.error(f"Error in fetching parent record {parent_path}: {e}")
-            # if parent_external_record_id:
-            #     inherit_permissions=False
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id, external_id=f"{external_record_id}"
+                connector_id=self.connector_id, external_id=external_record_id
                 )
             record_id = str(uuid.uuid4())
             code_file_record = CodeFileRecord(
@@ -689,7 +721,7 @@ class GitLabConnector(BaseConnector):
                 version = 0,
                 origin = OriginTypes.CONNECTOR.value,
                 record_group_type = RecordGroupType.PROJECT.value,
-                external_record_group_id = str(project_id),
+                external_record_group_id = external_group_id,
                 mime_type=file_mime,
                 external_revision_id=str(file_hash),
                 preview_renderable=False,
@@ -698,6 +730,7 @@ class GitLabConnector(BaseConnector):
                 inherit_permissions=True,
                 parent_external_record_id=parent_external_record_id,
                 weburl = weburl,
+                # no source time stamps might raise warnings
             )
             record_update = RecordUpdate(
                 record=code_file_record,
@@ -708,43 +741,49 @@ class GitLabConnector(BaseConnector):
                 content_changed=False,
                 permissions_changed=False,
                 external_record_id=external_record_id,
+                new_permissions=[],
+                old_permissions=[],
             )
             list_records_new.append(record_update)
         if list_records_new:
             await self._process_new_records(list_records_new)
-            self.logger.info(f"after processing new records {len(list_records_new)} records")
+            self.logger.warning(f"⚠️⚠️ Skipped {files_skipped} files")
+            self.logger.info(f"Processed new {len(list_records_new)} records")
 
     async def _fetch_code_file_content(self,record:Record)->AsyncGenerator[bytes,None]:
-        """stream content of code file"""
+        """ stream code file content"""
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 file_path = await tx_store.get_record_path(record.id)
 
-            self.logger.info(f"new_record from stream : {file_path}")
+            self.logger.info(f"new record from stream : {file_path}")
+            external_group_id = getattr(record,"external_record_group_id")
+            project_id = external_group_id.split('-')[0]
+            if not external_group_id:
+                raise Exception(f"❌❌ Project id not found.")
 
-            project_id = int(record.external_record_group_id)
             file_res = self.data_source.get_file_content(project_id,file_path)
             if not file_res.success :
                 self.logger.error(f"error in fetching file content {file_res.error}")
                 raise
             if not file_res.data:
-                self.logger.error(f"No file content found for file {file_path}" )
-                return
+                self.logger.info(f"No file content found for file {file_path}")
             file_data = file_res.data
             file_content_coded = file_data.content
             decoded_bytes = base64.b64decode(file_content_coded)
             yield decoded_bytes
         except Exception as e:
-            self.logger.error(f"Error fetching code content for record {record.id}: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error fetching code content for record {record.id}: {e}"
+            raise Exception(
+                f"Error fetching code content for record {record.id}: {e}"
             ) from e
     # ---------------------------Project Sync-----------------------------------#
 
     async def _sync_projects(self) -> None:
-        """_summary_
-        Args:
+        """ Sync all owned projects.
+            1. Sync appUsers and Pseudo groups for each project with permissions.
+            2.Sync issues with sync points
+            3.Sync merge requests with sync points
+            4.Sync repo code files  
         """
         projects_res = self.data_source.list_projects(owned=True)
         if not projects_res.success:
@@ -759,8 +798,9 @@ class GitLabConnector(BaseConnector):
             project_id:int = project.id
             project_path:str = project.path_with_namespace
             # if project_id == int(TEST_GITLAB_PROJECT_ID):
-            #     await self._fetch_issues_batched(project_id)
-            #     await self._fetch_prs_batched(project_id)
+            #     self.logger.info(f"Syncing issues and repo code files for project {project_id}")
+            #     # await self._fetch_issues_batched(project_id)
+            #     # await self._fetch_prs_batched(project_id)
             #     await self._sync_repo_main(project_id,project_path)
             # else:
             #     self.logger.debug(f"⚠️ Project {project.name} has no ID, skipping syncing issues and repo code files")
@@ -769,14 +809,14 @@ class GitLabConnector(BaseConnector):
             await self._sync_repo_main(project_id,project_path)
 
     async def _sync_project_members_as_pseudo(self, project:Project) -> None:
-        """_summary_
+        """ Sync users with permissions both with and without mail.
         Args:
-            project (Project): _description_
+            project (Project): Gitlab project details
         """
         project_id = project.id
         project_name = project.name
         dict_member:dict[int,GroupMember] = {}
-        self.logger.info(f"syncing users for project {project_name}")
+        self.logger.info(f"Syncing users for project {project_name}")
         members_res = self.data_source.list_project_members_all(project_id)
         if not members_res.success :
             self.logger.error(f"❌❌Error in fetching members for project {project_id}")
@@ -786,26 +826,26 @@ class GitLabConnector(BaseConnector):
             return
         members = members_res.data
         for member in members:
-            # users_raw.append(member)
             dict_member[member.id] = member
-        # make sudo groups of users with no email
-        pseudo_groups_permissions = []
+        # make sudo permission groups of users with no email along with ones mails visible
+        permission_project_level = []
+        permission_work_items_level = []
+        permission_code_repo_level=[]
+        permission_merge_requests_level=[]
         for member in dict_member.values():
-            member_email = member.public_email
-            if not member_email :
-                #TODO: giving default permissions to groups , make it acc. to gitlab access
-                pseudo_group_permission = await self._transform_restrictions_to_permisions(member)
-                if pseudo_group_permission:
-                    pseudo_groups_permissions.append(pseudo_group_permission)
-            else:
-                # mail found usual app user create
-                user_permission = Permission(
-                    email=member.public_email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-                if user_permission:
-                    pseudo_groups_permissions.append(user_permission)
+            permission = await self._transform_restrictions_to_permisions(member)
+            if  permission:
+                permission_project_level.append( permission)
+                external_member_level:int = getattr(member,"access_level",0)
+                if external_member_level ==0:
+                    self.logger.info(f"Member {member.name} has no access level, skipping")
+                elif external_member_level ==10:
+                    permission_work_items_level.append( permission)
+                elif external_member_level>=15:
+                    permission_work_items_level.append( permission)
+                    permission_merge_requests_level.append( permission)
+                    permission_code_repo_level.append( permission)
+
 
         project_record_group = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
@@ -815,22 +855,41 @@ class GitLabConnector(BaseConnector):
                 connector_id=self.connector_id,
                 external_group_id=str(project.id),
         )
-        self.logger.debug(f"permisions for project {project_name} : {pseudo_groups_permissions}")
-        await self.data_entities_processor.on_new_record_groups([(project_record_group, pseudo_groups_permissions)])
-        self.logger.info(f"Synced project {project_name} as record group ")
-
-        # creating dummy record group for issues to inherit permissions
-        # issues_record_group = RecordGroup(
-        #     org_id=self.data_entities_processor.org_id,
-        #     name = f"{project.path_with_namespace}-issues",
-        #     group_type=RecordGroupType.ISSUE_GROUP.value,
-        #     connector_name=self.connector_name,
-        #     connector_id=self.connector_id,
-        #     external_group_id=f"{project.id}-issues", # not a valid group id externally
-        # )
-        # self.logger.info("")
-        # await self.data_entities_processor.on_new_record_groups([(issues_record_group, pseudo_groups_permissions)])
-        # await self._fetch_issues_batched(project_id=project_id)
+        # creating record group for issues to inherit permissions
+        work_items_record_group = RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name = f"Work items",
+            group_type=RecordGroupType.PROJECT.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            external_group_id=f"{project.id}-work-items", # not a valid group id externally
+            parent_external_group_id=str(project.id),
+        )
+        self.logger.info("Creating work items record group")
+        merge_requests_record_group = RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name = f"Merge requests",
+            group_type=RecordGroupType.PROJECT.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            external_group_id=f"{project.id}-merge-requests", # not a valid group id externally
+            parent_external_group_id=str(project.id),
+        )
+        code_repo_record_group = RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name = f"Code repository",
+            group_type=RecordGroupType.PROJECT.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            external_group_id=f"{project.id}-code-repository", # not a valid group id externally
+            parent_external_group_id=str(project.id),
+        )
+        await self.data_entities_processor.on_new_record_groups([(project_record_group, permission_project_level),
+                                                                 (work_items_record_group, permission_work_items_level),
+                                                                 (code_repo_record_group, permission_code_repo_level),
+                                                                 (merge_requests_record_group, permission_merge_requests_level),
+                                                                 ])
+        self.logger.info("Synced Permissions for all levels.")
 
     async def _transform_restrictions_to_permisions(self,member:GroupMember)->Permission|None:
         """ Transform restrictions to permissions """
@@ -933,7 +992,7 @@ class GitLabConnector(BaseConnector):
                 app_name=Connectors.GITLAB,
                 connector_id=self.connector_id,
                 source_user_group_id=account_id,
-                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
+                name=f"{PSEUDO_USER_GROUP_PREFIX}_{account_id}",
                 org_id=self.data_entities_processor.org_id,
             )
 
@@ -949,36 +1008,25 @@ class GitLabConnector(BaseConnector):
 
     # ---------------------------Issues Sync-----------------------------------#
 
-    async def _sync_issues_full(self, project:Project,last_sync_time: str | None = None) -> None:
-        """_summary_
-
-        Args:
-            users (List[AppUser]): _description_
-        """
-
     async def _fetch_issues_batched(
         self, project_id: int, last_sync_time: str | None = None
     ) -> None:
         """
-        process: for each make TicketRecord
-        return: list of Records consisting of Tickets
+        Process: for each project read sync point, fetch work-items
         Args:
-            issue_batch (List[Issue]): _description_
-            last_sync_time (str): _description_
+            last_sync_time (str): epoch second of last sync time
         """
         # get issue permissions as of now inherit them from RECORD_GROUP PROJECT
         last_sync_time:int|None = await self._get_issues_sync_checkpoint(project_id)
-        self.logger.debug(f"😂😂😂😂😂😂 LAST SYNC TIME  : {last_sync_time}")
         if last_sync_time is not None:
             since_dt = datetime.fromtimestamp(last_sync_time/1000, tz=timezone.utc)
         else:
             since_dt = None
-        self.logger.debug(f"😂😂😂😂😂😂 SINCE TIME  : {since_dt}")
         issues_res = self.data_source.list_issues(project_id,updated_after=since_dt,order_by="updated_at",sort="asc")
         if not issues_res.success:
             raise Exception(f"❌❌ Error in fetching issues for project {project_id}")
         if not issues_res.data:
-            self.logger.info(f"No issues found for project {project_id}")
+            self.logger.debug(f"No issues found for project {project_id}")
             return
         all_issues:list[ProjectIssue] = issues_res.data
         total_issues = len(all_issues)
@@ -990,7 +1038,7 @@ class GitLabConnector(BaseConnector):
             batch_number += 1
             issues_batch = all_issues[i : i + batch_size]
             batch_records: list[RecordUpdate] = []
-            self.logger.info(
+            self.logger.debug(
                 f"📦 Processing batch {batch_number}: {len(issues_batch)} issues"
             )
             batch_records = await self._build_issue_records(issues_batch)
@@ -1037,42 +1085,39 @@ class GitLabConnector(BaseConnector):
         self.logger.info(f"✅✅ Processed {len(batch_records)} records")
 
     async def _build_issue_records(self, issue_batch: list[ProjectIssue]) -> list[RecordUpdate]:
-        """        """
+        """ Send new issue records for processing: Ticket records from issues, extract attachments from description, notes"""
         record_updates_batch: list[RecordUpdate] = []
+        attachment_records_cnt = 0
         for issue in issue_batch:
             # consider ticket types-> issue, incident, task
-            issue_type = issue.type
-            self.logger.info(f"Processing issue {issue.title} of type {issue_type}")
             record_update = await self._process_issue_incident_task_to_ticket(issue)
             if record_update:
                 record_updates_batch.append(record_update)
                 # get the file attachments from issue data
                 # make file records for all except images
-                markdown_content_raw: str = issue.description or ""
+                markdown_content_raw: str = getattr(issue,"description","") or ""
                 attachments,markdown_content  = await self.parse_gitlab_uploads_clean_test(
                     markdown_content_raw
                 )
-                self.logger.debug(f"Processed markdown content for issue {issue.title}")
                 if attachments:
                     file_record_updates = await self.make_file_records_from_list(
                         attachments=attachments, record=record_update.record
                     )
                     if file_record_updates:
                         record_updates_batch.extend(file_record_updates)
-                        self.logger.info(
-                            f"Added {len(file_record_updates)} attachments for issue {issue.title}"
-                        )
-            # adding notees attachments
+                        attachment_records_cnt += len(file_record_updates)
+            # adding notes attachments
             attachment_records  = await self.make_files_records_from_notes(issue,record_update.record)
             if attachment_records:
                 record_updates_batch.extend(attachment_records)
-                self.logger.debug(f"Added {len(attachment_records)} attachments for issue notes {issue.title}")
+                attachment_records_cnt += len(attachment_records)
+        self.logger.debug(f"Added {attachment_records_cnt} attachments for issue {issue.title}")
         return record_updates_batch
 
     async def _process_issue_incident_task_to_ticket(self, issue: ProjectIssue) -> RecordUpdate | None:
-        """ _summary_
+        """ Maae Ticket Record of gitlab work-items
         Args:
-            issue (Issue): _description_
+            issue (Issue): Gitlab issues, incidents, tasks
         """
         try:
             # check if record already exists
@@ -1106,8 +1151,7 @@ class GitLabConnector(BaseConnector):
             label_names: list[str] = []
             for label in issue.labels:
                 label_names.append(label)
-            # self.logger.debug(f"labels : {label_names}")
-            # self.logger.debug(f"date format : {issue.created_at, issue.updated_at}")
+            external_group_id = f"{issue.project_id}-work-items"
             ticket_record = TicketRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=issue.title,
@@ -1119,7 +1163,7 @@ class GitLabConnector(BaseConnector):
                 source_updated_at=self.datetime_to_epoch_ms(issue.updated_at),
                 source_created_at=self.datetime_to_epoch_ms(issue.created_at),
                 version=0,  # not used further so 0
-                external_record_group_id=str(issue.project_id),
+                external_record_group_id=external_group_id,
                 org_id=self.data_entities_processor.org_id,
                 record_group_type=RecordGroupType.PROJECT.value,
                 mime_type=MimeTypes.BLOCKS.value,
@@ -1149,19 +1193,25 @@ class GitLabConnector(BaseConnector):
             )
             return None
 
-    async def _build_ticket_blocks(self, record: Record) -> BlocksContainer:
-        """_summary_
-
+    async def _build_ticket_blocks(self, record: Record) -> bytes:
+        """Build blocks for ticket record
+        Block Group sequence
+            1.Description BlockGroup
+            2.Notes(Comments) BlockGroups
         Args:
-            record (Record): _description_
-
+            record (Record): Baseclass Record of Ticket Record
         Returns:
-            BlocksContainer: _description_
+            Bytes: BlocksContainer in JSON format
         """
-        raw_url = record.weburl.split("/")
-        self.logger.info(f"raw_url : {raw_url}")
+        raw_url = getattr(record,"weburl","") or ""
+        if not raw_url:
+            raise ValueError("Web URL is required for indexing ticket")
+        raw_url = raw_url.split("/")
         issue_number = int(raw_url[7])
-        project_id = record.external_record_group_id
+        external_group_id:str = getattr(record,"external_record_group_id")
+        project_id = external_group_id.split('-')[0]
+        if not external_group_id:
+            raise Exception(f"❌❌ Project id not found.")
         issue_res = self.data_source.get_issue(
             project_id=project_id, issue_iid=issue_number
         )
@@ -1173,7 +1223,7 @@ class GitLabConnector(BaseConnector):
             raise Exception(
                 f"❌❌ No issue data found for record {record.external_record_id}"
             )
-        base_project_url = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
         block_group_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
@@ -1216,18 +1266,6 @@ class GitLabConnector(BaseConnector):
 
         blocks_json = blocks_container.model_dump_json(indent=2)
         return blocks_json.encode('utf-8')
-        # return blocks_container
-
-    async def _sync_records_incremental(self) -> None:
-        """_summary_
-        {NOT USED} use _fetch_issues_batched with last sync time
-        when syncing so to avoid previosly synced files
-        Args:
-        """
-        return
-
-    async def _handle_page_upsert_event_issue(self) -> None:
-        return
 
     async def _handle_record_updates(self, issue_update: RecordUpdate) -> None:
         """_summary_
@@ -1235,6 +1273,7 @@ class GitLabConnector(BaseConnector):
         Args:
             issue_update (IssueUpdate): _description_
         """
+        return
 
     async def reindex_records(self) -> None:
         return
@@ -1247,15 +1286,22 @@ class GitLabConnector(BaseConnector):
     async def _build_comment_blocks(
         self, issue_url: str, parent_index: int, record: Record
     ) -> tuple[list[BlockGroup],list[RecordUpdate]]:
-        """             """
-        self.logger.info(f"Building comment blocks for issue: {issue_url}")
+        """Build block groups for issue notes
+        Args:
+            issue_url (str): URL of issue
+            parent_index (int): Index of parent block group
+            record (Record): Baseclass Record of Ticket Record
+        Returns:
+            tuple[list[BlockGroup],list[RecordUpdate]]: List of block groups and remaining records
+        """
+        self.logger.debug(f"Building comment blocks for issue: {issue_url}")
         raw_url = issue_url.split("/")
-        self.logger.info(f"raw_url : {raw_url}")
         issue_number = int(raw_url[7])
         # Fetching issue comments if present
         # TODO: will date wise filtering be needed here, as of now None
+        project_id = record.external_record_group_id.split('-')[0]
         comments_res = self.data_source.list_issue_notes(
-            project_id=int(record.external_record_group_id), issue_iid=issue_number
+            project_id=int(project_id), issue_iid=issue_number
         )
         if not comments_res.success :
             raise Exception(
@@ -1265,13 +1311,12 @@ class GitLabConnector(BaseConnector):
             self.logger.info(
                 f"No comments found for issue {issue_url}"
             )
-            # return []
         block_groups: list[BlockGroup] = []
         list_remaining_records: list[RecordUpdate] = []
         block_group_number = parent_index + 1
         comments:list[ProjectIssueNote] = comments_res.data
-        self.logger.info(f"Fetched {len(comments)} comments for issue {issue_url}, building blocks...")
-        base_project_url = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        self.logger.debug(f"Fetched {len(comments)} comments for issue {issue_url}, building blocks...")
+        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
         for comment in comments:
             raw_markdown_content: str = getattr(comment,"body","") or ""
             child_records,remaining_records = await self.make_child_records_of_attachments(markdown_raw=raw_markdown_content,record=record)
@@ -1286,7 +1331,6 @@ class GitLabConnector(BaseConnector):
             if comment_username:
                 comment_name = f"Comment by {comment_username} on issue {issue_number}"
             else:
-                self.logger.debug(f"author : {comment.author}")
                 comment_name = f"Comment on issue {issue_number}"
             bg = BlockGroup(
                 index=block_group_number,
@@ -1305,12 +1349,17 @@ class GitLabConnector(BaseConnector):
         return block_groups,list_remaining_records
 
     async def _build_merge_request_comment_blocks(self, mr_url: str, parent_index: int, record: Record) -> tuple[list[BlockGroup],list[RecordUpdate]]:
-        """Build comment blocks for merge request"""
-        self.logger.info(f"Building comment block groups for merge request {record.record_name}")
+        """Build comment block groups for merge request
+            Block Group sequence
+            1.Description BlockGroup
+            2.Notes(Comments) BlockGroups -> System comments, Generic notes, File comments (review comments)
+            3.File commits blocks
+        """
+        self.logger.debug(f"Building comment block groups for merge request {record.record_name}")
         raw_url = mr_url.split("/")
-        self.logger.info(f"raw_url : {raw_url}")
         mr_number = int(raw_url[7])
-        comments_res = self.data_source.list_merge_request_notes(project_id=int(record.external_record_group_id), mr_iid=mr_number)
+        project_id = record.external_record_group_id.split('-')[0]
+        comments_res = self.data_source.list_merge_request_notes(project_id=int(project_id), mr_iid=mr_number)
         if not comments_res.success :
             raise Exception(
                 f"❌❌ Failed to fetch comments for merge request {mr_url}: {comments_res.error}"
@@ -1326,50 +1375,13 @@ class GitLabConnector(BaseConnector):
         self.logger.debug(f"Fetched {len(comments)} comments for merge request {mr_url}, building blocks...")
         list_remaining_attachments:list[RecordUpdate] = []
         map_file_r_comments:dict[str,list[BlockComment]]={}
-        base_project_url = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
         for comment in comments:
             # classify as system, usual or file based comment
             # make bg of usual comments at once, map r_comments with file
             is_system_comment = getattr(comment,"system",False)
             is_review_comment = getattr(comment,"position",None)
-            if not is_system_comment:
-                raw_markdown_content: str = getattr(comment,"body","") or ""
-
-                markdown_content_with_images_base64 = await self.embed_images_as_base64(
-                    raw_markdown_content,base_project_url
-                )
-                child_records,remaining_attachments = await self.make_child_records_of_attachments(
-                    markdown_raw=raw_markdown_content, record=record
-                )
-                list_remaining_attachments.extend(remaining_attachments)
-                # making comment name
-                comment_name = ""
-                comment_author = getattr(comment,"author",{})
-                comment_username = comment_author.get("username")
-                if comment_username:
-                    comment_name = f"Comment by {comment_username} on merge request {mr_number}"
-                else:
-                    self.logger.debug(f"author : {comment_author}")
-                    comment_name = f"Comment on merge request {mr_number}"
-                comment_modified_date = getattr(comment,"updated_at","")
-                source_modified_date = self.string_to_datetime(comment_modified_date)
-                bg = BlockGroup(
-                    index=block_group_number,
-                    parent_index=parent_index,
-                    name=comment_name,
-                    type=GroupType.TEXT_SECTION.value,
-                    format=DataFormat.MARKDOWN.value,
-                    sub_type=GroupSubType.COMMENT.value,
-                    # source_group_id=comment.url,
-                    data=markdown_content_with_images_base64,
-                    weburl=mr_url,
-                    source_modified_date=source_modified_date,
-                    requires_processing=True,
-                    children_records=child_records,
-                )
-                block_group_number += 1
-                block_groups.append(bg)
-            elif is_review_comment:
+            if is_review_comment:
                 # will need to get file changes per file, new  file content, then attach mapped r_comments
                 raw_markdown_content: str = getattr(comment,"body","") or ""
                 markdown_content_with_images_base64 = (
@@ -1397,12 +1409,54 @@ class GitLabConnector(BaseConnector):
                         map_file_r_comments[file_path].append(block_comment)
                     else:
                         map_file_r_comments[file_path] = [block_comment]
+            else :
+                raw_markdown_content: str = getattr(comment,"body","") or ""
+                markdown_content_with_images_base64 = (
+                    await self.embed_images_as_base64(raw_markdown_content,base_project_url)
+                )
+                child_records,remaining_attachments = await self.make_child_records_of_attachments(
+                    markdown_raw=raw_markdown_content, record=record
+                )
+                list_remaining_attachments.extend(remaining_attachments)
+                comment_name = ""
+                comment_author = getattr(comment,"author",{})
+                comment_username = comment_author.get("username")
+                data = markdown_content_with_images_base64
+                if comment_username:
+                    if is_system_comment:
+                        comment_name = f"System Comment by {comment_username} on merge request {mr_number}"
+                        data = f"System comment \n\n {markdown_content_with_images_base64}"
+                    else:
+                        comment_name = f"Comment by {comment_username} on merge request {mr_number}"
+                else:
+                    if is_system_comment:
+                        comment_name = f"System Comment on merge request {mr_number}"
+                        data = f"System comment \n\n {markdown_content_with_images_base64}"
+                    else:
+                        comment_name = f"Comment on merge request {mr_number}"
+                comment_modified_date = getattr(comment,"updated_at","")
+                source_modified_date = self.string_to_datetime(comment_modified_date)
+                bg = BlockGroup(
+                    index=block_group_number,
+                    parent_index=parent_index,
+                    name=comment_name,
+                    type=GroupType.TEXT_SECTION.value,
+                    format=DataFormat.MARKDOWN.value,
+                    sub_type=GroupSubType.COMMENT.value,
+                    data=data,
+                    weburl=mr_url,
+                    source_modified_date=source_modified_date,
+                    requires_processing=True,
+                    children_records=child_records,
+                )
+                block_group_number += 1
+                block_groups.append(bg)
 
         # fetching file changes of mr
         # iterate through each file changes, append with new file content
         # to get file content use mr -> sha as ref with path pf file
         file_changes_res = self.data_source.list_merge_request_changes(
-            project_id=int(record.external_record_group_id), mr_iid=mr_number
+            project_id=int(project_id), mr_iid=mr_number
         )
         if not file_changes_res.success :
             self.logger.error(
@@ -1417,7 +1471,7 @@ class GitLabConnector(BaseConnector):
         # TODO: below call Can be avoided once Base SHA and head sha
         # are included as fields in pull request record while streaming
         # Also the additional properties of pr record included while calling stream record
-        tmp_mr_res = self.data_source.get_merge_request(project_id=int(record.external_record_group_id),mr_iid=mr_number)
+        tmp_mr_res = self.data_source.get_merge_request(project_id=int(project_id),mr_iid=mr_number)
         tmp_mr = tmp_mr_res.data
         tmp_mr_sha = getattr(tmp_mr,"sha","")
         self.logger.debug(f"tmp_mr_sha : {tmp_mr_sha}")
@@ -1425,36 +1479,47 @@ class GitLabConnector(BaseConnector):
         for file_change in changes:
             file_path = file_change.get("new_path","")
             diff_content = file_change.get("diff","")
-            # fetching new file content
-            new_file_content_res = self.data_source.get_file_content(project_id=int(record.external_record_group_id),file_path=file_path,ref=tmp_mr_sha)
-            if not new_file_content_res.success :
-                self.logger.error(f"❌❌ Failed to fetch new file content for file {file_path} in merge request {mr_url}: {new_file_content_res.error}")
-                continue
-            if not new_file_content_res.data:
-                self.logger.info(f"No new file content found for file {file_path} in merge request {mr_url}")
-                continue
-            new_file = new_file_content_res.data
-            new_file_content = getattr(new_file,'content',"")
-            self.logger.debug(f"new file content found for file {file_path} in merge request : {new_file_content}")
+            is_new_file = file_change.get("new_file",False)
+            is_deleted_file = file_change.get("deleted_file",False)
+            is_generated_file = file_change.get("generated_file",False)
+            is_truncated_diff  = file_change.get("too_large",False)
+            # fetching new file content only if new or changed
+            new_file_content = ""
+            if is_new_file or not is_deleted_file:
+                new_file_content_res = self.data_source.get_file_content(project_id=int(project_id),file_path=file_path,ref=tmp_mr_sha)
+                if not new_file_content_res.success :
+                    self.logger.error(f"❌❌ Failed to fetch new file content for file {file_path} in merge request {mr_url}: {new_file_content_res.error}")
+                    continue
+                if not new_file_content_res.data:
+                    self.logger.debug(f"No file content found for file {file_path} in merge request {mr_url}")
+                new_file = new_file_content_res.data
+                new_file_content = getattr(new_file,'content',"")
             try:
                 # Decode base64 content from Gitlab API else add encoded content
-                file_content = base64.b64decode(
-                    new_file_content
-                ).decode("utf-8")
+                file_content = base64.b64decode(new_file_content).decode("utf-8")
             except Exception as e:
-                self.logger.error(
-                    f"Failed to decode code file content for {file_path}: {e}"
-                )
+                self.logger.error(f"Failed to decode code file content for {file_path}: {e}")
                 file_content = new_file_content
+            data = ""
+            if is_generated_file:
+                data = f"[Generated file] \n\n {file_content} \n\n Diff content \n\n {diff_content}"
+            elif is_new_file:
+                data = f"[New file] \n\n {file_content} \n\n Diff content \n\n {diff_content}"
+            elif is_deleted_file:
+                data = f"[Deleted file] \n\n Diff content \n\n {diff_content}"
+            else:
+                # changes in existing file
+                data = f"Existing file \n\n {file_content} \n\n Diff content \n\n {diff_content}"
+            if is_truncated_diff:
+                data = data + "\n\n[TRUNCATED] Diff"
+            
             bg_n = BlockGroup(
                 index=block_group_number,
                 name=f"block for file {file_path}",
                 type=GroupType.FULL_CODE_PATCH,
                 format=DataFormat.MARKDOWN,
                 sub_type=GroupSubType.PR_FILE_CHANGE,
-                data=diff_content
-                + str("\n\nFull File Content:\n")
-                + str(file_content),
+                data=data,
                 comments=map_file_r_comments.get(file_path, []),
                 requires_processing=True,
             )
@@ -1463,12 +1528,12 @@ class GitLabConnector(BaseConnector):
         return block_groups,list_remaining_attachments
 
     async def make_files_records_from_notes(self, issue: ProjectIssue, record:Record) -> list[RecordUpdate]:
-        """Make file records from notes"""
+        """Make file records from notes body of issues."""
         notes_res = self.data_source.list_issue_notes(project_id=int(issue.project_id), issue_iid=issue.iid)
         if not notes_res.success :
             raise Exception(f"❌❌ Failed to fetch notes for issue {issue.title}: {notes_res.error}")
         if not notes_res.data:
-            self.logger.info(f"No notes found for issue {issue.title}")
+            self.logger.debug(f"No notes found for issue {issue.title}")
             return None
         notes = notes_res.data
         record_updates_batch: list[RecordUpdate] = []
@@ -1481,16 +1546,16 @@ class GitLabConnector(BaseConnector):
                 )
                 if file_record_updates:
                     record_updates_batch.extend(file_record_updates)
-                    self.logger.info(f"Added {len(file_record_updates)} attachments for issue {issue.title}")
+                    self.logger.debug(f"Added {len(file_record_updates)} attachments for issue {issue.title}")
         return record_updates_batch
 
     async def make_files_records_from_notes_mr(self,mr:ProjectMergeRequest,record:Record) -> list[RecordUpdate]:
-        """Make file records from notes"""
+        """Make file records from notes of merge request"""
         notes_res = self.data_source.list_merge_request_notes(project_id=int(mr.project_id), mr_iid=mr.iid)
         if not notes_res.success :
             raise Exception(f"❌❌ Failed to fetch notes for merge request {mr.title}: {notes_res.error}")
         if not notes_res.data:
-            self.logger.info(f"No notes found for merge request {mr.title}")
+            self.logger.debug(f"No notes found for merge request {mr.title}")
             return None
         notes = notes_res.data
         record_updates_batch: list[RecordUpdate] = []
@@ -1503,13 +1568,13 @@ class GitLabConnector(BaseConnector):
                 )
                 if file_record_updates:
                     record_updates_batch.extend(file_record_updates)
-                    self.logger.info(f"Added {len(file_record_updates)} attachments for merge request {mr.title}")
+                    self.logger.debug(f"Added {len(file_record_updates)} attachments for merge request {mr.title}")
         return record_updates_batch
 
     # ---------------------------Pull Requests-----------------------------------#
 
     async def _fetch_prs_batched(self,project_id:int) ->None:
-        """ Syncing merge requests in batches """
+        """ Syncing merge requests in batches based on sync point of last sync time"""
         last_sync_time = await self._get_mr_sync_checkpoint(project_id)
         if last_sync_time is not None:
             since_dt = datetime.fromtimestamp(last_sync_time/1000, tz=timezone.utc)
@@ -1520,7 +1585,7 @@ class GitLabConnector(BaseConnector):
             self.logger.error(f"Error in fetching issues for projectId {project_id}")
             return
         if not prs_res.data :
-            self.logger.info(f"No merge requests found for projectId {project_id}")
+            self.logger.debug(f"No merge requests found for projectId {project_id}")
 
         all_prs:list[ProjectMergeRequest] = prs_res.data
         total_prs = len(all_prs)
@@ -1532,7 +1597,7 @@ class GitLabConnector(BaseConnector):
             batch_number += 1
             prs_batch = all_prs[i : i + batch_size]
             batch_records: list[RecordUpdate] = []
-            self.logger.info(
+            self.logger.debug(
                 f"📦 Processing batch {batch_number}: {len(prs_batch)} merge requests"
             )
             batch_records = await self._build_pr_records(prs_batch)
@@ -1542,8 +1607,8 @@ class GitLabConnector(BaseConnector):
     async def _build_pr_records(self,prs_batch:list[ProjectMergeRequest])->list[RecordUpdate]:
         """Make merge requests of gitlab projects into PullRequestRecords"""
         record_updates_batch: list[RecordUpdate] = []
+        attachments_count = 0
         for pr in prs_batch:
-            self.logger.debug(f"⚒️⚒️ Processing merge request {pr.title}")
             record_update = await self._process_mr_to_pull_request(pr)
             if record_update:
                 record_updates_batch.append(record_update)
@@ -1558,16 +1623,17 @@ class GitLabConnector(BaseConnector):
                     )
                     if file_record_updates:
                         record_updates_batch.extend(file_record_updates)
-                        self.logger.info(f"Added {len(file_record_updates)} attachments for mr {pr.title}")
+                        attachments_count += len(file_record_updates)
                 # adding notes attachments
                 attachment_records = await self.make_files_records_from_notes_mr(pr,record_update.record)
                 if attachment_records:
                     record_updates_batch.extend(attachment_records)
-                    self.logger.debug(f"Added {len(attachment_records)} attachments for mr notes {pr.title}")
+                    attachments_count+=len(attachment_records)
+        self.logger.debug(f"Added {attachments_count} attachments for merge requests ")
         return record_updates_batch
 
     async def _process_mr_to_pull_request(self, pr: ProjectMergeRequest) -> RecordUpdate | None:
-        """Process merge request to pull request"""
+        """Process merge request to pull request record"""
         try:
             # check if record already exists
             existing_record = None
@@ -1594,17 +1660,10 @@ class GitLabConnector(BaseConnector):
             label_names: list[str] = []
             for label in pr.labels:
                 label_names.append(label)
-            # assignee_list:list[str] = []
-            # for assignees in pr.assignees:
-            #     assignee_list.append(assignees.get("username"))
             assignee_list: list[str] = [assignees.get("username") for assignees in pr.assignees]
-            # reviewer_names:list[str] = []
-            # for reviewers in pr.reviewers:
-            #     reviewer_names.append(reviewers.get("username"))
             reviewer_names: list[str] = [reviewers.get("username") for reviewers in pr.reviewers]
             merged_by:str = (pr.merged_by.get("username") if pr.merged_by else None )
-            self.logger.debug(f"labels : {label_names}")
-            self.logger.debug(f"date format : {pr.created_at, pr.updated_at}")
+            external_group_id = f"{pr.project_id}-merge-requests"
             merge_request_record = PullRequestRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=pr.title,
@@ -1616,7 +1675,7 @@ class GitLabConnector(BaseConnector):
                 source_updated_at=self.datetime_to_epoch_ms(pr.updated_at),
                 source_created_at=self.datetime_to_epoch_ms(pr.created_at),
                 version=0,  # not used further so 0
-                external_record_group_id=str(pr.project_id),
+                external_record_group_id=external_group_id,
                 org_id=self.data_entities_processor.org_id,
                 record_group_type=RecordGroupType.PROJECT.value,
                 mime_type=MimeTypes.BLOCKS.value,
@@ -1649,13 +1708,16 @@ class GitLabConnector(BaseConnector):
             )
             raise
 
-    async def _build_pull_request_blocks(self, record: Record) -> BlocksContainer:
-        # TODO: think for BG as code file updates how as in newer commit some files same as old
-        # TODO: think of keys when PR gets updated like only when metadata is getting updated or say body and also consider it for file changes
-        raw_url = record.weburl.split("/")
-        self.logger.debug(f"weburl :  {raw_url}")
+    async def _build_pull_request_blocks(self, record: Record) -> bytes:
+        raw_url = getattr(record,"weburl","") or ""
+        if not raw_url:
+            raise ValueError("Web URL is required for indexing merge request")
+        raw_url = raw_url.split("/")
         mr_number = int(raw_url[7])
-        project_id = record.external_record_group_id
+        external_group_id = getattr(record,"external_record_group_id")
+        project_id = external_group_id.split('-')[0]
+        if not external_group_id:
+            raise Exception(f"❌❌ Project id not found.")
         mr_res = self.data_source.get_merge_request(project_id=project_id, mr_iid=mr_number)
         if not mr_res.success:
             raise Exception(f"❌❌ Failed to fetch merge request details for record {record.external_record_id}: {mr_res.error}")
@@ -1663,7 +1725,7 @@ class GitLabConnector(BaseConnector):
         if not mr_res.data:
             raise Exception(f"❌❌ No merge request data found for record {record.external_record_id}")
         # TODO: when personal hosting base urls might be different
-        base_project_url = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        base_project_url = f"https://gitlab.com/api/v4/projects/{project_id}"
         block_group_number = 0
         block_number = 0
         blocks: list[Block] = []
@@ -1674,7 +1736,6 @@ class GitLabConnector(BaseConnector):
         markdown_with_images_base64 = await self.embed_images_as_base64(
             markdown_content_raw, base_project_url
         )
-        self.logger.debug(f"Processed markdown content for mr {mr.title}")
         markdown_content_with_title = f"{mr.title}\n\n{markdown_with_images_base64}"
         list_child_records,remaining_attachments = await self.make_child_records_of_attachments(markdown_content_raw,record)
         list_remaining_attachments.extend(remaining_attachments)
@@ -1705,7 +1766,7 @@ class GitLabConnector(BaseConnector):
         if not mr_commits_res.success :
             raise Exception(f"❌❌ Failed to fetch commits for merge request {mr_number}: {mr_commits_res.error}")
         if not mr_commits_res.data:
-            self.logger.info(f"No commits found for merge request {mr_number}")
+            self.logger.debug(f"No commits found for merge request {mr_number}")
         mr_commits:list[ProjectCommit] = mr_commits_res.data
         for commit in mr_commits:
             commit_message = getattr(commit, "message","")
@@ -1739,7 +1800,6 @@ class GitLabConnector(BaseConnector):
         await self._process_new_records(list_remaining_attachments)
         blocks_json = blocks_container.model_dump_json(indent=2)
         return blocks_json.encode('utf-8')
-        # return blocks_container
 
     # ---------------------------Attachment functions-----------------------------------#
 
@@ -1747,24 +1807,17 @@ class GitLabConnector(BaseConnector):
         """
         getting raw markdown content, then getting images as base64 and appending in markdown content
         """
-        self.logger.debug(
-            "Embedding images as base64 in markdown content in embed_images_as_base64 function"
-        )
-        attachments,markdown_content_clean  = await self.parse_gitlab_uploads_clean_test(
-            body_content
-        )
+        self.logger.debug("Embedding images as base64 in markdown content in embed_images_as_base64 function")
+        attachments,markdown_content_clean  = await self.parse_gitlab_uploads_clean_test(body_content)
         if not attachments:
             return markdown_content_clean
-        self.logger.info(f"attachments found for embedding : {attachments}")
         for attach in attachments:
-            self.logger.debug(f"Processing attachment for embedding: {attach}")
             if attach.get("category") != "image":
                 continue
             attachment_url = attach.get("href")
-            self.logger.debug(f"Fetching image from URL: {attachment_url}")
             full_attachment_url = f"{base_project_url}{attachment_url}"
             try:
-                image_bytes = await self.get_img_bytes(full_attachment_url)
+                image_bytes = await self.data_source.get_img_bytes(full_attachment_url)
                 if image_bytes:
                     # to get image format as in attachment data just an image
                     img = Image.open(BytesIO(image_bytes))
@@ -1781,7 +1834,8 @@ class GitLabConnector(BaseConnector):
         self, attachments: list[dict[str, Any]], record: Record
     ) -> list[RecordUpdate]:
         """Building file records from list of attachment links."""
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        project_id = record.external_record_group_id.split('-')[0]
+        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         list_records_new: list[RecordUpdate] = []
         for attach in attachments:
             if attach.get("category") == "image":
@@ -1791,12 +1845,12 @@ class GitLabConnector(BaseConnector):
             full_attachment_url = f"{base_url_for_attachments}{attachment_url}"
             attachment_name = attach.get("filename")
             attachment_type = attach.get("filetype")
-            self.logger.info(
+            self.logger.debug(
                 f"Processing attachment: {attachment_name} of type {attachment_type} from URL: {attachment_url}"
             )
             if not attachment_url or not attachment_name:
                 self.logger.warning(
-                    f"Skipping attachment due to missing URL or name: {attach}"
+                    f"Skipping attachment due to missing URL or Name: {attach}"
                 )
                 continue
 
@@ -1818,7 +1872,7 @@ class GitLabConnector(BaseConnector):
                 connector_id=self.connector_id,
                 origin=OriginTypes.CONNECTOR,
                 weburl=str(full_attachment_url),
-                record_group_type=RecordGroupType.ISSUE_GROUP.value,
+                record_group_type=RecordGroupType.PROJECT.value,
                 parent_external_record_id=record.external_record_id,
                 parent_record_type=record.record_type,
                 external_record_group_id=record.external_record_group_id,
@@ -1831,6 +1885,8 @@ class GitLabConnector(BaseConnector):
                 preview_renderable=True,
                 version=0,
                 size_in_bytes=0,  # unknown
+                source_created_at=get_epoch_timestamp_in_ms(),
+                source_updated_at=get_epoch_timestamp_in_ms(),
             )
 
             record_update = RecordUpdate(
@@ -1850,44 +1906,21 @@ class GitLabConnector(BaseConnector):
         return list_records_new
 
     async def _fetch_attachment_content(self,record:Record)->AsyncGenerator[bytes,None]:
-        """stream content from gitlab """
+        """stream attachment file content """
         try:
             attachment_id = record.external_record_id
             if not attachment_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"No attachment ID available for record {record.id}"
+                raise Exception(
+                    f"No attachment ID available for record {record.id}"
                 )
             # make call to fetch attachment content
             record_url = record.weburl
             if not record_url:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"No record URL available for record {record.id}"
-                )
-            GITLAB_TOKEN = await self._get_api_token_()
-            self.logger.info(f"Fetching file from URL: {record_url}")
-            headers = {
-                "Authorization": f"Bearer {GITLAB_TOKEN}",
-                "Accept": "application/octet-stream",
-            }
-
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream(
-                    'GET',
-                    record_url,
-                    headers = headers,
-                    timeout=30.0
-                ) as response:
-                    response.raise_for_status()
-                    async for chunk in response.aiter_bytes(chunk_size=16000):
-                        yield chunk
+                raise ValueError(f"No record URL available for record {record.id}")
+            async for chunk in self.data_source.get_attachment_files_content(record_url):
+                yield chunk
         except Exception as e:
-            self.logger.error(f"Error fetching attachment content for record {record.id}: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error fetching attachment content for record {record.id}: {e}"
-            ) from e
+            raise Exception(f"Error fetching attachment content for record {record.id}: {e}") from e
 
     async def make_child_records_of_attachments(self,markdown_raw:str,record:Record)->tuple[list[ChildRecord],list[RecordUpdate]]:
         """make child records of attachments from markdown raw content"""
@@ -1896,7 +1929,8 @@ class GitLabConnector(BaseConnector):
         )
         child_records: list[ChildRecord] = []
         remaining_attachments:list[RecordUpdate] = []
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        project_id = record.external_record_group_id.split('-')[0]
+        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         for attach in attachments:
             if attach.get("category") == "image":
                 continue
@@ -1905,7 +1939,7 @@ class GitLabConnector(BaseConnector):
             attachment_name = attach.get("filename")
             if not attachment_url or not attachment_name:
                 self.logger.warning(
-                    f"Skipping attachment due to missing URL or name: {attach}"
+                    f"Skipping attachment due to missing URL or Name: {attach}"
                 )
                 continue
             existing_record = None
@@ -1933,11 +1967,12 @@ class GitLabConnector(BaseConnector):
         return child_records,remaining_attachments
 
     async def make_block_comment_of_attachments(self,markdown_raw:str,record:Record)->tuple[list[CommentAttachment],list[RecordUpdate]]:
-        """ make comment attachments from markdown raw content"""
+        """ make comment attachments from markdown raw content for merge request review comments"""
         attachments,markdown_content  = await self.parse_gitlab_uploads_clean_test(markdown_raw)
         comment_attachments: list[CommentAttachment] = []
         remaining_attachments: list[RecordUpdate] = []
-        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{record.external_record_group_id}"
+        project_id = record.external_record_group_id.split('-')[0]
+        base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         for attach in attachments:
             if attach.get("category") == "image":
                 continue
@@ -1946,7 +1981,7 @@ class GitLabConnector(BaseConnector):
             attachment_name = attach.get("filename")
             if not attachment_url or not attachment_name:
                 self.logger.warning(
-                    f"Skipping attachment due to missing URL or name: {attach}"
+                    f"Skipping attachment due to missing URL or Name: {attach}"
                 )
                 continue
             existing_record = None
@@ -1987,63 +2022,6 @@ class GitLabConnector(BaseConnector):
         except Exception:
             self.logger.debug("issue in conversion of date time")
             return None
-
-    async def _get_api_token_(self) -> str:
-        """getting bearer token for file data streaming
-
-        Raises:
-            ValueError: _description_
-            ValueError: _description_
-
-        Returns:
-            str: _description_
-        """
-        config = await self.config_service.get_config(
-            f"/services/connectors/{self.connector_id}/config"
-        )
-        if not config:
-            self.logger.error("❌Github configuration not found.")
-            raise Exception("Github configuration not found")
-
-        credentials_config = config.get("credentials", {})
-        access_token = credentials_config.get("access_token", "")
-
-        if not access_token:
-            self.logger.error("❌Github configuration not found.")
-            raise ValueError("Github credentials not found")
-
-        return access_token
-        # self.logger.debug(f"Successfully retrieved GitLab API token from configuration.{GITLAB_TOKEN}")
-
-    async def get_img_bytes(self, image_url: str) -> bytes | None:
-        GITLAB_TOKEN = await self._get_api_token_()
-        self.logger.info(f"Fetching image from URL: {image_url}")
-        headers = {
-            "Authorization": f"Bearer {GITLAB_TOKEN}",
-            # "Private-Token": f"{GITLAB_TOKEN}",
-            "Accept": "*/*",
-        }
-        try:
-            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                img_data = resp.content
-                self.logger.info(f"Fetched image of size: {len(img_data)} bytes")
-                return img_data
-        except httpx.HTTPStatusError as e:
-            self.logger.error(
-                f"HTTP {e.response.status_code} fetching image from {image_url}"
-            )
-            return None
-        except Exception as e:
-            self.logger.error(f"Error fetching image from {image_url}: {e}")
-            return None
-
-    def _get_iso_time(self) -> str:
-        # Get the current time in UTC
-        utc_now = datetime.now(timezone.utc)
-        # Format the time into the ISO 8601 string format with 'Z'
-        return utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async def get_signed_url(self, record: Record) -> str | None:
         """Get signed URL for record access (optional - if API supports it)."""
@@ -2118,12 +2096,12 @@ class GitLabConnector(BaseConnector):
         return files,cleaned_text
 
     def get_parent_path_from_path(self,file_path:str)->list[str] | None:
-        """Cleans and Removes file name form path and returns it"""
+        """Cleans and removes file name from path and returns it."""
         if not file_path :
-            return None
-        file_path_dict = file_path.split("/")
-        file_path_dict.pop()
-        return file_path_dict
+            return []
+        file_path_list = file_path.split("/")
+        file_path_list.pop()
+        return file_path_list
 
     async def handle_webhook_notification(self) -> bool:
         """Handle webhook notifications (optional - for real-time sync)."""

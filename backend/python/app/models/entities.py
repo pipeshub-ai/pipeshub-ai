@@ -1619,7 +1619,7 @@ class PullRequestRecord(Record):
     mergeable:str | None=None
     merged_by:str | None=None
     labels:list[str] | None = Field(default_factory=list)
-
+    last_commit_sha:str|None =Field(default=None)
     def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,

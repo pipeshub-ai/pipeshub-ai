@@ -2512,7 +2512,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: list[str],
-        record_group_name:str,
+        record_group_id:str,
         transaction: str | None = None
     ) -> dict|None:
         """
@@ -2563,9 +2563,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # based on external id
             # assumed full path from record group next level is as list in param
             query = """
-            LET appId = @appId
+            LET appId = CONCAT("apps/", @connectorId)
             LET rawParts = @rawParts
-            LET recordGroupName = @recordGroupName
+            LET recordGroupId = @recordGroupId
 
             LET parts = (
                 LENGTH(rawParts) == 1 AND rawParts[0] == ""
@@ -2574,8 +2574,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET rg = FIRST(
-                FOR g IN INBOUND appId belongsTo
-                FILTER g.groupName == recordGroupName
+                FOR g IN 1..100 INBOUND appId belongsTo
+                FILTER g.externalGroupId == recordGroupId
                 RETURN g
             )
             FILTER rg != null
@@ -2604,13 +2604,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             return result
             """
-            self.logger.info(f"connector_id : { connector_id}")
             result = await self.http_client.execute_aql(
                 query,
                 bind_vars={
                     "rawParts":path,
-                    "appId":connector_id,
-                    "recordGroupName":record_group_name,
+                    "connectorId":connector_id,
+                    "recordGroupId":record_group_id,
                 },
                 txn_id=transaction
             )

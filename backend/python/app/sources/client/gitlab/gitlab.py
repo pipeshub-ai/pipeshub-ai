@@ -41,6 +41,8 @@ class GitLabClientViaToken:
         self._sdk: Gitlab | None = None
 
     def create_client(self) -> Gitlab:
+        # NOTE: this handles only authorization via OAuth token
+        # if used will need to change token request param if API_TOKEN
         kwargs: dict[str, Any] = {
             "url": self.url,
             "oauth_token": self.token,
@@ -57,13 +59,6 @@ class GitLabClientViaToken:
             kwargs["obey_rate_limit"] = self.obey_rate_limit
 
         self._sdk = gitlab.Gitlab(**kwargs)
-        # try:
-        #     self._sdk.auth()  # validate the credentials early
-        # except GitlabAuthenticationError as e:
-        #     raise RuntimeError("GitLab authentication failed") from e
-        # except Exception as e:
-        #     raise RuntimeError("Error initializing GitLab client") from e
-
         return self._sdk
 
     def get_sdk(self) -> Gitlab:
@@ -74,7 +69,9 @@ class GitLabClientViaToken:
 
     def get_base_url(self) -> str:
         return self.url
-
+    
+    def get_token(self) -> str:
+        return self.token
 
 class GitLabConfig(BaseModel):
     token: str = Field(..., description="GitLab private token")
@@ -109,6 +106,9 @@ class GitLabClient(IClient):
     def get_sdk(self) -> Gitlab:
         return self.client.get_sdk()
 
+    def get_token(self) -> str:
+        return self.client.get_token()
+    
     @classmethod
     def build_with_config(
         cls,
@@ -141,9 +141,10 @@ class GitLabClient(IClient):
         credentials_config  = config.get("credentials",{})
         if not  credentials_config:
             raise ValueError("Credentials configuration not found in Gitlab connector configuration")
-        auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+        auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH default is API_TOKEN
 
         if auth_type == "API_TOKEN":
+            # NOTE: if used will need to change token request param if API_TOKEN is used
             token = auth_config.get("token", "")
             timeout = auth_config.get("timeout", 30)
             url = auth_config.get("url", "https://gitlab.com")
@@ -172,5 +173,4 @@ class GitLabClient(IClient):
                 raise ValueError(f"Failed to get GitLab connector configuration for instance {connector_instance_id}")
             return config
         except Exception as e:
-            logger.error(f"Failed to get GitLab connector config: {e}")
             raise ValueError(f"Failed to get GitLab connector configuration for instance {connector_instance_id}") from e

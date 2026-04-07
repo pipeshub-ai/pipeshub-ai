@@ -709,7 +709,8 @@ class IGraphDBProvider(ABC):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
+        path: list[str],
+        record_group_id:str,
         transaction: str | None = None
     ) -> dict | None:
         """

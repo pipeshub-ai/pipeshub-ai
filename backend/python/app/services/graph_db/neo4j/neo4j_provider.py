@@ -1927,29 +1927,84 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
+        path: list[str],
+        record_group_id:str,
         transaction: str | None = None
     ) -> dict | None:
         """Get record by path"""
-        try:
-            query = """
-            MATCH (f:File {path: $path})
-            RETURN f
-            LIMIT 1
-            """
+        # try:
+        #     query = """
+        #     MATCH (f:File {path: $path})
+        #     RETURN f
+        #     LIMIT 1
+        #     """
 
+        #     results = await self.client.execute_query(
+        #         query,
+        #         parameters={"path": path},
+        #         txn_id=transaction
+        #     )
+
+        #     if results:
+        #         file_dict = dict(results[0]["f"])
+        #         return self._neo4j_to_arango_node(file_dict, CollectionNames.FILES.value)
+
+        #     return None
+
+        # except Exception as e:
+        #     self.logger.error(f"❌ Get record by path failed: {str(e)}")
+        #     return None
+        
+        try:
+            head = """
+            WITH $rawParts as parts
+
+            // Anchor: RecordGroup
+            MATCH (rg:RecordGroup)-[:BELONGS_TO*1..]->(:App {id: $appId})
+            WHERE rg.externalGroupId = $recordGroupId
+
+            // Anchor: root node — uses index on recordName
+            MATCH (n0:Record)-[:BELONGS_TO]->(rg)
+            WHERE n0.recordName = parts[0]
+            AND n0.externalParentId IS NULL
+            AND n0.recordType = "FILE"
+            AND n0.mimeType = "text/directory"
+
+            // Walk step by step — each hop filtered BEFORE expanding next level
+
+            """.strip()
+            step_count = len(path) 
+            step_blocks:list[str] = []
+            for i in range(1,step_count):
+                prev_node = f"n{i-1}"
+                curr_node = f"n{i}"
+                rel_var = f"r{i}"
+                step_blocks.append(
+                        f"""MATCH ({prev_node})-[{rel_var}:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->({curr_node}:Record)
+                WHERE {curr_node}.recordName = parts[{i}]"""
+                    )
+
+            final_node = "n0" if step_count==0 else f"n{step_count - 1}"
+
+            return_case = f"return {final_node} as result"
+            parts_to_join = [head]
+            if step_blocks:
+                parts_to_join.append("\n\n".join(step_blocks))
+            parts_to_join.append(return_case)
+
+            query = "\n\n".join(parts_to_join).strip()
             results = await self.client.execute_query(
                 query,
-                parameters={"path": path},
-                txn_id=transaction
+                parameters={"appId":connector_id,
+                            "recordGroupId":record_group_id,
+                            "rawParts":path,
+                            },
+                txn_id=transaction,
             )
 
             if results:
-                file_dict = dict(results[0]["f"])
-                return self._neo4j_to_arango_node(file_dict, CollectionNames.FILES.value)
-
+                return results[0]["result"]
             return None
-
         except Exception as e:
             self.logger.error(f"❌ Get record by path failed: {str(e)}")
             return None
@@ -2556,6 +2611,50 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by conversation index failed: {str(e)}")
             return None
 
+    async def get_record_path(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """ Get path of a record """
+        try:
+            query ="""
+            // PROFILE
+            MATCH path = (start_record:Record {id: $record_id})<-[:RECORD_RELATION*0..100]-(ancestor)
+
+            // 1. Edge Filter: Ensure the edge acts as a parent-child link
+            WHERE all(r IN relationships(path) WHERE r.relationshipType = 'PARENT_CHILD')
+
+            // 2. Node Filter: Ensure it follows the strict canonical path
+            AND all(i IN range(0, length(path)-1) 
+                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId)
+
+            // 3. Grab the longest valid path up to the root as above query returns all path lengths incrementally from 0,1,2,3 .....
+            WITH nodes(path) AS path_nodes
+            ORDER BY size(path_nodes) DESC
+            LIMIT 1
+
+            // 4. Extract names (root first) and concatenate into a file path
+            WITH [node IN reverse(path_nodes) 
+                WHERE node.recordName IS NOT NULL AND node.recordName <> "" | node.recordName] AS clean_path
+            RETURN reduce(s = "", name IN clean_path | 
+                CASE WHEN s = "" THEN name ELSE s + '/' + name END
+            ) AS file_path
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(f"✅ Successfully retrieved record path for {record_id}: {results}")
+                return results[0]["file_path"]
+
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Get record path failed: {str(e)}")
+            return None
     # ==================== Record Group Operations ====================
 
     async def get_record_group_by_external_id(
