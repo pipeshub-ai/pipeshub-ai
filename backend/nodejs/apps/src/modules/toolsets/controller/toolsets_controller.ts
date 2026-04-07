@@ -15,7 +15,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { executeConnectorCommand, handleBackendError, handleValidatedConnectorResponse, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
+import { executeConnectorCommand, handleBackendError, handleValidatedConnectorResponse } from '../../tokens_manager/utils/connector.utils';
 import {
   authenticateToolsetInstanceResponseSchema,
   createToolsetInstanceResponseSchema,
@@ -35,6 +35,12 @@ import {
   removeToolsetCredentialsResponseSchema,
   toolsetListResponseSchema,
   updateUserToolsetCredentialsResponseSchema,
+  getAgentToolsetsResponseSchema,
+  authenticateAgentToolsetResponseSchema,
+  updateAgentToolsetCredentialsResponseSchema,
+  removeAgentToolsetCredentialsResponseSchema,
+  reauthenticateAgentToolsetResponseSchema,
+  getAgentToolsetOAuthUrlResponseSchema,
 } from '../validators/toolsets_validator';
 
 const logger = Logger.getInstance({
@@ -919,7 +925,13 @@ export const getAgentToolsets =
         headers
       );
 
-      handleConnectorResponse(connectorResponse, res, 'Getting agent toolsets', 'Agent toolsets not found');
+      handleValidatedConnectorResponse(
+        connectorResponse,
+        res,
+        'Getting agent toolsets',
+        'Agent toolsets not found',
+        getAgentToolsetsResponseSchema
+      );
     } catch (error: any) {
       logger.error('Error getting agent toolsets', { error: error.message, agentKey: req.params.agentKey });
       next(handleBackendError(error, 'get agent toolsets'));
@@ -954,7 +966,13 @@ export const authenticateAgentToolset =
         req.body
       );
 
-      handleConnectorResponse(connectorResponse, res, 'Authenticating agent toolset', 'Failed to authenticate agent toolset');
+      handleValidatedConnectorResponse(
+        connectorResponse,
+        res,
+        'Authenticating agent toolset',
+        'Failed to authenticate agent toolset',
+        authenticateAgentToolsetResponseSchema
+      );
     } catch (error: any) {
       logger.error('Error authenticating agent toolset', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'authenticate agent toolset'));
@@ -989,7 +1007,13 @@ export const updateAgentToolsetCredentials =
         req.body
       );
 
-      handleConnectorResponse(connectorResponse, res, 'Updating agent toolset credentials', 'Failed to update agent toolset credentials');
+      handleValidatedConnectorResponse(
+        connectorResponse,
+        res,
+        'Updating agent toolset credentials',
+        'Failed to update agent toolset credentials',
+        updateAgentToolsetCredentialsResponseSchema
+      );
     } catch (error: any) {
       logger.error('Error updating agent toolset credentials', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'update agent toolset credentials'));
@@ -1023,7 +1047,13 @@ export const removeAgentToolsetCredentials =
         headers
       );
 
-      handleConnectorResponse(connectorResponse, res, 'Removing agent toolset credentials', 'Failed to remove agent toolset credentials');
+      handleValidatedConnectorResponse(
+        connectorResponse,
+        res,
+        'Removing agent toolset credentials',
+        'Failed to remove agent toolset credentials',
+        removeAgentToolsetCredentialsResponseSchema
+      );
     } catch (error: any) {
       logger.error('Error removing agent toolset credentials', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'remove agent toolset credentials'));
@@ -1057,7 +1087,13 @@ export const reauthenticateAgentToolset =
         headers
       );
 
-      handleConnectorResponse(connectorResponse, res, 'Re-authenticating agent toolset', 'Failed to re-authenticate agent toolset');
+      handleValidatedConnectorResponse(
+        connectorResponse,
+        res,
+        'Re-authenticating agent toolset',
+        'Failed to re-authenticate agent toolset',
+        reauthenticateAgentToolsetResponseSchema
+      );
     } catch (error: any) {
       logger.error('Error re-authenticating agent toolset', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'reauthenticate agent toolset'));
@@ -1097,7 +1133,13 @@ export const getAgentToolsetOAuthUrl =
         headers
       );
 
-      handleConnectorResponse(connectorResponse, res, 'Getting agent toolset OAuth URL', 'Failed to get OAuth authorization URL for agent toolset');
+      handleValidatedConnectorResponse(
+        connectorResponse,
+        res,
+        'Getting agent toolset OAuth URL',
+        'Failed to get OAuth authorization URL for agent toolset',
+        getAgentToolsetOAuthUrlResponseSchema
+      );
     } catch (error: any) {
       logger.error('Error getting agent toolset OAuth URL', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'get agent toolset OAuth URL'));

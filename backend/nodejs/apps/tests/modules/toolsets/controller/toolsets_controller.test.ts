@@ -68,7 +68,7 @@ describe('Toolsets Controller', () => {
 
   beforeEach(() => {
     executeStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
-    handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+    handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
     handleErrorStub = sinon.stub(connectorUtils, 'handleBackendError').callsFake((err: any) => err)
   })
 
@@ -174,7 +174,7 @@ describe('Toolsets Controller', () => {
       })
       // Restore handleResponseStub so we can test the redirect logic
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({
@@ -195,7 +195,7 @@ describe('Toolsets Controller', () => {
         data: { redirect_url: 'https://example.com/success' },
       })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code' } })
@@ -746,7 +746,7 @@ describe('Toolsets Controller', () => {
         data: null,
       })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code', state: 'state' } })
@@ -765,7 +765,7 @@ describe('Toolsets Controller', () => {
         data: { redirect_url: 'javascript:alert(1)' },
       })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code' } })
@@ -795,10 +795,10 @@ describe('Toolsets Controller', () => {
       expect(url).to.include('base_url=')
     })
 
-    it('should fall through to handleConnectorResponse for normal responses', async () => {
+    it('should fall through to handleValidatedConnectorResponse for normal responses', async () => {
       executeStub.resolves({ statusCode: 200, data: { result: 'ok' } })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: {} })

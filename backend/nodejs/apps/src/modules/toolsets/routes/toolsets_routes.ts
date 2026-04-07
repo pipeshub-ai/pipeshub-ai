@@ -58,6 +58,11 @@ import {
   updateUserToolsetInstanceSchema,
   updateToolsetOAuthConfigSchema,
   getAgentToolsetsSchema,
+  updateAgentToolsetInstanceSchema,
+  authenticateAgentToolsetSchema,
+  removeAgentToolsetCredentialsSchema,
+  reauthenticateAgentToolsetSchema,
+  getAgentToolsetOAuthUrlSchema,
 } from '../validators/toolsets_validator';
 
 // ============================================================================
@@ -332,6 +337,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/authenticate',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(authenticateAgentToolsetSchema),
     authenticateAgentToolset(config)
   );
 
@@ -355,6 +361,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/credentials',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(removeAgentToolsetCredentialsSchema),
     removeAgentToolsetCredentials(config)
   );
 
@@ -366,6 +373,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/reauthenticate',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(reauthenticateAgentToolsetSchema),
     reauthenticateAgentToolset(config)
   );
 
@@ -377,6 +385,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/oauth/authorize',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAgentToolsetOAuthUrlSchema),
     getAgentToolsetOAuthUrl(config)
   );
 

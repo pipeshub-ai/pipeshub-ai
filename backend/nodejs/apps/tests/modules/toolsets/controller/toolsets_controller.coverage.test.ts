@@ -63,7 +63,7 @@ describe('ToolsetsController - additional coverage', () => {
   beforeEach(() => {
     executeStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
     handleErrorStub = sinon.stub(connectorUtils, 'handleBackendError')
-    handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+    handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
   })
 
   afterEach(() => {

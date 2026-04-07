@@ -61,7 +61,7 @@ describe('toolsets/routes/toolsets_routes', () => {
       expect(router).to.exist
       const paths = getRoutes(router).map((r) => r.path)
       expect(paths).to.include('/registry')
-      expect(paths).to.include('/')
+      expect(paths).to.include('/oauth/callback')
       expect(paths).to.include('/instances')
       expect(paths).to.include('/my-toolsets')
     })
@@ -197,7 +197,7 @@ describe('toolsets/routes/toolsets_routes', () => {
 
     beforeEach(() => {
       executeStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
       sinon.stub(connectorUtils, 'handleBackendError').callsFake((err: any) => err)
     })
 

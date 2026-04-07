@@ -29,15 +29,6 @@ export const toolsetTypeParamSchema = z.object({
 });
 
 /**
- * Schema for toolset ID parameter
- */
-export const toolsetIdParamSchema = z.object({
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-});
-
-/**
  * Path params for routes that only include :instanceId
  * (GET/DELETE instance, credentials, reauthenticate, status).
  */
@@ -66,13 +57,19 @@ export const updateToolsetOAuthConfigSchema = z.object({
     oauthConfigId: z.string().min(1, 'OAuth config ID is required'),
   }),
   body: z.object({
-    authConfig: z
-      .object({
-        clientId: z.string().min(1),
-        clientSecret: z.string().min(1),
-        tenantId: z.string().optional(),
-      })
-      .passthrough(),
+    authConfig: z.object({
+      clientId: z.string().min(1),
+      clientSecret: z.string().min(1),
+      tenantId: z.string().optional(),
+      authorizeUrl: z.string().optional(),
+      tokenUrl: z.string().optional(),
+      scopes: z.array(z.string()).optional(),
+      redirectUri: z.string().optional(),
+      additionalParams: z.record(z.string()).optional(),
+      tokenAccessType: z.string().optional(),
+      scopeParameterName: z.string().optional(),
+      tokenResponsePath: z.string().optional(),
+    }),
     baseUrl: z.string().min(1),
   }),
 });
@@ -89,60 +86,6 @@ export const createToolsetInstanceSchema = z.object({
     baseUrl: z.string().optional(),
     oauthConfigId: z.string().optional(),
     oauthInstanceName: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for creating a toolset
- */
-export const createToolsetSchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'Toolset name is required'),
-    displayName: z.string().optional(),
-    type: z.string().optional(),
-    auth: z.object({
-      type: z.string().min(1, 'Auth type is required'),
-      clientId: z.string().optional(),
-      clientSecret: z.string().optional(),
-      apiToken: z.string().optional(),
-      oauthAppId: z.string().optional(),
-      scopes: z.array(z.string()).optional(),
-      tenantId: z.string().optional(),
-    }),
-    baseUrl: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for saving toolset configuration
- */
-export const saveToolsetConfigSchema = z.object({
-  body: z.object({
-    auth: z.object({
-      type: z.string().min(1, 'Auth type is required'),
-      clientId: z.string().optional(),
-      clientSecret: z.string().optional(),
-      apiToken: z.string().optional(),
-      oauthAppId: z.string().optional(),
-      scopes: z.array(z.string()).optional(),
-      tenantId: z.string().optional(),
-    }),
-    baseUrl: z.string().optional()
-  }),
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-});
-
-/**
- * Schema for getting OAuth authorization URL
- */
-export const getOAuthAuthorizationUrlSchema = z.object({
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-  query: z.object({
-    base_url: z.string().optional(),
   }),
 });
 
@@ -184,6 +127,25 @@ export const updateUserToolsetInstanceSchema = z.object({
   }),
 });
 
+
+/**
+ * Schema for updating agent's credentials for a non-OAuth toolset instance
+ */
+export const updateAgentToolsetInstanceSchema = z.object({
+  body: z.object({
+    auth: z.object({
+      apiToken: z.string().optional(),
+      username: z.string().optional(),
+      password: z.string().optional(),
+    }),
+  }),
+  params: z.object({
+    agentKey: z.string().min(1, 'Agent key is required'),
+    instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+});
+
+
 /**
  * POST /instances/:instanceId/authenticate — `auth` matches connector expectations; passthrough keeps toolset-specific keys (e.g. bearerToken).
  */
@@ -199,7 +161,6 @@ export const authenticateToolsetInstanceSchema = z.object({
         password: z.string().optional(),
         bearerToken: z.string().optional(),
       })
-      .passthrough(),
   }),
 });
 
@@ -279,6 +240,58 @@ export const getAgentToolsetsSchema = z.object({
 });
 
 
+/**
+ * DELETE /agents/:agentKey/instances/:instanceId/credentials — path params only.
+ */
+export const removeAgentToolsetCredentialsSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, 'Agent key is required'),
+    instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+});
+
+/**
+ * POST /agents/:agentKey/instances/:instanceId/reauthenticate — path params only, no body.
+ */
+export const reauthenticateAgentToolsetSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, 'Agent key is required'),
+    instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+});
+
+/**
+ * POST /agents/:agentKey/instances/:instanceId/authenticate — non-OAuth auth
+ * (API token, bearer token, username/password).
+ */
+export const authenticateAgentToolsetSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, 'Agent key is required'),
+    instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+  body: z.object({
+    auth: z.object({
+      apiToken: z.string().optional(),
+      bearerToken: z.string().optional(),
+      username: z.string().optional(),
+      password: z.string().optional(),
+    }),
+  }),
+});
+
+/**
+ * GET /agents/:agentKey/instances/:instanceId/oauth/authorize — path params + optional base_url query.
+ */
+export const getAgentToolsetOAuthUrlSchema = z.object({
+  params: z.object({
+    agentKey: z.string().min(1, 'Agent key is required'),
+    instanceId: z.string().min(1, 'Instance ID is required'),
+  }),
+  query: z.object({
+    base_url: z.string().optional(),
+  }),
+});
+
 // ============================================================================
 // Validation Schemas for api response
 // ============================================================================
@@ -324,23 +337,28 @@ export const toolsetListResponseSchema = z.object({
 });
 
 /** Single row from GET /instances (connector) — etcd fields plus registry enrichment */
-const toolsetInstanceListItemSchema = z
-  .object({
-    _id: z.string(),
-    instanceName: z.string(),
-    toolsetType: z.string(),
-    authType: z.string(),
-    orgId: z.string(),
-    createdBy: z.string(),
-    createdAtTimestamp: z.number(),
-    updatedAtTimestamp: z.number(),
-    oauthConfigId: z.string().optional(),
-    displayName: z.string(),
-    description: z.string(),
-    iconPath: z.string(),
-    toolCount: z.number(),
-  })
-  .passthrough();
+const toolsetInstanceListItemSchema = z.object({
+  _id: z.string(),
+  instanceName: z.string(),
+  toolsetType: z.string(),
+  authType: z.string(),
+  orgId: z.string(),
+  createdBy: z.string(),
+  createdAtTimestamp: z.number(),
+  updatedAtTimestamp: z.number(),
+  oauthConfigId: z.string().optional(),
+  displayName: z.string(),
+  description: z.string(),
+  iconPath: z.string(),
+  toolCount: z.number(),
+  /** Instance-level auth config stored for non-OAuth auth types. */
+  auth: z.object({
+    host: z.string().optional(),
+    port: z.number().optional(),
+    database: z.string().optional(),
+    baseUrl: z.string().optional(),
+  }).optional(),
+});
 
 /** GET /instances success body from connector */
 export const getToolsetInstancesResponseSchema = z.object({
@@ -375,7 +393,6 @@ const toolsetInstanceStoredSchema = z
     updatedAtTimestamp: z.number(),
     oauthConfigId: z.string().optional(),
   })
-  .passthrough();
 
 /** POST /instances success body from connector */
 export const createToolsetInstanceResponseSchema = z.object({
@@ -430,7 +447,6 @@ const myToolsetEntrySchema = z
     updatedAtTimestamp: z.number().optional(),
     auth: z.record(z.unknown()).nullable().optional(), // Shape varies per toolset type and auth type.
   })
-  .passthrough();
 
 /** GET /my-toolsets success body from connector */
 export const getMyToolsetsResponseSchema = z.object({
@@ -454,24 +470,27 @@ export const getMyToolsetsResponseSchema = z.object({
 /**
  * Admin-only oauthConfig object on a toolset instance (GET /instances/:id).
  *
- * Fixed fields: _id, oauthInstanceName, clientSecretSet.
- * Core OAuth infrastructure fields are always present when an OAuth config exists.
- * Toolset-specific extras (e.g. tenantId for Microsoft) are allowed via passthrough().
+ * All fields are sourced from _build_oauth_config in the Python connector.
+ * Provider-specific optional fields (tenantId, tokenAccessType, scopeParameterName,
+ * tokenResponsePath) are included explicitly rather than via passthrough.
  */
-const instanceOAuthConfigSchema = z
-  .object({
-    _id: z.string(),
-    oauthInstanceName: z.string(),
-    clientId: z.string(),
-    clientSecret: z.string(),
-    clientSecretSet: z.boolean().optional(),
-    authorizeUrl: z.string(),
-    tokenUrl: z.string(),
-    redirectUri: z.string(),
-    scopes: z.array(z.string()),
-    additionalParams: z.record(z.unknown()).optional(),
-  })
-  .passthrough();
+const instanceOAuthConfigSchema = z.object({
+  _id: z.string(),
+  oauthInstanceName: z.string(),
+  name: z.string().optional(),
+  clientId: z.string(),
+  clientSecret: z.string(),
+  clientSecretSet: z.boolean().optional(),
+  authorizeUrl: z.string(),
+  tokenUrl: z.string(),
+  redirectUri: z.string(),
+  scopes: z.array(z.string()),
+  additionalParams: z.record(z.string()).optional(),
+  tenantId: z.string().optional(),
+  tokenAccessType: z.string().optional(),
+  scopeParameterName: z.string().optional(),
+  tokenResponsePath: z.string().optional(),
+});
 
 /** GET /instances/:id — stored instance plus registry enrichment; optional admin-only OAuth fields */
 const toolsetInstanceDetailSchema = z
@@ -494,7 +513,6 @@ const toolsetInstanceDetailSchema = z
     oauthConfig: instanceOAuthConfigSchema.optional(),
     authenticatedUserCount: z.number().optional(),
   })
-  .passthrough();
 
 /** GET /instances/:instanceId success body from connector */
 export const getToolsetInstanceResponseSchema = z.object({
@@ -511,7 +529,7 @@ const toolsetSchemaToolEntrySchema = z.object({
   description: z.string(),
   parameters: z.array(registryToolParameterSchema),
   returns: z.string().nullable(),
-  examples: z.array(z.unknown()).optional(),
+  examples: z.array(z.unknown()).optional(), // Depricated
   tags: z.array(z.string()),
 });
 
@@ -527,7 +545,7 @@ const toolsetAuthFieldSchema = z.object({
   fieldType: z.string(),
   required: z.boolean(),
   usage: z.enum(['CONFIGURE', 'AUTHENTICATE', 'BOTH']),
-  defaultValue: z.unknown(),
+  defaultValue: z.union([z.string(), z.boolean(), z.null()]),
   validation: z.object({
     minLength: z.number(),
     maxLength: z.number(),
@@ -542,17 +560,96 @@ const toolsetAuthSchemaEntrySchema = z.object({
   fields: z.array(toolsetAuthFieldSchema),
   redirectUri: z.string().optional(),
   displayRedirectUri: z.boolean().optional(),
-}).passthrough();
+});
+
+/**
+ * A single auth field as it appears inside _oauth_configs, serialized from the
+ * Python AuthField dataclass via asdict() — all keys are snake_case.
+ */
+const rawOAuthAuthFieldSchema = z.object({
+  name: z.string(),
+  display_name: z.string(),
+  field_type: z.string(),
+  placeholder: z.string(),
+  description: z.string(),
+  required: z.boolean(),
+  default_value: z.union([z.string(), z.boolean()]),
+  min_length: z.number(),
+  max_length: z.number(),
+  is_secret: z.boolean(),
+  usage: z.enum(['CONFIGURE', 'AUTHENTICATE', 'BOTH']),
+});
+
+/** A documentation link as serialized from the Python DocumentationLink dataclass. */
+const rawDocumentationLinkSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  doc_type: z.string(),
+});
+
+/**
+ * A single entry in _oauth_configs (e.g. the "OAUTH" key), serialized from the
+ * Python OAuthConfig dataclass via asdict() — all keys are snake_case.
+ */
+const rawOAuthConfigEntrySchema = z.object({
+  connector_name: z.string(),
+  authorize_url: z.string(),
+  token_url: z.string(),
+  redirect_uri: z.string(),
+  scopes: z.object({
+    personal_sync: z.array(z.string()),
+    team_sync: z.array(z.string()),
+    agent: z.array(z.string()),
+  }),
+  auth_fields: z.array(rawOAuthAuthFieldSchema),
+  token_access_type: z.string().nullable(),
+  additional_params: z.record(z.string()),
+  scope_parameter_name: z.string(),
+  token_response_path: z.string().nullable(),
+  icon_path: z.string(),
+  app_group: z.string(),
+  app_description: z.string(),
+  app_categories: z.array(z.string()),
+  documentation_links: z.array(rawDocumentationLinkSchema),
+});
 
 /**
  * The config object on a toolset schema response.
- * auth.schemas is keyed by auth type; extra top-level config keys are allowed via passthrough.
+ * All fields are defined in ToolsetConfigBuilder._reset() (tool_builder.py) plus
+ * OAuth extras added by with_oauth_config() / with_oauth_urls().
+ * auth.schemas is keyed by auth type; _oauth_configs is keyed by auth type (e.g. "OAUTH").
  */
 const toolsetConfigSchema = z.object({
   auth: z.object({
     schemas: z.record(toolsetAuthSchemaEntrySchema),
-  }).passthrough(),
-}).passthrough();
+    supportedAuthTypes: z.array(z.string()).optional(),
+    displayRedirectUri: z.boolean().optional(),
+    redirectUri: z.string().optional(),
+    schema: z.object({ fields: z.array(toolsetAuthFieldSchema) }).optional(),
+    values: z.object({}).passthrough().optional(),
+    customFields: z.array(z.unknown()).optional(),
+    customValues: z.object({}).passthrough().optional(),
+    conditionalDisplay: z.record(z.object({
+      showWhen: z.object({
+        field: z.string(),
+        operator: z.string(),
+        value: z.union([z.string(), z.boolean(), z.number()]),
+      }),
+    })).optional(),
+    authorizeUrl: z.string().optional(),
+    tokenUrl: z.string().optional(),
+    scopes: z.array(z.string()).optional(),
+    oauthConfigs: z.record(z.object({
+      authorizeUrl: z.string(),
+      tokenUrl: z.string(),
+      scopes: z.array(z.string()),
+    })).optional(),
+  }),
+  iconPath: z.string().optional(),
+  documentationLinks: z.array(rawDocumentationLinkSchema).optional(),
+  tools: z.array(toolsetSchemaToolEntrySchema).optional(),
+  _oauth_configs: z.record(z.string(), rawOAuthConfigEntrySchema).optional(),
+});
 
 /**
  * The oauthConfig field returned by OAuthConfigRegistry.get_metadata() —
@@ -563,49 +660,42 @@ const toolsetOAuthConfigMetadataSchema = z.object({
   appGroup: z.string(),
   appDescription: z.string(),
   appCategories: z.array(z.string()),
-}).passthrough();
+});
 
 /** GET /registry/:toolsetType/schema success body from connector */
 export const getToolsetSchemaResponseSchema = z.object({
   status: z.literal('success'),
-  toolset: z
-    .object({
-      name: z.string(),
-      displayName: z.string(),
-      description: z.string(),
-      category: z.string(),
-      supportedAuthTypes: z.array(z.string()),
-      config: toolsetConfigSchema,
-      oauthConfig: toolsetOAuthConfigMetadataSchema.nullable(),
-      tools: z.array(toolsetSchemaToolEntrySchema),
-    })
-    .passthrough(),
+  toolset: z.object({
+    name: z.string(),
+    displayName: z.string(),
+    description: z.string(),
+    category: z.string(),
+    supportedAuthTypes: z.array(z.string()),
+    config: toolsetConfigSchema,
+    oauthConfig: toolsetOAuthConfigMetadataSchema.nullable(),
+    tools: z.array(toolsetSchemaToolEntrySchema),
+  }),
+});
+
+/** Shared base for all toolset operation success responses that return status + message. */
+const toolsetSuccessResponseSchema = z.object({
+  status: z.literal('success'),
+  message: z.string(),
 });
 
 /** POST /instances/:id/authenticate success body from connector */
-export const authenticateToolsetInstanceResponseSchema = z.object({
-  status: z.literal('success'),
-  message: z.string(),
+export const authenticateToolsetInstanceResponseSchema = toolsetSuccessResponseSchema.extend({
   isAuthenticated: z.boolean(),
 });
 
 /** PUT /instances/:id/credentials success body from connector */
-export const updateUserToolsetCredentialsResponseSchema = z.object({
-  status: z.literal('success'),
-  message: z.string(),
-});
+export const updateUserToolsetCredentialsResponseSchema = toolsetSuccessResponseSchema;
 
 /** DELETE /instances/:id/credentials success body from connector */
-export const removeToolsetCredentialsResponseSchema = z.object({
-  status: z.literal('success'),
-  message: z.string(),
-});
+export const removeToolsetCredentialsResponseSchema = toolsetSuccessResponseSchema;
 
 /** POST /instances/:id/reauthenticate success body from connector */
-export const reauthenticateToolsetInstanceResponseSchema = z.object({
-  status: z.literal('success'),
-  message: z.string(),
-});
+export const reauthenticateToolsetInstanceResponseSchema = toolsetSuccessResponseSchema;
 
 /** GET /instances/:id/oauth/authorize success body from connector */
 export const getInstanceOAuthAuthorizationUrlResponseSchema = z.object({
@@ -664,4 +754,49 @@ export const updateToolsetOAuthConfigResponseSchema = z.object({
 export const deleteToolsetOAuthConfigResponseSchema = z.object({
   status: z.literal('success'),
   message: z.string(),
+});
+
+/** POST /agents/:agentKey/instances/:instanceId/authenticate success body from connector */
+export const authenticateAgentToolsetResponseSchema = z.object({
+  status: z.literal('success'),
+  message: z.string(),
+  isAuthenticated: z.boolean(),
+});
+
+/**
+ * GET /agents/:agentKey success body from connector.
+ * Response mirrors GET /my-toolsets (same _build_toolsets_list_response helper).
+ */
+export const getAgentToolsetsResponseSchema = z.object({
+  status: z.literal('success'),
+  toolsets: z.array(myToolsetEntrySchema),
+  pagination: z.object({
+    page: z.number(),
+    limit: z.number(),
+    total: z.number(),
+    totalPages: z.number(),
+    hasNext: z.boolean(),
+    hasPrev: z.boolean(),
+  }),
+  filterCounts: z.object({
+    all: z.number(),
+    authenticated: z.number(),
+    notAuthenticated: z.number(),
+  }),
+});
+
+/** PUT /agents/:agentKey/instances/:instanceId/credentials success body from connector */
+export const updateAgentToolsetCredentialsResponseSchema = toolsetSuccessResponseSchema;
+
+/** DELETE /agents/:agentKey/instances/:instanceId/credentials success body from connector */
+export const removeAgentToolsetCredentialsResponseSchema = toolsetSuccessResponseSchema;
+
+/** POST /agents/:agentKey/instances/:instanceId/reauthenticate success body from connector */
+export const reauthenticateAgentToolsetResponseSchema = toolsetSuccessResponseSchema;
+
+/** GET /agents/:agentKey/instances/:instanceId/oauth/authorize success body from connector */
+export const getAgentToolsetOAuthUrlResponseSchema = z.object({
+  success: z.literal(true),
+  authorizationUrl: z.string(),
+  state: z.string(),
 });
