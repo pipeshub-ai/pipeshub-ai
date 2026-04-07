@@ -1357,19 +1357,21 @@ describe('connectorInstanceConfigResponseSchema', () => {
     expect(connectorInstanceConfigResponseSchema.safeParse(validConfig).success).to.be.true;
   });
 
-  it('should accept config with null createdBy and updatedBy', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+  it('should reject null createdBy or updatedBy', () => {
+    const withNullCreated = connectorInstanceConfigResponseSchema.safeParse({
       success: true,
-      config: {
-        ...validConfig.config,
-        createdBy: null,
-        updatedBy: null,
-      },
+      config: { ...validConfig.config, createdBy: null },
     });
-    expect(result.success).to.be.true;
+    expect(withNullCreated.success).to.be.false;
+
+    const withNullUpdated = connectorInstanceConfigResponseSchema.safeParse({
+      success: true,
+      config: { ...validConfig.config, updatedBy: null },
+    });
+    expect(withNullUpdated.success).to.be.false;
   });
 
-  it('should accept config with null timestamps', () => {
+  it('should reject null timestamps', () => {
     const result = connectorInstanceConfigResponseSchema.safeParse({
       success: true,
       config: {
@@ -1378,7 +1380,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
         updatedAtTimestamp: null,
       },
     });
-    expect(result.success).to.be.true;
+    expect(result.success).to.be.false;
   });
 
   it('should accept config with stored connector config', () => {

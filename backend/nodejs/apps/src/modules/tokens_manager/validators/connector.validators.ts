@@ -472,8 +472,8 @@ export const connectorInstanceConfigResponseSchema = connectorSuccessSchema.exte
     appGroup: z.string(),
     authType: z.string(),                 // always present, authType required at creation
     scope: z.string(),
-    createdBy: z.string(),     // always present, null for system-created records
-    updatedBy: z.string(),     // always present, null until first update
+    createdBy: z.string(),
+    updatedBy: z.string(),
     appDescription: z.string(),
     appCategories: z.array(z.string()),
     supportsRealtime: z.boolean(),
