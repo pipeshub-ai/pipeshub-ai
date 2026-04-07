@@ -615,9 +615,15 @@ def build_capability_summary(state: dict[str, Any]) -> str:
     _build_actions_section(state=state, has_knowledge=has_knowledge, parts=parts)
 
     parts.append(
-        "When users ask about your capabilities, what you can do, what tools or "
-        "knowledge you have, answer based on this summary. Do not call tools to "
-        "answer capability questions."
+        "When users ask about capabilities, available tools, knowledge "
+        "sources, or what actions can be performed, determine if the "
+        "underlying intent of the query is to understand what this agent "
+        "can do. If so, use the Capability Summary section below to "
+        "answer directly — set can_answer_directly: true. "
+        "If the user's underlying intent is to get real information, "
+        "find something, or understand an external system or topic — "
+        "regardless of how the question is phrased — it is a task, "
+        "not a capability question."
     )
 
     return "\n".join(parts)

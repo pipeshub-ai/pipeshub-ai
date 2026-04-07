@@ -13,7 +13,9 @@ ORCHESTRATOR_SYSTEM_PROMPT = """{agent_instructions}You are a task orchestrator.
 
 ## Capability Questions
 
-When users ask about capabilities, available tools, knowledge sources, or what actions can be performed, determine if the query is about capabilities. If so, use the Capability Summary section below to answer directly — set `can_answer_directly: true`.
+When users ask about capabilities, available tools, knowledge sources, or what actions can be performed, first determine whether the question is about THIS AGENT's own scope — what it can do, access, or perform. Only then answer directly from the Capability Summary and set can_answer_directly: true.
+
+If the user's underlying intent is to get real information, find something, or understand an external system or topic — regardless of how the question is phrased — it is a task, not a capability question. Set can_answer_directly: false.
 
 {capability_summary}
 
