@@ -13,6 +13,7 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
+from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -66,7 +67,17 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.mariadb.mariadb import MariaDBConfig
-from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
+from app.sources.external.mariadb.mariadb_ import (
+    MariaDBDataSource,
+    ColumnInfo,
+    CheckConstraintInfo,
+    DDLResult,
+    ForeignKeyInfo,
+    PrimaryKeyInfo,
+    TableDetail,
+    TableListEntry,
+    TableStatsEntry,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from fastapi import HTTPException
@@ -75,13 +86,20 @@ from fastapi.responses import StreamingResponse
 MAX_ROWS_PER_TABLE_LIMIT = 10000
 
 
+class MariaDBTableState(BaseModel):
+    column_hash: str = ""
+    n_live_tup: int = 0
+    last_updated: Optional[str] = None
+    auto_increment: int = 0
+
+
 @dataclass
 class MariaDBTable:
     name: str
     database_name: str
     row_count: Optional[int] = None
-    columns: List[Dict[str, Any]] = None
-    foreign_keys: List[Dict[str, Any]] = None
+    columns: List[ColumnInfo] = None
+    foreign_keys: List[ForeignKeyInfo] = None
     primary_keys: List[str] = None
     
     def __post_init__(self):
@@ -245,7 +263,7 @@ class MariaDBConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
         self._record_id_cache: Dict[str, str] = {}
         self.sync_stats: SyncStats = SyncStats()
-        self._table_filter_cache: List[Dict[str, str]] = []
+        self._table_filter_cache: List[FilterOption] = []
         self._filter_cache_rebuild_event: Optional[asyncio.Event] = None
         # Initialize sync point for incremental sync
         org_id = self.data_entities_processor.org_id
@@ -418,25 +436,26 @@ class MariaDBConnector(BaseConnector):
         
         tables = []
         for item in response.data:
-            table_name = item.get("name", "")
+            entry = TableListEntry.model_validate(item)
             
-            table_info_response = await self.data_source.get_table_info(table_name, database)
-            columns = []
+            table_info_response = await self.data_source.get_table_info(entry.name, database)
+            columns: List[ColumnInfo] = []
             if table_info_response.success:
-                columns = table_info_response.data.get("columns", [])
+                detail = TableDetail.model_validate(table_info_response.data)
+                columns = detail.columns
             
-            fks_response = await self.data_source.get_foreign_keys(table_name, database)
-            foreign_keys = []
+            fks_response = await self.data_source.get_foreign_keys(entry.name, database)
+            foreign_keys: List[ForeignKeyInfo] = []
             if fks_response.success:
-                foreign_keys = fks_response.data
+                foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data]
             
-            pks_response = await self.data_source.get_primary_keys(table_name, database)
-            primary_keys = []
+            pks_response = await self.data_source.get_primary_keys(entry.name, database)
+            primary_keys: List[str] = []
             if pks_response.success:
-                primary_keys = [pk.get("column_name", "") for pk in pks_response.data]
+                primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data]
             
             tables.append(MariaDBTable(
-                name=table_name,
+                name=entry.name,
                 database_name=database,
                 columns=columns,
                 foreign_keys=foreign_keys,
@@ -487,22 +506,21 @@ class MariaDBConnector(BaseConnector):
                 )
 
                 if table.foreign_keys:
-                    for fk_dict in table.foreign_keys:
-                        target_database = fk_dict.get("foreign_database", database_name)
-                        target_table = fk_dict.get("foreign_table_name", "")
-                        if target_table:
-                            target_fqn = f"{target_database}.{target_table}"
+                    for fk in table.foreign_keys:
+                        target_database = fk.foreign_database or database_name
+                        if fk.foreign_table_name:
+                            target_fqn = f"{target_database}.{fk.foreign_table_name}"
                             record.related_external_records.append(
                                 RelatedExternalRecord(
                                     external_record_id=target_fqn,
                                     record_type=RecordType.SQL_TABLE,
-                                    record_name=target_table,
+                                    record_name=fk.foreign_table_name,
                                     relation_type=RecordRelations.FOREIGN_KEY,
-                                    source_column=fk_dict.get("column_name", ""),
-                                    target_column=fk_dict.get("foreign_column_name", ""),
+                                    source_column=fk.column_name,
+                                    target_column=fk.foreign_column_name,
                                     child_table_name=fqn,
                                     parent_table_name=target_fqn,
-                                    constraint_name=fk_dict.get("constraint_name", ""),
+                                    constraint_name=fk.constraint_name,
                                 )
                             )
                 
@@ -580,22 +598,21 @@ class MariaDBConnector(BaseConnector):
                 )
 
                 if table.foreign_keys:
-                    for fk_dict in table.foreign_keys:
-                        target_database = fk_dict.get("foreign_database", database_name)
-                        target_table = fk_dict.get("foreign_table_name", "")
-                        if target_table:
-                            target_fqn = f"{target_database}.{target_table}"
+                    for fk in table.foreign_keys:
+                        target_database = fk.foreign_database or database_name
+                        if fk.foreign_table_name:
+                            target_fqn = f"{target_database}.{fk.foreign_table_name}"
                             updated_record.related_external_records.append(
                                 RelatedExternalRecord(
                                     external_record_id=target_fqn,
                                     record_type=RecordType.SQL_TABLE,
-                                    record_name=target_table,
+                                    record_name=fk.foreign_table_name,
                                     relation_type=RecordRelations.FOREIGN_KEY,
-                                    source_column=fk_dict.get("column_name", ""),
-                                    target_column=fk_dict.get("foreign_column_name", ""),
+                                    source_column=fk.column_name,
+                                    target_column=fk.foreign_column_name,
                                     child_table_name=fqn,
                                     parent_table_name=target_fqn,
-                                    constraint_name=fk_dict.get("constraint_name", ""),
+                                    constraint_name=fk.constraint_name,
                                 )
                             )
                 
@@ -628,22 +645,23 @@ class MariaDBConnector(BaseConnector):
                 database, table = parts[0], parts[1]
 
                 table_info_response = await self.data_source.get_table_info(table, database)
-                columns = []
+                columns: List[ColumnInfo] = []
                 if table_info_response.success:
-                    columns = table_info_response.data.get("columns", [])
+                    detail = TableDetail.model_validate(table_info_response.data)
+                    columns = detail.columns
                     self.logger.info(f"✅ Retrieved {len(columns)} columns for {database}.{table}")
                 else:
                     self.logger.error(f"❌ Failed to get table info for {database}.{table}: {table_info_response.error}")
 
                 fks_response = await self.data_source.get_foreign_keys(table, database)
-                foreign_keys = []
+                foreign_keys: List[ForeignKeyInfo] = []
                 if fks_response.success:
-                    foreign_keys = fks_response.data
+                    foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data]
                 
                 pks_response = await self.data_source.get_primary_keys(table, database)
-                primary_keys = []
+                primary_keys: List[str] = []
                 if pks_response.success:
-                    primary_keys = [pk.get("column_name", "") for pk in pks_response.data]
+                    primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data]
 
                 sync_filters, _ = await load_connector_filters(
                     self.config_service, "mariadb", self.connector_id, self.logger
@@ -657,14 +675,15 @@ class MariaDBConnector(BaseConnector):
                 ddl_response = await self.data_source.get_table_ddl(table, database)
                 ddl = ""
                 if ddl_response.success:
-                    ddl = ddl_response.data.get("ddl", "")
+                    ddl_obj = DDLResult.model_validate(ddl_response.data)
+                    ddl = ddl_obj.ddl
 
                 data = {
                     "table_name": table,
                     "database_name": database,
-                    "columns": columns,
+                    "columns": [col.model_dump() for col in columns],
                     "rows": rows,
-                    "foreign_keys": foreign_keys,
+                    "foreign_keys": [fk.model_dump() for fk in foreign_keys],
                     "primary_keys": primary_keys,
                     "ddl": ddl,
                     "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
@@ -775,9 +794,13 @@ class MariaDBConnector(BaseConnector):
                 await self._save_tables_sync_state(sync_point_key)
                 return
 
-            stored_table_states: Dict[str, Dict[str, Any]] = json.loads(
+            raw_states: Dict[str, Any] = json.loads(
                 stored_state.get("table_states", "{}")
             )
+            stored_table_states: Dict[str, MariaDBTableState] = {
+                fqn: MariaDBTableState.model_validate(state)
+                for fqn, state in raw_states.items()
+            }
             
             selected_tables = self._get_filter_values()
             current_stats = await self._get_current_table_states(selected_tables)
@@ -821,13 +844,13 @@ class MariaDBConnector(BaseConnector):
     async def _get_current_table_states(
         self,
         selected_tables: Optional[List[str]]
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> Dict[str, MariaDBTableState]:
         """Fetch current table states from MariaDB for comparison.
         
         Uses TABLE_ROWS and UPDATE_TIME from information_schema.TABLES along with
         column hash for change detection.
         """
-        table_states: Dict[str, Dict[str, Any]] = {}
+        table_states: Dict[str, MariaDBTableState] = {}
         
         if not self.database_name:
             self.logger.warning("Database name is not configured")
@@ -840,9 +863,10 @@ class MariaDBConnector(BaseConnector):
             self.logger.warning(f"Failed to get table stats: {stats_response.error}")
             return table_states
         
-        stats_by_fqn: Dict[str, Dict[str, Any]] = {}
-        for stat in stats_response.data:
-            fqn = f"{stat['database_name']}.{stat['table_name']}"
+        stats_by_fqn: Dict[str, TableStatsEntry] = {}
+        for stat_dict in stats_response.data:
+            stat = TableStatsEntry.model_validate(stat_dict)
+            fqn = f"{stat.database_name}.{stat.table_name}"
             if selected_tables and fqn not in selected_tables:
                 continue
             stats_by_fqn[fqn] = stat
@@ -851,12 +875,12 @@ class MariaDBConnector(BaseConnector):
             database_name, table_name = fqn.split(".", 1)
             column_hash = await self._compute_column_hash(database_name, table_name)
             
-            table_states[fqn] = {
-                "column_hash": column_hash,
-                "n_live_tup": stat.get("n_live_tup", 0) or 0,
-                "last_updated": str(stat.get("last_updated", "")) if stat.get("last_updated") else None,
-                "auto_increment": stat.get("auto_increment", 0) or 0,
-            }
+            table_states[fqn] = MariaDBTableState(
+                column_hash=column_hash,
+                n_live_tup=stat.n_live_tup or 0,
+                last_updated=str(stat.last_updated) if stat.last_updated else None,
+                auto_increment=stat.auto_increment or 0,
+            )
         
         return table_states
 
@@ -866,14 +890,15 @@ class MariaDBConnector(BaseConnector):
         if not table_info_response.success:
             return ""
         
-        columns = table_info_response.data.get("columns", [])
-        column_str = json.dumps(columns, sort_keys=True, default=str)
+        detail = TableDetail.model_validate(table_info_response.data)
+        columns_dicts = [col.model_dump() for col in detail.columns]
+        column_str = json.dumps(columns_dicts, sort_keys=True, default=str)
         return hashlib.md5(column_str.encode()).hexdigest()
 
     def _has_table_changed(
         self,
-        current: Dict[str, Any],
-        stored: Dict[str, Any]
+        current: MariaDBTableState,
+        stored: MariaDBTableState
     ) -> bool:
         """Check if table has changed by comparing metadata.
         
@@ -882,35 +907,22 @@ class MariaDBConnector(BaseConnector):
         - TABLE_ROWS estimate for row count changes
         - AUTO_INCREMENT for insert detection
         """
-        # Schema change (column definitions)
-        if current.get("column_hash") != stored.get("column_hash"):
+        if current.column_hash != stored.column_hash:
             return True
 
-        current_updated = current.get("last_updated")
-        stored_updated = stored.get("last_updated")
-
-        # UPDATE_TIME appeared (first write ever, or recovered after NULL)
-        if current_updated and not stored_updated:
+        if current.last_updated and not stored.last_updated:
             return True
         
-        # UPDATE_TIME wiped (server restart) — assume changed, safer
-        if stored_updated and not current_updated:
+        if stored.last_updated and not current.last_updated:
             return True
 
-        # UPDATE_TIME changed (when available)
-        if current_updated and stored_updated and current_updated != stored_updated:
+        if current.last_updated and stored.last_updated and current.last_updated != stored.last_updated:
             return True
         
-        # AUTO_INCREMENT changed (indicates new inserts)
-        current_auto = current.get("auto_increment", 0) or 0
-        stored_auto = stored.get("auto_increment", 0) or 0
-        if current_auto != stored_auto:
+        if current.auto_increment != stored.auto_increment:
             return True
 
-        # Row count changed (estimate, but still useful)
-        current_rows = current.get("n_live_tup", 0) or 0
-        stored_rows = stored.get("n_live_tup", 0) or 0
-        if current_rows != stored_rows:
+        if current.n_live_tup != stored.n_live_tup:
             return True
         
         return False
@@ -936,15 +948,16 @@ class MariaDBConnector(BaseConnector):
             database_name, table_name = fqn.split(".", 1)
             
             table_info_response = await self.data_source.get_table_info(table_name, database_name)
-            columns = []
+            columns: List[ColumnInfo] = []
             if table_info_response.success:
-                columns = table_info_response.data.get("columns", [])
+                detail = TableDetail.model_validate(table_info_response.data)
+                columns = detail.columns
             
             fks_response = await self.data_source.get_foreign_keys(table_name, database_name)
-            foreign_keys = fks_response.data if fks_response.success else []
+            foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data] if fks_response.success else []
             
             pks_response = await self.data_source.get_primary_keys(table_name, database_name)
-            primary_keys = [pk.get("column_name", "") for pk in pks_response.data] if pks_response.success else []
+            primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data] if pks_response.success else []
             
             table = MariaDBTable(
                 name=table_name,
@@ -965,15 +978,16 @@ class MariaDBConnector(BaseConnector):
             database_name, table_name = fqn.split(".", 1)
             
             table_info_response = await self.data_source.get_table_info(table_name, database_name)
-            columns = []
+            columns: List[ColumnInfo] = []
             if table_info_response.success:
-                columns = table_info_response.data.get("columns", [])
+                detail = TableDetail.model_validate(table_info_response.data)
+                columns = detail.columns
             
             fks_response = await self.data_source.get_foreign_keys(table_name, database_name)
-            foreign_keys = fks_response.data if fks_response.success else []
+            foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data] if fks_response.success else []
             
             pks_response = await self.data_source.get_primary_keys(table_name, database_name)
-            primary_keys = [pk.get("column_name", "") for pk in pks_response.data] if pks_response.success else []
+            primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data] if pks_response.success else []
             
             table = MariaDBTable(
                 name=table_name,
@@ -1006,12 +1020,14 @@ class MariaDBConnector(BaseConnector):
         selected_tables = self._get_filter_values()
         current_states = await self._get_current_table_states(selected_tables)
         count = len(current_states)
-        current_states = json.dumps(current_states)
+        serialized_states = json.dumps(
+            {fqn: state.model_dump() for fqn, state in current_states.items()}
+        )
         await self.tables_sync_point.update_sync_point(
             sync_point_key,
             {
                 "last_sync_time": get_epoch_timestamp_in_ms(),
-                "table_states": current_states,
+                "table_states": serialized_states,
             }
         )
         self.logger.debug(f"Saved sync state for {count} tables")
@@ -1033,18 +1049,18 @@ class MariaDBConnector(BaseConnector):
             if not self.database_name:
                 raise RuntimeError("MariaDB database is not configured")
 
-            table_cache: List[Dict[str, str]] = []
+            table_cache: List[FilterOption] = []
 
             tables_resp = await self.data_source.list_tables(database=self.database_name)
             if not tables_resp.success:
                 raise RuntimeError(tables_resp.error or "Failed to fetch tables")
 
-            for table in tables_resp.data:
-                table_name = table.get("name", "")
-                if not table_name:
+            for table_dict in tables_resp.data:
+                table_entry = TableListEntry.model_validate(table_dict)
+                if not table_entry.name:
                     continue
-                fqn = f"{self.database_name}.{table_name}"
-                table_cache.append({"id": fqn, "label": fqn})
+                fqn = f"{self.database_name}.{table_entry.name}"
+                table_cache.append(FilterOption(id=fqn, label=fqn))
 
             # Atomic swap so readers never see a partially-built cache
             self._table_filter_cache = table_cache
@@ -1083,9 +1099,8 @@ class MariaDBConnector(BaseConnector):
 
             if search and search.strip():
                 sl = search.strip().lower()
-                items = [i for i in items if sl in i["label"].lower()]
+                items = [i for i in items if sl in i.label.lower()]
 
-            # cursor carries the next offset (offset-based pagination)
             if cursor:
                 try:
                     offset = max(0, int(cursor))
@@ -1095,7 +1110,7 @@ class MariaDBConnector(BaseConnector):
                 offset = (page - 1) * limit
 
             page_items  = items[offset : offset + limit]
-            options     = [FilterOption(id=i["id"], label=i["label"]) for i in page_items]
+            options     = list(page_items)
             next_offset = offset + len(page_items)
             has_more    = next_offset < len(items)
             next_cursor = str(next_offset) if has_more else None

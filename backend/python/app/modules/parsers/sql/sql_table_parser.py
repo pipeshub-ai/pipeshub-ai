@@ -5,8 +5,10 @@ Parses JSON stream of SQL Table data (Schema + Rows) into BlocksContainer.
 This parser is generic and can be used for any SQL database connector.
 """
 import json
-from typing import Any, Dict, List, Optional, BinaryIO
+from typing import Any, BinaryIO, Dict, List, Optional
 import hashlib
+from pydantic import BaseModel, ConfigDict
+
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -24,6 +26,61 @@ from app.utils.logger import create_logger
 logger = create_logger("sql_table_parser")
 
 
+# ---------------------------------------------------------------------------
+# Pydantic models for the JSON input received from connectors.
+# Both PostgreSQL and MariaDB ColumnInfo / ForeignKeyInfo share these fields
+# after .model_dump().  extra='allow' keeps any DB-specific extras intact.
+# ---------------------------------------------------------------------------
+
+class SQLColumnInfo(BaseModel):
+    """Column metadata compatible with both PostgreSQL and MariaDB ColumnInfo."""
+    model_config = ConfigDict(extra="allow")
+    name: str = "unknown"
+    data_type: str = "VARCHAR"
+    character_maximum_length: Optional[int] = None
+    numeric_precision: Optional[int] = None
+    numeric_scale: Optional[int] = None
+    nullable: bool = True
+    default: Optional[str] = None
+    is_unique: bool = False
+
+
+class SQLForeignKeyInfo(BaseModel):
+    """Foreign key metadata handling both PostgreSQL and MariaDB field names."""
+    model_config = ConfigDict(extra="allow")
+    constraint_name: str = "fk"
+    column_name: str = ""
+    # PostgreSQL
+    foreign_table_schema: Optional[str] = None
+    # MariaDB
+    foreign_database: Optional[str] = None
+    foreign_table_name: str = ""
+    foreign_column_name: str = ""
+
+    @property
+    def reference_namespace(self) -> str:
+        return self.foreign_table_schema or self.foreign_database or ""
+
+    @property
+    def reference_target(self) -> str:
+        ns = self.reference_namespace
+        return f"{ns}.{self.foreign_table_name}" if ns else self.foreign_table_name
+
+
+class SQLTableInput(BaseModel):
+    """Top-level input data for SQL table parsing, as received from connectors."""
+    model_config = ConfigDict(extra="allow")
+    table_name: str = "unknown_table"
+    database_name: str = "unknown_db"
+    schema_name: Optional[str] = None
+    columns: List[SQLColumnInfo] = []
+    rows: List[Any] = []
+    foreign_keys: List[SQLForeignKeyInfo] = []
+    primary_keys: List[str] = []
+    ddl: Optional[str] = None
+    connector_name: str = ""
+
+
 class SQLTableParser:
     """Parser for SQL tables from JSON stream to BlocksContainer."""
 
@@ -33,63 +90,44 @@ class SQLTableParser:
     def parse_stream(self, file_stream: BinaryIO) -> BlocksContainer:
         """
         Parse table data from a JSON stream.
-        Expected JSON format :
-        {
-            "table_name": str,
-            "database_name": str,
-            "schema_name": str 
-            "columns": List[Dict],
-            "rows": List[List[Any]] | List[Dict],
-            "foreign_keys": List[Dict] 
-            "primary_keys": List[str],
-            ...
-        }
+        Expected JSON format matches SQLTableInput fields.
         """
         try:
-            data = json.load(file_stream)
+            raw = json.load(file_stream)
+            data = SQLTableInput.model_validate(raw)
         except Exception as e:
             logger.error(f"Failed to parse JSON stream: {e}")
             return BlocksContainer(blocks=[], block_groups=[])
 
-        table_name = data.get("table_name", "unknown_table")
-        database_name = data.get("database_name", "unknown_db")
-        schema_name = data.get("schema_name")
-        columns = data.get("columns", [])
-        rows = data.get("rows", [])
-        foreign_keys = data.get("foreign_keys", [])
-        primary_keys = data.get("primary_keys", [])
-
-        if not columns:
-            logger.warning("No columns provided for table %s", table_name)
+        if not data.columns:
+            logger.warning("No columns provided for table %s", data.table_name)
             return BlocksContainer(blocks=[], block_groups=[])
 
-        column_names = [col.get("name", f"col_{i}") for i, col in enumerate(columns)]
-        
-        # Use provided DDL or generate it if missing
-        ddl = data.get("ddl")
-        if not ddl:
-            ddl = self.generate_ddl(table_name, columns, foreign_keys, primary_keys)
-            
-        schema_row = self._build_schema_row(columns, primary_keys)
+        column_names = [col.name for col in data.columns]
 
-        blocks = []
-        children = []
+        ddl = data.ddl or self._generate_ddl(
+            data.table_name, data.columns, data.foreign_keys, data.primary_keys
+        )
+        schema_row = self._build_schema_row(data.columns, data.primary_keys)
 
-        # Handle rows if they are already dicts (from stream_record) or lists
-        row_dicts = []
-        if rows and isinstance(rows[0], dict):
-            row_dicts = rows
-        elif rows and isinstance(rows[0], list):
-             for row in rows:
-                row_dict = {column_names[i]: row[i] if i < len(row) else None for i in range(len(column_names))}
-                row_dicts.append(row_dict)
+        # Normalise rows to list-of-dicts
+        row_dicts: List[Dict[str, Any]] = []
+        if data.rows:
+            first = data.rows[0]
+            if isinstance(first, dict):
+                row_dicts = data.rows
+            elif isinstance(first, list):
+                for row in data.rows:
+                    row_dicts.append(
+                        {column_names[i]: row[i] if i < len(row) else None for i in range(len(column_names))}
+                    )
 
-
-        row_dicts = row_dicts
+        blocks: List[Block] = []
+        children: List[BlockContainerIndex] = []
 
         for idx, row_dict in enumerate(row_dicts):
             row_text = generate_simple_row_text(row_dict)
-            content_hash = self._calculate_content_hash(row_text)   
+            content_hash = self._calculate_content_hash(row_text)
             blocks.append(
                 Block(
                     index=idx,
@@ -101,38 +139,35 @@ class SQLTableParser:
                         "row": json.dumps(row_dict),
                     },
                     parent_index=0,
-                )   
+                )
             )
             children.append(BlockContainerIndex(block_index=idx))
 
-        # Two-part FQN for MariaDB (database.table); three-part for PostgreSQL (database.schema.table)
-        if schema_name:
-            fqn = f"{database_name}.{schema_name}.{table_name}"
-        else:
-            fqn = f"{database_name}.{table_name}"
-        connector_name = data.get("connector_name", "") or ""
-        if hasattr(connector_name, "value"):
-            connector_name = connector_name.value
-        connector_name = (connector_name or "").strip()
+        fqn = self._build_fqn(data.database_name, data.schema_name, data.table_name)
+        connector_name = data.connector_name.strip()
 
-        # Generate detailed table summary with column information
         table_summary = self._generate_detailed_table_summary(
             fqn=fqn,
-            columns=columns,
-            rows=rows,
-            primary_keys=primary_keys,
-            foreign_keys=foreign_keys,
+            columns=data.columns,
+            row_count=len(data.rows),
+            primary_keys=data.primary_keys,
+            foreign_keys=data.foreign_keys,
             connector_name=connector_name,
         )
 
-        # Generate content hash for the schema block group (used for reconciliation)
+        # exclude_none keeps dumps identical to the raw connector dicts,
+        # avoiding spurious hash changes from Pydantic-added None defaults.
+        fk_dicts = [fk.model_dump(exclude_none=True) for fk in data.foreign_keys]
+
+        # Intentional schema-only hash: excludes table_summary (which includes
+        # row count) so reconciliation only detects actual schema changes.
         schema_hash_content = json.dumps({
             "ddl": ddl,
             "schema_row": schema_row,
             "fqn": fqn,
             "column_headers": column_names,
-            "primary_keys": primary_keys,
-            "foreign_keys": foreign_keys,
+            "primary_keys": data.primary_keys,
+            "foreign_keys": fk_dicts,
         }, sort_keys=True)
         schema_content_hash = self._calculate_content_hash(schema_hash_content)
 
@@ -140,12 +175,12 @@ class SQLTableParser:
             index=0,
             type=GroupType.TABLE,
             sub_type=GroupSubType.SQL_TABLE,
-            name=table_name,
+            name=data.table_name,
             format=DataFormat.JSON,
             content_hash=schema_content_hash,
             table_metadata=TableMetadata(
-                num_of_rows=len(rows),
-                num_of_cols=len(columns),
+                num_of_rows=len(data.rows),
+                num_of_cols=len(data.columns),
                 has_header=True,
                 column_names=column_names,
             ),
@@ -154,8 +189,8 @@ class SQLTableParser:
                 "column_headers": column_names,
                 "schema_row": schema_row,
                 "ddl": ddl,
-                "foreign_keys": foreign_keys,
-                "primary_keys": primary_keys,
+                "foreign_keys": fk_dicts,
+                "primary_keys": data.primary_keys,
                 "fqn": fqn,
             },
             children=children,
@@ -163,62 +198,71 @@ class SQLTableParser:
 
         return BlocksContainer(blocks=blocks, block_groups=[block_group])
 
-    def _calculate_content_hash(self, content: str) -> str:
-        """Calculate SHA256 and MD5 hash of the content, concatenated."""
-        sha256_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-        md5_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_fqn(database_name: str, schema_name: Optional[str], table_name: str) -> str:
+        if schema_name:
+            return f"{database_name}.{schema_name}.{table_name}"
+        return f"{database_name}.{table_name}"
+
+    @staticmethod
+    def _calculate_content_hash(content: str) -> str:
+        sha256_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        md5_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
         return f"{sha256_hash}:{md5_hash}"
-        
-    def generate_ddl(
+
+    @staticmethod
+    def _build_full_type(col: SQLColumnInfo) -> str:
+        """Build full data type string including length/precision/scale."""
+        dtype = col.data_type
+
+        if col.character_maximum_length is not None:
+            char_types = ("character varying", "varchar", "character", "char", "text")
+            if dtype.lower() in char_types or any(t in dtype.lower() for t in char_types):
+                return f"{dtype}({int(col.character_maximum_length)})"
+
+        if col.numeric_precision is not None:
+            numeric_types = ("numeric", "decimal", "number")
+            if dtype.lower() in numeric_types or any(t in dtype.lower() for t in numeric_types):
+                if col.numeric_scale is not None and col.numeric_scale > 0:
+                    return f"{dtype}({int(col.numeric_precision)},{int(col.numeric_scale)})"
+                return f"{dtype}({int(col.numeric_precision)})"
+
+        return dtype
+
+    def _generate_ddl(
         self,
         table_name: str,
-        columns: List[Dict[str, Any]],
-        foreign_keys: Optional[List[Dict[str, Any]]] = None,
-        primary_keys: Optional[List[str]] = None,
+        columns: List[SQLColumnInfo],
+        foreign_keys: List[SQLForeignKeyInfo],
+        primary_keys: List[str],
         unique_columns: Optional[List[str]] = None,
     ) -> str:
         """Generate CREATE TABLE DDL statement with full constraint information."""
-        foreign_keys = foreign_keys or []
-        primary_keys = primary_keys or []
         unique_columns = unique_columns or []
         lines = [f"CREATE TABLE {table_name} ("]
 
-        col_defs = []
+        col_defs: List[str] = []
         for col in columns:
-            name = col.get("name", "unknown")
-            dtype = col.get("data_type", "VARCHAR")
-            
-            # Build full type with precision/scale/length
             full_type = self._build_full_type(col)
 
-            nullable = col.get("nullable", True)
-            default = col.get("default")
-            is_unique = col.get("is_unique", False) or name in unique_columns
-
-            col_def = f"  {name} {full_type}"
-            if not nullable:
+            col_def = f"  {col.name} {full_type}"
+            if not col.nullable:
                 col_def += " NOT NULL"
-            if default is not None:
-                col_def += f" DEFAULT {default}"
-            if is_unique and name not in primary_keys:
+            if col.default is not None:
+                col_def += f" DEFAULT {col.default}"
+            if (col.is_unique or col.name in unique_columns) and col.name not in primary_keys:
                 col_def += " UNIQUE"
             col_defs.append(col_def)
 
-        # Add FOREIGN KEY constraints (Postgres: foreign_table_schema; MariaDB: foreign_database)
         for fk in foreign_keys:
-            fk_col = fk.get('column_name') or fk.get('column', '')
-            fk_ref_ns = (
-                fk.get('foreign_table_schema')
-                or fk.get('foreign_database')
-                or fk.get('references_schema', '')
-            )
-            fk_ref_table = fk.get('foreign_table_name') or fk.get('references_table', '')
-            fk_ref_col = fk.get('foreign_column_name') or fk.get('references_column', '')
-            ref_target = f"{fk_ref_ns}.{fk_ref_table}" if fk_ref_ns else fk_ref_table
             fk_def = (
-                f"  CONSTRAINT {fk.get('constraint_name', 'fk')} "
-                f"FOREIGN KEY ({fk_col}) "
-                f"REFERENCES {ref_target}({fk_ref_col})"
+                f"  CONSTRAINT {fk.constraint_name} "
+                f"FOREIGN KEY ({fk.column_name}) "
+                f"REFERENCES {fk.reference_target}({fk.foreign_column_name})"
             )
             col_defs.append(fk_def)
 
@@ -230,151 +274,80 @@ class SQLTableParser:
         lines.append(");")
 
         return "\n".join(lines)
-    
-    def _build_full_type(self, col: Dict[str, Any]) -> str:
-        """Build full data type string including length/precision/scale."""
-        dtype = col.get("data_type", "VARCHAR")
-        max_len = col.get("character_maximum_length")
-        precision = col.get("numeric_precision")
-        scale = col.get("numeric_scale")
-        
-        # Check for character types with length
-        if max_len is not None:
-            char_types = ("character varying", "varchar", "character", "char", "text")
-            if dtype.lower() in char_types or any(t in dtype.lower() for t in char_types):
-                return f"{dtype}({int(max_len)})"
-        
-        # Check for numeric types with precision/scale
-        if precision is not None:
-            numeric_types = ("numeric", "decimal", "number")
-            if dtype.lower() in numeric_types or any(t in dtype.lower() for t in numeric_types):
-                if scale is not None and scale > 0:
-                    return f"{dtype}({int(precision)},{int(scale)})"
-                else:
-                    return f"{dtype}({int(precision)})"
-        
-        return dtype
 
-    def _build_schema_row(self, columns: List[Dict[str, Any]], primary_keys: List[str] = None) -> Dict[str, str]:
+    def _build_schema_row(self, columns: List[SQLColumnInfo], primary_keys: List[str]) -> Dict[str, str]:
         """Build schema row with column names mapped to their full data types and constraints.
-        
+
         Format: "full_type [NOT NULL] [DEFAULT value] [PRIMARY KEY] [UNIQUE]"
         """
-        schema = {}
-        primary_keys = primary_keys or []
-        
+        schema: Dict[str, str] = {}
+
         for col in columns:
-            name = col.get("name", "unknown")
-            
-            # Build full type with length/precision/scale
             full_type = self._build_full_type(col)
-            
-            # Build constraints string
-            constraints = []
-            
-            # NOT NULL / NULL
-            if not col.get("nullable", True):
+
+            constraints: List[str] = []
+            if not col.nullable:
                 constraints.append("NOT NULL")
-            
-            # DEFAULT value
-            default_val = col.get("default")
-            if default_val is not None:
-                # Truncate long default values
-                default_str = str(default_val)
+            if col.default is not None:
+                default_str = str(col.default)
                 if len(default_str) > 50:
                     default_str = default_str[:47] + "..."
                 constraints.append(f"DEFAULT {default_str}")
-            
-            # PRIMARY KEY
-            if name in primary_keys:
+            if col.name in primary_keys:
                 constraints.append("PRIMARY KEY")
-            
-            # UNIQUE (only if not already a primary key)
-            if col.get("is_unique", False) and name not in primary_keys:
+            if col.is_unique and col.name not in primary_keys:
                 constraints.append("UNIQUE")
-            
+
             constraint_str = " ".join(constraints) if constraints else ""
-            schema[name] = f"{full_type} {constraint_str}".strip()
-        
+            schema[col.name] = f"{full_type} {constraint_str}".strip()
+
         return schema
 
     def _generate_detailed_table_summary(
         self,
         fqn: str,
-        columns: List[Dict[str, Any]],
-        rows: List[Any],
-        primary_keys: Optional[List[str]] = None,
-        foreign_keys: Optional[List[Dict[str, Any]]] = None,
+        columns: List[SQLColumnInfo],
+        row_count: int,
+        primary_keys: List[str],
+        foreign_keys: List[SQLForeignKeyInfo],
         connector_name: str = "",
     ) -> str:
-        """
-        Generate a detailed table summary including column descriptions.
-        This summary is designed to be embedded alongside DDL for better semantic search.
-        """
-        primary_keys = primary_keys or []
-        foreign_keys = foreign_keys or []
-
+        """Generate a detailed table summary including column descriptions."""
         table_type = f"{connector_name} SQL table" if connector_name else "SQL table"
-        summary_parts = []
-        summary_parts.append(f"{table_type} {fqn} with {len(columns)} columns and {len(rows)} rows.")
+        summary_parts: List[str] = []
+        summary_parts.append(f"{table_type} {fqn} with {len(columns)} columns and {row_count} rows.")
         summary_parts.append("")
         summary_parts.append("Columns:")
-        
+
         for col in columns:
-            name = col.get("name", "unknown")
-            
-            # Use the helper to build full type
             full_type = self._build_full_type(col)
-            
-            # Build constraints description
-            constraints = []
-            if name in primary_keys:
+
+            constraints: List[str] = []
+            if col.name in primary_keys:
                 constraints.append("PRIMARY KEY")
-            if not col.get("nullable", True):
+            if not col.nullable:
                 constraints.append("NOT NULL")
-            if col.get("is_unique", False) and name not in primary_keys:
+            if col.is_unique and col.name not in primary_keys:
                 constraints.append("UNIQUE")
-            
-            # Add DEFAULT if present (truncated for readability)
-            default_val = col.get("default")
-            if default_val is not None:
-                default_str = str(default_val)
+            if col.default is not None:
+                default_str = str(col.default)
                 if len(default_str) > 30:
                     default_str = default_str[:27] + "..."
                 constraints.append(f"DEFAULT {default_str}")
-            
-            # Check if this column is a foreign key (Postgres: foreign_table_schema; MariaDB: foreign_database)
+
             for fk in foreign_keys:
-                fk_col = fk.get("column_name") or fk.get("column", "")
-                if fk_col == name:
-                    ref_ns = (
-                        fk.get("foreign_table_schema")
-                        or fk.get("foreign_database")
-                        or fk.get("references_schema", "")
-                    )
-                    ref_table = fk.get("foreign_table_name") or fk.get("references_table", "")
-                    ref_target = f"{ref_ns}.{ref_table}" if ref_ns else ref_table
-                    constraints.append(f"FK->{ref_target}")
-            
+                if fk.column_name == col.name:
+                    constraints.append(f"FK->{fk.reference_target}")
+
             constraint_str = f" [{', '.join(constraints)}]" if constraints else ""
-            summary_parts.append(f"  - {name}: {full_type}{constraint_str}")
-        
-        # Add foreign key relationships summary (Postgres: foreign_table_schema; MariaDB: foreign_database)
+            summary_parts.append(f"  - {col.name}: {full_type}{constraint_str}")
+
         if foreign_keys:
             summary_parts.append("")
             summary_parts.append("Foreign Key Relationships:")
             for fk in foreign_keys:
-                col = fk.get("column_name") or fk.get("column", "")
-                ref_ns = (
-                    fk.get("foreign_table_schema")
-                    or fk.get("foreign_database")
-                    or fk.get("references_schema", "")
+                summary_parts.append(
+                    f"  - {fk.column_name} references {fk.reference_target}({fk.foreign_column_name})"
                 )
-                ref_table = fk.get("foreign_table_name") or fk.get("references_table", "")
-                ref_col = fk.get("foreign_column_name") or fk.get("references_column", "")
-                ref_target = f"{ref_ns}.{ref_table}" if ref_ns else ref_table
-                summary_parts.append(f"  - {col} references {ref_target}({ref_col})")
-        
+
         return "\n".join(summary_parts)
-
-

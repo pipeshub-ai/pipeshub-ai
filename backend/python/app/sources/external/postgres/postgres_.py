@@ -12,12 +12,126 @@ Provides async wrapper methods for PostgreSQL operations:
 import logging
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, ConfigDict
+
 from app.sources.client.postgres.postgres import PostgreSQLClient, PostgreSQLResponse
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_TABLE_ROW_FETCH_LIMIT = 1000
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models for structured data returned by PostgreSQL queries
+# All use extra='allow' so unexpected columns from the DB are preserved.
+# ---------------------------------------------------------------------------
+
+class DatabaseInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    encoding: Optional[str] = None
+    collation: Optional[str] = None
+    size: Optional[str] = None
+
+
+class SchemaInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    owner: Optional[str] = None
+
+
+class TableListEntry(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    type: Optional[str] = None
+
+
+class ColumnInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    data_type: Optional[str] = None
+    udt_name: Optional[str] = None
+    character_maximum_length: Optional[int] = None
+    numeric_precision: Optional[int] = None
+    numeric_scale: Optional[int] = None
+    datetime_precision: Optional[int] = None
+    nullable: bool = False
+    default: Optional[str] = None
+    is_unique: bool = False
+
+
+class CheckConstraintInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    constraint_name: str = ""
+    check_clause: str = ""
+
+
+class TableDetail(BaseModel):
+    """Result of get_table_info: table metadata + columns + constraints."""
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    type: Optional[str] = None
+    columns: List[ColumnInfo] = []
+    check_constraints: List[CheckConstraintInfo] = []
+
+
+class ViewInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ""
+    definition: Optional[str] = None
+
+
+class ForeignKeyInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    constraint_name: str = ""
+    column_name: str = ""
+    foreign_table_schema: str = ""
+    foreign_table_name: str = ""
+    foreign_column_name: str = ""
+
+
+class PrimaryKeyInfo(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    column_name: str = ""
+
+
+class DDLResult(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    ddl: str = ""
+
+
+class ConnectionTestResult(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    version: Optional[str] = None
+    database: Optional[str] = None
+    user: Optional[str] = None
+
+
+class TableStats(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    schema_name: str = ""
+    table_name: str = ""
+    n_live_tup: int = 0
+    n_tup_ins: int = 0
+    n_tup_upd: int = 0
+    n_tup_del: int = 0
+
+
+# Internal models used only by the DDL builder
+class _DDLColumnDef(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    column_name: str = ""
+    data_type: str = ""
+    not_null: bool = False
+    default_value: Optional[str] = None
+    ordinal: int = 0
+
+
+class _DDLConstraintDef(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    constraint_name: str = ""
+    columns: str = ""
 
 class PostgreSQLDataSource:
     """PostgreSQL DataSource for database operations.
@@ -63,12 +177,13 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query)
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(results)} databases")
+            databases = [DatabaseInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(databases)} databases")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} databases"
+                data=[db.model_dump() for db in databases],
+                message=f"Successfully listed {len(databases)} databases"
             )
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLDataSource] list_databases failed: {e}")
@@ -99,12 +214,13 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query)
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(results)} schemas")
+            schemas = [SchemaInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(schemas)} schemas")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} schemas"
+                data=[s.model_dump() for s in schemas],
+                message=f"Successfully listed {len(schemas)} schemas"
             )
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLDataSource] list_schemas failed: {e}")
@@ -138,12 +254,13 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query, (schema,))
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(results)} tables")
+            tables = [TableListEntry.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(tables)} tables")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} tables"
+                data=[t.model_dump() for t in tables],
+                message=f"Successfully listed {len(tables)} tables"
             )
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLDataSource] list_tables failed: {e}")
@@ -222,34 +339,37 @@ class PostgreSQLDataSource:
         """
         
         try:
-            table_info = self._client.execute_query(table_query, (schema, table))
-            if not table_info:
+            table_info_raw = self._client.execute_query(table_query, (schema, table))
+            if not table_info_raw:
                 return PostgreSQLResponse(
                     success=False,
                     error="Table not found",
                     message=f"Table {schema}.{table} not found"
                 )
             
-            columns = self._client.execute_query(columns_query, (schema, table))
-            unique_cols = self._client.execute_query(unique_query, (schema, table))
-            check_constraints = self._client.execute_query(check_query, (schema, table))
+            columns_raw = self._client.execute_query(columns_query, (schema, table))
+            unique_cols_raw = self._client.execute_query(unique_query, (schema, table))
+            check_raw = self._client.execute_query(check_query, (schema, table))
             
-            # Build set of unique column names
-            unique_column_names = {row.get('column_name') for row in unique_cols}
+            unique_column_names = {row.get('column_name') for row in unique_cols_raw}
             
-            # Enrich columns with unique constraint info
+            columns = [ColumnInfo.model_validate(row) for row in columns_raw]
             for col in columns:
-                col['is_unique'] = col.get('name') in unique_column_names
+                col.is_unique = col.name in unique_column_names
             
-            result = table_info[0]
-            result["columns"] = columns
-            result["check_constraints"] = check_constraints
+            check_constraints = [CheckConstraintInfo.model_validate(row) for row in check_raw]
+            
+            table_detail = TableDetail.model_validate({
+                **table_info_raw[0],
+                'columns': columns,
+                'check_constraints': check_constraints,
+            })
             
             logger.debug(f"🔧 [PostgreSQLDataSource] Table has {len(columns)} columns")
             
             return PostgreSQLResponse(
                 success=True,
-                data=result,
+                data=table_detail.model_dump(),
                 message=f"Successfully retrieved table info for {schema}.{table}"
             )
         except Exception as e:
@@ -283,12 +403,13 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query, (schema,))
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(results)} views")
+            views = [ViewInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(views)} views")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
-                message=f"Successfully listed {len(results)} views"
+                data=[v.model_dump() for v in views],
+                message=f"Successfully listed {len(views)} views"
             )
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLDataSource] list_views failed: {e}")
@@ -331,11 +452,12 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query, (schema, table))
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(results)} foreign keys")
+            foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(foreign_keys)} foreign keys")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
+                data=[fk.model_dump() for fk in foreign_keys],
                 message=f"Successfully retrieved foreign keys for {schema}.{table}"
             )
         except Exception as e:
@@ -373,11 +495,12 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query, (schema, table))
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(results)} primary key columns")
+            primary_keys = [PrimaryKeyInfo.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(primary_keys)} primary key columns")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
+                data=[pk.model_dump() for pk in primary_keys],
                 message=f"Successfully retrieved primary keys for {schema}.{table}"
             )
         except Exception as e:
@@ -497,12 +620,13 @@ class PostgreSQLDataSource:
         """
         
         try:
-            columns = self._client.execute_query(columns_query, (schema, table))
-            pk_result = self._client.execute_query(pk_query, (schema, table))
-            unique_result = self._client.execute_query(unique_query, (schema, table))
-            fk_result = self._client.execute_query(fk_query, (schema, table))
-            check_result = self._client.execute_query(check_query, (schema, table))
+            columns_raw = self._client.execute_query(columns_query, (schema, table))
+            pk_raw = self._client.execute_query(pk_query, (schema, table))
+            unique_raw = self._client.execute_query(unique_query, (schema, table))
+            fk_raw = self._client.execute_query(fk_query, (schema, table))
+            check_raw = self._client.execute_query(check_query, (schema, table))
             
+            columns = [_DDLColumnDef.model_validate(c) for c in columns_raw]
             if not columns:
                 return PostgreSQLResponse(
                     success=False,
@@ -510,35 +634,35 @@ class PostgreSQLDataSource:
                     message=f"Table {schema}.{table} not found"
                 )
             
-            # Build DDL
+            pk_constraints = [_DDLConstraintDef.model_validate(pk) for pk in pk_raw]
+            unique_constraints = [_DDLConstraintDef.model_validate(uq) for uq in unique_raw]
+            fk_entries = [ForeignKeyInfo.model_validate(fk) for fk in fk_raw]
+            check_entries = [CheckConstraintInfo.model_validate(chk) for chk in check_raw]
+            
             ddl_lines = [f"CREATE TABLE {schema}.{table} ("]
             
             col_defs = []
             for col in columns:
-                col_def = f"  {col['column_name']} {col['data_type']}"
-                if col['not_null']:
+                col_def = f"  {col.column_name} {col.data_type}"
+                if col.not_null:
                     col_def += " NOT NULL"
-                if col['default_value']:
-                    col_def += f" DEFAULT {col['default_value']}"
+                if col.default_value:
+                    col_def += f" DEFAULT {col.default_value}"
                 col_defs.append(col_def)
             
-            # Add PRIMARY KEY constraint
-            if pk_result:
-                pk = pk_result[0]
-                col_defs.append(f"  CONSTRAINT {pk['constraint_name']} PRIMARY KEY ({pk['columns']})")
+            if pk_constraints:
+                pk = pk_constraints[0]
+                col_defs.append(f"  CONSTRAINT {pk.constraint_name} PRIMARY KEY ({pk.columns})")
             
-            # Add UNIQUE constraints
-            for uq in unique_result:
-                col_defs.append(f"  CONSTRAINT {uq['constraint_name']} UNIQUE ({uq['columns']})")
+            for uq in unique_constraints:
+                col_defs.append(f"  CONSTRAINT {uq.constraint_name} UNIQUE ({uq.columns})")
             
-            # Add FOREIGN KEY constraints
-            for fk in fk_result:
-                fk_ref = f"{fk['foreign_table_schema']}.{fk['foreign_table_name']}({fk['foreign_column_name']})"
-                col_defs.append(f"  CONSTRAINT {fk['constraint_name']} FOREIGN KEY ({fk['column_name']}) REFERENCES {fk_ref}")
+            for fk in fk_entries:
+                fk_ref = f"{fk.foreign_table_schema}.{fk.foreign_table_name}({fk.foreign_column_name})"
+                col_defs.append(f"  CONSTRAINT {fk.constraint_name} FOREIGN KEY ({fk.column_name}) REFERENCES {fk_ref}")
             
-            # Add CHECK constraints
-            for chk in check_result:
-                col_defs.append(f"  CONSTRAINT {chk['constraint_name']} CHECK ({chk['check_clause']})")
+            for chk in check_entries:
+                col_defs.append(f"  CONSTRAINT {chk.constraint_name} CHECK ({chk.check_clause})")
             
             ddl_lines.append(",\n".join(col_defs))
             ddl_lines.append(");")
@@ -546,9 +670,10 @@ class PostgreSQLDataSource:
             ddl = "\n".join(ddl_lines)
             logger.debug(f"🔧 [PostgreSQLDataSource] Generated complete DDL for {schema}.{table}")
             
+            ddl_result = DDLResult(ddl=ddl)
             return PostgreSQLResponse(
                 success=True,
-                data={'ddl': ddl},
+                data=ddl_result.model_dump(),
                 message=f"Successfully retrieved DDL for {schema}.{table}"
             )
         except Exception as e:
@@ -573,9 +698,10 @@ class PostgreSQLDataSource:
             results = self._client.execute_query(query)
             logger.info("🔧 [PostgreSQLDataSource] Connection test successful")
             
+            conn_info = ConnectionTestResult.model_validate(results[0]) if results else ConnectionTestResult()
             return PostgreSQLResponse(
                 success=True,
-                data=results[0] if results else {},
+                data=conn_info.model_dump(),
                 message="Connection successful"
             )
         except Exception as e:
@@ -688,12 +814,13 @@ class PostgreSQLDataSource:
         
         try:
             results = self._client.execute_query(query, params)
-            logger.debug(f"🔧 [PostgreSQLDataSource] Found stats for {len(results)} tables")
+            stats = [TableStats.model_validate(row) for row in results]
+            logger.debug(f"🔧 [PostgreSQLDataSource] Found stats for {len(stats)} tables")
             
             return PostgreSQLResponse(
                 success=True,
-                data=results,
-                message=f"Successfully retrieved stats for {len(results)} tables"
+                data=[s.model_dump() for s in stats],
+                message=f"Successfully retrieved stats for {len(stats)} tables"
             )
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLDataSource] get_table_stats failed: {e}")

@@ -43,9 +43,6 @@ class ReconciliationMetadata:
         for bid, val in raw.items():
             if isinstance(val, int):
                 block_id_to_index[bid] = val
-            elif isinstance(val, dict) and "index" in val:
-                block_id_to_index[bid] = val["index"]
-
         return cls(
             hash_to_block_ids=data.get("hash_to_block_ids", {}),
             block_id_to_index=block_id_to_index,
