@@ -2438,7 +2438,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if result and len(result) > 0:
-                self.logger.info(f"result : {result}")
                 path = result[0]
                 self.logger.debug(f"✅ Found path for {record_id}: {path}")
                 return path
@@ -2526,39 +2525,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Optional[Dict]: The file record if found, otherwise None.
         """
-        # try:
-        #     self.logger.info(
-        #         f"🚀 Retrieving record by path for connector {connector_id} and path {path}"
-        #     )
-
-        #     query = f"""
-        #     FOR fileRecord IN {CollectionNames.FILES.value}
-        #         FILTER fileRecord.path == @path
-        #         RETURN fileRecord
-        #     """
-
-        #     results = await self.http_client.execute_aql(
-        #         query,
-        #         bind_vars={"path": path},
-        #         txn_id=transaction
-        #     )
-
-        #     if results:
-        #         self.logger.info(
-        #             f"✅ Successfully retrieved file record for path: {path}"
-        #         )
-        #         return results[0]
-        #     else:
-        #         self.logger.warning(
-        #             f"⚠️ No record found for path: {path}"
-        #         )
-        #         return None
-
-        # except Exception as e:
-        #     self.logger.error(
-        #         f"❌ Failed to retrieve record for path {path}: {str(e)}"
-        #     )
-        #     return None
         try:
             # based on external id
             # assumed full path from record group next level is as list in param

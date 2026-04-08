@@ -1932,29 +1932,6 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None
     ) -> dict | None:
         """Get record by path"""
-        # try:
-        #     query = """
-        #     MATCH (f:File {path: $path})
-        #     RETURN f
-        #     LIMIT 1
-        #     """
-
-        #     results = await self.client.execute_query(
-        #         query,
-        #         parameters={"path": path},
-        #         txn_id=transaction
-        #     )
-
-        #     if results:
-        #         file_dict = dict(results[0]["f"])
-        #         return self._neo4j_to_arango_node(file_dict, CollectionNames.FILES.value)
-
-        #     return None
-
-        # except Exception as e:
-        #     self.logger.error(f"❌ Get record by path failed: {str(e)}")
-        #     return None
-        
         try:
             head = """
             WITH $rawParts as parts
@@ -2648,7 +2625,6 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(f"✅ Successfully retrieved record path for {record_id}: {results}")
                 return results[0]["file_path"]
 
             return None
