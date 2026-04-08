@@ -11,7 +11,6 @@ from app.events.processor import Processor
 from app.modules.indexing.run import IndexingPipeline
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
-from app.modules.parsers.docx.docx_parser import DocxParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
@@ -138,7 +137,6 @@ class ContainerUtils:
         image_parser = ImageParser(logger)
 
         parsers = {
-            ExtensionTypes.DOCX.value: DocxParser(),
             ExtensionTypes.DOC.value: DocParser(),
             ExtensionTypes.PPTX.value: PPTXParser(),
             ExtensionTypes.PPT.value: PPTParser(),
