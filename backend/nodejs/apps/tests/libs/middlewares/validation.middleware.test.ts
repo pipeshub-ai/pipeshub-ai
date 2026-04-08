@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { z } from 'zod'
 import { ValidationMiddleware } from '../../../src/libs/middlewares/validation.middleware'
+import { ValidationError } from '../../../src/libs/errors/validation.error'
 import { Logger } from '../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
@@ -165,10 +166,14 @@ describe('ValidationMiddleware', () => {
       await middleware(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ValidationError)
+      expect(error.message).to.equal('Validation failed')
+      expect(error.errors).to.be.an('array')
+      expect(error.errors.length).to.be.greaterThan(0)
     })
 
-    it('should log and continue when body has wrong type', async () => {
+    it('should call next with ValidationError when body has wrong type', async () => {
       const schema = z.object({
         body: z.object({
           count: z.number(),
@@ -188,10 +193,11 @@ describe('ValidationMiddleware', () => {
       await middleware(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ValidationError)
     })
 
-    it('should log and continue for invalid email format', async () => {
+    it('should call next with ValidationError for invalid email format', async () => {
       const schema = z.object({
         body: z.object({
           email: z.string().email(),
@@ -211,10 +217,11 @@ describe('ValidationMiddleware', () => {
       await middleware(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ValidationError)
     })
 
-    it('should log and continue when params are invalid', async () => {
+    it('should call next with ValidationError when params are invalid', async () => {
       const schema = z.object({
         body: z.object({}).passthrough(),
         query: z.object({}).passthrough(),
@@ -234,7 +241,8 @@ describe('ValidationMiddleware', () => {
       await middleware(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ValidationError)
     })
   })
 
@@ -296,7 +304,7 @@ describe('ValidationMiddleware', () => {
   // Non-Zod errors
   // -----------------------------------------------------------------------
   describe('validate - non-Zod errors', () => {
-    it('should log and continue on non-Zod errors', async () => {
+    it('should forward non-Zod errors via next()', async () => {
       // Create a schema that deliberately throws a non-Zod error
       const schema = z.object({
         body: z.any(),
@@ -318,7 +326,10 @@ describe('ValidationMiddleware', () => {
       await middleware(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(Error)
+      expect(error).to.not.be.instanceOf(ValidationError)
+      expect(error.message).to.equal('Unexpected error')
     })
   })
 
@@ -384,7 +395,9 @@ describe('ValidationMiddleware', () => {
       await middleware(req, res, next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(ValidationError)
+      expect(error.errors.length).to.be.greaterThanOrEqual(3)
     })
   })
 })

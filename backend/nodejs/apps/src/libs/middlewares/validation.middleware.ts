@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 
 import { Logger } from '../services/logger.service';
 import { ValidationUtils } from '../utils/validation.utils';
+import { ValidationError } from '../errors/validation.error';
 
 export interface ValidatorOptions {
   stripUnknown?: boolean;
@@ -44,21 +45,21 @@ export class ValidationMiddleware {
       } catch (error) {
         if (error instanceof z.ZodError) {
           const errors = ValidationUtils.formatZodError(error);
+          const validationError = new ValidationError(
+            'Validation failed',
+            errors,
+          );
 
-          this.logger.warn('Request validation failed, continuing', {
+          this.logger.error('Validation failed', {
             path: req.path,
             method: req.method,
             errors,
           });
-        } else {
-          this.logger.warn('Unexpected error during request validation, continuing', {
-            path: req.path,
-            method: req.method,
-            error,
-          });
-        }
 
-        next();
+          next(validationError);
+        } else {
+          next(error);
+        }
       }
     };
   }
