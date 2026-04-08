@@ -8,12 +8,12 @@ const logger = Logger.getInstance();
 export const sendValidatedJson = (
     res: Response,
     schema: z.ZodTypeAny,
-    payload: unknown,
+    payload: any,
     statusCode: number,
   ): Response => {
     const result = schema.safeParse(payload);
     if (!result.success) {
-      logger.warn('Response validation failed, sending unvalidated payload', {
+      logger.warn('Response schema mismatch: extra/missing field or incorrect value type', {
         errors: ValidationUtils.formatZodError(result.error),
       });
       return res.status(statusCode).json(payload);
