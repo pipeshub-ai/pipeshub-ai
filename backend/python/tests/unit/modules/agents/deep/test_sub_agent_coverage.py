@@ -11,6 +11,7 @@ Targets missing lines: 39-43, 112-116, 156->154, 187->166, 198, 244->255,
 import asyncio
 import json
 import logging
+import sys
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,6 +31,7 @@ from app.modules.agents.deep.sub_agent import (
     _prewarm_clients,
     _SubAgentStreamingCallback,
     _ToolCallBudget,
+    _wrap_retrieval_tools_for_context_efficiency,
     _wrap_tools_with_budget,
 )
 
@@ -1696,3 +1698,254 @@ class TestMakeBudgetedCoroFuncFallback:
         result = await coro()
         assert result == "sync result"
         assert budget.count == 1
+
+
+# ============================================================================
+# _extract_response — json.dumps TypeError fallback (lines 1050-1051)
+# ============================================================================
+
+
+class TestExtractResponseJsonFallback:
+    """Cover lines 1050-1051: content that is dict/list but fails json.dumps."""
+
+    def test_dict_content_failing_json_dumps(self):
+        """Dict content that causes json.dumps TypeError falls back to str()."""
+        class BadObj:
+            def __repr__(self):
+                return "BadObj()"
+        # ToolMessage with content that is a dict containing un-serialisable value
+        bad_dict = {"key": BadObj()}
+        msgs = [ToolMessage(content=bad_dict, name="tool1", tool_call_id="tc1")]
+        log = _mock_log()
+        result = _extract_response(msgs, log)
+        assert "BadObj" in result or "key" in result
+
+    def test_list_content_failing_json_dumps(self):
+        """List content that causes json.dumps TypeError falls back to str()."""
+        class Unserializable:
+            def __repr__(self):
+                return "Unserializable()"
+            def __str__(self):
+                return "Unserializable()"
+        bad_list = [Unserializable()]
+        msgs = [ToolMessage(content=bad_list, name="tool1", tool_call_id="tc1")]
+        log = _mock_log()
+        # Patch json.dumps to raise TypeError for this specific content
+        with patch("app.modules.agents.deep.sub_agent.json.dumps", side_effect=TypeError("not serializable")):
+            result = _extract_response(msgs, log)
+        assert "Unserializable" in result
+
+
+# ============================================================================
+# _extract_tool_results — _deep_retrieval_buffer processing (lines 1077-1089)
+# ============================================================================
+
+
+class TestExtractToolResultsDeepBuffer:
+    """Cover lines 1077-1089: processing _deep_retrieval_buffer entries."""
+
+    def test_buffer_with_valid_json_string(self):
+        """String entry in buffer that is valid JSON."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = ['{"status": "success", "content": "data"}']
+        with patch("app.modules.agents.qna.nodes._process_retrieval_output") as mock_proc:
+            _extract_tool_results([], state, log)
+            mock_proc.assert_called_once()
+            # Called with parsed dict
+            assert isinstance(mock_proc.call_args[0][0], dict)
+
+    def test_buffer_with_invalid_json_string(self):
+        """String entry in buffer that is NOT valid JSON."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = ["not json at all"]
+        with patch("app.modules.agents.qna.nodes._process_retrieval_output") as mock_proc:
+            _extract_tool_results([], state, log)
+            mock_proc.assert_called_once()
+            # Called with raw string
+            assert mock_proc.call_args[0][0] == "not json at all"
+
+    def test_buffer_with_dict_entry(self):
+        """Dict entry in buffer."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = [{"status": "ok"}]
+        with patch("app.modules.agents.qna.nodes._process_retrieval_output") as mock_proc:
+            _extract_tool_results([], state, log)
+            mock_proc.assert_called_once()
+            assert mock_proc.call_args[0][0] == {"status": "ok"}
+
+    def test_buffer_processing_exception(self):
+        """Exception during buffer processing is logged as warning."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = [{"data": "test"}]
+        with patch("app.modules.agents.qna.nodes._process_retrieval_output", side_effect=RuntimeError("boom")):
+            _extract_tool_results([], state, log)
+        log.warning.assert_called()
+
+
+# ============================================================================
+# _extract_tool_results — retrieval ToolMessage with dict content (lines 1109-1110)
+# ============================================================================
+
+
+class TestExtractToolResultsRetrievalDict:
+    """Cover lines 1109-1110: retrieval tool with dict result_content."""
+
+    def test_retrieval_tool_dict_content(self):
+        """Retrieval ToolMessage with dict content calls _process_retrieval_output."""
+        log = _mock_log()
+        state = _mock_state()
+        msg = ToolMessage(
+            content={"status": "success", "results": []},
+            name="retrieval_search",
+            tool_call_id="tc1",
+        )
+        with patch("app.modules.agents.qna.nodes._process_retrieval_output") as mock_proc:
+            results = _extract_tool_results([msg], state, log)
+        mock_proc.assert_called_once()
+        assert len(results) == 1
+
+
+# ============================================================================
+# _detect_status — ImportError fallback (lines 1131-1135)
+# ============================================================================
+
+
+class TestDetectStatusFallback:
+    """Cover lines 1131-1135: fallback when _detect_tool_result_status is not importable."""
+
+    def test_fallback_detects_error(self):
+        """Fallback path returns 'error' for error markers."""
+        with patch.dict(sys.modules, {"app.modules.agents.qna.nodes": None}):
+            result = _detect_status("Unauthorized: access denied")
+        assert result == "error"
+
+    def test_fallback_detects_success(self):
+        """Fallback path returns 'success' for clean content."""
+        with patch.dict(sys.modules, {"app.modules.agents.qna.nodes": None}):
+            result = _detect_status("All records retrieved successfully")
+        assert result == "success"
+
+    def test_fallback_detects_failed(self):
+        """Fallback path returns 'error' for 'failed' marker."""
+        with patch.dict(sys.modules, {"app.modules.agents.qna.nodes": None}):
+            result = _detect_status("Request failed with status 500")
+        assert result == "error"
+
+
+# ============================================================================
+# _wrap_retrieval_tools_for_context_efficiency (lines 1218-1277)
+# ============================================================================
+
+
+class TestWrapRetrievalToolsForContextEfficiency:
+    """Cover lines 1218-1277."""
+
+    def test_non_retrieval_tool_passes_through(self):
+        """Non-retrieval tools are not wrapped."""
+        log = _mock_log()
+        state = _mock_state()
+        tool = MagicMock()
+        tool.name = "jira_create_issue"
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        assert result == [tool]
+
+    def test_retrieval_tool_without_coro_passes_through(self):
+        """Retrieval tool with no coroutine or func is not wrapped."""
+        log = _mock_log()
+        state = _mock_state()
+        tool = MagicMock(spec=[])  # No attributes at all
+        tool.name = "retrieval_search"
+        # Ensure getattr returns None for coroutine and func
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_retrieval_tool_wraps_and_strips_output(self):
+        """Retrieval tool is wrapped; full result stored in buffer, stripped returned."""
+        log = _mock_log()
+        state = _mock_state()
+
+        full_result = json.dumps({
+            "status": "success",
+            "content": "summary",
+            "metadata": {"source": "kb"},
+            "final_results": [{"block": "huge data"}],
+        })
+
+        async def mock_coro(**kwargs):
+            return full_result
+
+        tool = MagicMock()
+        tool.name = "retrieval_search"
+        tool.coroutine = mock_coro
+        tool.func = None
+        tool.description = "Search knowledge base"
+        tool.args_schema = None
+        tool.return_direct = False
+
+        with patch("langchain_core.tools.StructuredTool") as MockST:
+            wrapped_tool = MagicMock()
+            MockST.from_function.return_value = wrapped_tool
+            result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+            assert MockST.from_function.called
+            assert result == [wrapped_tool]
+
+    def test_wrap_failure_falls_back_to_original(self):
+        """If StructuredTool.from_function raises, original tool is kept."""
+        log = _mock_log()
+        state = _mock_state()
+
+        tool = MagicMock()
+        tool.name = "knowledge_search"
+        tool.coroutine = AsyncMock(return_value="data")
+        tool.func = None
+        tool.description = "desc"
+        tool.args_schema = None
+        tool.return_direct = False
+
+        with patch("langchain_core.tools.StructuredTool") as MockST:
+            MockST.from_function.side_effect = RuntimeError("wrap failed")
+            result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        assert result == [tool]
+        log.warning.assert_called()
+
+
+# ============================================================================
+# _prewarm_clients — lock creation and warm log threshold (lines 1359-1363, 1379)
+# ============================================================================
+
+
+class TestPrewarmClientsLockAndLog:
+    """Cover lines 1359-1363 (lock creation + double-check) and 1379 (warm log)."""
+
+    @pytest.mark.asyncio
+    async def test_prewarm_creates_lock_and_caches(self):
+        """Pre-warm creates lock, caches client, and logs when above threshold."""
+        log = _mock_log()
+        state = _mock_state()
+
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_factory = AsyncMock()
+        mock_factory.create_client = AsyncMock(return_value="client_obj")
+
+        tasks = [{"task_id": "t1", "domains": ["jira"], "tools": ["jira.create"]}]
+
+        with patch("app.modules.agents.deep.sub_agent.get_tools_for_sub_agent") as mock_get_tools, \
+             patch("app.modules.agents.deep.sub_agent._WARM_LOG_THRESHOLD_MS", -1):
+            mock_tool = MagicMock()
+            mock_tool.name = "jira.create"
+            mock_tool._creator = mock_creator
+            mock_tool._factory = mock_factory
+            mock_tool._app_name = "jira"
+            mock_tool._toolset_id = "ts1"
+            mock_tool._config = {}
+            mock_get_tools.return_value = [mock_tool]
+
+            await _prewarm_clients(tasks, state, log)
+        log.info.assert_called()

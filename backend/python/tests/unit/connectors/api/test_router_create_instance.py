@@ -637,11 +637,16 @@ class TestStoreInitialConfig:
         """Non-admin with auth config -> skip OAuth creation, still store config."""
         body = _base_body(
             authType="OAUTH",
+            oauthConfigId="test-oauth-123",
             config={"auth": {"token": "abc"}},
         )
         registry = _default_registry()
         config_service = AsyncMock()
         config_service.set_config = AsyncMock(return_value=True)
+        # Mock get_config to return existing OAuth config for validation
+        config_service.get_config = AsyncMock(return_value=[
+            {"_id": "test-oauth-123", "orgId": "org-1", "name": "Test OAuth App"}
+        ])
         req = _mock_request(
             body=body,
             headers={"X-Is-Admin": "false"},

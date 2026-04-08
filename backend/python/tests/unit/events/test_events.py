@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.events.events import EventProcessor
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +76,8 @@ async def _drain(async_gen):
 
 
 async def _mock_processor_gen(*args, **kwargs):
-    yield {"event": "parsing_complete", "data": {}}
-    yield {"event": "indexing_complete", "data": {}}
+    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
 
 
 # ===========================================================================
@@ -907,7 +908,7 @@ class TestOnEventDoclingFallback:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
         async def docling_fails(*args, **kwargs):
-            yield {"event": "docling_failed"}
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
 
         processor.process_pdf_with_docling = MagicMock(side_effect=docling_fails)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
@@ -1076,8 +1077,8 @@ class TestOnEventDuplicate:
             event_data = _make_event_payload()
             events = await _drain(ep.on_event(event_data))
 
-        assert any(e["event"] == "parsing_complete" for e in events)
-        assert any(e["event"] == "indexing_complete" for e in events)
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_check_duplicate_in_progress_handling(self):

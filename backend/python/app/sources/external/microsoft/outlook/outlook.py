@@ -3,10 +3,42 @@
 import json
 import logging
 from dataclasses import asdict
+from datetime import date
 from typing import Any, Dict, List, Literal, Mapping, Optional
 
+from app.connectors.sources.microsoft.common.constants import escape_odata_string
+from app.sources.client.microsoft.microsoft import MSGraphClient
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
+)
+from kiota_abstractions.headers_collection import HeadersCollection
+from msgraph.generated.models.attachment import Attachment  # type: ignore
+from msgraph.generated.models.attendee import Attendee  # type: ignore
+from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
+from msgraph.generated.models.body_type import BodyType  # type: ignore
+from msgraph.generated.models.conversation_thread import (
+    ConversationThread,  # type: ignore
+)
+from msgraph.generated.models.date_time_time_zone import (
+    DateTimeTimeZone,  # type: ignore
+)
+from msgraph.generated.models.email_address import EmailAddress  # type: ignore
+from msgraph.generated.models.event import Event  # type: ignore
+from msgraph.generated.models.group import Group  # type: ignore
+from msgraph.generated.models.item_body import ItemBody  # type: ignore
+from msgraph.generated.models.location import Location  # type: ignore
+from msgraph.generated.models.mail_folder import MailFolder  # type: ignore
+from msgraph.generated.models.message import Message  # type: ignore
+from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
+from msgraph.generated.models.post import Post  # type: ignore
+from msgraph.generated.models.recipient import Recipient  # type: ignore
+from msgraph.generated.models.recurrence_pattern import RecurrencePattern
+from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
+from msgraph.generated.models.recurrence_range import RecurrenceRange
+from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
+from msgraph.generated.models.user import User  # type: ignore
+from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (  # type: ignore
+    CalendarViewRequestBuilder,
 )
 from msgraph.generated.users.item.calendars.calendars_request_builder import (  # type: ignore
     CalendarsRequestBuilder,
@@ -20,56 +52,50 @@ from msgraph.generated.users.item.contacts.contacts_request_builder import (  # 
 from msgraph.generated.users.item.events.events_request_builder import (  # type: ignore
     EventsRequestBuilder,
 )
+from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
+    InstancesRequestBuilder,
+)
 from msgraph.generated.users.item.mail_folders.item.messages.delta.delta_request_builder import (  # type: ignore
     DeltaRequestBuilder,
 )
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (  # type: ignore
     MailFoldersRequestBuilder,
 )
-from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
-    InstancesRequestBuilder,
+from msgraph.generated.users.item.messages.item.forward.forward_post_request_body import (
+    ForwardPostRequestBody,  # type: ignore
 )
-
-from datetime import date
+from msgraph.generated.users.item.messages.item.reply.reply_post_request_body import (
+    ReplyPostRequestBody,  # type: ignore
+)
+from msgraph.generated.users.item.messages.item.reply_all.reply_all_post_request_body import (
+    ReplyAllPostRequestBody,  # type: ignore
+)
 
 # Import MS Graph specific query parameter classes for Outlook
 from msgraph.generated.users.item.messages.messages_request_builder import (  # type: ignore
     MessagesRequestBuilder,
 )
-from kiota_abstractions.headers_collection import HeadersCollection
 
-from app.sources.client.microsoft.microsoft import MSGraphClient
-from msgraph.generated.models.message import Message  # type: ignore
-from msgraph.generated.models.item_body import ItemBody  # type: ignore
-from msgraph.generated.models.body_type import BodyType  # type: ignore
-from msgraph.generated.models.recipient import Recipient  # type: ignore
-from msgraph.generated.models.email_address import EmailAddress  # type: ignore
-from msgraph.generated.models.event import Event  # type: ignore
-from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone  # type: ignore
-from msgraph.generated.models.location import Location  # type: ignore
-from msgraph.generated.models.attendee import Attendee  # type: ignore
-from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
-from msgraph.generated.users.item.messages.item.reply.reply_post_request_body import ReplyPostRequestBody  # type: ignore
-from msgraph.generated.users.item.messages.item.reply_all.reply_all_post_request_body import ReplyAllPostRequestBody  # type: ignore
-from msgraph.generated.users.item.messages.item.forward.forward_post_request_body import ForwardPostRequestBody  # type: ignore
-from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (  # type: ignore
-    CalendarViewRequestBuilder,
-)
-from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
-from msgraph.generated.models.recurrence_pattern import RecurrencePattern
-from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
-from msgraph.generated.models.recurrence_range import RecurrenceRange
-from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 
 # Outlook-specific response wrapper
 class OutlookCalendarContactsResponse:
-    """Standardized Outlook API response wrapper."""
+    """Standardized Outlook API response wrapper.
+    
+    For collection responses, data is a dict with structure:
+    {
+        'value': List[Message | User | Group | Event | Attachment | Post | ConversationThread | ...],
+        'odata_next_link': Optional[str],
+        'odata_delta_link': Optional[str]
+    }
+    
+    For single entity responses, data is the Pydantic object itself (Message, User, etc.)
+    """
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Dict[str, Any] | Message | User | Group | Event | Attachment | Post | ConversationThread] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
+    def __init__(self, success: bool, data: Optional[Dict[str, Any] | Message | User | Group | Event | Attachment | Post | ConversationThread] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
         self.success = success
         self.data = data
         self.error = error
@@ -83,7 +109,17 @@ class OutlookCalendarContactsResponse:
 
 # Outlook-specific response wrapper for mail folders
 class OutlookMailFoldersResponse:
-    """Standardized Outlook Mail Folders API response wrapper."""
+    """Standardized Outlook Mail Folders API response wrapper.
+    
+    For mail folders, data is a dict with structure:
+    {
+        'value': List[Dict[str, Any]],  # MailFolder objects converted to dicts
+        '@odata.nextLink': Optional[str],
+        'count': int
+    }
+    
+    Note: Unlike other responses, mail folders are converted to dicts by _handle_mail_folders_response
+    """
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -199,6 +235,7 @@ def _dict_to_event(data: dict) -> Event:
             event.recurrence = rec
         elif isinstance(rec, dict):
             from datetime import date
+
             from msgraph.generated.models.day_of_week import DayOfWeek
             from msgraph.generated.models.week_index import WeekIndex
 
@@ -376,28 +413,10 @@ class OutlookCalendarContactsDataSource:
                 success = False
                 error_msg = f"{response.code}: {response.message}"
 
-            # Check if this is a COLLECTION response or SINGLE ENTITY response
-            if isinstance(response, dict):
-                # Response is already a dict
-                response_data = {
-                    'value': response.get('value', []),
-                    'odata_next_link': response.get('@odata.nextLink') or response.get('odata_next_link'),
-                    'odata_delta_link': response.get('@odata.deltaLink') or response.get('odata_delta_link'),
-                }
-            elif hasattr(response, 'value'):
-                # COLLECTION response - has 'value' attribute
-                response_data = {
-                    'value': response.value if response.value is not None else [],
-                    'odata_next_link': response.odata_next_link if hasattr(response, 'odata_next_link') else None,
-                    'odata_delta_link': response.odata_delta_link if hasattr(response, 'odata_delta_link') else None,
-                }
-            else:
-                # SINGLE ENTITY response - return the object itself
-                response_data = response
-
+            # Return the response object as-is (Pydantic collection or single entity)
             return OutlookCalendarContactsResponse(
                 success=success,
-                data=response_data,
+                data=response,
                 error=error_msg,
             )
         except Exception as e:
@@ -418,49 +437,12 @@ class OutlookCalendarContactsDataSource:
                 success = False
                 error_msg = str(response.error)
 
-            # Extract folders data from MailFolderCollectionResponse
-            folders_data = None
-            if success and hasattr(response, 'value') and response.value:
-                folders_data = {
-                    "value": [],
-                    "count": len(response.value)
-                }
-
-                # Add OData metadata if present
-                if hasattr(response, 'additional_data') and response.additional_data:
-                    if '@odata.context' in response.additional_data:
-                        folders_data["@odata.context"] = response.additional_data['@odata.context']
-
-                if hasattr(response, 'odata_next_link') and response.odata_next_link:
-                    folders_data["@odata.nextLink"] = response.odata_next_link
-
-                if hasattr(response, 'odata_count') and response.odata_count:
-                    folders_data["@odata.count"] = response.odata_count
-
-                # Process each MailFolder object
-                for folder in response.value:
-                    folder_dict = {
-                        "id": getattr(folder, 'id', None),
-                        "display_name": getattr(folder, 'display_name', None),
-                        "parent_folder_id": getattr(folder, 'parent_folder_id', None),
-                        "child_folder_count": getattr(folder, 'child_folder_count', 0),
-                        "unread_item_count": getattr(folder, 'unread_item_count', 0),
-                        "total_item_count": getattr(folder, 'total_item_count', 0),
-                        "is_hidden": getattr(folder, 'is_hidden', False)
-                    }
-
-                    # Add additional properties if they exist
-                    if hasattr(folder, 'additional_data') and folder.additional_data:
-                        if 'sizeInBytes' in folder.additional_data:
-                            folder_dict["sizeInBytes"] = folder.additional_data['sizeInBytes']
-
-                    folders_data["value"].append(folder_dict)
-
+            # Return the response object as-is (MailFolderCollectionResponse)
             return OutlookMailFoldersResponse(
                 success=success,
-                data=folders_data,
+                data=response,
                 error=error_msg,
-                message=f"Successfully retrieved {len(response.value) if response.value else 0} mail folders" if success else None
+                message=f"Successfully retrieved {len(response.value) if (response and hasattr(response, 'value') and response.value) else 0} mail folders" if success else None
             )
 
         except Exception as e:
@@ -475,10 +457,10 @@ class OutlookCalendarContactsDataSource:
         self,
         user_id: str,
         mailFolder_id: str,
-        saved_delta_link: Optional[str] = None,
+        saved_delta_link: str | None = None,
         page_size: int = 200,
         **initial_params
-    ) -> tuple[List[Dict], Optional[str]]:
+    ) -> tuple[list[Message], str | None]:
         """Fetch all delta messages with automatic pagination.
 
         This method automatically handles pagination by following nextLink until
@@ -527,14 +509,87 @@ class OutlookCalendarContactsDataSource:
             if not response.success:
                 raise Exception(f"Delta query failed: {response.error}")
 
-            # Collect messages from this page
-            messages = response.data.get('value', [])
+            # Collect messages from this page - response.data is MessageCollectionResponse
+            messages = response.data.value if response.data.value else []
             all_messages.extend(messages)
             logger.info(f"Retrieved {len(messages)} messages in this page (total so far: {len(all_messages)})")
 
             # Check for next page or completion
-            next_link = response.data.get('odata_next_link')
-            delta_link = response.data.get('odata_delta_link')
+            next_link = response.data.odata_next_link if response.data.odata_next_link else None
+            delta_link = response.data.odata_delta_link if response.data.odata_delta_link else None
+
+            if next_link:
+                # More pages available
+                logger.info("nextLink found, fetching next page...")
+                continuation_url = next_link
+                continue
+            elif delta_link:
+                # Sync complete - save this for next round
+                logger.info(f"Delta sync complete. Total messages: {len(all_messages)}")
+                return all_messages, delta_link
+            else:
+                raise Exception("Response missing both odata_next_link and odata_delta_link")
+
+    async def fetch_all_messages_delta_me(
+        self,
+        mailFolder_id: str,
+        saved_delta_link: str | None = None,
+        page_size: int = 200,
+        **initial_params
+    ) -> tuple[list[Message], str | None]:
+        """Fetch all delta messages for authenticated user (/me) with automatic pagination.
+
+        This method automatically handles pagination by following nextLink until
+        a deltaLink is received, which indicates all changes have been retrieved.
+
+        Args:
+            mailFolder_id: Mail folder identifier
+            saved_delta_link: Previously saved deltaLink for incremental sync
+            page_size: Page size preference (default 200, max for messages)
+            **initial_params: Additional parameters (select, expand, etc.) for initial request only
+
+        Returns:
+            Tuple of (all_messages, final_delta_link)
+            - all_messages: List of all message changes
+            - final_delta_link: New delta link to save for next incremental sync
+        """
+        all_messages = []
+        continuation_url = saved_delta_link
+        is_first_request = True
+
+        logger.info(f"Starting delta fetch for /me folder {mailFolder_id}")
+        if saved_delta_link:
+            logger.info("Using saved delta link for incremental sync")
+
+        while True:
+            # On first request without saved delta, use initial params
+            if is_first_request and not continuation_url:
+                response = await self.me_mail_folders_mail_folder_messages_delta(
+                    mailFolder_id=mailFolder_id,
+                    continuation_url=None,
+                    page_size=page_size,
+                    **initial_params
+                )
+            else:
+                # Use continuation URL (nextLink or deltaLink)
+                response = await self.me_mail_folders_mail_folder_messages_delta(
+                    mailFolder_id=mailFolder_id,
+                    continuation_url=continuation_url
+                )
+
+            is_first_request = False
+
+            if not response.success:
+                raise Exception(f"Delta query failed: {response.error}")
+
+            # Collect messages from this page - response.data is MessageCollectionResponse
+            messages = response.data.value if response.data.value else []
+            all_messages.extend(messages)
+            logger.info(f"Retrieved {len(messages)} messages in this page (total so far: {len(all_messages)})")
+
+            # Check for next page or completion
+            next_link = response.data.odata_next_link if response.data.odata_next_link else None
+            delta_link = response.data.odata_delta_link if response.data.odata_delta_link else None
 
             if next_link:
                 # More pages available
@@ -1232,6 +1287,7 @@ class OutlookCalendarContactsDataSource:
 
     async def me_list_mail_folders(
         self,
+        next_url: Optional[str] = None,
         includeHiddenFolders: Optional[str] = None,
         dollar_orderby: Optional[List[str]] = None,
         dollar_select: Optional[List[str]] = None,
@@ -1250,6 +1306,7 @@ class OutlookCalendarContactsDataSource:
         Outlook operation: GET /me/mailFolders
         Operation type: mail
         Args:
+            next_url (str, optional): Full URL from @odata.nextLink for pagination
             includeHiddenFolders (str, optional): Include Hidden Folders
             dollar_orderby (List[str], optional): Order items by property values
             dollar_select (List[str], optional): Select properties to be returned
@@ -1268,39 +1325,45 @@ class OutlookCalendarContactsDataSource:
         """
         # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters()
+            if next_url:
+                # Use the complete URL from nextLink for pagination
+                response = await self.client.me.mail_folders.with_url(next_url).get()
+            else:
+                # Use typed query parameters
+                query_params = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                # Set query parameters using typed object properties
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
+                if includeHiddenFolders is not None:
+                    query_params.include_hidden_folders = includeHiddenFolders
 
-            # Create proper typed request configuration
-            config = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
+                # Create proper typed request configuration
+                config = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetRequestConfiguration()
+                config.query_parameters = query_params
 
-            if headers:
-                config.headers = headers
+                if headers:
+                    config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                # Add consistency level for search operations in Outlook
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.me.mail_folders.get(request_configuration=config)
+                response = await self.client.me.mail_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -5183,6 +5246,8 @@ class OutlookCalendarContactsDataSource:
     async def me_mail_folders_mail_folder_messages_delta(
         self,
         mailFolder_id: str,
+        continuation_url: Optional[str] = None,
+        page_size: Optional[int] = None,
         changeType: Optional[str] = None,
         dollar_select: Optional[List[str]] = None,
         dollar_orderby: Optional[List[str]] = None,
@@ -5197,11 +5262,13 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Invoke function delta.
+        """Invoke function delta with pagination support.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages/delta()
         Operation type: mail
         Args:
             mailFolder_id (str, required): Outlook mailFolder id identifier
+            continuation_url (str, optional): Complete nextLink or deltaLink URL from previous response
+            page_size (int, optional): Preferred page size (max 200 for messages)
             changeType (str, optional): A custom query option to filter the delta response based on the type of change. Supported values are created, updated or deleted.
             dollar_select (List[str], optional): Select properties to be returned
             dollar_orderby (List[str], optional): Order items by property values
@@ -5216,43 +5283,55 @@ class OutlookCalendarContactsDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error including pagination links
         """
         # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters()
+            if continuation_url:
+                # Use the complete URL from nextLink or deltaLink
+                response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.delta.with_url(continuation_url).get()
+            else:
+                # Create query parameters object
+                from msgraph.generated.users.item.mail_folders.item.messages.delta.delta_request_builder import (
+                    DeltaRequestBuilder,
+                )
+                query_params = DeltaRequestBuilder.DeltaRequestBuilderGetQueryParameters()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                # Set query parameters
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
 
-            # Create proper typed request configuration
-            config = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
+                # Create request configuration with query parameters using typed class
+                request_configuration = DeltaRequestBuilder.DeltaRequestBuilderGetRequestConfiguration(
+                    query_parameters=query_params
+                )
 
-            if headers:
-                config.headers = headers
+                # Build headers
+                from kiota_abstractions.headers_collection import HeadersCollection
+                headers_col = HeadersCollection()
+                
+                if page_size:
+                    headers_col.try_add("Prefer", f"odata.maxpagesize={page_size}")
+                
+                if search:
+                    headers_col.try_add("ConsistencyLevel", "eventual")
+                
+                if headers:
+                    for hk, hv in headers.items():
+                        headers_col.try_add(hk, hv)
+                
+                request_configuration.headers = headers_col
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.delta().get(request_configuration=config)
+                response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.delta.get(request_configuration=request_configuration)
+            
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -9324,6 +9403,7 @@ class OutlookCalendarContactsDataSource:
     async def users_list_mail_folders(
         self,
         user_id: str,
+        next_url: Optional[str] = None,
         folder_names: Optional[List[str]] = None,
         folder_filter_mode: Optional[Literal["include", "exclude"]] = "include",
         includeHiddenFolders: Optional[str] = None,
@@ -9345,6 +9425,7 @@ class OutlookCalendarContactsDataSource:
         Operation type: mail
         Args:
             user_id (str, required): Outlook user id identifier
+            next_url (str, optional): Full URL from @odata.nextLink for pagination
             folder_names (List[str], optional): List of folder display names to filter
             folder_filter_mode (str, optional): 'include' to whitelist or 'exclude' to blacklist folder_names
             includeHiddenFolders (str, optional): Include Hidden Folders
@@ -9365,54 +9446,58 @@ class OutlookCalendarContactsDataSource:
         """
         # Build query parameters including OData for Outlook
         try:
-            # Build filter string from folder_names if provided
-            # Note: MS Graph mailFolders doesn't support 'in' operator, use 'eq' with 'or' instead
-            if folder_names and folder_filter_mode:
-                if folder_filter_mode.lower() == 'include':
-                    # Include only specified folders: use OR with eq
-                    conditions = [f"displayName eq '{name}'" for name in folder_names]
-                    filter = ' or '.join(conditions)
-                else:
-                    # Exclude specified folders: use AND with ne
-                    conditions = [f"displayName ne '{name}'" for name in folder_names]
-                    filter = ' and '.join(conditions)
+            if next_url:
+                # Use the complete URL from nextLink for pagination
+                response = await self.client.users.by_user_id(user_id).mail_folders.with_url(next_url).get()
+            else:
+                # Build filter string from folder_names if provided
+                # Note: MS Graph mailFolders doesn't support 'in' operator, use 'eq' with 'or' instead
+                if folder_names and folder_filter_mode:
+                    if folder_filter_mode.lower() == 'include':
+                        # Include only specified folders: use OR with eq
+                        conditions = [f"displayName eq '{escape_odata_string(name)}'" for name in folder_names]
+                        filter = ' or '.join(conditions)
+                    else:
+                        # Exclude specified folders: use AND with ne
+                        conditions = [f"displayName ne '{escape_odata_string(name)}'" for name in folder_names]
+                        filter = ' and '.join(conditions)
 
-            # Use typed query parameters for MailFolders
-            query_params = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters()
+                # Use typed query parameters for MailFolders
+                query_params = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+                # Set query parameters using typed object properties
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
+                if search:
+                    query_params.search = search
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
 
-            # Create proper typed request configuration for MailFolders
-            config = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
+                # Create proper typed request configuration for MailFolders
+                config = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetRequestConfiguration()
+                config.query_parameters = query_params
 
-            # Add consistency level for search operations
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers.add('ConsistencyLevel', 'eventual')
+                # Add consistency level for search operations
+                if search:
+                    if not config.headers:
+                        config.headers = {}
+                    config.headers.add('ConsistencyLevel', 'eventual')
 
-            if headers:
-                if not config.headers:
-                    config.headers = {}
-                for key, value in headers.items():
-                    config.headers.add(key, value)
+                if headers:
+                    if not config.headers:
+                        config.headers = {}
+                    for key, value in headers.items():
+                        config.headers.add(key, value)
 
-            response = await self.client.users.by_user_id(user_id).mail_folders.get(request_configuration=config)
+                response = await self.client.users.by_user_id(user_id).mail_folders.get(request_configuration=config)
             return self._handle_mail_folders_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -53653,7 +53738,9 @@ class OutlookCalendarContactsDataSource:
         Outlook operation: GET /me/events?$filter=type eq 'seriesMaster'
         """
         try:
-            from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+            from msgraph.generated.users.item.events.events_request_builder import (
+                EventsRequestBuilder,
+            )
 
             query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
                 filter="type eq 'seriesMaster'",
@@ -53695,7 +53782,9 @@ class OutlookCalendarContactsDataSource:
                         and start/dateTime ge '{start}' and end/dateTime le '{end}'
         """
         try:
-            from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+            from msgraph.generated.users.item.events.events_request_builder import (
+                EventsRequestBuilder,
+            )
 
             safe_keyword = keyword.strip().replace("'", "''")
 
@@ -53742,10 +53831,10 @@ class OutlookCalendarContactsDataSource:
         Outlook operation: POST /me/calendar/getSchedule
         """
         try:
+            from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
             from msgraph.generated.users.item.calendar.get_schedule.get_schedule_post_request_body import (
                 GetSchedulePostRequestBody,
             )
-            from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 
             # Fetch the signed-in user's email to pass as the schedule request target
             me_resp = await self.client.me.get()

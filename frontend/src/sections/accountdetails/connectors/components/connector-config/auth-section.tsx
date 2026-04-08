@@ -1063,8 +1063,8 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
               </Box>
             )}
 
-            {/* OAuth App Selector - Show when OAuth is selected and OAuth configs exist (or in edit mode with existing config) or when loading */}
-            {isOAuthSelected && (loadingOAuthApps || oauthApps.length > 0 || (!isCreateMode && selectedOAuthConfigId)) && (
+            {/* OAuth App Selector - Show when OAuth is selected and (OAuth configs exist OR non-admin user OR in edit mode with existing config OR loading) */}
+            {isOAuthSelected && (loadingOAuthApps || oauthApps.length > 0 || (!isCreateMode && selectedOAuthConfigId) || !isAdmin) && (
               <Box sx={{ mb: 2.5 }}>
                 <Grid container spacing={2}>
                   <Grid item xs={12}>
@@ -1085,7 +1085,11 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                             flexWrap: { xs: 'wrap', sm: 'nowrap' },
                           }}
                         >
-                          <FormControl fullWidth sx={{ flex: 1, minWidth: { xs: '100%', sm: 300 } }}>
+                          <FormControl 
+                            fullWidth 
+                            sx={{ flex: 1, minWidth: { xs: '100%', sm: 300 } }}
+                            error={!isAdmin && !!formErrors?.oauthConfigId}
+                          >
                             <InputLabel>OAuth App {!isAdmin && '(Required)'}</InputLabel>
                             <Select
                               value={selectedOAuthConfigId || ''}
@@ -1096,6 +1100,7 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                               label={`OAuth App ${!isAdmin ? '(Required)' : ''}`}
                               disabled={loadingOAuthConfig}
                             required={!isAdmin}
+                            error={!isAdmin && !!formErrors?.oauthConfigId}
                             renderValue={(value) => {
                               if (!value && isAdmin && newOAuthAppName) {
                                 // Show preview of new OAuth app being created
@@ -1243,6 +1248,11 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                               </MenuItem>
                             )}
                           </Select>
+                          {!isAdmin && formErrors?.oauthConfigId && (
+                            <FormHelperText error>
+                              {formErrors.oauthConfigId}
+                            </FormHelperText>
+                          )}
                           <Typography
                             variant="caption"
                             sx={{
@@ -1265,8 +1275,8 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                                 : selectedOAuthConfigId
                                   ? 'OAuth app selected. Credentials are securely stored and managed by administrators.'
                                   : oauthApps.length === 0
-                                    ? 'No OAuth apps available. Please contact an administrator to create one.'
-                                    : 'Select an OAuth app configured by your administrator. Credentials are not visible for security.'}
+                                    ? 'No OAuth Apps configured. Please contact an administrator to create one before proceeding.'
+                                    : 'Select an OAuth App configured by your administrator. Credentials are managed by admins.'}
                           </Typography>
                         </FormControl>
                       </Box>
@@ -1378,6 +1388,39 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                           </Typography>
                         </Alert>
                       )}
+
+                      {/* Warning Alert for Non-Admin Users - No OAuth Apps Available */}
+                      {!isAdmin && oauthApps.length === 0 && !loadingOAuthApps && (
+                        <Alert
+                          severity="warning"
+                          icon={<Iconify icon="mdi:alert-circle-outline" width={20} />}
+                          sx={{
+                            mt: 1.5,
+                            borderRadius: 1.25,
+                            bgcolor: isDark
+                              ? alpha(theme.palette.warning.main, 0.1)
+                              : alpha(theme.palette.warning.main, 0.05),
+                            border: `1px solid ${alpha(theme.palette.warning.main, isDark ? 0.3 : 0.2)}`,
+                            '& .MuiAlert-icon': {
+                              color: theme.palette.warning.main,
+                            },
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{ fontSize: '0.8125rem', fontWeight: 500, mb: 0.5 }}
+                          >
+                            No OAuth Apps Available
+                          </Typography>
+                          <Typography
+                            variant="caption"
+                            sx={{ fontSize: '0.75rem', color: theme.palette.text.secondary }}
+                          >
+                            An administrator must create an OAuth App before you can configure this connector. 
+                            Please contact your administrator to set up an OAuth App for {connector.name}.
+                          </Typography>
+                        </Alert>
+                      )}
                       </Box>
                     )}
                   </Grid>
@@ -1474,19 +1517,14 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                       // For OAuth: Handle credential field visibility based on user role
                       const isOAuthCredentialField =
                         isOAuthSelected &&
-                        (field.name === 'clientId' || field.name === 'clientSecret');
+                        (field.name === 'clientId' || field.name === 'clientSecret' || field.name === 'tenantId');
 
                       const isOAuthMetadataField =
                         isOAuthSelected && (field.name === 'redirectUri' || field.name === 'scope');
 
-                      // Non-admin users: Hide OAuth credential fields (clientId, clientSecret) when OAuth app is selected
-                      // They can still see metadata fields like redirectUri if needed
-                      if (
-                        isOAuthSelected &&
-                        !isAdmin &&
-                        isOAuthCredentialField &&
-                        selectedOAuthConfigId
-                      ) {
+                      // Non-admin users: Always hide OAuth credential fields (clientId, clientSecret, tenantId)
+                      // They must select an existing OAuth App configured by admins
+                      if (isOAuthSelected && !isAdmin && isOAuthCredentialField) {
                         return null;
                       }
 

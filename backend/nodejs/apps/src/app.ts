@@ -60,7 +60,11 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
-import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
+import {
+  resolveMessageBrokerConfig,
+  ensureMessageTopicsExist,
+  REQUIRED_TOPICS,
+} from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
@@ -104,16 +108,16 @@ export class Application {
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
 
-      // Ensure Kafka topics exist (important for Kafka deployments where auto-create is disabled)
+      // Ensure message broker topics/streams exist
       try {
-        this.logger.info('Ensuring Kafka topics exist...');
-        await ensureKafkaTopicsExist(appConfig.kafka, this.logger, REQUIRED_KAFKA_TOPICS);
-        this.logger.info('Kafka topics check completed');
-      } catch (kafkaError: any) {
+        this.logger.info('Ensuring message broker topics exist...');
+        const brokerConfig = resolveMessageBrokerConfig(appConfig);
+        await ensureMessageTopicsExist(brokerConfig, this.logger, REQUIRED_TOPICS);
+        this.logger.info('Message broker topics check completed');
+      } catch (brokerError: any) {
         this.logger.warn(
-          `Could not verify/create Kafka topics: ${kafkaError.message}.`
+          `Could not verify/create message broker topics: ${brokerError.message}.`
         );
-        // Don't throw - allow app to continue; topics might already exist or be created elsewhere
       }
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(

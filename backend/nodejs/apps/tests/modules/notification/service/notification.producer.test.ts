@@ -6,6 +6,7 @@ import { NotificationProducer, EventType } from '../../../../src/modules/notific
 describe('notification/service/notification.producer', () => {
   let producer: NotificationProducer
   let mockLogger: any
+  let mockProducer: any
 
   beforeEach(() => {
     mockLogger = {
@@ -14,8 +15,16 @@ describe('notification/service/notification.producer', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
+    mockProducer = {
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(false),
+      publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    }
     producer = new NotificationProducer(
-      { brokers: ['localhost:9092'] },
+      mockProducer,
       mockLogger,
     )
   })
@@ -38,39 +47,34 @@ describe('notification/service/notification.producer', () => {
 
   describe('start', () => {
     it('should call connect if not connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(false)
-      const connectStub = sinon.stub(producer, 'connect' as any).resolves()
+      mockProducer.isConnected.returns(false)
       await producer.start()
-      expect(connectStub.calledOnce).to.be.true
+      expect(mockProducer.connect.calledOnce).to.be.true
     })
 
     it('should not call connect if already connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(true)
-      const connectStub = sinon.stub(producer, 'connect' as any).resolves()
+      mockProducer.isConnected.returns(true)
       await producer.start()
-      expect(connectStub.called).to.be.false
+      expect(mockProducer.connect.called).to.be.false
     })
   })
 
   describe('stop', () => {
     it('should call disconnect if connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(true)
-      const disconnectStub = sinon.stub(producer, 'disconnect' as any).resolves()
+      mockProducer.isConnected.returns(true)
       await producer.stop()
-      expect(disconnectStub.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
 
     it('should not disconnect if not connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(false)
-      const disconnectStub = sinon.stub(producer, 'disconnect' as any).resolves()
+      mockProducer.isConnected.returns(false)
       await producer.stop()
-      expect(disconnectStub.called).to.be.false
+      expect(mockProducer.disconnect.called).to.be.false
     })
   })
 
   describe('publishEvent', () => {
     it('should publish event with correct topic and format', async () => {
-      const publishStub = sinon.stub(producer, 'publish' as any).resolves()
       const event: any = {
         eventType: EventType.NewNotificationEvent,
         timestamp: 1234567890,
@@ -79,8 +83,8 @@ describe('notification/service/notification.producer', () => {
 
       await producer.publishEvent(event)
 
-      expect(publishStub.calledOnce).to.be.true
-      const [topic, message] = publishStub.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('notification')
       expect(message.key).to.equal('notif-1')
       expect(message.value).to.deep.equal(event.payload)
@@ -88,7 +92,7 @@ describe('notification/service/notification.producer', () => {
     })
 
     it('should log error when publish fails', async () => {
-      sinon.stub(producer, 'publish' as any).rejects(new Error('Kafka down'))
+      mockProducer.publish.rejects(new Error('Kafka down'))
       const event: any = {
         eventType: EventType.NewNotificationEvent,
         timestamp: Date.now(),
@@ -100,7 +104,6 @@ describe('notification/service/notification.producer', () => {
     })
 
     it('should include timestamp in headers as string', async () => {
-      const publishStub = sinon.stub(producer, 'publish' as any).resolves()
       const event: any = {
         eventType: EventType.NewNotificationEvent,
         timestamp: 9999999999,
@@ -108,12 +111,11 @@ describe('notification/service/notification.producer', () => {
       }
 
       await producer.publishEvent(event)
-      const [, message] = publishStub.firstCall.args
+      const [, message] = mockProducer.publish.firstCall.args
       expect(message.headers.timestamp).to.equal('9999999999')
     })
 
     it('should log success after publish', async () => {
-      sinon.stub(producer, 'publish' as any).resolves()
       const event: any = {
         eventType: EventType.NewNotificationEvent,
         timestamp: Date.now(),

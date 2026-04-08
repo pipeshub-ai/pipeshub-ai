@@ -65,6 +65,10 @@ services:
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
       # Ensure we use the same password as configured for the ArangoDB service
 
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
@@ -222,12 +226,13 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+      - "29092:29092"
     environment:
       - KAFKA_BROKER_ID=1
       - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT
-      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092
-      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT,HOST:PLAINTEXT
+      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092,HOST://0.0.0.0:29092
+      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092,HOST://localhost:29092
       - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1

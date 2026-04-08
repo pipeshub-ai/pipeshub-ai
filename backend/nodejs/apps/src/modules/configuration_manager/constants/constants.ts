@@ -16,10 +16,6 @@ export const keyValueStoreTypes = {
   REDIS: 'redis',
 };
 
-export const messageBrokerTypes = {
-  KAFKA: 'kafka',
-};
-
 export const googleWorkspaceTypes = {
   INDIVIDUAL: 'individual',
   BUSINESS: 'business',

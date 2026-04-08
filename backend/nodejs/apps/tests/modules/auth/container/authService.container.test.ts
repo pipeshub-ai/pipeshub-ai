@@ -78,16 +78,16 @@ describe('AuthServiceContainer', () => {
     it('should set instance to null after dispose', async () => {
       const mockRedis = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() };
       const mockKvStore = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() };
-      const mockEntityEvents = { isConnected: sinon.stub().returns(true), stop: sinon.stub().resolves() };
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() };
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['RedisService', 'KeyValueStoreService', 'EntitiesEventProducer'].includes(key),
+          ['RedisService', 'KeyValueStoreService', 'MessageProducer'].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'RedisService') return mockRedis;
           if (key === 'KeyValueStoreService') return mockKvStore;
-          if (key === 'EntitiesEventProducer') return mockEntityEvents;
+          if (key === 'MessageProducer') return mockMessageProducer;
           return null;
         }),
       };
@@ -100,7 +100,7 @@ describe('AuthServiceContainer', () => {
         expect((AuthServiceContainer as any).instance).to.be.null;
         expect(mockRedis.disconnect.calledOnce).to.be.true;
         expect(mockKvStore.disconnect.calledOnce).to.be.true;
-        expect(mockEntityEvents.stop.calledOnce).to.be.true;
+        expect(mockMessageProducer.disconnect.calledOnce).to.be.true;
       } finally {
         if ((AuthServiceContainer as any).instance !== null) {
           (AuthServiceContainer as any).instance = originalInstance;
@@ -111,16 +111,16 @@ describe('AuthServiceContainer', () => {
     it('should not disconnect services when they are not connected', async () => {
       const mockRedis = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() };
       const mockKvStore = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() };
-      const mockEntityEvents = { isConnected: sinon.stub().returns(false), stop: sinon.stub() };
+      const mockMessageProducer = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() };
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['RedisService', 'KeyValueStoreService', 'EntitiesEventProducer'].includes(key),
+          ['RedisService', 'KeyValueStoreService', 'MessageProducer'].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'RedisService') return mockRedis;
           if (key === 'KeyValueStoreService') return mockKvStore;
-          if (key === 'EntitiesEventProducer') return mockEntityEvents;
+          if (key === 'MessageProducer') return mockMessageProducer;
           return null;
         }),
       };
@@ -132,7 +132,7 @@ describe('AuthServiceContainer', () => {
         await AuthServiceContainer.dispose();
         expect(mockRedis.disconnect.called).to.be.false;
         expect(mockKvStore.disconnect.called).to.be.false;
-        expect(mockEntityEvents.stop.called).to.be.false;
+        expect(mockMessageProducer.disconnect.called).to.be.false;
       } finally {
         if ((AuthServiceContainer as any).instance !== null) {
           (AuthServiceContainer as any).instance = originalInstance;
@@ -236,13 +236,13 @@ describe('AuthServiceContainer', () => {
       }
     });
 
-    it('should handle only EntitiesEventProducer bound', async () => {
-      const mockEvents = { isConnected: sinon.stub().returns(true), stop: sinon.stub().resolves() };
+    it('should handle only MessageProducer bound', async () => {
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() };
 
       const mockContainer = {
-        isBound: sinon.stub().callsFake((key: string) => key === 'EntitiesEventProducer'),
+        isBound: sinon.stub().callsFake((key: string) => key === 'MessageProducer'),
         get: sinon.stub().callsFake((key: string) => {
-          if (key === 'EntitiesEventProducer') return mockEvents;
+          if (key === 'MessageProducer') return mockMessageProducer;
           return null;
         }),
       };
@@ -252,7 +252,7 @@ describe('AuthServiceContainer', () => {
 
       try {
         await AuthServiceContainer.dispose();
-        expect(mockEvents.stop.calledOnce).to.be.true;
+        expect(mockMessageProducer.disconnect.calledOnce).to.be.true;
       } finally {
         if ((AuthServiceContainer as any).instance !== null) {
           (AuthServiceContainer as any).instance = originalInstance;
