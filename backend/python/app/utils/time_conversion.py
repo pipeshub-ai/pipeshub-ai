@@ -36,12 +36,19 @@ def prepare_iso_timestamps(start_time: str, end_time: str) -> tuple[str, str]:
 
     return start_dt.isoformat(), end_dt.isoformat()
 
-def datetime_to_epoch_ms(dt_obj: datetime | str | None) -> int | None:
-    """Convert datetime object or ISO string to epoch timestamp in milliseconds.
-    
+def datetime_to_epoch_ms(
+    dt_obj: datetime | str | None,
+    strptime_format: str | None = None,
+) -> int | None:
+    """Convert datetime object or string to epoch timestamp in milliseconds.
+
     Args:
-        dt_obj: datetime object, ISO string, or None
-        
+        dt_obj: datetime object, ISO string, ServiceNow-style string, or None
+        strptime_format: If set and ``dt_obj`` is a str, parse with
+            :func:`datetime.strptime` first (e.g. ``%Y-%m-%d %H:%M:%S`` for
+            ServiceNow). Naive values are treated as UTC. If parsing fails,
+            falls back to :func:`parse_timestamp` for ISO strings.
+
     Returns:
         Epoch timestamp in milliseconds, or None if input is None or invalid
     """
@@ -49,6 +56,14 @@ def datetime_to_epoch_ms(dt_obj: datetime | str | None) -> int | None:
         return None
     try:
         if isinstance(dt_obj, str):
+            if strptime_format:
+                try:
+                    dt = datetime.strptime(dt_obj, strptime_format)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return int(dt.timestamp() * 1000)
+                except ValueError:
+                    pass
             return parse_timestamp(dt_obj)
         dt = dt_obj
         if isinstance(dt, datetime) and dt.tzinfo is None:
