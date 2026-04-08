@@ -1031,6 +1031,17 @@ class DataSourceEntitiesProcessor:
                             external_id=record_group.parent_external_group_id
                         )
 
+                        if parent_record_group is None:
+                            # Create placeholder parent record group
+                            parent_record_group = RecordGroup(
+                                external_group_id=record_group.parent_external_group_id,
+                                name=record_group.parent_external_group_id,
+                                group_type=record_group.group_type,
+                                connector_name=record_group.connector_name,
+                                connector_id=record_group.connector_id,
+                            )
+                            await tx_store.batch_upsert_record_groups([parent_record_group])
+
                         if parent_record_group:
                             self.logger.info(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
 
@@ -1058,11 +1069,6 @@ class DataSourceEntitiesProcessor:
                                     [inherit_relation], collection=CollectionNames.INHERIT_PERMISSIONS.value
                                 )
                             #if inherit records is false we need to remove the edge aswell
-                        else:
-                            self.logger.warning(
-                                f"Could not find parent record group with external_id "
-                                f"'{record_group.parent_external_group_id}' for child '{record_group.name}'"
-                            )
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
