@@ -37,7 +37,7 @@ import {
 } from '@mui/material';
 
 import {
-  getWebUrlWithFragment,
+  getWebUrl,
 } from 'src/sections/knowledgebase/utils/utils';
 
 import RecordDetails from './record-details';
@@ -351,7 +351,7 @@ const StreamingContent = React.memo(
         const num = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
         const citation = citationMap[num];
         if (citation?.metadata?.previewRenderable === false) {
-          const webUrl = getWebUrlWithFragment(citation);
+          const webUrl = getWebUrl(citation);
           if (webUrl) {
             window.open(webUrl, '_blank', 'noopener,noreferrer');
           }
@@ -360,7 +360,7 @@ const StreamingContent = React.memo(
         }
 
         if (!citation?.metadata?.extension) {
-          const webUrl = getWebUrlWithFragment(citation);
+          const webUrl = getWebUrl(citation);
           if (webUrl) {
             window.open(webUrl, '_blank', 'noopener,noreferrer');
           }
