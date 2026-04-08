@@ -68,13 +68,14 @@ describe('sendValidatedJson', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal({ name: 'Alice' })
     })
 
-    it('should return the Response object', () => {
-      const schema = z.object({ id: z.number() })
+    it('should return the same Response object with the same status code on success', () => {
+      const schema = z.object({ status: z.literal('success') })
       const res = createMockResponse()
 
-      const result = sendValidatedJson(res, schema, { id: 1 }, 200)
+      const result = sendValidatedJson(res, schema, { status: 'success' }, 201)
 
       expect(result).to.equal(res)
+      expect(res.status.firstCall.args[0]).to.equal(201)
     })
 
     it('should send 201 status for created resources', () => {
@@ -132,6 +133,17 @@ describe('sendValidatedJson', () => {
       expect(res.json.firstCall.args[0]).to.equal(payload)
     })
 
+    it('should return the same Response object with the same status code on failure', () => {
+      const schema = z.object({ count: z.number() })
+      const res = createMockResponse()
+      const payload = { count: 'not-a-number' }
+
+      const result = sendValidatedJson(res, schema, payload, 200)
+
+      expect(result).to.equal(res)
+      expect(res.status.firstCall.args[0]).to.equal(200)
+    })
+
     it('should still use the provided status code when validation fails', () => {
       const schema = z.object({ name: z.string() })
       const res = createMockResponse()
@@ -141,13 +153,14 @@ describe('sendValidatedJson', () => {
       expect(res.status.firstCall.args[0]).to.equal(422)
     })
 
-    it('should return the Response object even when validation fails', () => {
+    it('should return the same Response object with the same status code on failure', () => {
       const schema = z.object({ name: z.string() })
       const res = createMockResponse()
 
-      const result = sendValidatedJson(res, schema, {}, 200)
+      const result = sendValidatedJson(res, schema, { name: 42 }, 422)
 
       expect(result).to.equal(res)
+      expect(res.status.firstCall.args[0]).to.equal(422)
     })
 
     it('should include formatted zod errors in the warning log', () => {
