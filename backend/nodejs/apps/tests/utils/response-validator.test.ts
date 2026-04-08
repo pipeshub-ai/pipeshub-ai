@@ -119,7 +119,7 @@ describe('sendValidatedJson', () => {
 
       expect((loggerInstance.warn as sinon.SinonStub).calledOnce).to.be.true
       const warnArgs = (loggerInstance.warn as sinon.SinonStub).firstCall.args
-      expect(warnArgs[0]).to.include('validation failed')
+      expect(warnArgs[0]).to.include('schema mismatch')
     })
 
     it('should send the original unvalidated payload when validation fails', () => {
