@@ -137,8 +137,6 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      kafka-1:
-        condition: service_healthy
       redis:
         condition: service_healthy
       mongodb:

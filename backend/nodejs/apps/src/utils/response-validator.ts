@@ -1,17 +1,22 @@
 import { Response } from "express";
 import { z } from "zod";
-import { ValidationError } from "../libs/errors/validation.error";
+import { Logger } from "../libs/services/logger.service";
 import { ValidationUtils } from "../libs/utils/validation.utils";
+
+const logger = Logger.getInstance();
 
 export const sendValidatedJson = (
     res: Response,
     schema: z.ZodTypeAny,
-    payload: unknown,
+    payload: any,
     statusCode: number,
   ): Response => {
     const result = schema.safeParse(payload);
     if (!result.success) {
-      throw new ValidationError('Validation failed', ValidationUtils.formatZodError(result.error));
+      logger.warn('Response schema mismatch: extra/missing field or incorrect value type', {
+        errors: ValidationUtils.formatZodError(result.error),
+      });
+      return res.status(statusCode).json(payload);
     }
     return res.status(statusCode).json(result.data);
   };
