@@ -20,7 +20,12 @@ class FetchFullRecordArgs(BaseModel):
     """
     record_ids: list[str] = Field(
         ...,
-        description="List of recordIds of the records to fetch. Pass ALL record IDs in a single call — do NOT make multiple separate calls."
+        description=(
+            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID :' line "
+            "of the record's context metadata in the conversation. "
+            "Use ONLY the exact Record IDs from the context — do NOT invent, guess, or reuse example IDs. "
+            "Pass ALL record IDs in a single call."
+        )
     )
     reason: str = Field(
         default="Fetching full record content for comprehensive answer",
@@ -148,9 +153,10 @@ def create_fetch_full_record_tool(
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
         """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
-
+        
+        IMPORTANT: record_ids must be taken directly from the 'Record ID :' field shown in the context metadata for each record. Do NOT use invented IDs, example IDs that are not present in the current context.
         Args:
-            record_ids: List of recordIds to fetch (e.g., ["ba4cf9ed-d254-4989-a817-adf0475250cd"])
+            record_ids: List of Record IDs to fetch — use the exact 'Record ID :' values from the context
             reason: Brief explanation of why the full records are needed
 
         Returns: Complete content of the records or {"ok": false, "error": "..."}.

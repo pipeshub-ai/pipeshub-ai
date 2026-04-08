@@ -1742,16 +1742,8 @@ async def call_aiter_llm_stream(
                             char_end += m.end()
 
                         current_raw = state.answer_buf[:char_end]
-                        # Skip if we have incomplete citations
-                        incomplete_match = incomplete_cite_re.search(current_raw)
-                        if incomplete_match:
-                            # Don't update emit_upto or reset counter if we skip due to incomplete citations
-                            # This allows the next token to complete the citation
-                            # Reset words_in_chunk to threshold - 1 so we'll check again on next token
-                            state.words_in_chunk = target_words_per_chunk - 1
-                            break  # Break out of word iteration, wait for more tokens
+                
 
-                        # Only update emit_upto and reset counter if we're actually yielding
                         state.emit_upto = char_end
                         state.words_in_chunk = 0
 

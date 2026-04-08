@@ -69,7 +69,9 @@ qna_prompt_instructions_1 = """
   5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
 
   **How to call fetch_full_record:**
-  - Pass a LIST of record IDs: fetch_full_record(record_ids=["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"])
+  - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
+  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
+  - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
   - Include a reason explaining why you need the full records
   - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
   - The tool returns the complete content of all requested records
