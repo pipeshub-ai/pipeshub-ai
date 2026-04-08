@@ -15789,19 +15789,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET is_creator = ({node_var}.createdBy == {user_var}.userId OR {node_var}.createdBy == {user_var}._key)
 
             // Determine role based on conditions
-            RETURN CASE
-                // No direct user->app and no team->app: no access
-                WHEN user_app_rel == null AND team_app_rel == null THEN null
-                // Access via team (All)->app: READER; admin gets EDITOR for team apps
-                WHEN user_app_rel == null AND team_app_rel != null THEN (is_admin == true ? "EDITOR" : "READER")
-                // Admin users: Team apps get EDITOR, Personal apps get OWNER
-                WHEN is_admin == true AND app_scope == "team" THEN "EDITOR"
-                WHEN is_admin == true AND app_scope == "personal" THEN "OWNER"
-                // Team app creator gets OWNER
-                WHEN app_scope == "team" AND is_creator == true THEN "OWNER"
-                // Otherwise READER
-                ELSE "READER"
-            END
+            RETURN (user_app_rel == null AND team_app_rel == null) ? null
+                 : (user_app_rel == null AND team_app_rel != null) ? (is_admin == true ? "EDITOR" : "READER")
+                 : (is_admin == true AND app_scope == "team") ? "EDITOR"
+                 : (is_admin == true AND app_scope == "personal") ? "OWNER"
+                 : (app_scope == "team" AND is_creator == true) ? "OWNER"
+                 : "READER"
         )
         """
 
