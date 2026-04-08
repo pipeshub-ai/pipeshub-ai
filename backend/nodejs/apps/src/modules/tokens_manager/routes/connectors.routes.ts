@@ -38,18 +38,18 @@ import {
   getActiveAgentInstances,
 } from '../controllers/connector.controllers';
 import {
-  createConnectorInstanceSchema,
-  connectorIdParamSchema,
-  connectorListSchema,
-  connectorTypeParamSchema,
-  updateConnectorInstanceNameSchema,
-  updateConnectorInstanceAuthConfigSchema,
-  updateConnectorInstanceFiltersSyncConfigSchema,
+  createInstanceSchema,
+  idParamSchema,
+  listSchema,
+  typeParamSchema,
+  updateInstanceNameSchema,
+  updateInstanceAuthConfigSchema,
+  updateInstanceFiltersSyncConfigSchema,
   getOAuthAuthorizationUrlSchema,
   handleOAuthCallbackSchema,
   getFilterFieldOptionsSchema,
-  connectorToggleSchema,
-} from '../schemas/connector';
+  toggleSchema,
+} from '../schemas/connector.schema';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
@@ -93,7 +93,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorListSchema),
+    ValidationMiddleware.validate(listSchema),
     getConnectorRegistry(config)
   );
 
@@ -106,7 +106,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorTypeParamSchema),
+    ValidationMiddleware.validate(typeParamSchema),
     getConnectorSchema(config)
   );
 
@@ -123,7 +123,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorListSchema),
+    ValidationMiddleware.validate(listSchema),
     getConnectorInstances(config)
   );
 
@@ -136,7 +136,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(createConnectorInstanceSchema),
+    ValidationMiddleware.validate(createInstanceSchema),
     createConnectorInstance(config)
   );
 
@@ -173,7 +173,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorListSchema),
+    ValidationMiddleware.validate(listSchema),
     getActiveAgentInstances(config)
   );
   /**
@@ -185,7 +185,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorListSchema),
+    ValidationMiddleware.validate(listSchema),
     getConfiguredConnectorInstances(config)
   );
 
@@ -198,7 +198,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorIdParamSchema),
+    ValidationMiddleware.validate(idParamSchema),
     getConnectorInstance(config)
   );
 
@@ -211,7 +211,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_DELETE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorIdParamSchema),
+    ValidationMiddleware.validate(idParamSchema),
     deleteConnectorInstance(config)
   );
 
@@ -228,7 +228,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorIdParamSchema),
+    ValidationMiddleware.validate(idParamSchema),
     getConnectorInstanceConfig(config)
   );
 
@@ -241,7 +241,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateConnectorInstanceAuthConfigSchema),
+    ValidationMiddleware.validate(updateInstanceAuthConfigSchema),
     updateConnectorInstanceAuthConfig(config)
   );
 
@@ -254,7 +254,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateConnectorInstanceFiltersSyncConfigSchema),
+    ValidationMiddleware.validate(updateInstanceFiltersSyncConfigSchema),
     updateConnectorInstanceFiltersSyncConfig(config)
   );
 
@@ -267,7 +267,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateConnectorInstanceNameSchema),
+    ValidationMiddleware.validate(updateInstanceNameSchema),
     updateConnectorInstanceName(config)
   );
 
@@ -331,7 +331,7 @@ export function createConnectorRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(connectorToggleSchema),
+    ValidationMiddleware.validate(toggleSchema),
     toggleConnectorInstance(config)
   );
 

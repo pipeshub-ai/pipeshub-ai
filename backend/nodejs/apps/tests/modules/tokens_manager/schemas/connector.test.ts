@@ -1,38 +1,38 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import {
-  createConnectorInstanceSchema,
-  connectorIdParamSchema,
-  connectorListSchema,
-  connectorTypeParamSchema,
-  updateConnectorInstanceNameSchema,
-  updateConnectorInstanceAuthConfigSchema,
-  updateConnectorInstanceFiltersSyncConfigSchema,
+  createInstanceSchema,
+  idParamSchema,
+  listSchema,
+  typeParamSchema,
+  updateInstanceNameSchema,
+  updateInstanceAuthConfigSchema,
+  updateInstanceFiltersSyncConfigSchema,
   getOAuthAuthorizationUrlSchema,
   handleOAuthCallbackSchema,
   getFilterFieldOptionsSchema,
-  connectorToggleSchema,
-  connectorSuccessSchema,
-  connectorToggleResponseSchema,
+  toggleSchema,
+  successSchema,
+  toggleResponseSchema,
   paginationResponseSchema,
   scopeCountsResponseSchema,
-  connectorInstanceConfigResponseSchema,
-  connectorAuthConfigUpdateResponseSchema,
-  connectorFiltersSyncConfigUpdateResponseSchema,
-  connectorNameUpdateResponseSchema,
-  connectorFilterFieldOptionsResponseSchema,
-  connectorOAuthAuthorizeResponseSchema,
-  connectorOAuthCallbackResponseSchema,
-  connectorRegistryResponseSchema,
-  connectorSchemaResponseSchema,
-  connectorInstancesResponseSchema,
-  connectorActiveInactiveResponseSchema,
-  connectorActiveAgentInstancesResponseSchema,
-  connectorConfiguredResponseSchema,
-  createConnectorResponseSchema,
-  connectorInstanceDetailResponseSchema,
-  connectorDeleteResponseSchema,
-} from '../../../../src/modules/tokens_manager/schemas/connector';
+  instanceConfigResponseSchema,
+  authConfigUpdateResponseSchema,
+  filtersSyncConfigUpdateResponseSchema,
+  nameUpdateResponseSchema,
+  filterFieldOptionsResponseSchema,
+  oauthAuthorizeResponseSchema,
+  oauthCallbackResponseSchema,
+  registryResponseSchema,
+  schemaResponseSchema,
+  instancesResponseSchema,
+  activeInactiveResponseSchema,
+  activeAgentInstancesResponseSchema,
+  configuredResponseSchema,
+  createResponseSchema,
+  instanceDetailResponseSchema,
+  deleteResponseSchema,
+} from '../../../../src/modules/tokens_manager/schemas/connector.schema';
 
 // ============================================================================
 // Test helpers
@@ -41,12 +41,12 @@ import {
 const validConnectorId = 'ebd5cb6a-a2dd-4065-af23-e70b392ffd1b';
 
 // ============================================================================
-// createConnectorInstanceSchema
+// createInstanceSchema
 // ============================================================================
 
-describe('createConnectorInstanceSchema', () => {
+describe('createInstanceSchema', () => {
   it('should accept minimal valid body (required fields only)', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: {
         connectorType: 'Jira',
         instanceName: 'My Jira',
@@ -57,7 +57,7 @@ describe('createConnectorInstanceSchema', () => {
   });
 
   it('should accept full valid body with all optional fields', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: {
         connectorType: 'Jira',
         instanceName: 'My Jira',
@@ -75,209 +75,209 @@ describe('createConnectorInstanceSchema', () => {
   });
 
   it('should accept scope "personal"', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { connectorType: 'Slack', instanceName: 'Slack', scope: 'personal' },
     });
     expect(result.success).to.be.true;
   });
 
   it('should reject missing connectorType', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { instanceName: 'My Jira', scope: 'team' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject empty connectorType', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { connectorType: '', instanceName: 'My Jira', scope: 'team' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing instanceName', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { connectorType: 'Jira', scope: 'team' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject empty instanceName', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { connectorType: 'Jira', instanceName: '', scope: 'team' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing scope', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { connectorType: 'Jira', instanceName: 'My Jira' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject invalid scope value', () => {
-    const result = createConnectorInstanceSchema.safeParse({
+    const result = createInstanceSchema.safeParse({
       body: { connectorType: 'Jira', instanceName: 'My Jira', scope: 'global' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing body entirely', () => {
-    const result = createConnectorInstanceSchema.safeParse({});
+    const result = createInstanceSchema.safeParse({});
     expect(result.success).to.be.false;
   });
 });
 
 // ============================================================================
-// connectorIdParamSchema
+// idParamSchema
 // ============================================================================
 
-describe('connectorIdParamSchema', () => {
+describe('idParamSchema', () => {
   it('should accept a valid connectorId param', () => {
-    const result = connectorIdParamSchema.safeParse({
+    const result = idParamSchema.safeParse({
       params: { connectorId: validConnectorId },
     });
     expect(result.success).to.be.true;
   });
 
   it('should accept any non-empty string as connectorId', () => {
-    const result = connectorIdParamSchema.safeParse({
+    const result = idParamSchema.safeParse({
       params: { connectorId: 'any-string-id' },
     });
     expect(result.success).to.be.true;
   });
 
   it('should reject missing connectorId', () => {
-    const result = connectorIdParamSchema.safeParse({ params: {} });
+    const result = idParamSchema.safeParse({ params: {} });
     expect(result.success).to.be.false;
   });
 
   it('should reject empty connectorId', () => {
-    const result = connectorIdParamSchema.safeParse({
+    const result = idParamSchema.safeParse({
       params: { connectorId: '' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing params', () => {
-    const result = connectorIdParamSchema.safeParse({});
+    const result = idParamSchema.safeParse({});
     expect(result.success).to.be.false;
   });
 });
 
 // ============================================================================
-// connectorListSchema
+// listSchema
 // ============================================================================
 
-describe('connectorListSchema', () => {
+describe('listSchema', () => {
   it('should accept empty query (all optional)', () => {
-    const result = connectorListSchema.safeParse({ query: {} });
+    const result = listSchema.safeParse({ query: {} });
     expect(result.success).to.be.true;
   });
 
   it('should accept valid scope "team"', () => {
-    const result = connectorListSchema.safeParse({ query: { scope: 'team' } });
+    const result = listSchema.safeParse({ query: { scope: 'team' } });
     expect(result.success).to.be.true;
   });
 
   it('should accept valid scope "personal"', () => {
-    const result = connectorListSchema.safeParse({ query: { scope: 'personal' } });
+    const result = listSchema.safeParse({ query: { scope: 'personal' } });
     expect(result.success).to.be.true;
   });
 
   it('should reject invalid scope', () => {
-    const result = connectorListSchema.safeParse({ query: { scope: 'org' } });
+    const result = listSchema.safeParse({ query: { scope: 'org' } });
     expect(result.success).to.be.false;
   });
 
   it('should accept valid numeric page and limit as strings (preprocess)', () => {
-    const result = connectorListSchema.safeParse({
+    const result = listSchema.safeParse({
       query: { page: '2', limit: '50' },
     });
     expect(result.success).to.be.true;
   });
 
   it('should accept valid numeric page and limit as numbers', () => {
-    const result = connectorListSchema.safeParse({
+    const result = listSchema.safeParse({
       query: { page: 3, limit: 100 },
     });
     expect(result.success).to.be.true;
   });
 
   it('should reject page less than 1', () => {
-    const result = connectorListSchema.safeParse({ query: { page: '0' } });
+    const result = listSchema.safeParse({ query: { page: '0' } });
     expect(result.success).to.be.false;
   });
 
   it('should reject limit greater than 200', () => {
-    const result = connectorListSchema.safeParse({ query: { limit: '201' } });
+    const result = listSchema.safeParse({ query: { limit: '201' } });
     expect(result.success).to.be.false;
   });
 
   it('should reject limit less than 1', () => {
-    const result = connectorListSchema.safeParse({ query: { limit: '0' } });
+    const result = listSchema.safeParse({ query: { limit: '0' } });
     expect(result.success).to.be.false;
   });
 
   it('should accept a search string', () => {
-    const result = connectorListSchema.safeParse({ query: { search: 'jira' } });
+    const result = listSchema.safeParse({ query: { search: 'jira' } });
     expect(result.success).to.be.true;
   });
 
   it('should treat empty string page as undefined (no error)', () => {
-    const result = connectorListSchema.safeParse({ query: { page: '' } });
+    const result = listSchema.safeParse({ query: { page: '' } });
     expect(result.success).to.be.true;
   });
 
   it('should treat empty string limit as undefined (no error)', () => {
-    const result = connectorListSchema.safeParse({ query: { limit: '' } });
+    const result = listSchema.safeParse({ query: { limit: '' } });
     expect(result.success).to.be.true;
   });
 
   it('should reject missing query entirely', () => {
-    const result = connectorListSchema.safeParse({});
+    const result = listSchema.safeParse({});
     expect(result.success).to.be.false;
   });
 });
 
 // ============================================================================
-// connectorTypeParamSchema
+// typeParamSchema
 // ============================================================================
 
-describe('connectorTypeParamSchema', () => {
+describe('typeParamSchema', () => {
   it('should accept a valid connectorType param', () => {
-    const result = connectorTypeParamSchema.safeParse({
+    const result = typeParamSchema.safeParse({
       params: { connectorType: 'Jira' },
     });
     expect(result.success).to.be.true;
   });
 
   it('should reject empty connectorType', () => {
-    const result = connectorTypeParamSchema.safeParse({
+    const result = typeParamSchema.safeParse({
       params: { connectorType: '' },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing connectorType', () => {
-    const result = connectorTypeParamSchema.safeParse({ params: {} });
+    const result = typeParamSchema.safeParse({ params: {} });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing params', () => {
-    const result = connectorTypeParamSchema.safeParse({});
+    const result = typeParamSchema.safeParse({});
     expect(result.success).to.be.false;
   });
 });
 
 // ============================================================================
-// updateConnectorInstanceNameSchema
+// updateInstanceNameSchema
 // ============================================================================
 
-describe('updateConnectorInstanceNameSchema', () => {
+describe('updateInstanceNameSchema', () => {
   it('should accept valid body and params', () => {
-    const result = updateConnectorInstanceNameSchema.safeParse({
+    const result = updateInstanceNameSchema.safeParse({
       body: { instanceName: 'New Name' },
       params: { connectorId: validConnectorId },
     });
@@ -285,7 +285,7 @@ describe('updateConnectorInstanceNameSchema', () => {
   });
 
   it('should reject missing instanceName', () => {
-    const result = updateConnectorInstanceNameSchema.safeParse({
+    const result = updateInstanceNameSchema.safeParse({
       body: {},
       params: { connectorId: validConnectorId },
     });
@@ -293,7 +293,7 @@ describe('updateConnectorInstanceNameSchema', () => {
   });
 
   it('should reject empty instanceName', () => {
-    const result = updateConnectorInstanceNameSchema.safeParse({
+    const result = updateInstanceNameSchema.safeParse({
       body: { instanceName: '' },
       params: { connectorId: validConnectorId },
     });
@@ -301,7 +301,7 @@ describe('updateConnectorInstanceNameSchema', () => {
   });
 
   it('should reject missing connectorId param', () => {
-    const result = updateConnectorInstanceNameSchema.safeParse({
+    const result = updateInstanceNameSchema.safeParse({
       body: { instanceName: 'New Name' },
       params: {},
     });
@@ -309,7 +309,7 @@ describe('updateConnectorInstanceNameSchema', () => {
   });
 
   it('should reject empty connectorId param', () => {
-    const result = updateConnectorInstanceNameSchema.safeParse({
+    const result = updateInstanceNameSchema.safeParse({
       body: { instanceName: 'New Name' },
       params: { connectorId: '' },
     });
@@ -317,7 +317,7 @@ describe('updateConnectorInstanceNameSchema', () => {
   });
 
   it('should reject missing body', () => {
-    const result = updateConnectorInstanceNameSchema.safeParse({
+    const result = updateInstanceNameSchema.safeParse({
       params: { connectorId: validConnectorId },
     });
     expect(result.success).to.be.false;
@@ -325,12 +325,12 @@ describe('updateConnectorInstanceNameSchema', () => {
 });
 
 // ============================================================================
-// updateConnectorInstanceAuthConfigSchema
+// updateInstanceAuthConfigSchema
 // ============================================================================
 
-describe('updateConnectorInstanceAuthConfigSchema', () => {
+describe('updateInstanceAuthConfigSchema', () => {
   it('should accept valid body with auth object', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       body: { auth: { oauthConfigId: 'some-id', authType: 'OAUTH' } },
       params: { connectorId: validConnectorId },
     });
@@ -338,7 +338,7 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
   });
 
   it('should accept body with optional baseUrl', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       body: {
         auth: { clientId: 'id', clientSecret: 'secret' },
         baseUrl: 'https://app.example.com',
@@ -349,7 +349,7 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
   });
 
   it('should accept auth as empty object (z.any() allows it)', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       body: { auth: {} },
       params: { connectorId: validConnectorId },
     });
@@ -357,7 +357,7 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
   });
 
   it('should reject missing auth field', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       body: {},
       params: { connectorId: validConnectorId },
     });
@@ -365,7 +365,7 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
   });
 
   it('should reject missing connectorId param', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       body: { auth: {} },
       params: {},
     });
@@ -373,7 +373,7 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
   });
 
   it('should reject empty connectorId param', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       body: { auth: {} },
       params: { connectorId: '' },
     });
@@ -381,7 +381,7 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
   });
 
   it('should reject missing body', () => {
-    const result = updateConnectorInstanceAuthConfigSchema.safeParse({
+    const result = updateInstanceAuthConfigSchema.safeParse({
       params: { connectorId: validConnectorId },
     });
     expect(result.success).to.be.false;
@@ -389,12 +389,12 @@ describe('updateConnectorInstanceAuthConfigSchema', () => {
 });
 
 // ============================================================================
-// updateConnectorInstanceFiltersSyncConfigSchema
+// updateInstanceFiltersSyncConfigSchema
 // ============================================================================
 
-describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
+describe('updateInstanceFiltersSyncConfigSchema', () => {
   it('should accept empty body (both sync and filters are optional)', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       body: {},
       params: { connectorId: validConnectorId },
     });
@@ -402,7 +402,7 @@ describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
   });
 
   it('should accept body with only sync', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       body: { sync: { selectedStrategy: 'MANUAL' } },
       params: { connectorId: validConnectorId },
     });
@@ -410,7 +410,7 @@ describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
   });
 
   it('should accept body with only filters', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       body: { filters: { sync: { values: {} } } },
       params: { connectorId: validConnectorId },
     });
@@ -418,7 +418,7 @@ describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
   });
 
   it('should accept body with both sync and filters', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       body: {
         sync: { selectedStrategy: 'SCHEDULED' },
         filters: { indexing: { values: {} } },
@@ -429,7 +429,7 @@ describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
   });
 
   it('should reject missing connectorId', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       body: {},
       params: {},
     });
@@ -437,7 +437,7 @@ describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
   });
 
   it('should reject empty connectorId', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       body: {},
       params: { connectorId: '' },
     });
@@ -445,7 +445,7 @@ describe('updateConnectorInstanceFiltersSyncConfigSchema', () => {
   });
 
   it('should reject missing body', () => {
-    const result = updateConnectorInstanceFiltersSyncConfigSchema.safeParse({
+    const result = updateInstanceFiltersSyncConfigSchema.safeParse({
       params: { connectorId: validConnectorId },
     });
     expect(result.success).to.be.false;
@@ -651,12 +651,12 @@ describe('getFilterFieldOptionsSchema', () => {
 });
 
 // ============================================================================
-// connectorToggleSchema
+// toggleSchema
 // ============================================================================
 
-describe('connectorToggleSchema', () => {
+describe('toggleSchema', () => {
   it('should accept type "sync" with valid connectorId', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync' },
       params: { connectorId: validConnectorId },
     });
@@ -664,7 +664,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should accept type "agent" with valid connectorId', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'agent' },
       params: { connectorId: validConnectorId },
     });
@@ -672,7 +672,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should accept type "sync" with optional fullSync true', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync', fullSync: true },
       params: { connectorId: validConnectorId },
     });
@@ -680,7 +680,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should accept type "sync" with optional fullSync false', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync', fullSync: false },
       params: { connectorId: validConnectorId },
     });
@@ -688,7 +688,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should reject invalid type value', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'realtime' },
       params: { connectorId: validConnectorId },
     });
@@ -696,7 +696,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should reject missing type field', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: {},
       params: { connectorId: validConnectorId },
     });
@@ -704,7 +704,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should reject non-boolean fullSync', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync', fullSync: 'yes' },
       params: { connectorId: validConnectorId },
     });
@@ -712,7 +712,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should reject missing connectorId', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync' },
       params: {},
     });
@@ -720,7 +720,7 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should reject empty connectorId', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync' },
       params: { connectorId: '' },
     });
@@ -728,14 +728,14 @@ describe('connectorToggleSchema', () => {
   });
 
   it('should reject missing body', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       params: { connectorId: validConnectorId },
     });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing params', () => {
-    const result = connectorToggleSchema.safeParse({
+    const result = toggleSchema.safeParse({
       body: { type: 'sync' },
     });
     expect(result.success).to.be.false;
@@ -857,34 +857,34 @@ const validInstanceItem = {
 };
 
 // ============================================================================
-// connectorSuccessSchema
+// successSchema
 // ============================================================================
 
-describe('connectorSuccessSchema', () => {
+describe('successSchema', () => {
   it('should accept { success: true }', () => {
-    expect(connectorSuccessSchema.safeParse({ success: true }).success).to.be.true;
+    expect(successSchema.safeParse({ success: true }).success).to.be.true;
   });
 
   it('should accept { success: false }', () => {
-    expect(connectorSuccessSchema.safeParse({ success: false }).success).to.be.true;
+    expect(successSchema.safeParse({ success: false }).success).to.be.true;
   });
 
   it('should reject missing success field', () => {
-    expect(connectorSuccessSchema.safeParse({}).success).to.be.false;
+    expect(successSchema.safeParse({}).success).to.be.false;
   });
 
   it('should reject non-boolean success', () => {
-    expect(connectorSuccessSchema.safeParse({ success: 'true' }).success).to.be.false;
+    expect(successSchema.safeParse({ success: 'true' }).success).to.be.false;
   });
 });
 
 // ============================================================================
-// connectorToggleResponseSchema
+// toggleResponseSchema
 // ============================================================================
 
-describe('connectorToggleResponseSchema', () => {
+describe('toggleResponseSchema', () => {
   it('should accept valid response', () => {
-    const result = connectorToggleResponseSchema.safeParse({
+    const result = toggleResponseSchema.safeParse({
       success: true,
       message: 'Connector toggled successfully.',
     });
@@ -892,12 +892,12 @@ describe('connectorToggleResponseSchema', () => {
   });
 
   it('should reject missing message', () => {
-    const result = connectorToggleResponseSchema.safeParse({ success: true });
+    const result = toggleResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 
   it('should reject unknown extra keys (strict)', () => {
-    const result = connectorToggleResponseSchema.safeParse({
+    const result = toggleResponseSchema.safeParse({
       success: true,
       message: 'ok',
       extra: 'field',
@@ -975,12 +975,12 @@ describe('scopeCountsResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorOAuthAuthorizeResponseSchema
+// oauthAuthorizeResponseSchema
 // ============================================================================
 
-describe('connectorOAuthAuthorizeResponseSchema', () => {
+describe('oauthAuthorizeResponseSchema', () => {
   it('should accept valid OAuth authorize response', () => {
-    const result = connectorOAuthAuthorizeResponseSchema.safeParse({
+    const result = oauthAuthorizeResponseSchema.safeParse({
       success: true,
       authorizationUrl: 'https://accounts.google.com/o/oauth2/auth?...',
       state: 'random-state-token',
@@ -989,7 +989,7 @@ describe('connectorOAuthAuthorizeResponseSchema', () => {
   });
 
   it('should reject missing authorizationUrl', () => {
-    const result = connectorOAuthAuthorizeResponseSchema.safeParse({
+    const result = oauthAuthorizeResponseSchema.safeParse({
       success: true,
       state: 'state-token',
     });
@@ -997,7 +997,7 @@ describe('connectorOAuthAuthorizeResponseSchema', () => {
   });
 
   it('should reject missing state', () => {
-    const result = connectorOAuthAuthorizeResponseSchema.safeParse({
+    const result = oauthAuthorizeResponseSchema.safeParse({
       success: true,
       authorizationUrl: 'https://accounts.google.com/...',
     });
@@ -1005,7 +1005,7 @@ describe('connectorOAuthAuthorizeResponseSchema', () => {
   });
 
   it('should reject extra unknown keys (strict)', () => {
-    const result = connectorOAuthAuthorizeResponseSchema.safeParse({
+    const result = oauthAuthorizeResponseSchema.safeParse({
       success: true,
       authorizationUrl: 'https://...',
       state: 'state',
@@ -1016,12 +1016,12 @@ describe('connectorOAuthAuthorizeResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorOAuthCallbackResponseSchema
+// oauthCallbackResponseSchema
 // ============================================================================
 
-describe('connectorOAuthCallbackResponseSchema', () => {
+describe('oauthCallbackResponseSchema', () => {
   it('should accept valid OAuth callback response', () => {
-    const result = connectorOAuthCallbackResponseSchema.safeParse({
+    const result = oauthCallbackResponseSchema.safeParse({
       success: true,
       redirect_url: 'https://app.example.com/connectors?status=success',
     });
@@ -1029,12 +1029,12 @@ describe('connectorOAuthCallbackResponseSchema', () => {
   });
 
   it('should reject missing redirect_url', () => {
-    const result = connectorOAuthCallbackResponseSchema.safeParse({ success: true });
+    const result = oauthCallbackResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 
   it('should reject extra unknown keys (strict)', () => {
-    const result = connectorOAuthCallbackResponseSchema.safeParse({
+    const result = oauthCallbackResponseSchema.safeParse({
       success: true,
       redirect_url: 'https://...',
       extra: 'field',
@@ -1044,12 +1044,12 @@ describe('connectorOAuthCallbackResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorNameUpdateResponseSchema
+// nameUpdateResponseSchema
 // ============================================================================
 
-describe('connectorNameUpdateResponseSchema', () => {
+describe('nameUpdateResponseSchema', () => {
   it('should accept valid name update response', () => {
-    const result = connectorNameUpdateResponseSchema.safeParse({
+    const result = nameUpdateResponseSchema.safeParse({
       success: true,
       connector: { _key: 'some-uuid', name: 'New Name' },
     });
@@ -1057,12 +1057,12 @@ describe('connectorNameUpdateResponseSchema', () => {
   });
 
   it('should reject missing connector field', () => {
-    const result = connectorNameUpdateResponseSchema.safeParse({ success: true });
+    const result = nameUpdateResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 
   it('should reject missing _key in connector', () => {
-    const result = connectorNameUpdateResponseSchema.safeParse({
+    const result = nameUpdateResponseSchema.safeParse({
       success: true,
       connector: { name: 'New Name' },
     });
@@ -1070,7 +1070,7 @@ describe('connectorNameUpdateResponseSchema', () => {
   });
 
   it('should reject missing name in connector', () => {
-    const result = connectorNameUpdateResponseSchema.safeParse({
+    const result = nameUpdateResponseSchema.safeParse({
       success: true,
       connector: { _key: 'some-uuid' },
     });
@@ -1078,7 +1078,7 @@ describe('connectorNameUpdateResponseSchema', () => {
   });
 
   it('should reject extra keys in connector (strict)', () => {
-    const result = connectorNameUpdateResponseSchema.safeParse({
+    const result = nameUpdateResponseSchema.safeParse({
       success: true,
       connector: { _key: 'some-uuid', name: 'New Name', extra: true },
     });
@@ -1087,12 +1087,12 @@ describe('connectorNameUpdateResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorDeleteResponseSchema
+// deleteResponseSchema
 // ============================================================================
 
-describe('connectorDeleteResponseSchema', () => {
+describe('deleteResponseSchema', () => {
   it('should accept valid delete response', () => {
-    const result = connectorDeleteResponseSchema.safeParse({
+    const result = deleteResponseSchema.safeParse({
       success: true,
       message: 'Connector deletion initiated',
       connectorId: 'ebd5cb6a-a2dd-4065-af23-e70b392ffd1b',
@@ -1102,7 +1102,7 @@ describe('connectorDeleteResponseSchema', () => {
   });
 
   it('should reject missing message', () => {
-    const result = connectorDeleteResponseSchema.safeParse({
+    const result = deleteResponseSchema.safeParse({
       success: true,
       connectorId: 'some-id',
       status: 'DELETING',
@@ -1111,7 +1111,7 @@ describe('connectorDeleteResponseSchema', () => {
   });
 
   it('should reject missing connectorId', () => {
-    const result = connectorDeleteResponseSchema.safeParse({
+    const result = deleteResponseSchema.safeParse({
       success: true,
       message: 'Connector deletion initiated',
       status: 'DELETING',
@@ -1120,7 +1120,7 @@ describe('connectorDeleteResponseSchema', () => {
   });
 
   it('should reject missing status', () => {
-    const result = connectorDeleteResponseSchema.safeParse({
+    const result = deleteResponseSchema.safeParse({
       success: true,
       message: 'Connector deletion initiated',
       connectorId: 'some-id',
@@ -1129,7 +1129,7 @@ describe('connectorDeleteResponseSchema', () => {
   });
 
   it('should reject extra unknown keys (strict)', () => {
-    const result = connectorDeleteResponseSchema.safeParse({
+    const result = deleteResponseSchema.safeParse({
       success: true,
       message: 'ok',
       connectorId: 'id',
@@ -1141,14 +1141,14 @@ describe('connectorDeleteResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorFilterFieldOptionsResponseSchema
+// filterFieldOptionsResponseSchema
 // ============================================================================
 
-describe('connectorFilterFieldOptionsResponseSchema', () => {
+describe('filterFieldOptionsResponseSchema', () => {
   const validOptions = [{ id: 'PST', label: 'Pipeshub Security Test' }];
 
   it('should accept valid response with no cursor or message', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: validOptions,
       page: 1,
@@ -1159,7 +1159,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should accept response with optional cursor', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: validOptions,
       page: 1,
@@ -1171,7 +1171,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should accept cursor as null', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: [],
       page: 1,
@@ -1183,7 +1183,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should accept optional message field', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: [],
       page: 1,
@@ -1195,7 +1195,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should accept empty options array', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: [],
       page: 1,
@@ -1206,7 +1206,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should reject missing options', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       page: 1,
       limit: 50,
@@ -1216,7 +1216,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should reject option missing id', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: [{ label: 'Only Label' }],
       page: 1,
@@ -1227,7 +1227,7 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
   });
 
   it('should reject missing hasMore', () => {
-    const result = connectorFilterFieldOptionsResponseSchema.safeParse({
+    const result = filterFieldOptionsResponseSchema.safeParse({
       success: true,
       options: [],
       page: 1,
@@ -1238,10 +1238,10 @@ describe('connectorFilterFieldOptionsResponseSchema', () => {
 });
 
 // ============================================================================
-// createConnectorResponseSchema
+// createResponseSchema
 // ============================================================================
 
-describe('createConnectorResponseSchema', () => {
+describe('createResponseSchema', () => {
   const validConnector = {
     connectorId: 'ebd5cb6a-a2dd-4065-af23-e70b392ffd1b',
     connectorType: 'Jira',
@@ -1254,7 +1254,7 @@ describe('createConnectorResponseSchema', () => {
   };
 
   it('should accept valid create response', () => {
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       connector: validConnector,
       message: 'Connector instance created successfully.',
@@ -1263,7 +1263,7 @@ describe('createConnectorResponseSchema', () => {
   });
 
   it('should accept scope "personal"', () => {
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       connector: { ...validConnector, scope: 'personal' },
       message: 'Connector instance created successfully.',
@@ -1272,7 +1272,7 @@ describe('createConnectorResponseSchema', () => {
   });
 
   it('should reject missing message', () => {
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       connector: validConnector,
     });
@@ -1280,7 +1280,7 @@ describe('createConnectorResponseSchema', () => {
   });
 
   it('should reject missing connector', () => {
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       message: 'ok',
     });
@@ -1289,7 +1289,7 @@ describe('createConnectorResponseSchema', () => {
 
   it('should reject missing connectorId in connector', () => {
     const { connectorId: _, ...rest } = validConnector;
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       connector: rest,
       message: 'ok',
@@ -1298,7 +1298,7 @@ describe('createConnectorResponseSchema', () => {
   });
 
   it('should reject invalid scope in connector', () => {
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       connector: { ...validConnector, scope: 'global' },
       message: 'ok',
@@ -1307,7 +1307,7 @@ describe('createConnectorResponseSchema', () => {
   });
 
   it('should reject extra keys in connector (strict)', () => {
-    const result = createConnectorResponseSchema.safeParse({
+    const result = createResponseSchema.safeParse({
       success: true,
       connector: { ...validConnector, extra: 'field' },
       message: 'ok',
@@ -1317,10 +1317,10 @@ describe('createConnectorResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorInstanceConfigResponseSchema
+// instanceConfigResponseSchema
 // ============================================================================
 
-describe('connectorInstanceConfigResponseSchema', () => {
+describe('instanceConfigResponseSchema', () => {
   const minimalNestedStoredConfig = {
     auth: {},
     sync: {},
@@ -1354,17 +1354,17 @@ describe('connectorInstanceConfigResponseSchema', () => {
   };
 
   it('should accept valid config response with default empty nested config (Python GET)', () => {
-    expect(connectorInstanceConfigResponseSchema.safeParse(validConfig).success).to.be.true;
+    expect(instanceConfigResponseSchema.safeParse(validConfig).success).to.be.true;
   });
 
   it('should reject null createdBy or updatedBy', () => {
-    const withNullCreated = connectorInstanceConfigResponseSchema.safeParse({
+    const withNullCreated = instanceConfigResponseSchema.safeParse({
       success: true,
       config: { ...validConfig.config, createdBy: null },
     });
     expect(withNullCreated.success).to.be.false;
 
-    const withNullUpdated = connectorInstanceConfigResponseSchema.safeParse({
+    const withNullUpdated = instanceConfigResponseSchema.safeParse({
       success: true,
       config: { ...validConfig.config, updatedBy: null },
     });
@@ -1372,7 +1372,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
   });
 
   it('should reject null timestamps', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: {
         ...validConfig.config,
@@ -1384,7 +1384,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
   });
 
   it('should accept config with stored connector config', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: {
         ...validConfig.config,
@@ -1399,7 +1399,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
   });
 
   it('should accept Outlook-style auth extras and empty sync/filters', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: {
         ...validConfig.config,
@@ -1423,7 +1423,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
   });
 
   it('should accept stored scheduledConfig with only intervalMinutes and timezone', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: {
         ...validConfig.config,
@@ -1442,7 +1442,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
 
   it('should reject missing connector_id', () => {
     const { connector_id: _, ...rest } = validConfig.config;
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: rest,
     });
@@ -1451,7 +1451,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
 
   it('should reject missing isActive', () => {
     const { isActive: _, ...rest } = validConfig.config;
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: rest,
     });
@@ -1459,7 +1459,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
   });
 
   it('should reject extra unknown keys in config (strict)', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: { ...validConfig.config, unknownField: true },
     });
@@ -1467,7 +1467,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
   });
 
   it('should reject extra top-level keys inside nested stored config (strict)', () => {
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: {
         ...validConfig.config,
@@ -1484,7 +1484,7 @@ describe('connectorInstanceConfigResponseSchema', () => {
 
   it('should reject missing nested config object', () => {
     const { config: _nested, ...rest } = validConfig.config;
-    const result = connectorInstanceConfigResponseSchema.safeParse({
+    const result = instanceConfigResponseSchema.safeParse({
       success: true,
       config: rest,
     });
@@ -1493,10 +1493,10 @@ describe('connectorInstanceConfigResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorAuthConfigUpdateResponseSchema
+// authConfigUpdateResponseSchema
 // ============================================================================
 
-describe('connectorAuthConfigUpdateResponseSchema', () => {
+describe('authConfigUpdateResponseSchema', () => {
   const validAuthUpdate = {
     success: true,
     config: {
@@ -1508,11 +1508,11 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
   };
 
   it('should accept valid auth update response', () => {
-    expect(connectorAuthConfigUpdateResponseSchema.safeParse(validAuthUpdate).success).to.be.true;
+    expect(authConfigUpdateResponseSchema.safeParse(validAuthUpdate).success).to.be.true;
   });
 
   it('should accept config with no credentials or oauth (both optional)', () => {
-    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+    const result = authConfigUpdateResponseSchema.safeParse({
       success: true,
       config: { auth: { authType: 'OAUTH', connectorType: 'Jira', connectorScope: 'team' } },
       message: 'Authentication configuration saved successfully.',
@@ -1521,7 +1521,7 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
   });
 
   it('should accept config with sync and filters', () => {
-    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+    const result = authConfigUpdateResponseSchema.safeParse({
       success: true,
       config: {
         auth: { authType: 'OAUTH', connectorType: 'Jira', connectorScope: 'team' },
@@ -1536,7 +1536,7 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
   });
 
   it('should reject missing message', () => {
-    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+    const result = authConfigUpdateResponseSchema.safeParse({
       success: true,
       config: validAuthUpdate.config,
     });
@@ -1544,7 +1544,7 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
   });
 
   it('should reject missing config', () => {
-    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+    const result = authConfigUpdateResponseSchema.safeParse({
       success: true,
       message: 'ok',
     });
@@ -1552,7 +1552,7 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
   });
 
   it('should reject extra top-level keys (strict)', () => {
-    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+    const result = authConfigUpdateResponseSchema.safeParse({
       ...validAuthUpdate,
       extra: 'field',
     });
@@ -1560,7 +1560,7 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
   });
 
   it('should reject unknown keys inside config (strict)', () => {
-    const result = connectorAuthConfigUpdateResponseSchema.safeParse({
+    const result = authConfigUpdateResponseSchema.safeParse({
       success: true,
       config: {
         ...validAuthUpdate.config,
@@ -1573,10 +1573,10 @@ describe('connectorAuthConfigUpdateResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorFiltersSyncConfigUpdateResponseSchema
+// filtersSyncConfigUpdateResponseSchema
 // ============================================================================
 
-describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
+describe('filtersSyncConfigUpdateResponseSchema', () => {
   const validFiltersSyncUpdate = {
     success: true,
     config: { sync: { selectedStrategy: 'MANUAL' } },
@@ -1586,12 +1586,12 @@ describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
 
   it('should accept valid filters-sync update response', () => {
     expect(
-      connectorFiltersSyncConfigUpdateResponseSchema.safeParse(validFiltersSyncUpdate).success,
+      filtersSyncConfigUpdateResponseSchema.safeParse(validFiltersSyncUpdate).success,
     ).to.be.true;
   });
 
   it('should accept syncFiltersChanged as true', () => {
-    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse({
+    const result = filtersSyncConfigUpdateResponseSchema.safeParse({
       ...validFiltersSyncUpdate,
       syncFiltersChanged: true,
     });
@@ -1600,12 +1600,12 @@ describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
 
   it('should reject missing syncFiltersChanged', () => {
     const { syncFiltersChanged: _, ...rest } = validFiltersSyncUpdate;
-    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse(rest);
+    const result = filtersSyncConfigUpdateResponseSchema.safeParse(rest);
     expect(result.success).to.be.false;
   });
 
   it('should reject non-boolean syncFiltersChanged', () => {
-    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse({
+    const result = filtersSyncConfigUpdateResponseSchema.safeParse({
       ...validFiltersSyncUpdate,
       syncFiltersChanged: 'false',
     });
@@ -1614,12 +1614,12 @@ describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
 
   it('should reject missing message', () => {
     const { message: _, ...rest } = validFiltersSyncUpdate;
-    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse(rest);
+    const result = filtersSyncConfigUpdateResponseSchema.safeParse(rest);
     expect(result.success).to.be.false;
   });
 
   it('should reject extra top-level keys (strict)', () => {
-    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse({
+    const result = filtersSyncConfigUpdateResponseSchema.safeParse({
       ...validFiltersSyncUpdate,
       extra: 'field',
     });
@@ -1627,7 +1627,7 @@ describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
   });
 
   it('should reject unknown keys inside config (strict)', () => {
-    const result = connectorFiltersSyncConfigUpdateResponseSchema.safeParse({
+    const result = filtersSyncConfigUpdateResponseSchema.safeParse({
       ...validFiltersSyncUpdate,
       config: { ...validFiltersSyncUpdate.config, legacyKey: true },
     });
@@ -1636,22 +1636,22 @@ describe('connectorFiltersSyncConfigUpdateResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorActiveInactiveResponseSchema
+// activeInactiveResponseSchema
 // ============================================================================
 
-describe('connectorActiveInactiveResponseSchema', () => {
+describe('activeInactiveResponseSchema', () => {
   const validActiveInactive = {
     success: true,
     connectors: [],
   };
 
   it('should accept empty connectors list', () => {
-    expect(connectorActiveInactiveResponseSchema.safeParse(validActiveInactive).success).to.be.true;
+    expect(activeInactiveResponseSchema.safeParse(validActiveInactive).success).to.be.true;
   });
 
   it('should accept connectors list with a valid instance (no config)', () => {
     const { config: _, ...instanceWithoutConfig } = validInstanceItem;
-    const result = connectorActiveInactiveResponseSchema.safeParse({
+    const result = activeInactiveResponseSchema.safeParse({
       success: true,
       connectors: [instanceWithoutConfig],
     });
@@ -1659,12 +1659,12 @@ describe('connectorActiveInactiveResponseSchema', () => {
   });
 
   it('should reject missing connectors', () => {
-    const result = connectorActiveInactiveResponseSchema.safeParse({ success: true });
+    const result = activeInactiveResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 
   it('should reject extra top-level keys (strict)', () => {
-    const result = connectorActiveInactiveResponseSchema.safeParse({
+    const result = activeInactiveResponseSchema.safeParse({
       ...validActiveInactive,
       extra: 'field',
     });
@@ -1673,12 +1673,12 @@ describe('connectorActiveInactiveResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorActiveAgentInstancesResponseSchema
+// activeAgentInstancesResponseSchema
 // ============================================================================
 
-describe('connectorActiveAgentInstancesResponseSchema', () => {
+describe('activeAgentInstancesResponseSchema', () => {
   it('should accept valid response with pagination', () => {
-    const result = connectorActiveAgentInstancesResponseSchema.safeParse({
+    const result = activeAgentInstancesResponseSchema.safeParse({
       success: true,
       connectors: [],
       pagination: validPagination,
@@ -1687,7 +1687,7 @@ describe('connectorActiveAgentInstancesResponseSchema', () => {
   });
 
   it('should reject missing pagination', () => {
-    const result = connectorActiveAgentInstancesResponseSchema.safeParse({
+    const result = activeAgentInstancesResponseSchema.safeParse({
       success: true,
       connectors: [],
     });
@@ -1695,7 +1695,7 @@ describe('connectorActiveAgentInstancesResponseSchema', () => {
   });
 
   it('should reject missing connectors', () => {
-    const result = connectorActiveAgentInstancesResponseSchema.safeParse({
+    const result = activeAgentInstancesResponseSchema.safeParse({
       success: true,
       pagination: validPagination,
     });
@@ -1703,7 +1703,7 @@ describe('connectorActiveAgentInstancesResponseSchema', () => {
   });
 
   it('should reject extra top-level keys (strict)', () => {
-    const result = connectorActiveAgentInstancesResponseSchema.safeParse({
+    const result = activeAgentInstancesResponseSchema.safeParse({
       success: true,
       connectors: [],
       pagination: validPagination,
@@ -1714,12 +1714,12 @@ describe('connectorActiveAgentInstancesResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorInstancesResponseSchema
+// instancesResponseSchema
 // ============================================================================
 
-describe('connectorInstancesResponseSchema', () => {
+describe('instancesResponseSchema', () => {
   it('should accept valid response with empty list', () => {
-    const result = connectorInstancesResponseSchema.safeParse({
+    const result = instancesResponseSchema.safeParse({
       success: true,
       connectors: [],
       pagination: validPagination,
@@ -1728,7 +1728,7 @@ describe('connectorInstancesResponseSchema', () => {
   });
 
   it('should accept response with optional scopeCounts', () => {
-    const result = connectorInstancesResponseSchema.safeParse({
+    const result = instancesResponseSchema.safeParse({
       success: true,
       connectors: [],
       pagination: validPagination,
@@ -1738,7 +1738,7 @@ describe('connectorInstancesResponseSchema', () => {
   });
 
   it('should accept valid full instance in connectors list', () => {
-    const result = connectorInstancesResponseSchema.safeParse({
+    const result = instancesResponseSchema.safeParse({
       success: true,
       connectors: [validInstanceItem],
       pagination: { ...validPagination, totalCount: 1, totalPages: 1 },
@@ -1747,7 +1747,7 @@ describe('connectorInstancesResponseSchema', () => {
   });
 
   it('should reject missing pagination', () => {
-    const result = connectorInstancesResponseSchema.safeParse({
+    const result = instancesResponseSchema.safeParse({
       success: true,
       connectors: [],
     });
@@ -1756,7 +1756,7 @@ describe('connectorInstancesResponseSchema', () => {
 
   it('should reject instance missing required _key', () => {
     const { _key: _, ...instanceWithout_key } = validInstanceItem;
-    const result = connectorInstancesResponseSchema.safeParse({
+    const result = instancesResponseSchema.safeParse({
       success: true,
       connectors: [instanceWithout_key],
       pagination: validPagination,
@@ -1766,12 +1766,12 @@ describe('connectorInstancesResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorInstanceDetailResponseSchema
+// instanceDetailResponseSchema
 // ============================================================================
 
-describe('connectorInstanceDetailResponseSchema', () => {
+describe('instanceDetailResponseSchema', () => {
   it('should accept valid instance detail response', () => {
-    const result = connectorInstanceDetailResponseSchema.safeParse({
+    const result = instanceDetailResponseSchema.safeParse({
       success: true,
       connector: validInstanceItem,
     });
@@ -1779,12 +1779,12 @@ describe('connectorInstanceDetailResponseSchema', () => {
   });
 
   it('should reject missing connector', () => {
-    const result = connectorInstanceDetailResponseSchema.safeParse({ success: true });
+    const result = instanceDetailResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 
   it('should reject connector with non-nullable status as number', () => {
-    const result = connectorInstanceDetailResponseSchema.safeParse({
+    const result = instanceDetailResponseSchema.safeParse({
       success: true,
       connector: { ...validInstanceItem, status: 123 },
     });
@@ -1792,7 +1792,7 @@ describe('connectorInstanceDetailResponseSchema', () => {
   });
 
   it('should accept connector with status as string', () => {
-    const result = connectorInstanceDetailResponseSchema.safeParse({
+    const result = instanceDetailResponseSchema.safeParse({
       success: true,
       connector: { ...validInstanceItem, status: 'DELETING' },
     });
@@ -1800,7 +1800,7 @@ describe('connectorInstanceDetailResponseSchema', () => {
   });
 
   it('should reject extra top-level keys (strict)', () => {
-    const result = connectorInstanceDetailResponseSchema.safeParse({
+    const result = instanceDetailResponseSchema.safeParse({
       success: true,
       connector: validInstanceItem,
       extra: 'field',
@@ -1810,10 +1810,10 @@ describe('connectorInstanceDetailResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorConfiguredResponseSchema
+// configuredResponseSchema
 // ============================================================================
 
-describe('connectorConfiguredResponseSchema', () => {
+describe('configuredResponseSchema', () => {
   const validConfigured = {
     success: true,
     connectors: {
@@ -1824,11 +1824,11 @@ describe('connectorConfiguredResponseSchema', () => {
   };
 
   it('should accept valid configured response', () => {
-    expect(connectorConfiguredResponseSchema.safeParse(validConfigured).success).to.be.true;
+    expect(configuredResponseSchema.safeParse(validConfigured).success).to.be.true;
   });
 
   it('should accept with instances in the list', () => {
-    const result = connectorConfiguredResponseSchema.safeParse({
+    const result = configuredResponseSchema.safeParse({
       success: true,
       connectors: {
         connectors: [validInstanceItem],
@@ -1840,7 +1840,7 @@ describe('connectorConfiguredResponseSchema', () => {
   });
 
   it('should reject missing scopeCounts (required in configured response)', () => {
-    const result = connectorConfiguredResponseSchema.safeParse({
+    const result = configuredResponseSchema.safeParse({
       success: true,
       connectors: {
         connectors: [],
@@ -1851,7 +1851,7 @@ describe('connectorConfiguredResponseSchema', () => {
   });
 
   it('should reject missing pagination', () => {
-    const result = connectorConfiguredResponseSchema.safeParse({
+    const result = configuredResponseSchema.safeParse({
       success: true,
       connectors: { connectors: [], scopeCounts: validScopeCounts },
     });
@@ -1859,18 +1859,18 @@ describe('connectorConfiguredResponseSchema', () => {
   });
 
   it('should reject missing connectors wrapper', () => {
-    const result = connectorConfiguredResponseSchema.safeParse({ success: true });
+    const result = configuredResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 });
 
 // ============================================================================
-// connectorRegistryResponseSchema
+// registryResponseSchema
 // ============================================================================
 
-describe('connectorRegistryResponseSchema', () => {
+describe('registryResponseSchema', () => {
   it('should accept valid registry response with empty list', () => {
-    const result = connectorRegistryResponseSchema.safeParse({
+    const result = registryResponseSchema.safeParse({
       success: true,
       connectors: [],
       pagination: validPagination,
@@ -1879,7 +1879,7 @@ describe('connectorRegistryResponseSchema', () => {
   });
 
   it('should accept response with optional registryCountsByScope', () => {
-    const result = connectorRegistryResponseSchema.safeParse({
+    const result = registryResponseSchema.safeParse({
       success: true,
       connectors: [],
       pagination: validPagination,
@@ -1889,7 +1889,7 @@ describe('connectorRegistryResponseSchema', () => {
   });
 
   it('should accept a valid full registry item in list', () => {
-    const result = connectorRegistryResponseSchema.safeParse({
+    const result = registryResponseSchema.safeParse({
       success: true,
       connectors: [validRegistryItem],
       pagination: { ...validPagination, totalCount: 1 },
@@ -1898,7 +1898,7 @@ describe('connectorRegistryResponseSchema', () => {
   });
 
   it('should reject missing pagination', () => {
-    const result = connectorRegistryResponseSchema.safeParse({
+    const result = registryResponseSchema.safeParse({
       success: true,
       connectors: [],
     });
@@ -1907,7 +1907,7 @@ describe('connectorRegistryResponseSchema', () => {
 
   it('should reject registry item missing type', () => {
     const { type: _, ...itemWithoutType } = validRegistryItem;
-    const result = connectorRegistryResponseSchema.safeParse({
+    const result = registryResponseSchema.safeParse({
       success: true,
       connectors: [itemWithoutType],
       pagination: validPagination,
@@ -1917,12 +1917,12 @@ describe('connectorRegistryResponseSchema', () => {
 });
 
 // ============================================================================
-// connectorSchemaResponseSchema
+// schemaResponseSchema
 // ============================================================================
 
-describe('connectorSchemaResponseSchema', () => {
+describe('schemaResponseSchema', () => {
   it('should accept valid schema response', () => {
-    const result = connectorSchemaResponseSchema.safeParse({
+    const result = schemaResponseSchema.safeParse({
       success: true,
       schema: validConnectorConfig,
     });
@@ -1930,13 +1930,13 @@ describe('connectorSchemaResponseSchema', () => {
   });
 
   it('should reject missing schema', () => {
-    const result = connectorSchemaResponseSchema.safeParse({ success: true });
+    const result = schemaResponseSchema.safeParse({ success: true });
     expect(result.success).to.be.false;
   });
 
   it('should reject schema missing auth', () => {
     const { auth: _, ...configWithoutAuth } = validConnectorConfig;
-    const result = connectorSchemaResponseSchema.safeParse({
+    const result = schemaResponseSchema.safeParse({
       success: true,
       schema: configWithoutAuth,
     });
@@ -1945,7 +1945,7 @@ describe('connectorSchemaResponseSchema', () => {
 
   it('should reject schema missing sync', () => {
     const { sync: _, ...configWithoutSync } = validConnectorConfig;
-    const result = connectorSchemaResponseSchema.safeParse({
+    const result = schemaResponseSchema.safeParse({
       success: true,
       schema: configWithoutSync,
     });
@@ -1953,7 +1953,7 @@ describe('connectorSchemaResponseSchema', () => {
   });
 
   it('should reject schema with auth missing supportedAuthTypes', () => {
-    const result = connectorSchemaResponseSchema.safeParse({
+    const result = schemaResponseSchema.safeParse({
       success: true,
       schema: {
         ...validConnectorConfig,
@@ -1964,7 +1964,7 @@ describe('connectorSchemaResponseSchema', () => {
   });
 
   it('should reject schema with sync missing selectedStrategy', () => {
-    const result = connectorSchemaResponseSchema.safeParse({
+    const result = schemaResponseSchema.safeParse({
       success: true,
       schema: {
         ...validConnectorConfig,

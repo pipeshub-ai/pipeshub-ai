@@ -34,7 +34,7 @@ const registryScopeSchema = z.union([scopeSchema, scopeArraySchema]);
 /**
  * Connector ID parameter validation
  */
-const connectorIdParam = z.object({
+const idParam = z.object({
   connectorId: z.string().min(1, 'Connector ID is required'),
 });
 
@@ -45,7 +45,7 @@ const connectorIdParam = z.object({
 /**
  * Schema for creating a new connector instance
  */
-export const createConnectorInstanceSchema = z.object({
+export const createInstanceSchema = z.object({
   body: z.object({
     connectorType: z.string().min(1, 'Connector type is required'),
     instanceName: z.string().min(1, 'Instance name is required'),
@@ -67,14 +67,14 @@ export const createConnectorInstanceSchema = z.object({
 /**
  * Schema for validating connectorId parameter
  */
-export const connectorIdParamSchema = z.object({
-  params: connectorIdParam,
+export const idParamSchema = z.object({
+  params: idParam,
 });
 
 /**
  * Schema for validating connector list query parameters
  */
-export const connectorListSchema = z.object({
+export const listSchema = z.object({
   query: z.object({
     scope: scopeSchema
       .refine((val) => val === 'team' || val === 'personal', {
@@ -100,7 +100,7 @@ export const connectorListSchema = z.object({
 /**
  * Schema for validating connector type parameter
  */
-export const connectorTypeParamSchema = z.object({
+export const typeParamSchema = z.object({
   params: z.object({
     connectorType: z.string().min(1, 'Connector type is required'),
   }),
@@ -109,11 +109,11 @@ export const connectorTypeParamSchema = z.object({
 /**
  * Schema for updating connector instance name
  */
-export const updateConnectorInstanceNameSchema = z.object({
+export const updateInstanceNameSchema = z.object({
   body: z.object({
     instanceName: z.string().min(1, 'Instance name is required'),
   }),
-  params: connectorIdParam,
+  params: idParam,
 });
 
 // ============================================================================
@@ -123,25 +123,25 @@ export const updateConnectorInstanceNameSchema = z.object({
 /**
  * Schema for updating connector instance auth configuration
  */
-export const updateConnectorInstanceAuthConfigSchema = z.object({
+export const updateInstanceAuthConfigSchema = z.object({
   body: z.object({
     auth: z.any().refine((val) => val !== undefined && val !== null, {
       message: 'Auth configuration is required',
     }),
     baseUrl: z.string().optional(),
   }),
-  params: connectorIdParam,
+  params: idParam,
 });
 
 /**
  * Schema for updating connector instance filters and sync configuration
  */
-export const updateConnectorInstanceFiltersSyncConfigSchema = z.object({
+export const updateInstanceFiltersSyncConfigSchema = z.object({
   body: z.object({
     sync: z.any().optional(),
     filters: z.any().optional(),
   }),
-  params: connectorIdParam,
+  params: idParam,
 });
 
 // ============================================================================
@@ -152,7 +152,7 @@ export const updateConnectorInstanceFiltersSyncConfigSchema = z.object({
  * Schema for getting OAuth authorization URL
  */
 export const getOAuthAuthorizationUrlSchema = z.object({
-  params: connectorIdParam,
+  params: idParam,
   query: z.object({
     baseUrl: z.string().optional(),
   }),
@@ -207,12 +207,12 @@ export const getFilterFieldOptionsSchema = z.object({
 /**
  * Schema for validating connector toggle type parameter
  */
-export const connectorToggleSchema = z.object({
+export const toggleSchema = z.object({
   body: z.object({
     type: z.enum(['sync', 'agent']),
     fullSync: z.boolean().optional(),
   }),
-  params: connectorIdParam,
+  params: idParam,
 });
 
 
@@ -225,14 +225,14 @@ export const connectorToggleSchema = z.object({
 /**
  * Base success response schema - reused across many endpoints
  */
-export const connectorSuccessSchema = z.object({
+export const successSchema = z.object({
   success: z.boolean(),
 });
 
 /**
  * POST /:connectorId/toggle response schema
  */
-export const connectorToggleResponseSchema = connectorSuccessSchema.extend({
+export const toggleResponseSchema = successSchema.extend({
   message: z.string(),
 }).strict();
 
@@ -453,7 +453,7 @@ const storedSyncConfigSchema = z
 /** GET /config always includes nested `config` with these three keys (Python defaults missing etcd to empty objects). */
 const emptyObjectSchema = z.object({}).strict();
 
-const storedConnectorConfigSchema = z
+const storedConfigSchema = z
   .object({
     auth: z.union([emptyObjectSchema, storedAuthConfigSchema]),
     sync: storedSyncConfigSchema,
@@ -464,7 +464,7 @@ const storedConnectorConfigSchema = z
 /**
  * GET /:connectorId/config response schema
  */
-export const connectorInstanceConfigResponseSchema = connectorSuccessSchema.extend({
+export const instanceConfigResponseSchema = successSchema.extend({
   config: z.object({
     connector_id: z.string(),
     name: z.string(),                     // always present, instanceName required at creation
@@ -480,7 +480,7 @@ export const connectorInstanceConfigResponseSchema = connectorSuccessSchema.exte
     supportsSync: z.boolean(),
     supportsAgent: z.boolean(),
     iconPath: z.string(),
-    config: storedConnectorConfigSchema,
+    config: storedConfigSchema,
     isActive: z.boolean(),
     isConfigured: z.boolean(),
     isAuthenticated: z.boolean(),
@@ -520,7 +520,7 @@ const configUpdateResponseConfigSchema = z
 /**
  * PUT /:connectorId/config/auth response schema
  */
-export const connectorAuthConfigUpdateResponseSchema = connectorSuccessSchema.extend({
+export const authConfigUpdateResponseSchema = successSchema.extend({
   config: configUpdateResponseConfigSchema,
   message: z.string(),
 }).strict();
@@ -528,7 +528,7 @@ export const connectorAuthConfigUpdateResponseSchema = connectorSuccessSchema.ex
 /**
  * PUT /:connectorId/config/filters-sync response schema
  */
-export const connectorFiltersSyncConfigUpdateResponseSchema = connectorSuccessSchema.extend({
+export const filtersSyncConfigUpdateResponseSchema = successSchema.extend({
   config: configUpdateResponseConfigSchema,
   message: z.string(),
   syncFiltersChanged: z.boolean(),
@@ -537,7 +537,7 @@ export const connectorFiltersSyncConfigUpdateResponseSchema = connectorSuccessSc
 /**
  * PUT /:connectorId/name response schema
  */
-export const connectorNameUpdateResponseSchema = connectorSuccessSchema.extend({
+export const nameUpdateResponseSchema = successSchema.extend({
   connector: z.object({
     _key: z.string(),
     name: z.string(),
@@ -547,7 +547,7 @@ export const connectorNameUpdateResponseSchema = connectorSuccessSchema.extend({
 /**
  * GET /:connectorId/filters/:filterKey/options response schema
  */
-export const connectorFilterFieldOptionsResponseSchema = connectorSuccessSchema.extend({
+export const filterFieldOptionsResponseSchema = successSchema.extend({
   options: z.array(z.object({
     id: z.string(),
     label: z.string(),
@@ -562,7 +562,7 @@ export const connectorFilterFieldOptionsResponseSchema = connectorSuccessSchema.
 /**
  * GET /:connectorId/oauth/authorize response schema
  */
-export const connectorOAuthAuthorizeResponseSchema = connectorSuccessSchema.extend({
+export const oauthAuthorizeResponseSchema = successSchema.extend({
   authorizationUrl: z.string(),
   state: z.string(),
 }).strict();
@@ -570,7 +570,7 @@ export const connectorOAuthAuthorizeResponseSchema = connectorSuccessSchema.exte
 /**
  * GET /oauth/callback response schema (from Python backend)
  */
-export const connectorOAuthCallbackResponseSchema = connectorSuccessSchema.extend({
+export const oauthCallbackResponseSchema = successSchema.extend({
   redirect_url: z.string(),
 }).strict();
 
@@ -585,7 +585,7 @@ const documentationLinkSchema = z.object({
   type: z.string().optional(),
 }).strict();
 
-const connectorConfigResponseSchema = z.object({
+const configResponseSchema = z.object({
   iconPath: z.string(),
   supportsRealtime: z.boolean(),
   supportsSync: z.boolean(),
@@ -601,7 +601,7 @@ const connectorConfigResponseSchema = z.object({
 // Response Schemas - Registry
 // ============================================================================
 
-export const connectorRegistryItemSchema = z.object({
+export const registryItemSchema = z.object({
   name: z.string(),
   type: z.string(),
   appGroup: z.string(),
@@ -612,7 +612,7 @@ export const connectorRegistryItemSchema = z.object({
   supportsRealtime: z.boolean(),
   supportsSync: z.boolean(),
   supportsAgent: z.boolean(),
-  config: connectorConfigResponseSchema,
+  config: configResponseSchema,
   scope: registryScopeSchema,
   connectorInfo: z.string().nullable().optional(),
 }).strict();
@@ -620,8 +620,8 @@ export const connectorRegistryItemSchema = z.object({
 /**
  * GET /registry response schema
  */
-export const connectorRegistryResponseSchema = connectorSuccessSchema.extend({
-  connectors: z.array(connectorRegistryItemSchema),
+export const registryResponseSchema = successSchema.extend({
+  connectors: z.array(registryItemSchema),
   pagination: paginationResponseSchema,
   registryCountsByScope: scopeCountsResponseSchema.optional(),
 }).strict();
@@ -629,15 +629,15 @@ export const connectorRegistryResponseSchema = connectorSuccessSchema.extend({
 /**
  * GET /registry/:connectorType/schema response schema
  */
-export const connectorSchemaResponseSchema = connectorSuccessSchema.extend({
-  schema: connectorConfigResponseSchema,
+export const schemaResponseSchema = successSchema.extend({
+  schema: configResponseSchema,
 }).strict();
 
 // ============================================================================
 // Response Schemas - Connector Instances
 // ============================================================================
 
-export const connectorInstanceItemSchema = connectorRegistryItemSchema.extend({
+export const instanceItemSchema = registryItemSchema.extend({
   scope: scopeSchema,
   _key: z.string(),                  // always set: str(uuid4()) at creation
   authType: z.string(),              // always set: validated non-null at creation (ValueError if missing)
@@ -656,15 +656,15 @@ export const connectorInstanceItemSchema = connectorRegistryItemSchema.extend({
 /**
  * Connector instance item schema without config (used for active/inactive endpoints)
  */
-export const connectorInstanceItemWithoutConfigSchema = connectorInstanceItemSchema.omit({
+export const instanceItemWithoutConfigSchema = instanceItemSchema.omit({
   config: true,
 }).strict();
 
 /**
  * GET / (list connector instances) response schema
  */
-export const connectorInstancesResponseSchema = connectorSuccessSchema.extend({
-  connectors: z.array(connectorInstanceItemSchema),
+export const instancesResponseSchema = successSchema.extend({
+  connectors: z.array(instanceItemSchema),
   pagination: paginationResponseSchema,
   scopeCounts: scopeCountsResponseSchema.optional(),
 }).strict();
@@ -672,24 +672,24 @@ export const connectorInstancesResponseSchema = connectorSuccessSchema.extend({
 /**
  * GET /active and GET /inactive response schema
  */
-export const connectorActiveInactiveResponseSchema = connectorSuccessSchema.extend({
-  connectors: z.array(connectorInstanceItemWithoutConfigSchema),
+export const activeInactiveResponseSchema = successSchema.extend({
+  connectors: z.array(instanceItemWithoutConfigSchema),
 }).strict();
 
 /**
  * GET /agents/active response schema
  */
-export const connectorActiveAgentInstancesResponseSchema = connectorSuccessSchema.extend({
-  connectors: z.array(connectorInstanceItemWithoutConfigSchema),
+export const activeAgentInstancesResponseSchema = successSchema.extend({
+  connectors: z.array(instanceItemWithoutConfigSchema),
   pagination: paginationResponseSchema,
 }).strict();
 
 /**
  * GET /configured response schema
  */
-export const connectorConfiguredResponseSchema = connectorSuccessSchema.extend({
+export const configuredResponseSchema = successSchema.extend({
   connectors: z.object({
-    connectors: z.array(connectorInstanceItemSchema),
+    connectors: z.array(instanceItemSchema),
     pagination: paginationResponseSchema,
     scopeCounts: scopeCountsResponseSchema,
   }).strict(),
@@ -698,7 +698,7 @@ export const connectorConfiguredResponseSchema = connectorSuccessSchema.extend({
 /**
  * Created connector item schema (simplified, returned after creation)
  */
-const createdConnectorItemSchema = z.object({
+const createdItemSchema = z.object({
   connectorId: z.string(),
   connectorType: z.string(),
   instanceName: z.string(),
@@ -712,22 +712,22 @@ const createdConnectorItemSchema = z.object({
 /**
  * POST / (create connector instance) response schema
  */
-export const createConnectorResponseSchema = connectorSuccessSchema.extend({
-  connector: createdConnectorItemSchema,
+export const createResponseSchema = successSchema.extend({
+  connector: createdItemSchema,
   message: z.string(),
 }).strict();
 
 /**
  * GET /:connectorId (single connector instance) response schema
  */
-export const connectorInstanceDetailResponseSchema = connectorSuccessSchema.extend({
-  connector: connectorInstanceItemSchema,
+export const instanceDetailResponseSchema = successSchema.extend({
+  connector: instanceItemSchema,
 }).strict();
 
 /**
  * DELETE /:connectorId response schema
  */
-export const connectorDeleteResponseSchema = connectorSuccessSchema.extend({
+export const deleteResponseSchema = successSchema.extend({
   message: z.string(),
   connectorId: z.string(),
   status: z.string(),
@@ -737,21 +737,21 @@ export const connectorDeleteResponseSchema = connectorSuccessSchema.extend({
 // Inferred Response Types
 // ============================================================================
 
-export type ConnectorRegistryResponse = z.infer<typeof connectorRegistryResponseSchema>;
-export type ConnectorSchemaResponse = z.infer<typeof connectorSchemaResponseSchema>;
-export type ConnectorInstanceItem = z.infer<typeof connectorInstanceItemSchema>;
-export type ConnectorInstancesResponse = z.infer<typeof connectorInstancesResponseSchema>;
-export type ConnectorActiveInactiveResponse = z.infer<typeof connectorActiveInactiveResponseSchema>;
-export type ConnectorActiveAgentInstancesResponse = z.infer<typeof connectorActiveAgentInstancesResponseSchema>;
-export type ConnectorConfiguredResponse = z.infer<typeof connectorConfiguredResponseSchema>;
-export type ConnectorInstanceDetailResponse = z.infer<typeof connectorInstanceDetailResponseSchema>;
-export type ConnectorDeleteResponse = z.infer<typeof connectorDeleteResponseSchema>;
-export type ConnectorInstanceConfigResponse = z.infer<typeof connectorInstanceConfigResponseSchema>;
-export type ConnectorAuthConfigUpdateResponse = z.infer<typeof connectorAuthConfigUpdateResponseSchema>;
-export type ConnectorFiltersSyncConfigUpdateResponse = z.infer<typeof connectorFiltersSyncConfigUpdateResponseSchema>;
-export type ConnectorNameUpdateResponse = z.infer<typeof connectorNameUpdateResponseSchema>;
-export type ConnectorOAuthAuthorizeResponse = z.infer<typeof connectorOAuthAuthorizeResponseSchema>;
-export type ConnectorOAuthCallbackResponse = z.infer<typeof connectorOAuthCallbackResponseSchema>;
-export type CreateConnectorResponse = z.infer<typeof createConnectorResponseSchema>;
-export type ConnectorFilterFieldOptionsResponse = z.infer<typeof connectorFilterFieldOptionsResponseSchema>;
-export type ConnectorToggleResponse = z.infer<typeof connectorToggleResponseSchema>;
+export type RegistryResponse = z.infer<typeof registryResponseSchema>;
+export type SchemaResponse = z.infer<typeof schemaResponseSchema>;
+export type InstanceItem = z.infer<typeof instanceItemSchema>;
+export type InstancesResponse = z.infer<typeof instancesResponseSchema>;
+export type ActiveInactiveResponse = z.infer<typeof activeInactiveResponseSchema>;
+export type ActiveAgentInstancesResponse = z.infer<typeof activeAgentInstancesResponseSchema>;
+export type ConfiguredResponse = z.infer<typeof configuredResponseSchema>;
+export type InstanceDetailResponse = z.infer<typeof instanceDetailResponseSchema>;
+export type DeleteResponse = z.infer<typeof deleteResponseSchema>;
+export type InstanceConfigResponse = z.infer<typeof instanceConfigResponseSchema>;
+export type AuthConfigUpdateResponse = z.infer<typeof authConfigUpdateResponseSchema>;
+export type FiltersSyncConfigUpdateResponse = z.infer<typeof filtersSyncConfigUpdateResponseSchema>;
+export type NameUpdateResponse = z.infer<typeof nameUpdateResponseSchema>;
+export type OAuthAuthorizeResponse = z.infer<typeof oauthAuthorizeResponseSchema>;
+export type OAuthCallbackResponse = z.infer<typeof oauthCallbackResponseSchema>;
+export type CreateResponse = z.infer<typeof createResponseSchema>;
+export type FilterFieldOptionsResponse = z.infer<typeof filterFieldOptionsResponseSchema>;
+export type ToggleResponse = z.infer<typeof toggleResponseSchema>;
