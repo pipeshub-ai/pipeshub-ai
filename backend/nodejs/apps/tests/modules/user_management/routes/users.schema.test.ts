@@ -29,7 +29,7 @@ import {
   InviteSentResponseSchema,
   BulkInviteResponseSchema,
   GraphListUsersResponseSchema,
-} from '../../../../src/modules/user_management/validation/user-validators';
+} from '../../../../src/modules/user_management/schemas/user.schemas';
 
 describe('GetAllUsers response schemas (Zod)', () => {
   const validListItem = {

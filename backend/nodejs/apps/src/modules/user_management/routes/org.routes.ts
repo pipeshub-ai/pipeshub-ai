@@ -19,7 +19,7 @@ import {
   OrgHealthResponseSchema,
   OrgLogoPutValidationSchema,
   OrgLogoReadDeleteValidationSchema,
-} from '../validation/org-validators';
+} from '../schemas/org.schemas';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 

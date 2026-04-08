@@ -11,7 +11,7 @@ import {
   RemoveUsersFromGroupsResponseSchema,
   RemoveUsersFromGroupsValidationSchema,
   UserGroupDocumentResponseSchema,
-} from '../../../../src/modules/user_management/validation/userGroup-validators';
+} from '../../../../src/modules/user_management/schemas/userGroup.schemas';
 
 describe('CreateUserGroupResponseSchema (Zod)', () => {
   const valid = {

@@ -61,7 +61,7 @@ import {
   GraphListUsersResponseSchema,
   UserDisplayPictureErrorResponseSchema,
   RemoveUserDisplayPictureResponseSchema,
-} from '../validation/user-validators';
+} from '../schemas/user.schemas';
 
 @injectable()
 export class UserController {

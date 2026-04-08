@@ -47,7 +47,7 @@ import { UserIdValidationSchema,
   InternalAdminUsersResponseSchema,
   InternalLookupUserResponseSchema,
   BulkInviteValidationSchema,
-} from '../validation/user-validators';
+} from '../schemas/user.schemas';
 
 export function createUserRouter(container: Container) {
   const router = Router();

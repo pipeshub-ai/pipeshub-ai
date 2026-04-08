@@ -18,7 +18,7 @@ import {
   GetUsersInGroupResponseSchema,
   RemoveUsersFromGroupsResponseSchema,
   UserGroupDocumentResponseSchema,
-} from '../validation/userGroup-validators';
+} from '../schemas/userGroup.schemas';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 
 @injectable()

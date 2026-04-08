@@ -8,8 +8,6 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
-import { ValidationError } from '../../../../src/libs/errors/validation.error';
-
 /** Valid GET /users/graph/list body from connector (GraphListUsersResponseSchema). */
 function graphListUsersConnectorPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -189,7 +187,7 @@ describe('UserController', () => {
       expect(res.json.calledWith(blockedUsers)).to.be.true;
     });
 
-    it('should throw ValidationError when default list fails response schema', async () => {
+    it('should log and continue when default list fails response schema', async () => {
       const badUsers = [
         {
           _id: '507f1f77bcf86cd799439011',
@@ -205,16 +203,11 @@ describe('UserController', () => {
         }),
       } as any);
 
-      try {
-        await controller.getAllUsers(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.getAllUsers(req, res);
+      expect(res.json.called).to.be.true;
     });
 
-    it('should throw ValidationError when blocked list fails response schema', async () => {
+    it('should log and continue when blocked list fails response schema', async () => {
       req.query = { blocked: 'true' };
       const badBlocked = [
         {
@@ -226,13 +219,8 @@ describe('UserController', () => {
 
       sinon.stub(UserCredentials, 'aggregate').resolves(badBlocked);
 
-      try {
-        await controller.getAllUsers(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.getAllUsers(req, res);
+      expect(res.json.called).to.be.true;
     });
   });
 
@@ -328,7 +316,7 @@ describe('UserController', () => {
       process.env.HIDE_EMAIL = originalEnv;
     });
 
-    it('should call next with ValidationError when email is invalid', async () => {
+    it('should log and continue when email is invalid', async () => {
       const originalHide = process.env.HIDE_EMAIL;
       delete process.env.HIDE_EMAIL;
 
@@ -346,9 +334,8 @@ describe('UserController', () => {
 
       await controller.getUserById(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(ValidationError);
-      expect(res.json.called).to.be.false;
+      expect(res.json.called).to.be.true;
+      expect(next.called).to.be.false;
 
       if (originalHide === undefined) {
         delete process.env.HIDE_EMAIL;

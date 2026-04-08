@@ -5,8 +5,6 @@ import mongoose from 'mongoose';
 import { UserGroupController } from '../../../../src/modules/user_management/controller/userGroups.controller';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
-import { ValidationError } from '../../../../src/libs/errors/validation.error';
-
 describe('UserGroupController', () => {
   let controller: UserGroupController;
   let req: any;
@@ -69,7 +67,7 @@ describe('UserGroupController', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal(mockSavedGroupPlain);
     });
 
-    it('should throw ValidationError when saved document fails response schema', async () => {
+    it('should log and continue when saved document fails response schema', async () => {
       req.body = { name: 'Bad', type: 'custom' };
 
       sinon.stub(UserGroups, 'findOne').resolves(null);
@@ -86,13 +84,8 @@ describe('UserGroupController', () => {
         toJSON: () => badPlain,
       } as any);
 
-      try {
-        await controller.createUserGroup(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.createUserGroup(req, res);
+      expect(res.json.called).to.be.true;
     });
 
     it('should throw BadRequestError when name is missing', async () => {
@@ -212,7 +205,7 @@ describe('UserGroupController', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal(mockGroups);
     });
 
-    it('should throw ValidationError when list fails response schema', async () => {
+    it('should log and continue when list fails response schema', async () => {
       const badGroups = [{ _id: 'x', name: 'incomplete' }];
 
       sinon.stub(UserGroups, 'find').returns({
@@ -221,13 +214,8 @@ describe('UserGroupController', () => {
         }),
       } as any);
 
-      try {
-        await controller.getAllUserGroups(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.getAllUserGroups(req, res);
+      expect(res.json.called).to.be.true;
     });
   });
 
@@ -260,7 +248,7 @@ describe('UserGroupController', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal(mockGroup);
     });
 
-    it('should throw ValidationError when group document fails response schema', async () => {
+    it('should log and continue when group document fails response schema', async () => {
       req.params.groupId = '69cd0daf863a6899015af274';
 
       sinon.stub(UserGroups, 'findOne').returns({
@@ -269,13 +257,8 @@ describe('UserGroupController', () => {
         }),
       } as any);
 
-      try {
-        await controller.getUserGroupById(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.getUserGroupById(req, res);
+      expect(res.json.called).to.be.true;
     });
 
     it('should throw NotFoundError when group not found', async () => {
@@ -350,7 +333,7 @@ describe('UserGroupController', () => {
       });
     });
 
-    it('should throw ValidationError when updated document fails response schema', async () => {
+    it('should log and continue when updated document fails response schema', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { name: 'New Name' };
 
@@ -372,13 +355,8 @@ describe('UserGroupController', () => {
 
       sinon.stub(UserGroups, 'findOne').resolves(mockGroup as any);
 
-      try {
-        await controller.updateGroup(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.updateGroup(req, res);
+      expect(res.json.called).to.be.true;
     });
 
     it('should throw BadRequestError when name is missing', async () => {
@@ -574,7 +552,7 @@ describe('UserGroupController', () => {
       expect(mockGroup.deletedBy).to.equal(req.user.userId);
     });
 
-    it('should throw ValidationError when deleted document fails response schema', async () => {
+    it('should log and continue when deleted document fails response schema', async () => {
       req.params.groupId = '507f1f77bcf86cd799439011';
 
       const mockGroup = {
@@ -595,13 +573,8 @@ describe('UserGroupController', () => {
         exec: sinon.stub().resolves(mockGroup),
       } as any);
 
-      try {
-        await controller.deleteGroup(req, res);
-        expect.fail('expected ValidationError');
-      } catch (err) {
-        expect(err).to.be.instanceOf(ValidationError);
-      }
-      expect(res.json.called).to.be.false;
+      await controller.deleteGroup(req, res);
+      expect(res.json.called).to.be.true;
     });
   });
 

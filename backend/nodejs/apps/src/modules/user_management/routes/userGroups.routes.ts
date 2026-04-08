@@ -12,7 +12,7 @@ import {
   groupValidationSchema,
   RemoveUsersFromGroupsValidationSchema,
   UserGroupIdValidationSchema,
-} from '../validation/userGroup-validators';
+} from '../schemas/userGroup.schemas';
 
 export function createUserGroupRouter(container: Container) {
   const router = Router();

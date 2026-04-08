@@ -48,7 +48,7 @@ import {
   UpdateOnboardingStatusResponseSchema,
   UpdateOrgLogoResponseSchema,
   UpdateOrganizationDetailsResponseSchema,
-} from '../validation/org-validators';
+} from '../schemas/org.schemas';
 
 const ORG_PERMANENT_ADDRESS_KEYS = [
   'addressLine1',

@@ -16,7 +16,7 @@ import {
   RemoveOrgLogoResponseSchema,
   OrgLogoPutValidationSchema,
   OrgLogoReadDeleteValidationSchema,
-} from '../../../../src/modules/user_management/validation/org-validators'
+} from '../../../../src/modules/user_management/schemas/org.schemas'
 import { createMockOrgUpdateJson } from '../../../helpers/mock-org-updated-document'
 
 describe('OrgCreationBody Zod Schema', () => {
