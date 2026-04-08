@@ -1,6 +1,5 @@
 # ruff: noqa
 from __future__ import annotations
-from turtle import up
 
 from gitlab import Gitlab
 from typing import Dict, List, Optional, Tuple, Union, cast
@@ -964,10 +963,8 @@ class GitLabDataSource:
                     resp = await client.post(url, headers=headers,json=payload)
                     resp.raise_for_status()
                     tree_data = resp.content
-                    print(f"Fetched file tree of {project_id} of content length : {len(tree_data)}")
                     return GitLabResponse(success=True, data=(tree_data))
             except Exception as e:
-                print(f"Error fetching file tree of {project_id}: {e}")
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -1032,7 +1029,7 @@ class GitLabDataSource:
     
     #----------------------Other than SDK calls--------------------------------#
     
-    async def get_img_bytes(self, image_url: str) -> bytes | None:
+    async def get_img_bytes(self, image_url: str) -> GitLabResponse[bytes] | None:
         GITLAB_TOKEN = self.token
         # self.logger.info(f"Fetching image from URL: {image_url}")
         headers = {
@@ -1044,29 +1041,14 @@ class GitLabDataSource:
                 resp = await client.get(image_url, headers=headers)
                 resp.raise_for_status()
                 img_data = resp.content
-                # self.logger.info(f"Fetched image of size: {len(img_data)} bytes")
-                return img_data
+                return GitLabResponse(success=True, data=img_data)
         except httpx.HTTPStatusError as e:
             return GitLabResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
         except Exception as e:
             return GitLabResponse(success=False, error=f"Error fetching image from {image_url}: {e}")
     
     async def get_attachment_files_content(self,weburl:str) -> AsyncGenerator[bytes,None]:
-        """Getting file content from weburl for attachments in binary format."""
-        # try:
-        #     headers = {
-        #         "Authorization": f"Bearer {self.token}",
-        #         "Accept": "application/octet-stream",
-        #     }
-        #     async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-        #         resp = await client.get(weburl, headers=headers)
-        #         resp.raise_for_status()
-        #         file_data = resp.content
-        #         return GitLabResponse(success=True, data=file_data)
-        # except httpx.HTTPStatusError as e:
-        #         return GitLabResponse(success=False, error=f"HTTP {e.response.status_code} fetching file content from {weburl}")
-        # except Exception as e:
-        #         return GitLabResponse(success=False, error=f"Error fetching file from {weburl}: {e}")
+        """Getting file content from weburl for attachments in bytes."""
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/octet-stream",

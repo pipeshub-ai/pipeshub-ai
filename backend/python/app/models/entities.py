@@ -1769,9 +1769,9 @@ class CodeFileRecord(Record):
             connector_name=connector_name,
             connector_id=arango_base_record.get("connectorId"),
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
-            weburl=arango_base_record["webUrl"],
+            weburl=arango_base_record.get("webUrl"),
         )
-        # NOTE: Add more prop. as per need.
+
 
 class Anyone(BaseModel):
     id: str = Field(description="Unique identifier for the anyone", default_factory=lambda: str(uuid4()))

@@ -800,13 +800,6 @@ class GitLabConnector(BaseConnector):
             await self._sync_project_members_as_pseudo(project)
             project_id:int = project.id
             project_path:str = project.path_with_namespace
-            # if project_id == int(TEST_GITLAB_PROJECT_ID):
-            #     self.logger.info(f"Syncing issues and repo code files for project {project_id}")
-            #     # await self._fetch_issues_batched(project_id)
-            #     # await self._fetch_prs_batched(project_id)
-            #     await self._sync_repo_main(project_id,project_path)
-            # else:
-            #     self.logger.debug(f"⚠️ Project {project.name} has no ID, skipping syncing issues and repo code files")
             await self._fetch_issues_batched(project_id)
             await self._fetch_prs_batched(project_id)
             await self._sync_repo_main(project_id,project_path)
@@ -1822,8 +1815,9 @@ class GitLabConnector(BaseConnector):
             full_attachment_url = f"{base_project_url}{attachment_url}"
             try:
                 image_bytes = await self.data_source.get_img_bytes(full_attachment_url)
-                if image_bytes:
+                if image_bytes.success and image_bytes.data:
                     # to get image format as in attachment data just an image
+                    image_bytes = image_bytes.data
                     img = Image.open(BytesIO(image_bytes))
                     fmt = img.format.lower() if img.format else "png"
                     base64_data = base64.b64encode(image_bytes).decode("utf-8")
