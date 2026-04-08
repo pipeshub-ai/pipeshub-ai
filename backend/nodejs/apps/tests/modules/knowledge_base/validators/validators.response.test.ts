@@ -1,30 +1,30 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import {
-  listKnowledgeBasesResponseSchema,
-  kbSuccessResponseSchema,
-  createKBResponseSchema,
-  getKBResponseSchema,
-  getRecordByIdResponseSchema,
+  listResponseSchema,
+  successResponseSchema,
+  createResponseSchema,
+  detailResponseSchema,
+  recordByIdResponseSchema,
   updateRecordResponseSchema,
   deleteRecordResponseSchema,
   reindexRecordResponseSchema,
   reindexRecordGroupResponseSchema,
-  getConnectorStatsResponseSchema,
+  connectorStatsResponseSchema,
   reindexFailedRecordsResponseSchema,
-  resyncConnectorRecordsResponseSchema,
-  getKbUploadLimitsResponseSchema,
+  resyncRecordsResponseSchema,
+  uploadLimitsResponseSchema,
   moveRecordResponseSchema,
-  listKBPermissionsResponseSchema,
-  removeKBPermissionResponseSchema,
-  updateKBPermissionResponseSchema,
-  createKBPermissionResponseSchema,
+  listPermissionsResponseSchema,
+  removePermissionResponseSchema,
+  updatePermissionResponseSchema,
+  createPermissionResponseSchema,
   uploadRecordsResponseSchema,
   createFolderResponseSchema,
-  kbFolderSuccessResponseSchema,
-  getKnowledgeHubNodesResponseSchema,
-  getKBChildrenResponseSchema,
-  getFolderChildrenResponseSchema,
+  folderSuccessResponseSchema,
+  hubNodesResponseSchema,
+  childrenResponseSchema,
+  folderChildrenResponseSchema,
 } from '../../../../src/modules/knowledge_base/schemas/knowledge_base'
 
 const TS = 1775196920754
@@ -44,9 +44,9 @@ const validIndexingStatusCounts = {
 
 describe('Response Schema Validation', () => {
   // =========================================================================
-  // 1. listKnowledgeBasesResponseSchema
+  // 1. listResponseSchema
   // =========================================================================
-  describe('listKnowledgeBasesResponseSchema', () => {
+  describe('listResponseSchema', () => {
     const validData = {
       knowledgeBases: [
         {
@@ -74,7 +74,7 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = listKnowledgeBasesResponseSchema.safeParse(validData)
+      const result = listResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
@@ -88,7 +88,7 @@ describe('Response Schema Validation', () => {
           },
         ],
       }
-      const result = listKnowledgeBasesResponseSchema.safeParse(data)
+      const result = listResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -97,7 +97,7 @@ describe('Response Schema Validation', () => {
         ...validData,
         knowledgeBases: [{ ...validData.knowledgeBases[0], userRole: null }],
       }
-      const result = listKnowledgeBasesResponseSchema.safeParse(data)
+      const result = listResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -106,12 +106,12 @@ describe('Response Schema Validation', () => {
         ...validData,
         knowledgeBases: [{ ...validData.knowledgeBases[0], folders: null }],
       }
-      const result = listKnowledgeBasesResponseSchema.safeParse(data)
+      const result = listResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject folder missing createdAtTimestamp or webUrl (list KB always returns both)', () => {
-      const missingTs = listKnowledgeBasesResponseSchema.safeParse({
+      const missingTs = listResponseSchema.safeParse({
         ...validData,
         knowledgeBases: [
           {
@@ -120,7 +120,7 @@ describe('Response Schema Validation', () => {
           },
         ],
       })
-      const missingUrl = listKnowledgeBasesResponseSchema.safeParse({
+      const missingUrl = listResponseSchema.safeParse({
         ...validData,
         knowledgeBases: [
           {
@@ -143,7 +143,7 @@ describe('Response Schema Validation', () => {
           },
         ],
       }
-      const result = listKnowledgeBasesResponseSchema.safeParse(data)
+      const result = listResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -165,51 +165,51 @@ describe('Response Schema Validation', () => {
           },
         ],
       }
-      const result = listKnowledgeBasesResponseSchema.safeParse(data)
+      const result = listResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
       const { pagination, ...rest } = validData
-      const result = listKnowledgeBasesResponseSchema.safeParse(rest)
+      const result = listResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = listKnowledgeBasesResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = listResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 2. kbSuccessResponseSchema
+  // 2. successResponseSchema
   // =========================================================================
-  describe('kbSuccessResponseSchema', () => {
+  describe('successResponseSchema', () => {
     it('should accept valid complete response', () => {
-      const result = kbSuccessResponseSchema.safeParse({ success: true, message: 'Done' })
+      const result = successResponseSchema.safeParse({ success: true, message: 'Done' })
       expect(result.success).to.be.true
     })
 
     it('should accept without optional message', () => {
-      const result = kbSuccessResponseSchema.safeParse({ success: false })
+      const result = successResponseSchema.safeParse({ success: false })
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
-      const result = kbSuccessResponseSchema.safeParse({ message: 'Done' })
+      const result = successResponseSchema.safeParse({ message: 'Done' })
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = kbSuccessResponseSchema.safeParse({ success: true, extra: 'x' })
+      const result = successResponseSchema.safeParse({ success: true, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 3. createKBResponseSchema
+  // 3. createResponseSchema
   // =========================================================================
-  describe('createKBResponseSchema', () => {
+  describe('createResponseSchema', () => {
     const validData = {
       id: 'kb-9f8e7d6c-5b4a-3210-fedc-ba9876543210',
       name: 'Product Knowledge Base',
@@ -219,26 +219,26 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = createKBResponseSchema.safeParse(validData)
+      const result = createResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
       const { userRole, ...rest } = validData
-      const result = createKBResponseSchema.safeParse(rest)
+      const result = createResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = createKBResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = createResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 4. getKBResponseSchema
+  // 4. detailResponseSchema
   // =========================================================================
-  describe('getKBResponseSchema', () => {
+  describe('detailResponseSchema', () => {
     const validData = {
       id: 'kb-001',
       name: 'Main KB',
@@ -251,41 +251,41 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = getKBResponseSchema.safeParse(validData)
+      const result = detailResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
     it('should accept with nullable connectorId as null', () => {
-      const result = getKBResponseSchema.safeParse({ ...validData, connectorId: null })
+      const result = detailResponseSchema.safeParse({ ...validData, connectorId: null })
       expect(result.success).to.be.true
     })
 
     it('should accept with empty folders array', () => {
-      const result = getKBResponseSchema.safeParse({ ...validData, folders: [] })
+      const result = detailResponseSchema.safeParse({ ...validData, folders: [] })
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
       const { createdBy, ...rest } = validData
-      const result = getKBResponseSchema.safeParse(rest)
+      const result = detailResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject empty id', () => {
-      const result = getKBResponseSchema.safeParse({ ...validData, id: '' })
+      const result = detailResponseSchema.safeParse({ ...validData, id: '' })
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getKBResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = detailResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 5. getRecordByIdResponseSchema
+  // 5. recordByIdResponseSchema
   // =========================================================================
-  describe('getRecordByIdResponseSchema', () => {
+  describe('recordByIdResponseSchema', () => {
     const baseRecord = {
       id: 'rec-a1b2c3d4',
       _id: 'records/rec-a1b2c3d4',
@@ -395,7 +395,7 @@ describe('Response Schema Validation', () => {
           },
         },
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -406,7 +406,7 @@ describe('Response Schema Validation', () => {
         folder: null,
         metadata: null,
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -420,7 +420,7 @@ describe('Response Schema Validation', () => {
           ticketRecord: null,
         },
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -435,7 +435,7 @@ describe('Response Schema Validation', () => {
           ticketRecord: validTicketRecord,
         },
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -447,7 +447,7 @@ describe('Response Schema Validation', () => {
         metadata: null,
         permissions: [],
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -460,7 +460,7 @@ describe('Response Schema Validation', () => {
           orgId: 'org-12345',
         } as unknown as (typeof validData)['knowledgeBase'],
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -469,14 +469,14 @@ describe('Response Schema Validation', () => {
         ...validData,
         record: { ...baseRecord, connectorId: null as unknown as string },
       }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject record with missing connectorName', () => {
       const { connectorName: _cn, ...recordNoName } = baseRecord
       const data = { ...validData, record: recordNoName }
-      const result = getRecordByIdResponseSchema.safeParse(data)
+      const result = recordByIdResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -486,19 +486,19 @@ describe('Response Schema Validation', () => {
           ...validData,
           record: { ...baseRecord, connectorName: connectorName as unknown as string },
         }
-        const result = getRecordByIdResponseSchema.safeParse(data)
+        const result = recordByIdResponseSchema.safeParse(data)
         expect(result.success).to.be.false
       }
     })
 
     it('should reject missing required field', () => {
       const { record, ...rest } = validData
-      const result = getRecordByIdResponseSchema.safeParse(rest)
+      const result = recordByIdResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getRecordByIdResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = recordByIdResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
@@ -770,9 +770,9 @@ describe('Response Schema Validation', () => {
   })
 
   // =========================================================================
-  // 10. getConnectorStatsResponseSchema
+  // 10. connectorStatsResponseSchema
   // =========================================================================
-  describe('getConnectorStatsResponseSchema', () => {
+  describe('connectorStatsResponseSchema', () => {
     const validData = {
       success: true,
       data: {
@@ -799,25 +799,25 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = getConnectorStatsResponseSchema.safeParse(validData)
+      const result = connectorStatsResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
     it('should accept with empty byRecordType', () => {
       const data = { ...validData, data: { ...validData.data, byRecordType: [] } }
-      const result = getConnectorStatsResponseSchema.safeParse(data)
+      const result = connectorStatsResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
     it('should accept non-CONNECTOR origin strings', () => {
       const data = { ...validData, data: { ...validData.data, origin: 'UPLOAD' } }
-      const result = getConnectorStatsResponseSchema.safeParse(data)
+      const result = connectorStatsResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
     it('should reject empty origin', () => {
       const data = { ...validData, data: { ...validData.data, origin: '' } }
-      const result = getConnectorStatsResponseSchema.safeParse(data)
+      const result = connectorStatsResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -829,18 +829,18 @@ describe('Response Schema Validation', () => {
           stats: { total: -1, indexingStatus: validIndexingStatusCounts },
         },
       }
-      const result = getConnectorStatsResponseSchema.safeParse(data)
+      const result = connectorStatsResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject missing required field', () => {
       const { data, ...rest } = validData
-      const result = getConnectorStatsResponseSchema.safeParse(rest)
+      const result = connectorStatsResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getConnectorStatsResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = connectorStatsResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
@@ -885,37 +885,37 @@ describe('Response Schema Validation', () => {
   })
 
   // =========================================================================
-  // 12. resyncConnectorRecordsResponseSchema
+  // 12. resyncRecordsResponseSchema
   // =========================================================================
-  describe('resyncConnectorRecordsResponseSchema', () => {
+  describe('resyncRecordsResponseSchema', () => {
     it('should accept valid success response', () => {
-      const result = resyncConnectorRecordsResponseSchema.safeParse({
+      const result = resyncRecordsResponseSchema.safeParse({
         resyncConnectorResponse: { success: true },
       })
       expect(result.success).to.be.true
     })
 
     it('should accept valid failure response with error', () => {
-      const result = resyncConnectorRecordsResponseSchema.safeParse({
+      const result = resyncRecordsResponseSchema.safeParse({
         resyncConnectorResponse: { success: false, error: 'Sync failed' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject failure response without error string', () => {
-      const result = resyncConnectorRecordsResponseSchema.safeParse({
+      const result = resyncRecordsResponseSchema.safeParse({
         resyncConnectorResponse: { success: false },
       })
       expect(result.success).to.be.false
     })
 
     it('should reject missing required field', () => {
-      const result = resyncConnectorRecordsResponseSchema.safeParse({})
+      const result = resyncRecordsResponseSchema.safeParse({})
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = resyncConnectorRecordsResponseSchema.safeParse({
+      const result = resyncRecordsResponseSchema.safeParse({
         resyncConnectorResponse: { success: true },
         extra: 'x',
       })
@@ -924,33 +924,33 @@ describe('Response Schema Validation', () => {
   })
 
   // =========================================================================
-  // 13. getKbUploadLimitsResponseSchema
+  // 13. uploadLimitsResponseSchema
   // =========================================================================
-  describe('getKbUploadLimitsResponseSchema', () => {
+  describe('uploadLimitsResponseSchema', () => {
     const validData = { maxFilesPerRequest: 10, maxFileSizeBytes: 104857600 }
 
     it('should accept valid complete response', () => {
-      const result = getKbUploadLimitsResponseSchema.safeParse(validData)
+      const result = uploadLimitsResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
     it('should reject zero maxFilesPerRequest', () => {
-      const result = getKbUploadLimitsResponseSchema.safeParse({ ...validData, maxFilesPerRequest: 0 })
+      const result = uploadLimitsResponseSchema.safeParse({ ...validData, maxFilesPerRequest: 0 })
       expect(result.success).to.be.false
     })
 
     it('should reject negative maxFileSizeBytes', () => {
-      const result = getKbUploadLimitsResponseSchema.safeParse({ ...validData, maxFileSizeBytes: -1 })
+      const result = uploadLimitsResponseSchema.safeParse({ ...validData, maxFileSizeBytes: -1 })
       expect(result.success).to.be.false
     })
 
     it('should reject missing required field', () => {
-      const result = getKbUploadLimitsResponseSchema.safeParse({ maxFilesPerRequest: 10 })
+      const result = uploadLimitsResponseSchema.safeParse({ maxFilesPerRequest: 10 })
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getKbUploadLimitsResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = uploadLimitsResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
@@ -981,9 +981,9 @@ describe('Response Schema Validation', () => {
   })
 
   // =========================================================================
-  // 15. listKBPermissionsResponseSchema
+  // 15. listPermissionsResponseSchema
   // =========================================================================
-  describe('listKBPermissionsResponseSchema', () => {
+  describe('listPermissionsResponseSchema', () => {
     const validData = {
       kbId: 'kb-perm-001',
       permissions: [
@@ -1002,7 +1002,7 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = listKBPermissionsResponseSchema.safeParse(validData)
+      const result = listPermissionsResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
@@ -1018,31 +1018,31 @@ describe('Response Schema Validation', () => {
           },
         ],
       }
-      const result = listKBPermissionsResponseSchema.safeParse(data)
+      const result = listPermissionsResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
       const { totalCount, ...rest } = validData
-      const result = listKBPermissionsResponseSchema.safeParse(rest)
+      const result = listPermissionsResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject empty kbId', () => {
-      const result = listKBPermissionsResponseSchema.safeParse({ ...validData, kbId: '' })
+      const result = listPermissionsResponseSchema.safeParse({ ...validData, kbId: '' })
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = listKBPermissionsResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = listPermissionsResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 16. removeKBPermissionResponseSchema
+  // 16. removePermissionResponseSchema
   // =========================================================================
-  describe('removeKBPermissionResponseSchema', () => {
+  describe('removePermissionResponseSchema', () => {
     const validData = {
       kbId: 'kb-rem-001',
       userIds: ['user-001', 'user-002'],
@@ -1050,12 +1050,12 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = removeKBPermissionResponseSchema.safeParse(validData)
+      const result = removePermissionResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
     it('should accept with empty arrays', () => {
-      const result = removeKBPermissionResponseSchema.safeParse({
+      const result = removePermissionResponseSchema.safeParse({
         kbId: 'kb-rem-001',
         userIds: [],
         teamIds: [],
@@ -1065,20 +1065,20 @@ describe('Response Schema Validation', () => {
 
     it('should reject missing required field', () => {
       const { teamIds, ...rest } = validData
-      const result = removeKBPermissionResponseSchema.safeParse(rest)
+      const result = removePermissionResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = removeKBPermissionResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = removePermissionResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 17. updateKBPermissionResponseSchema
+  // 17. updatePermissionResponseSchema
   // =========================================================================
-  describe('updateKBPermissionResponseSchema', () => {
+  describe('updatePermissionResponseSchema', () => {
     const validData = {
       kbId: 'kb-upd-001',
       userIds: ['user-003'],
@@ -1087,26 +1087,26 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = updateKBPermissionResponseSchema.safeParse(validData)
+      const result = updatePermissionResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
       const { newRole, ...rest } = validData
-      const result = updateKBPermissionResponseSchema.safeParse(rest)
+      const result = updatePermissionResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = updateKBPermissionResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = updatePermissionResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 18. createKBPermissionResponseSchema
+  // 18. createPermissionResponseSchema
   // =========================================================================
-  describe('createKBPermissionResponseSchema', () => {
+  describe('createPermissionResponseSchema', () => {
     const validData = {
       kbId: 'kb-create-perm-001',
       permissionResult: {
@@ -1121,7 +1121,7 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = createKBPermissionResponseSchema.safeParse(validData)
+      const result = createPermissionResponseSchema.safeParse(validData)
       expect(result.success).to.be.true
     })
 
@@ -1130,18 +1130,18 @@ describe('Response Schema Validation', () => {
         ...validData,
         permissionResult: { ...validData.permissionResult, details: {} },
       }
-      const result = createKBPermissionResponseSchema.safeParse(data)
+      const result = createPermissionResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
       const { permissionResult, ...rest } = validData
-      const result = createKBPermissionResponseSchema.safeParse(rest)
+      const result = createPermissionResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = createKBPermissionResponseSchema.safeParse({ ...validData, extra: 'x' })
+      const result = createPermissionResponseSchema.safeParse({ ...validData, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
@@ -1270,34 +1270,34 @@ describe('Response Schema Validation', () => {
   })
 
   // =========================================================================
-  // 21. kbFolderSuccessResponseSchema
+  // 21. folderSuccessResponseSchema
   // =========================================================================
-  describe('kbFolderSuccessResponseSchema', () => {
+  describe('folderSuccessResponseSchema', () => {
     it('should accept valid complete response', () => {
-      const result = kbFolderSuccessResponseSchema.safeParse({ success: true, message: 'Folder updated successfully' })
+      const result = folderSuccessResponseSchema.safeParse({ success: true, message: 'Folder updated successfully' })
       expect(result.success).to.be.true
     })
 
     it('should accept without optional message', () => {
-      const result = kbFolderSuccessResponseSchema.safeParse({ success: true })
+      const result = folderSuccessResponseSchema.safeParse({ success: true })
       expect(result.success).to.be.true
     })
 
     it('should reject missing required field', () => {
-      const result = kbFolderSuccessResponseSchema.safeParse({ message: 'Done' })
+      const result = folderSuccessResponseSchema.safeParse({ message: 'Done' })
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = kbFolderSuccessResponseSchema.safeParse({ success: true, extra: 'x' })
+      const result = folderSuccessResponseSchema.safeParse({ success: true, extra: 'x' })
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 22. getKnowledgeHubNodesResponseSchema
+  // 22. hubNodesResponseSchema
   // =========================================================================
-  describe('getKnowledgeHubNodesResponseSchema', () => {
+  describe('hubNodesResponseSchema', () => {
     const validKHNodeItem = {
       id: 'node-1',
       name: 'My App',
@@ -1362,7 +1362,7 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid root-level response', () => {
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(validKHResponse)
+      const result = hubNodesResponseSchema.safeParse(validKHResponse)
       expect(result.success).to.be.true
     })
 
@@ -1377,7 +1377,7 @@ describe('Response Schema Validation', () => {
         recordGroupType: 'KB',
         sharingStatus: 'private',
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse({
+      const result = hubNodesResponseSchema.safeParse({
         ...validKHResponse,
         items: [kbRgItem],
       })
@@ -1385,7 +1385,7 @@ describe('Response Schema Validation', () => {
     })
 
     it('should reject node item with null connector', () => {
-      const result = getKnowledgeHubNodesResponseSchema.safeParse({
+      const result = hubNodesResponseSchema.safeParse({
         ...validKHResponse,
         items: [{ ...validKHNodeItem, connector: null }],
       })
@@ -1400,7 +1400,7 @@ describe('Response Schema Validation', () => {
         parentNode: null,
         breadcrumbs: [{ id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'GOOGLE_DRIVE' }],
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1417,7 +1417,7 @@ describe('Response Schema Validation', () => {
           canManagePermissions: true,
         },
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1429,7 +1429,7 @@ describe('Response Schema Validation', () => {
           permission: { role: 'WRITER', canEdit: true, canDelete: false },
         }],
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1450,7 +1450,7 @@ describe('Response Schema Validation', () => {
           },
         },
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1468,7 +1468,7 @@ describe('Response Schema Validation', () => {
           },
         },
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1478,18 +1478,18 @@ describe('Response Schema Validation', () => {
         id: 'rg-1',
         currentNode: { id: 'rg-1', name: 'KB', nodeType: 'recordGroup', subType: 'COLLECTION' },
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
     it('should reject currentNode or breadcrumb missing subType', () => {
-      const noSubCurrent = getKnowledgeHubNodesResponseSchema.safeParse({
+      const noSubCurrent = hubNodesResponseSchema.safeParse({
         ...validKHResponse,
         id: 'app-123',
         currentNode: { id: 'app-123', name: 'Drive', nodeType: 'app' },
         breadcrumbs: [{ id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'X' }],
       })
-      const noSubCrumb = getKnowledgeHubNodesResponseSchema.safeParse({
+      const noSubCrumb = hubNodesResponseSchema.safeParse({
         ...validKHResponse,
         id: 'app-123',
         currentNode: { id: 'app-123', name: 'Drive', nodeType: 'app', subType: 'GOOGLE_DRIVE' },
@@ -1501,12 +1501,12 @@ describe('Response Schema Validation', () => {
 
     it('should reject missing required field', () => {
       const { items, ...rest } = validKHResponse
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(rest)
+      const result = hubNodesResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getKnowledgeHubNodesResponseSchema.safeParse({ ...validKHResponse, extra: 'x' })
+      const result = hubNodesResponseSchema.safeParse({ ...validKHResponse, extra: 'x' })
       expect(result.success).to.be.false
     })
 
@@ -1515,15 +1515,15 @@ describe('Response Schema Validation', () => {
         ...validKHResponse,
         items: [{ ...validKHNodeItem, extra: 'x' }],
       }
-      const result = getKnowledgeHubNodesResponseSchema.safeParse(data)
+      const result = hubNodesResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 23. getKBChildrenResponseSchema
+  // 23. childrenResponseSchema
   // =========================================================================
-  describe('getKBChildrenResponseSchema', () => {
+  describe('childrenResponseSchema', () => {
     const validContainer = {
       id: 'kb-1',
       name: 'My KB',
@@ -1635,7 +1635,7 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = getKBChildrenResponseSchema.safeParse(validKBChildrenResponse)
+      const result = childrenResponseSchema.safeParse(validKBChildrenResponse)
       expect(result.success).to.be.true
     })
 
@@ -1647,7 +1647,7 @@ describe('Response Schema Validation', () => {
         totalCount: 0,
         counts: { folders: 0, records: 0, totalItems: 0, totalFolders: 0, totalRecords: 0 },
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1656,7 +1656,7 @@ describe('Response Schema Validation', () => {
         ...validKBChildrenResponse,
         records: [{ ...validKBRecord, fileRecord: null }],
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1670,7 +1670,7 @@ describe('Response Schema Validation', () => {
           webUrl: null,
         }],
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1689,7 +1689,7 @@ describe('Response Schema Validation', () => {
           available: validStringArrayFilters,
         },
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1698,7 +1698,7 @@ describe('Response Schema Validation', () => {
         ...validKBChildrenResponse,
         folders: [{ ...validKBFolder, type: 'file' }],
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1707,16 +1707,16 @@ describe('Response Schema Validation', () => {
         ...validKBChildrenResponse,
         folders: [{ ...validKBFolder, type: '' }],
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should accept record item with arbitrary non-empty type string', () => {
-      const fileType = getKBChildrenResponseSchema.safeParse({
+      const fileType = childrenResponseSchema.safeParse({
         ...validKBChildrenResponse,
         records: [{ ...validKBRecord, type: 'file' }],
       })
-      const folderLabel = getKBChildrenResponseSchema.safeParse({
+      const folderLabel = childrenResponseSchema.safeParse({
         ...validKBChildrenResponse,
         records: [{ ...validKBRecord, type: 'folder' }],
       })
@@ -1729,24 +1729,24 @@ describe('Response Schema Validation', () => {
         ...validKBChildrenResponse,
         records: [{ ...validKBRecord, type: '' }],
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject negative totalCount', () => {
       const data = { ...validKBChildrenResponse, totalCount: -1 }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject missing required field', () => {
       const { container, ...rest } = validKBChildrenResponse
-      const result = getKBChildrenResponseSchema.safeParse(rest)
+      const result = childrenResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getKBChildrenResponseSchema.safeParse({ ...validKBChildrenResponse, extra: 'x' })
+      const result = childrenResponseSchema.safeParse({ ...validKBChildrenResponse, extra: 'x' })
       expect(result.success).to.be.false
     })
 
@@ -1755,7 +1755,7 @@ describe('Response Schema Validation', () => {
         ...validKBChildrenResponse,
         container: { ...validContainer, extra: 'x' },
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -1764,15 +1764,15 @@ describe('Response Schema Validation', () => {
         ...validKBChildrenResponse,
         container: { ...validContainer, id: '' },
       }
-      const result = getKBChildrenResponseSchema.safeParse(data)
+      const result = childrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })
 
   // =========================================================================
-  // 24. getFolderChildrenResponseSchema
+  // 24. folderChildrenResponseSchema
   // =========================================================================
-  describe('getFolderChildrenResponseSchema', () => {
+  describe('folderChildrenResponseSchema', () => {
     const validFolderChildFolder = {
       id: 'subfolder-1',
       name: 'Subfolder',
@@ -1858,7 +1858,7 @@ describe('Response Schema Validation', () => {
     }
 
     it('should accept valid complete response', () => {
-      const result = getFolderChildrenResponseSchema.safeParse(validFolderChildrenResponse)
+      const result = folderChildrenResponseSchema.safeParse(validFolderChildrenResponse)
       expect(result.success).to.be.true
     })
 
@@ -1870,7 +1870,7 @@ describe('Response Schema Validation', () => {
         totalCount: 0,
         counts: { folders: 0, records: 0, totalItems: 0, foldersShown: 0, recordsShown: 0 },
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1879,7 +1879,7 @@ describe('Response Schema Validation', () => {
         ...validFolderChildrenResponse,
         folders: [{ ...validFolderChildFolder, path: null }],
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1888,7 +1888,7 @@ describe('Response Schema Validation', () => {
         ...validFolderChildrenResponse,
         folders: [{ ...validFolderChildFolder, parent_id: null }],
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -1905,7 +1905,7 @@ describe('Response Schema Validation', () => {
           available: validStringArrayFilters,
         },
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1914,7 +1914,7 @@ describe('Response Schema Validation', () => {
         ...validFolderChildrenResponse,
         folders: [{ ...validFolderChildFolder, type: 'record' }],
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
@@ -1923,7 +1923,7 @@ describe('Response Schema Validation', () => {
         ...validFolderChildrenResponse,
         folders: [{ ...validFolderChildFolder, type: '' }],
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
@@ -1932,18 +1932,18 @@ describe('Response Schema Validation', () => {
         ...validFolderChildrenResponse,
         counts: { ...validFolderChildrenCounts, folders: -1 },
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject missing required field', () => {
       const { counts, ...rest } = validFolderChildrenResponse
-      const result = getFolderChildrenResponseSchema.safeParse(rest)
+      const result = folderChildrenResponseSchema.safeParse(rest)
       expect(result.success).to.be.false
     })
 
     it('should reject extra unrecognized fields', () => {
-      const result = getFolderChildrenResponseSchema.safeParse({ ...validFolderChildrenResponse, extra: 'x' })
+      const result = folderChildrenResponseSchema.safeParse({ ...validFolderChildrenResponse, extra: 'x' })
       expect(result.success).to.be.false
     })
 
@@ -1952,7 +1952,7 @@ describe('Response Schema Validation', () => {
         ...validFolderChildrenResponse,
         counts: { ...validFolderChildrenCounts, extra: 0 },
       }
-      const result = getFolderChildrenResponseSchema.safeParse(data)
+      const result = folderChildrenResponseSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

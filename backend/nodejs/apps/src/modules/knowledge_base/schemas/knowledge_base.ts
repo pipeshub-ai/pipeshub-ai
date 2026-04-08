@@ -6,7 +6,7 @@ import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
 // ==================================================================
 
 
-export const getRecordByIdSchema = z.object({
+export const recordByIdSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
   query: z.object({ convertTo: z.string().optional() }),
 });
@@ -51,7 +51,7 @@ export const reindexFailedRecordSchema = z.object({
   }),
 });
 
-export const resyncConnectorSchema = z.object({
+export const resyncSchema = z.object({
   body: z.object({
     connectorName: z.string().min(1),
     connectorId: z.string().min(1),
@@ -59,7 +59,7 @@ export const resyncConnectorSchema = z.object({
   }),
 });
 
-export const getConnectorStatsSchema = z.object({
+export const connectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
 });
 
@@ -185,7 +185,7 @@ export const uploadRecordsToFolderSchema = z.object({
   }),
 });
 
-export const getAllKBRecordsSchema = z.object({
+export const allRecordsSchema = z.object({
   query: z
     .object({
     page: z
@@ -354,17 +354,17 @@ export const getAllKBRecordsSchema = z.object({
   }),
 });
 
-export const createKBSchema = z.object({
+export const createSchema = z.object({
   body: z.object({
     kbName: z.string().min(1).max(255),
   }),
 });
 
-export const getKBSchema = z.object({
+export const kbIdParamSchema = z.object({
   params: z.object({ kbId: z.string().min(1) }),
 });
 
-export const listKnowledgeBasesSchema = z.object({
+export const listSchema = z.object({
   query: z
     .object({
     page: z
@@ -472,7 +472,7 @@ export const listKnowledgeBasesSchema = z.object({
     .strict(), // Reject unknown query parameters
 });
 
-export const updateKBSchema = z.object({
+export const updateSchema = z.object({
   body: z.object({
     kbName: z.string().min(1).max(255).optional(),
   }),
@@ -481,7 +481,7 @@ export const updateKBSchema = z.object({
   }),
 });
 
-export const deleteKBSchema = z.object({
+export const deleteSchema = z.object({
   params: z.object({ kbId: z.string().min(1) }),
 });
 
@@ -491,7 +491,7 @@ export const createFolderSchema = z.object({
   }),
 });
 
-export const kbPermissionSchema = z.object({
+export const permissionBodySchema = z.object({
   body: z.object({
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(),
@@ -575,7 +575,7 @@ export const moveRecordSchema = z.object({
   }),
 });
 
-const knowledgeHubQuerySchema = z.object({
+const hubQuerySchema = z.object({
   page: z
     .string()
     .optional()
@@ -620,11 +620,11 @@ const knowledgeHubQuerySchema = z.object({
   onlyContainers: z.string().optional(),
 });
 
-export const getKnowledgeHubNodesSchema = z.object({
-  query: knowledgeHubQuerySchema,
+export const hubNodesSchema = z.object({
+  query: hubQuerySchema,
 });
 
-export const getKnowledgeHubChildNodesSchema = z.object({
+export const hubChildNodesSchema = z.object({
   params: z.object({
     parentType: z.enum(['app', 'recordGroup', 'folder', 'record'], {
       errorMap: () => ({
@@ -634,7 +634,7 @@ export const getKnowledgeHubChildNodesSchema = z.object({
     }),
     parentId: z.string().min(1, 'parentId is required'),
   }),
-  query: knowledgeHubQuerySchema,
+  query: hubQuerySchema,
 });
 
 // ============================================================================
@@ -759,7 +759,7 @@ const khPermissionsSchema = z.object({
 }).strict();
 
 // Top-level response — nullable fields are always present as explicit null (never absent)
-export const getKnowledgeHubNodesResponseSchema = z.object({
+export const hubNodesResponseSchema = z.object({
   success: z.boolean(),
   error: z.string().nullable(),                       // null on success
   id: z.string().nullable(),                          // null at root
@@ -843,7 +843,7 @@ const kbListAvailableFiltersSchema = z
   .strict();
 
 // GET /api/v1/knowledgeBase/
-export const listKnowledgeBasesResponseSchema = z.object({
+export const listResponseSchema = z.object({
   knowledgeBases: z.array(kbListItemSchema),
   pagination: kbPaginationSchema,
   filters: z.object({
@@ -858,13 +858,13 @@ export const listKnowledgeBasesResponseSchema = z.object({
 // ============================================================================
 
 // PUT /api/v1/kb/:kbId and DELETE /api/v1/kb/:kbId
-export const kbSuccessResponseSchema = z.object({
+export const successResponseSchema = z.object({
   success: z.boolean(),
   message: z.string().optional(),
 }).strict();
 
 // POST /api/v1/kb/ 
-export const createKBResponseSchema = z.object({
+export const createResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
   createdAtTimestamp: z.number().int(),
@@ -874,14 +874,14 @@ export const createKBResponseSchema = z.object({
 
 // GET /api/v1/knowledgeBase/:kbId
 
-const getKBFolderItemSchema = z.object({
+const detailFolderItemSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   createdAtTimestamp: z.number().int().optional(), // absent when null (exclude_none on nested Pydantic model)
   webUrl: z.string().optional(),                   // absent when null (exclude_none on nested Pydantic model)
 }).strict();
 
-export const getKBResponseSchema = z.object({
+export const detailResponseSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   connectorId: z.string().nullable(),      // always present, null for COLLECTION-origin KBs
@@ -889,7 +889,7 @@ export const getKBResponseSchema = z.object({
   updatedAtTimestamp: z.number().int(),
   createdBy: z.string(),
   userRole: z.string(),                    // always present — user must have a role to access
-  folders: z.array(getKBFolderItemSchema), // always present, may be empty array
+  folders: z.array(detailFolderItemSchema), // always present, may be empty array
 }).strict();
 
 // ============================================================================
@@ -1008,7 +1008,7 @@ const kbChildrenPaginationSchema = z.object({
 
 // GET /knowledgeBase/:kbId/children
 
-export const getKBChildrenResponseSchema = z.object({
+export const childrenResponseSchema = z.object({
   success: z.boolean(),
   container: kbChildrenContainerSchema,
   folders: z.array(kbChildrenFolderSchema),
@@ -1056,7 +1056,7 @@ const folderChildrenCountsSchema = z.object({
 
 // GET /knowledgeBase/:kbId/folder/:folderId/children
 
-export const getFolderChildrenResponseSchema = z.object({
+export const folderChildrenResponseSchema = z.object({
   success: z.boolean(),
   folders: z.array(folderChildrenFolderSchema),
   records: z.array(kbChildrenRecordSchema),
@@ -1088,7 +1088,7 @@ const kbPermissionItemSchema = z.object({
   updatedAtTimestamp: z.number().int(),
 }).strict();
 
-export const listKBPermissionsResponseSchema = z.object({
+export const listPermissionsResponseSchema = z.object({
   kbId: z.string().min(1),
   permissions: z.array(kbPermissionItemSchema),
   totalCount: z.number().int().min(0),
@@ -1096,7 +1096,7 @@ export const listKBPermissionsResponseSchema = z.object({
 
 // DELETE /api/v1/knowledgeBase/:kbId/permissions
 
-export const removeKBPermissionResponseSchema = z.object({
+export const removePermissionResponseSchema = z.object({
   kbId: z.string().min(1),
   userIds: z.array(z.string()),
   teamIds: z.array(z.string()),
@@ -1104,7 +1104,7 @@ export const removeKBPermissionResponseSchema = z.object({
 
 // PUT /api/v1/knowledgeBase/:kbId/permissions  (updateKBPermission)
 
-export const updateKBPermissionResponseSchema = z.object({
+export const updatePermissionResponseSchema = z.object({
   kbId: z.string().min(1),
   userIds: z.array(z.string()),
   teamIds: z.array(z.string()),
@@ -1113,7 +1113,7 @@ export const updateKBPermissionResponseSchema = z.object({
 
 // POST /api/v1/knowledgeBase/:kbId/permissions  (createKBPermission, status 201)
 
-const createKBPermissionResultSchema = z.object({
+const createPermissionResultSchema = z.object({
   success: z.boolean(),
   grantedCount: z.number().int().min(0),
   grantedUsers: z.array(z.string()),
@@ -1123,9 +1123,9 @@ const createKBPermissionResultSchema = z.object({
   details: z.record(z.unknown()),
 }).strict();
 
-export const createKBPermissionResponseSchema = z.object({
+export const createPermissionResponseSchema = z.object({
   kbId: z.string().min(1),
-  permissionResult: createKBPermissionResultSchema,
+  permissionResult: createPermissionResultSchema,
 }).strict();
 
 // ============================================================================
@@ -1193,7 +1193,7 @@ export const createFolderResponseSchema = z.object({
 // PUT  /api/v1/knowledgeBase/:kbId/folder/:folderId  → {"success":true,"message":"Folder updated successfully"}
 // DELETE /api/v1/knowledgeBase/:kbId/folder/:folderId → {"success":true,"message":"Folder deleted successfully"}
 
-export const kbFolderSuccessResponseSchema = kbSuccessResponseSchema;
+export const folderSuccessResponseSchema = successResponseSchema;
 
 
 // ============================================================================
@@ -1201,24 +1201,24 @@ export const kbFolderSuccessResponseSchema = kbSuccessResponseSchema;
 // ============================================================================
 
 
-const getRecordByIdMetadataTagSchema = z
+const recordByIdMetadataTagSchema = z
   .object({ id: z.string(), name: z.string() })
   .strict();
 
-const getRecordByIdMetadataSchema = z
+const recordByIdMetadataSchema = z
   .object({
-    departments: z.array(getRecordByIdMetadataTagSchema),
-    categories: z.array(getRecordByIdMetadataTagSchema),
-    subcategories1: z.array(getRecordByIdMetadataTagSchema),
-    subcategories2: z.array(getRecordByIdMetadataTagSchema),
-    subcategories3: z.array(getRecordByIdMetadataTagSchema),
-    topics: z.array(getRecordByIdMetadataTagSchema),
-    languages: z.array(getRecordByIdMetadataTagSchema),
+    departments: z.array(recordByIdMetadataTagSchema),
+    categories: z.array(recordByIdMetadataTagSchema),
+    subcategories1: z.array(recordByIdMetadataTagSchema),
+    subcategories2: z.array(recordByIdMetadataTagSchema),
+    subcategories3: z.array(recordByIdMetadataTagSchema),
+    topics: z.array(recordByIdMetadataTagSchema),
+    languages: z.array(recordByIdMetadataTagSchema),
   })
   .strict();
 
 
-const getRecordByIdFileRecordSchema = z
+const recordByIdFileRecordSchema = z
   .object({
     id: z.string(),
     _key: z.string().optional(),
@@ -1243,7 +1243,7 @@ const getRecordByIdFileRecordSchema = z
   .passthrough()
 
 
-const getRecordByIdTicketRecordSchema = z
+const recordByIdTicketRecordSchema = z
   .object({
     id: z.string(),
     _key: z.string().optional(),
@@ -1270,7 +1270,7 @@ const getRecordByIdTicketRecordSchema = z
   })
   .passthrough()
 
-const getRecordByIdMailRecordSchema = z
+const recordByIdMailRecordSchema = z
   .object({
     id: z.string(),
     _key: z.string().optional(),
@@ -1293,7 +1293,7 @@ const getRecordByIdMailRecordSchema = z
   })
   .passthrough()
 
-const getRecordByIdRecordSchema = z
+const recordByIdRecordSchema = z
   .object({
     id: z.string(),
     _key: z.string().optional(),
@@ -1340,13 +1340,13 @@ const getRecordByIdRecordSchema = z
     lastExtractionTimestamp: kbRecordNullableInt,
     lastIndexTimestamp: kbRecordNullableInt,
     sizeInBytes: kbRecordNullableInt,
-    fileRecord: getRecordByIdFileRecordSchema.nullable(),
-    mailRecord: getRecordByIdMailRecordSchema.nullable(),
-    ticketRecord: getRecordByIdTicketRecordSchema.nullable(),
+    fileRecord: recordByIdFileRecordSchema.nullable(),
+    mailRecord: recordByIdMailRecordSchema.nullable(),
+    ticketRecord: recordByIdTicketRecordSchema.nullable(),
   })
   .passthrough();
 
-const getRecordByIdKnowledgeBaseSchema = z
+const recordByIdKnowledgeBaseSchema = z
   .object({
     id: z.string().min(1),
     name: z.string().min(1),
@@ -1354,14 +1354,14 @@ const getRecordByIdKnowledgeBaseSchema = z
   })
   .strict();
 
-const getRecordByIdFolderSchema = z
+const recordByIdFolderSchema = z
   .object({
     id: z.string().min(1),
     name: z.string().min(1),
   })
   .strict();
 
-const getRecordByIdPermissionSchema = z
+const recordByIdPermissionSchema = z
   .object({
     id: z.string(),
     name: z.string(),
@@ -1373,13 +1373,13 @@ const getRecordByIdPermissionSchema = z
 
 // GET /api/v1/records/{record_id}
 
-export const getRecordByIdResponseSchema = z
+export const recordByIdResponseSchema = z
   .object({
-    record: getRecordByIdRecordSchema,
-    knowledgeBase: getRecordByIdKnowledgeBaseSchema.nullable(),
-    folder: getRecordByIdFolderSchema.nullable(),
-    metadata: getRecordByIdMetadataSchema.nullable(),
-    permissions: z.array(getRecordByIdPermissionSchema),
+    record: recordByIdRecordSchema,
+    knowledgeBase: recordByIdKnowledgeBaseSchema.nullable(),
+    folder: recordByIdFolderSchema.nullable(),
+    metadata: recordByIdMetadataSchema.nullable(),
+    permissions: z.array(recordByIdPermissionSchema),
   })
   .strict();
 
@@ -1494,7 +1494,7 @@ export const reindexRecordGroupResponseSchema = z
   })
   .strict();
 
-export const connectorStatsIndexingStatusCountsSchema = z
+export const statsIndexingStatusCountsSchema = z
   .object({
     NOT_STARTED: z.number().int().min(0),
     PAUSED: z.number().int().min(0),
@@ -1509,15 +1509,15 @@ export const connectorStatsIndexingStatusCountsSchema = z
   })
   .strict();
 
-const connectorStatsByRecordTypeItemSchema = z
+const statsByRecordTypeItemSchema = z
   .object({
     recordType: z.string().min(1),
     total: z.number().int().min(0),
-    indexingStatus: connectorStatsIndexingStatusCountsSchema,
+    indexingStatus: statsIndexingStatusCountsSchema,
   })
   .strict();
 
-const connectorStatsDataSchema = z
+const statsDataSchema = z
   .object({
     orgId: z.string().min(1),
     connectorId: z.string().min(1),
@@ -1525,19 +1525,19 @@ const connectorStatsDataSchema = z
     stats: z
       .object({
         total: z.number().int().min(0),
-        indexingStatus: connectorStatsIndexingStatusCountsSchema,
+        indexingStatus: statsIndexingStatusCountsSchema,
       })
       .strict(),
-    byRecordType: z.array(connectorStatsByRecordTypeItemSchema),
+    byRecordType: z.array(statsByRecordTypeItemSchema),
   })
   .strict();
 
 // GET /api/v1/stats (connector)
 
-export const getConnectorStatsResponseSchema = z
+export const connectorStatsResponseSchema = z
   .object({
     success: z.boolean(),
-    data: connectorStatsDataSchema,
+    data: statsDataSchema,
   })
   .strict();
 
@@ -1554,7 +1554,7 @@ export const reindexFailedRecordsResponseSchema = z
 
 // POST /resync/connector
 
-export const resyncConnectorRecordsResponseSchema = z
+export const resyncRecordsResponseSchema = z
   .object({
     resyncConnectorResponse: z.discriminatedUnion('success', [
       z.object({ success: z.literal(true) }).strict(),
@@ -1569,7 +1569,7 @@ export const resyncConnectorRecordsResponseSchema = z
 
 // GET /knowledgeBase/limits
 
-export const getKbUploadLimitsResponseSchema = z
+export const uploadLimitsResponseSchema = z
   .object({
     maxFilesPerRequest: z.number().int().positive(),
     maxFileSizeBytes: z.number().int().positive(),
@@ -1582,32 +1582,32 @@ export const getKbUploadLimitsResponseSchema = z
 
 // PUT /api/v1/knowledgeBase/:kbId/record/:recordId/move
 
-export const moveRecordResponseSchema = kbSuccessResponseSchema;
+export const moveRecordResponseSchema = successResponseSchema;
 
 // ============================================================================
 // Inferred Response Types
 // ============================================================================
 
-export type GetKBResponse = z.infer<typeof getKBResponseSchema>;
-export type GetKBChildrenResponse = z.infer<typeof getKBChildrenResponseSchema>;
-export type GetFolderChildrenResponse = z.infer<typeof getFolderChildrenResponseSchema>;
-export type ListKBPermissionsResponse = z.infer<typeof listKBPermissionsResponseSchema>;
-export type RemoveKBPermissionResponse = z.infer<typeof removeKBPermissionResponseSchema>;
-export type CreateKBPermissionResponse = z.infer<typeof createKBPermissionResponseSchema>;
-export type UpdateKBPermissionResponse = z.infer<typeof updateKBPermissionResponseSchema>;
+export type DetailResponse = z.infer<typeof detailResponseSchema>;
+export type ChildrenResponse = z.infer<typeof childrenResponseSchema>;
+export type FolderChildrenResponse = z.infer<typeof folderChildrenResponseSchema>;
+export type ListPermissionsResponse = z.infer<typeof listPermissionsResponseSchema>;
+export type RemovePermissionResponse = z.infer<typeof removePermissionResponseSchema>;
+export type CreatePermissionResponse = z.infer<typeof createPermissionResponseSchema>;
+export type UpdatePermissionResponse = z.infer<typeof updatePermissionResponseSchema>;
 export type UploadRecordsResponse = z.infer<typeof uploadRecordsResponseSchema>;
 export type CreateFolderResponse = z.infer<typeof createFolderResponseSchema>;
-export type KbFolderSuccessResponse = z.infer<typeof kbFolderSuccessResponseSchema>;
+export type FolderSuccessResponse = z.infer<typeof folderSuccessResponseSchema>;
 export type MoveRecordResponse = z.infer<typeof moveRecordResponseSchema>;
-export type KbSuccessResponse = z.infer<typeof kbSuccessResponseSchema>;
-export type CreateKBResponse = z.infer<typeof createKBResponseSchema>;
-export type ListKnowledgeBasesResponse = z.infer<typeof listKnowledgeBasesResponseSchema>;
-export type GetRecordByIdResponse = z.infer<typeof getRecordByIdResponseSchema>;
+export type SuccessResponse = z.infer<typeof successResponseSchema>;
+export type CreateResponse = z.infer<typeof createResponseSchema>;
+export type ListResponse = z.infer<typeof listResponseSchema>;
+export type RecordByIdResponse = z.infer<typeof recordByIdResponseSchema>;
 export type UpdateRecordResponse = z.infer<typeof updateRecordResponseSchema>;
 export type DeleteRecordResponse = z.infer<typeof deleteRecordResponseSchema>;
 export type ReindexRecordResponse = z.infer<typeof reindexRecordResponseSchema>;
 export type ReindexRecordGroupResponse = z.infer<typeof reindexRecordGroupResponseSchema>;
-export type GetConnectorStatsResponse = z.infer<typeof getConnectorStatsResponseSchema>;
+export type ConnectorStatsResponse = z.infer<typeof connectorStatsResponseSchema>;
 export type ReindexFailedRecordsResponse = z.infer<typeof reindexFailedRecordsResponseSchema>;
-export type KbUploadLimitsResponse = z.infer<typeof getKbUploadLimitsResponseSchema>;
-export type GetKnowledgeHubNodesResponse = z.infer<typeof getKnowledgeHubNodesResponseSchema>;
+export type UploadLimitsResponse = z.infer<typeof uploadLimitsResponseSchema>;
+export type HubNodesResponse = z.infer<typeof hubNodesResponseSchema>;

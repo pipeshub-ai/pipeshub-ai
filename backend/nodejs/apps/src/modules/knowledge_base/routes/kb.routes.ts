@@ -34,34 +34,34 @@ import {
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
-  getRecordByIdSchema,
+  recordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
   reindexRecordGroupSchema,
   reindexFailedRecordSchema,
-  resyncConnectorSchema,
-  createKBSchema,
-  getKBSchema,
-  updateKBSchema,
-  deleteKBSchema,
+  resyncSchema,
+  createSchema,
+  kbIdParamSchema,
+  updateSchema,
+  deleteSchema,
   createFolderSchema,
-  kbPermissionSchema,
+  permissionBodySchema,
   getFolderSchema,
   getPermissionsSchema,
   updatePermissionsSchema,
   deletePermissionsSchema,
   updateFolderSchema,
   deleteFolderSchema,
-  getAllKBRecordsSchema,
+  allRecordsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  listKnowledgeBasesSchema,
+  listSchema,
   reindexRecordSchema,
-  getConnectorStatsSchema,
+  connectorStatsSchema,
   moveRecordSchema,
-  getKnowledgeHubNodesSchema,
-  getKnowledgeHubChildNodesSchema,
-  getKbUploadLimitsResponseSchema,
+  hubNodesSchema,
+  hubChildNodesSchema,
+  uploadLimitsResponseSchema,
 } from '../schemas/knowledge_base';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -207,7 +207,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(createKBSchema),
+    ValidationMiddleware.validate(createSchema),
     createKnowledgeBase(appConfig),
   );
 
@@ -217,7 +217,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(listKnowledgeBasesSchema),
+    ValidationMiddleware.validate(listSchema),
     listKnowledgeBases(appConfig),
   );
 
@@ -230,7 +230,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getKnowledgeHubNodesSchema),
+    ValidationMiddleware.validate(hubNodesSchema),
     getKnowledgeHubNodes(appConfig),
   );
 
@@ -240,7 +240,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getKnowledgeHubChildNodesSchema),
+    ValidationMiddleware.validate(hubChildNodesSchema),
     getKnowledgeHubNodes(appConfig),
   );
 
@@ -252,7 +252,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getRecordByIdSchema),
+    ValidationMiddleware.validate(recordByIdSchema),
     getRecordById(appConfig),
   );
 
@@ -291,7 +291,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getRecordByIdSchema),
+    ValidationMiddleware.validate(recordByIdSchema),
     getRecordBuffer(appConfig.connectorBackend),
   );
 
@@ -321,7 +321,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getConnectorStatsSchema),
+    ValidationMiddleware.validate(connectorStatsSchema),
     getConnectorStats(appConfig),
   );
 
@@ -341,7 +341,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(resyncConnectorSchema),
+    ValidationMiddleware.validate(resyncSchema),
     resyncConnectorRecords(recordRelationService, appConfig),
   );
 
@@ -361,7 +361,7 @@ export function createKnowledgeBaseRouter(
           maxFilesPerRequest: KB_UPLOAD_LIMITS.maxFilesPerRequest,
           maxFileSizeBytes: await resolveMaxUploadSize(),
         };
-        sendValidatedJson(res, getKbUploadLimitsResponseSchema, payload, 200);
+        sendValidatedJson(res, uploadLimitsResponseSchema, payload, 200);
       } catch (_e) {
         logger.error('Error getting limits', { error: _e });
         next(_e);
@@ -375,7 +375,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getKBSchema),
+    ValidationMiddleware.validate(kbIdParamSchema),
     getKnowledgeBase(appConfig),
   );
 
@@ -385,7 +385,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateKBSchema),
+    ValidationMiddleware.validate(updateSchema),
     updateKnowledgeBase(appConfig),
   );
 
@@ -395,7 +395,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_DELETE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(deleteKBSchema),
+    ValidationMiddleware.validate(deleteSchema),
     deleteKnowledgeBase(appConfig),
   );
 
@@ -405,7 +405,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllKBRecordsSchema),
+    ValidationMiddleware.validate(allRecordsSchema),
     getKBContent(appConfig),
   );
 
@@ -515,7 +515,7 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(kbPermissionSchema),
+    ValidationMiddleware.validate(permissionBodySchema),
     createKBPermission(appConfig),
   );
 

@@ -38,26 +38,26 @@ import {
 } from '../../tokens_manager/utils/connector.utils';
 import {
   createFolderResponseSchema,
-  createKBPermissionResponseSchema,
-  createKBResponseSchema,
+  createPermissionResponseSchema,
+  createResponseSchema,
   deleteRecordResponseSchema,
-  getFolderChildrenResponseSchema,
-  getKBChildrenResponseSchema,
-  getKBResponseSchema,
-  getKnowledgeHubNodesResponseSchema,
-  getConnectorStatsResponseSchema,
-  getRecordByIdResponseSchema,
-  kbFolderSuccessResponseSchema,
-  kbSuccessResponseSchema,
-  listKBPermissionsResponseSchema,
-  listKnowledgeBasesResponseSchema,
+  folderChildrenResponseSchema,
+  childrenResponseSchema,
+  detailResponseSchema,
+  hubNodesResponseSchema,
+  connectorStatsResponseSchema,
+  recordByIdResponseSchema,
+  folderSuccessResponseSchema,
+  successResponseSchema,
+  listPermissionsResponseSchema,
+  listResponseSchema,
   moveRecordResponseSchema,
   reindexFailedRecordsResponseSchema,
   reindexRecordGroupResponseSchema,
   reindexRecordResponseSchema,
-  removeKBPermissionResponseSchema,
-  resyncConnectorRecordsResponseSchema,
-  updateKBPermissionResponseSchema,
+  removePermissionResponseSchema,
+  resyncRecordsResponseSchema,
+  updatePermissionResponseSchema,
   updateRecordResponseSchema,
   uploadRecordsResponseSchema,
 } from '../schemas/knowledge_base';
@@ -151,7 +151,7 @@ export const getKnowledgeHubNodes =
         res,
         'Getting knowledge hub nodes',
         'Failed to get nodes',
-        getKnowledgeHubNodesResponseSchema,
+        hubNodesResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting knowledge hub nodes', {
@@ -278,7 +278,7 @@ export const createKnowledgeBase =
         res,
         'Creating knowledge base',
         'Knowledge base creation failed',
-        createKBResponseSchema,
+        createResponseSchema,
       );
       logger.info(`Knowledge base '${kbName}' created successfully`);
     } catch (error: any) {
@@ -316,7 +316,7 @@ export const getKnowledgeBase =
         res,
         'Getting knowledge base',
         'Knowledge base not found',
-        getKBResponseSchema,
+        detailResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error getting knowledge base', {
@@ -465,7 +465,7 @@ export const listKnowledgeBases =
         res,
         'Getting knowledge bases',
         'Knowledge bases not found',
-        listKnowledgeBasesResponseSchema,
+        listResponseSchema,
       );
 
       // Log successful retrieval
@@ -519,7 +519,7 @@ export const updateKnowledgeBase =
         res,
         'Updating knowledge base',
         'Knowledge base not found',
-        kbSuccessResponseSchema,
+        successResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error updating knowledge base', { error: error.message });
@@ -555,7 +555,7 @@ export const deleteKnowledgeBase =
         res,
         'Deleting knowledge base',
         'Knowledge base not found',
-        kbSuccessResponseSchema,
+        successResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error deleting knowledge base', { error: error.message });
@@ -705,7 +705,7 @@ export const updateFolder =
         res,
         'Updating folder',
         'Folder not found',
-        kbFolderSuccessResponseSchema,
+        folderSuccessResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error updating folder for knowledge base', {
@@ -748,7 +748,7 @@ export const deleteFolder =
         res,
         'Deleting folder',
         'Folder not found',
-        kbFolderSuccessResponseSchema,
+        folderSuccessResponseSchema,
       );
     } catch (error: any) {
       logger.error('Error deleting folder for knowledge base', {
@@ -1874,7 +1874,7 @@ export const getKBContent =
         res,
         'Getting KB records',
         'KB records not found',
-        getKBChildrenResponseSchema,
+        childrenResponseSchema,
       );
 
       // Log successful retrieval
@@ -2073,7 +2073,7 @@ export const getFolderContents =
         res,
         'Getting folder contents',
         'Folder contents not found',
-        getFolderChildrenResponseSchema,
+        folderChildrenResponseSchema,
       );
 
       // Log successful retrieval
@@ -2118,7 +2118,7 @@ export const getRecordById =
         res,
         'Getting record by id',
         'Record not found',
-        getRecordByIdResponseSchema,
+        recordByIdResponseSchema,
       );
 
       // Log successful retrieval
@@ -2336,7 +2336,7 @@ export const createKBPermission =
         throw new NotFoundError('Failed to create permissions');
       }
 
-      sendValidatedJson(res, createKBPermissionResponseSchema, { kbId, permissionResult }, 201);
+      sendValidatedJson(res, createPermissionResponseSchema, { kbId, permissionResult }, 201);
     } catch (error: any) {
       logger.error('Error creating KB permissions', {
         error: error.message,
@@ -2404,7 +2404,7 @@ export const updateKBPermission =
 
       const updateResult = response.data as any;
 
-      sendValidatedJson(res, updateKBPermissionResponseSchema, {
+      sendValidatedJson(res, updatePermissionResponseSchema, {
         kbId,
         userIds: updateResult.userIds,
         teamIds: updateResult.teamIds,
@@ -2458,7 +2458,7 @@ export const removeKBPermission =
 
       const removeResult = response.data as any;
 
-      sendValidatedJson(res, removeKBPermissionResponseSchema, {
+      sendValidatedJson(res, removePermissionResponseSchema, {
         kbId,
         userIds: removeResult.userIds,
         teamIds: removeResult.teamIds,
@@ -2500,7 +2500,7 @@ export const listKBPermissions =
 
       const listResult = response.data as any;
 
-      sendValidatedJson(res, listKBPermissionsResponseSchema, {
+      sendValidatedJson(res, listPermissionsResponseSchema, {
         kbId,
         permissions: listResult.permissions,
         totalCount: listResult.totalCount,
@@ -2561,7 +2561,7 @@ export const getConnectorStats =
         });
 
         // Send response
-        sendValidatedJson(res, getConnectorStatsResponseSchema, result, 200);
+        sendValidatedJson(res, connectorStatsResponseSchema, result, 200);
       } catch (pythonServiceError: any) {
         logger.error('Error calling Python service for record', {
           userId,
@@ -2784,7 +2784,7 @@ export const resyncConnectorRecords =
           resyncConnectorPayload,
         );
 
-      sendValidatedJson(res, resyncConnectorRecordsResponseSchema, { resyncConnectorResponse }, 200);
+      sendValidatedJson(res, resyncRecordsResponseSchema, { resyncConnectorResponse }, 200);
 
       return; // Added return statement
     } catch (error: any) {

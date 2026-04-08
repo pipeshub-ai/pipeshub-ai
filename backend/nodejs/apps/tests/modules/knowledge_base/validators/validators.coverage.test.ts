@@ -1,24 +1,24 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import {
-  getRecordByIdSchema,
+  recordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
   reindexFailedRecordSchema,
-  resyncConnectorSchema,
-  getConnectorStatsSchema,
+  resyncSchema,
+  connectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllKBRecordsSchema,
-  createKBSchema,
-  getKBSchema,
-  listKnowledgeBasesSchema,
-  updateKBSchema,
-  deleteKBSchema,
+  allRecordsSchema,
+  createSchema,
+  kbIdParamSchema,
+  listSchema,
+  updateSchema,
+  deleteSchema,
   createFolderSchema,
-  kbPermissionSchema,
+  permissionBodySchema,
   getFolderSchema,
   updateFolderSchema,
   deleteFolderSchema,
@@ -153,18 +153,18 @@ describe('Knowledge Base Validators - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // getAllKBRecordsSchema
+  // allRecordsSchema
   // -----------------------------------------------------------------------
-  describe('getAllKBRecordsSchema', () => {
+  describe('allRecordsSchema', () => {
     it('should accept valid query params', () => {
-      const result = getAllKBRecordsSchema.safeParse({
+      const result = allRecordsSchema.safeParse({
         query: { page: '1', limit: '20', search: 'test' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject script tags in search', () => {
-      const result = getAllKBRecordsSchema.safeParse({
+      const result = allRecordsSchema.safeParse({
         query: { search: '<script>xss</script>' },
       })
       expect(result.success).to.be.false
@@ -172,11 +172,11 @@ describe('Knowledge Base Validators - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // kbPermissionSchema
+  // permissionBodySchema
   // -----------------------------------------------------------------------
-  describe('kbPermissionSchema', () => {
+  describe('permissionBodySchema', () => {
     it('should accept valid user permission', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: ['user1'], role: 'READER' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -184,7 +184,7 @@ describe('Knowledge Base Validators - coverage', () => {
     })
 
     it('should accept valid team permission', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { teamIds: ['team1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -192,7 +192,7 @@ describe('Knowledge Base Validators - coverage', () => {
     })
 
     it('should reject when no userIds or teamIds', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { role: 'READER' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -200,7 +200,7 @@ describe('Knowledge Base Validators - coverage', () => {
     })
 
     it('should reject when userIds provided without role', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: ['user1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -230,25 +230,25 @@ describe('Knowledge Base Validators - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // listKnowledgeBasesSchema
+  // listSchema
   // -----------------------------------------------------------------------
-  describe('listKnowledgeBasesSchema', () => {
+  describe('listSchema', () => {
     it('should accept valid query params', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { page: '1', limit: '20', sortBy: 'name', sortOrder: 'asc' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject unknown query params (strict mode)', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { unknownParam: 'value' },
       })
       expect(result.success).to.be.false
     })
 
     it('should accept search with permissions filter', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { permissions: 'OWNER,READER' },
       })
       expect(result.success).to.be.true
@@ -280,8 +280,8 @@ describe('Knowledge Base Validators - coverage', () => {
   // Simple schemas
   // -----------------------------------------------------------------------
   describe('simple schemas', () => {
-    it('getRecordByIdSchema should accept valid input', () => {
-      const result = getRecordByIdSchema.safeParse({
+    it('recordByIdSchema should accept valid input', () => {
+      const result = recordByIdSchema.safeParse({
         params: { recordId: 'rec-1' },
         query: { convertTo: 'pdf' },
       })
@@ -311,22 +311,22 @@ describe('Knowledge Base Validators - coverage', () => {
       expect(result.success).to.be.true
     })
 
-    it('resyncConnectorSchema should accept valid input', () => {
-      const result = resyncConnectorSchema.safeParse({
+    it('resyncSchema should accept valid input', () => {
+      const result = resyncSchema.safeParse({
         body: { connectorName: 'google', connectorId: 'c-1', fullSync: true },
       })
       expect(result.success).to.be.true
     })
 
-    it('createKBSchema should accept valid input', () => {
-      const result = createKBSchema.safeParse({
+    it('createSchema should accept valid input', () => {
+      const result = createSchema.safeParse({
         body: { kbName: 'My KB' },
       })
       expect(result.success).to.be.true
     })
 
-    it('updateKBSchema should accept valid input', () => {
-      const result = updateKBSchema.safeParse({
+    it('updateSchema should accept valid input', () => {
+      const result = updateSchema.safeParse({
         body: { kbName: 'Updated KB' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })

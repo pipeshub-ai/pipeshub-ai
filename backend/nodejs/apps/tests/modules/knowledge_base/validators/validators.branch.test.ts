@@ -3,14 +3,14 @@ import { expect } from 'chai'
 import {
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllKBRecordsSchema,
-  listKnowledgeBasesSchema,
-  kbPermissionSchema,
+  allRecordsSchema,
+  listSchema,
+  permissionBodySchema,
   updatePermissionsSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
   reindexFailedRecordSchema,
-  resyncConnectorSchema,
+  resyncSchema,
   moveRecordSchema,
 } from '../../../../src/modules/knowledge_base/schemas/knowledge_base'
 
@@ -136,11 +136,11 @@ describe('Knowledge Base Validators - branch coverage', () => {
   })
 
   // =========================================================================
-  // kbPermissionSchema - refine validations
+  // permissionBodySchema - refine validations
   // =========================================================================
-  describe('kbPermissionSchema - refines', () => {
+  describe('permissionBodySchema - refines', () => {
     it('should require at least one userId or teamId', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: {},
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
       })
@@ -148,7 +148,7 @@ describe('Knowledge Base Validators - branch coverage', () => {
     })
 
     it('should pass with userIds and role', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: ['user1'], role: 'READER' },
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
       })
@@ -156,7 +156,7 @@ describe('Knowledge Base Validators - branch coverage', () => {
     })
 
     it('should pass with teamIds only (no role required)', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { teamIds: ['team1'] },
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
       })
@@ -164,7 +164,7 @@ describe('Knowledge Base Validators - branch coverage', () => {
     })
 
     it('should fail when userIds provided without role', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: ['user1'] },
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
       })
@@ -172,7 +172,7 @@ describe('Knowledge Base Validators - branch coverage', () => {
     })
 
     it('should fail with empty userIds and empty teamIds', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: [], teamIds: [] },
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
       })
@@ -288,32 +288,32 @@ describe('Knowledge Base Validators - branch coverage', () => {
   })
 
   // =========================================================================
-  // listKnowledgeBasesSchema
+  // listSchema
   // =========================================================================
-  describe('listKnowledgeBasesSchema - sortBy', () => {
+  describe('listSchema - sortBy', () => {
     it('should accept name as sort field', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { sortBy: 'name' },
       })
       expect(result.success).to.be.true
     })
 
     it('should accept userRole as sort field', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { sortBy: 'userRole' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject invalid sort field', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { sortBy: 'invalidField' },
       })
       expect(result.success).to.be.false
     })
 
     it('should reject unknown query parameters (strict)', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { unknownField: 'value' },
       })
       expect(result.success).to.be.false
