@@ -513,7 +513,6 @@ code_file_record_schema={
             "summary": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             "filePath": {"type": "string", "minLength": 0},
-            "fileName": {"type": "string", "minLength": 0},
             "fileHash": {"type": "string", "minLength": 0},
         },
     },

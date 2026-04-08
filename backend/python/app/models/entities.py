@@ -1764,7 +1764,6 @@ class CodeFileRecord(Record):
             record_type=RecordType(arango_base_record["recordType"]),
             external_record_id=arango_base_record["externalRecordId"],
             file_path=arango_base_code_file_record.get("filePath"),
-            # file_name=arango_base_code_file_record.get("fileName"),
             file_hash=arango_base_code_file_record.get("fileHash"),
             origin=OriginTypes(arango_base_record["origin"]),
             connector_name=connector_name,

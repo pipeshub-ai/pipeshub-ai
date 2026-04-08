@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import os
@@ -173,6 +174,8 @@ class GitLabConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope:str,
+        created_by:str,
     ) -> None:
         super().__init__(
             GitLabApp(connector_id),
@@ -181,6 +184,8 @@ class GitLabConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_name = Connectors.GITLAB.value
         self.connector_id = connector_id
@@ -390,8 +395,8 @@ class GitLabConnector(BaseConnector):
                         self.logger.warning("Group missing ID, skipping ")
                         total_groups_skipped += 1
                         continue
-                    self.logger.debug(f"syncing project wise users for group {group_id}")
-                    members_res = self.data_source.list_group_members_all(group_id)
+                    self.logger.debug(f"syncing users for group {group_id}")
+                    members_res = await asyncio.to_thread(self.data_source.list_group_members_all,group_id)
                     if not members_res.success :
                         self.logger.info(f"Error in fetching members for group {group_id}")
                         total_groups_skipped += 1
@@ -404,6 +409,7 @@ class GitLabConnector(BaseConnector):
                     self.logger.error(f"Error in syncing users for group {group_id}: {e}", exc_info=True)
                     continue
         # syncing from all projects
+
         projects_res = self.data_source.list_projects(owned=True)
         if not projects_res.success:
             self.logger.info(f"Error in fetching projects: {projects_res.error}")
@@ -416,10 +422,9 @@ class GitLabConnector(BaseConnector):
                         self.logger.warning("Project missing ID, skipping ")
                         total_projects_skipped += 1
                         continue
-                    members_res = self.data_source.list_project_members_all(project_id)
-
+                    members_res = await asyncio.to_thread(self.data_source.list_project_members_all,project_id =project_id)
                     if not members_res.success :
-                        self.logger.info(f"Error in fetching members for project {project_id}")
+                        self.logger.error(f"Error in fetching members for project {project_id}")
                         total_projects_skipped += 1
                         continue
                     members = members_res.data
@@ -1510,7 +1515,8 @@ class GitLabConnector(BaseConnector):
                 data = f"Existing file \n\n {file_content} \n\n Diff content \n\n {diff_content}"
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"
-
+            file_comments = map_file_r_comments.get(file_path, [])
+            comments = [file_comments] if file_comments else []
             bg_n = BlockGroup(
                 index=block_group_number,
                 name=f"block for file {file_path}",
@@ -1518,7 +1524,7 @@ class GitLabConnector(BaseConnector):
                 format=DataFormat.MARKDOWN,
                 sub_type=GroupSubType.PR_FILE_CHANGE,
                 data=data,
-                comments=map_file_r_comments.get(file_path, []),
+                comments=comments,
                 requires_processing=True,
             )
             block_groups.append(bg_n)
@@ -2122,6 +2128,8 @@ class GitLabConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope:str,
+        created_by:str,
     ) -> "BaseConnector":
         """
         Factory method to create a Gitlab connector instance.
@@ -2145,4 +2153,6 @@ class GitLabConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
