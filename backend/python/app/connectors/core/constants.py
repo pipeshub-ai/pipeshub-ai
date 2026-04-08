@@ -17,6 +17,8 @@ class OAuthConfigKeys:
     CONFIG = "config"
     SCOPE = "scope"
     SCOPES = "scopes"  # OAuth permission scopes (plural, different from connector scope)
+    TOKEN_ACCESS_TYPE = "tokenAccessType"
+    ADDITIONAL_PARAMS = "additionalParams"
 
 
 class AuthFieldKeys:
@@ -81,6 +83,14 @@ class ConnectorRequestKeys:
     AUTH_TYPE = "authType"
     BASE_URL = "baseUrl"
     SCOPE = "scope"  # Connector scope (team/personal)
+    CONNECTOR_SCOPE = "connectorScope"
+
+
+class ConnectorRegistryAuthMetadataKeys:
+    """Keys in connector registry `config.auth` metadata (schemas, per-auth-type OAuth)."""
+
+    SCHEMAS = "schemas"
+    OAUTH_CONFIGS = "oauthConfigs"
 
 
 class ConnectorStateKeys:

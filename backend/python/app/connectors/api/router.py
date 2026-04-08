@@ -53,6 +53,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.constants import (
     AuthFieldKeys,
+    ConnectorRegistryAuthMetadataKeys,
     ConnectorRequestKeys,
     ConnectorStateKeys,
     OAuthConfigKeys,
@@ -2185,9 +2186,9 @@ async def _prepare_connector_config(
 
     auth_type = selected_auth_type.upper() if selected_auth_type else AuthType.NONE
     auth_metadata = metadata.get(OAuthConfigKeys.CONFIG, {}).get(OAuthConfigKeys.AUTH, {})
-    auth_schemas = auth_metadata.get("schemas", {})
-    selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_type != "NONE" else {}
-    registry_oauth_config = (auth_metadata.get("oauthConfigs") or {}).get(auth_type, {})
+    auth_schemas = auth_metadata.get(ConnectorRegistryAuthMetadataKeys.SCHEMAS, {})
+    selected_auth_schema = (auth_schemas.get(auth_type, {}) if auth_type != AuthType.NONE else {})
+    registry_oauth_config = (auth_metadata.get(ConnectorRegistryAuthMetadataKeys.OAUTH_CONFIGS) or {}).get(auth_type, {})
 
     # Add OAuth infrastructure fields for OAUTH type
     # Only authorizeUrl and tokenUrl: use etcd when present, else registry
