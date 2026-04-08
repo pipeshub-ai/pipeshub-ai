@@ -49,7 +49,7 @@ import {
   handleOAuthCallbackSchema,
   getFilterFieldOptionsSchema,
   connectorToggleSchema,
-} from '../validators/connector.validators';
+} from '../schemas/connector';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 

@@ -1,11 +1,11 @@
 /**
- * Connector Validators
+ * Connector schemas
  *
  * Zod validation schemas for connector routes.
  * Handles request validation for connector instance management,
  * configuration, OAuth, and filter operations.
  *
- * @module connectors/validators
+ * @module tokens_manager/schemas/connector
  */
 
 import { z } from 'zod';

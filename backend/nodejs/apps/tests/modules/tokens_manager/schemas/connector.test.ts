@@ -32,7 +32,7 @@ import {
   createConnectorResponseSchema,
   connectorInstanceDetailResponseSchema,
   connectorDeleteResponseSchema,
-} from '../../../../src/modules/tokens_manager/validators/connector.validators';
+} from '../../../../src/modules/tokens_manager/schemas/connector';
 
 // ============================================================================
 // Test helpers

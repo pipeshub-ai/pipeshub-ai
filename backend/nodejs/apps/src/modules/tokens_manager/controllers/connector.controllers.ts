@@ -40,7 +40,7 @@ import {
   connectorOAuthCallbackResponseSchema,
   createConnectorResponseSchema,
   connectorActiveAgentInstancesResponseSchema,
-} from '../validators/connector.validators';
+} from '../schemas/connector';
 
 const logger = Logger.getInstance({
   service: 'Connector Controller',
