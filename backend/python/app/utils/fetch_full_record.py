@@ -142,14 +142,14 @@ async def _fetch_record_by_id(
     """
     Fetch a record by its graph record id.
     
-    1. Resolve record_id -> virtual_record_id via graph_provider
+    1. Fetch the Record from graph_provider to get virtual_record_id and metadata
     2. Check if already in map (by vrid)
-    3. If not, fetch from blob_store
+    3. If not, fetch from blob_store via chat_helpers.get_record
     4. Add to map for future lookups
     
     Args:
-        record_id: The graph record id
-        graph_provider: Service to resolve record_id to virtual_record_id
+        record_id: The graph record id (record.id / record._key)
+        graph_provider: Service to fetch record and resolve virtual_record_id
         blob_store: Storage to fetch record content
         org_id: Organization ID for blob storage
         virtual_record_id_to_result: Map to check/update with fetched records
@@ -165,89 +165,64 @@ async def _fetch_record_by_id(
         return None
     
     try:
-        # Resolve record_id to virtual_record_id (may already be a vrid from context)
-        record_id_to_vrid = await graph_provider.get_virtual_record_ids_for_record_ids([record_id])
-        vrid = record_id_to_vrid.get(record_id)
-
-        if not vrid:
-            # LLM often passes virtual_record_id; try treating record_id as vrid
-            if record_id in virtual_record_id_to_result:
-                existing = virtual_record_id_to_result[record_id]
-                if existing:
-                    return existing
-            record_by_vrid = await blob_store.get_record_from_storage(virtual_record_id=record_id, org_id=org_id)
-            if record_by_vrid:
-                vrid = record_id
-                record = record_by_vrid
-                try:
-                    graph_record = await graph_provider.get_record_by_id(record.get("id") or record.get("record_id"))
-                    if graph_record:
-                        meta = (
-                            graph_record.model_dump()
-                            if hasattr(graph_record, "model_dump")
-                            else graph_record
-                        )
-                        if isinstance(meta, dict):
-                            record["id"] = meta.get("id") or meta.get("_key") or record.get("id")
-                            record["org_id"] = org_id
-                            record["record_name"] = meta.get("record_name") or meta.get("recordName")
-                            record["record_type"] = meta.get("record_type") or meta.get("recordType")
-                            record["version"] = meta.get("version")
-                            record["origin"] = meta.get("origin")
-                            record["connector_name"] = meta.get("connector_name") or meta.get("connectorName")
-                            record["weburl"] = meta.get("weburl") or meta.get("webUrl")
-                except Exception as e:
-                    logger.warning("Could not fetch graph metadata for record %s: %s", record_id, str(e))
-                record["virtual_record_id"] = vrid
-                virtual_record_id_to_result[vrid] = record
-                return record
-            logger.debug("Could not resolve record_id %s to virtual_record_id or fetch by vrid", record_id)
+        graph_record = await graph_provider.get_record_by_id(record_id)
+        if not graph_record:
+            logger.debug("Record %s not found in graph", record_id)
             return None
 
-        # Check if already in map by vrid
+        meta = (
+            graph_record.model_dump()
+            if hasattr(graph_record, "model_dump")
+            else graph_record
+        )
+
+        vrid = meta.get("virtual_record_id")
+        if not vrid:
+            logger.debug("Record %s exists in graph but has no virtual_record_id", record_id)
+            return None
+
         if vrid in virtual_record_id_to_result:
-            existing_record = virtual_record_id_to_result[vrid]
-            if existing_record:
-                logger.debug("Record %s found in map by vrid %s", record_id, vrid)
-                return existing_record
-        
-        # Fetch from blob storage
-        record = await blob_store.get_record_from_storage(virtual_record_id=vrid, org_id=org_id)
-        
+            return virtual_record_id_to_result.get(vrid)
+
+        # Build graph metadata for get_record so blob+graph normalization stays consistent
+        record_id_value = meta.get("id") or meta.get("_key") or record_id
+        virtual_to_record_map: Dict[str, Dict[str, Any]] = {
+            vrid: {
+                "id": record_id_value,
+                "_key": record_id_value,
+                "recordName": meta.get("record_name"),
+                "recordType": meta.get("record_type"),
+                "version": meta.get("version"),
+                "origin": meta.get("origin"),
+                "connectorName": meta.get("connector_name"),
+                "connectorId": meta.get("connector_id"),
+                "webUrl": meta.get("weburl"),
+                "previewRenderable": meta.get("preview_renderable", True),
+                "hideWeburl": meta.get("hide_weburl", False),
+                "mimeType": meta.get("mime_type"),
+                "sourceCreatedAtTimestamp": meta.get("source_created_at"),
+                "sourceLastModifiedTimestamp": meta.get("source_updated_at"),
+            }
+        }
+
+        from app.utils.chat_helpers import get_record
+
+        await get_record(
+            vrid,
+            virtual_record_id_to_result,
+            blob_store,
+            org_id,
+            virtual_to_record_map=virtual_to_record_map,
+            graph_provider=graph_provider,
+        )
+
+        record = virtual_record_id_to_result.get(vrid)
         if not record:
             logger.debug("Could not fetch record from blob for vrid %s", vrid)
-            virtual_record_id_to_result[vrid] = None
             return None
-        
-        # Enrich with graph metadata (similar to get_record in chat_helpers)
-        # get_record_by_id returns a Record Pydantic model or dict (generic 'id' field)
-        try:
-            graph_record = await graph_provider.get_record_by_id(record_id)
-            if graph_record:
-                # Normalize to dict: Pydantic models use model_dump(), dicts use as-is
-                meta = (
-                    graph_record.model_dump()
-                    if hasattr(graph_record, "model_dump")
-                    else graph_record
-                )
-                if isinstance(meta, dict):
-                    record_id_value = meta.get("id") or meta.get("_key") or record_id
-                    record["id"] = record_id_value
-                    record["org_id"] = org_id
-                    record["record_name"] = meta.get("record_name") or meta.get("recordName")
-                    record["record_type"] = meta.get("record_type") or meta.get("recordType")
-                    record["version"] = meta.get("version")
-                    record["origin"] = meta.get("origin")
-                    record["connector_name"] = meta.get("connector_name") or meta.get("connectorName")
-                    record["weburl"] = meta.get("weburl") or meta.get("webUrl")
-                else:
-                    record["id"] = record_id
-            else:
-                record["id"] = record_id
-        except Exception as e:
-            logger.warning("Could not fetch graph metadata for record %s: %s", record_id, str(e))
+
+        if not record.get("id"):
             record["id"] = record_id
-        
         record["virtual_record_id"] = vrid
         # Add to map for future lookups
         virtual_record_id_to_result[vrid] = record
@@ -276,8 +251,8 @@ async def _fetch_multiple_records_impl(
     For SQL_TABLE records, also enriches with FK parent/child record IDs.
 
     If a record_id is not found in the map, attempts to:
-    1. Resolve record_id -> virtual_record_id via graph_provider
-    2. Fetch the record from blob_store
+    1. Fetch the Record from graph_provider to get virtual_record_id
+    2. Fetch the record content from blob_store
     3. Enrich with FK relations if SQL_TABLE
 
     Returns:

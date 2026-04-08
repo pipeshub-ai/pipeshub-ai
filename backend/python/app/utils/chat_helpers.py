@@ -548,32 +548,21 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                 
                 # Build flattened result entry
                 # rec keys are snake_case; metadata dict uses camelCase for frontend
+                enhanced_metadata = get_enhanced_metadata(rec, bg, {})
+                enhanced_metadata["virtualRecordId"] = vrid
+                enhanced_metadata["source"] = "FK_ENRICHMENT"
                 flattened_results.append({
                     "virtual_record_id": vrid,
                     "record_id": record_id,
                     "record_name": rec_name,
                     "block_index": bg_index,
+                    "isBlockGroup": True,
                     "block_group_index": bg_index,
                     "block_type": GroupType.TABLE.value,
                     "content": (table_summary, []),
                     "fk_parent_relations": fk_parent_relations,
                     "fk_child_relations": fk_child_relations,
-                    "metadata": {
-                        "virtualRecordId": vrid,
-                        "blockIndex": bg_index,
-                        "isBlockGroup": True,
-                        "recordName": rec_name,
-                        "recordType": rec.get("record_type", ""),
-                        "source": "FK_ENRICHMENT",
-                        "origin": rec.get("origin", ""),
-                        "recordId": record_id,
-                        "mimeType": rec.get("mime_type", ""),
-                        "orgId": rec.get("org_id", ""),
-                        "connector": rec.get("connector_name", ""),
-                        "connectorId": rec.get("connector_id", ""),
-                        "webUrl": rec.get("weburl", ""),
-                        "hideWeburl": rec.get("hide_weburl", False),
-                    },
+                    "metadata": enhanced_metadata,
                 })
                 logger.debug(
                     "FK enrichment: added DDL block_group for %s to flattened_results (len now=%d)",
@@ -591,8 +580,9 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     if flattened_results is not None:
         fk_count = sum(1 for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT")
-        logger.info(
-            "FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
+        logger.info(f"FK enrichment:complete for SQL tables")
+        logger.debug(
+            f"FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
             flattened_len_before,
             len(flattened_results),
             fk_count,
@@ -1173,7 +1163,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["version"] = graphDb_record.get("version")
                 record["origin"] = graphDb_record.get("origin")
                 record["connector_name"] = graphDb_record.get("connectorName")
-                record["connector_id"] = graphDb_record.get("connectorId") or record.get("connector_id", "")
+                record["connector_id"] = graphDb_record.get("connectorId")
                 record["weburl"] = graphDb_record.get("webUrl")
                 record["preview_renderable"] = graphDb_record.get("previewRenderable", True)
                 record["hide_weburl"] = graphDb_record.get("hideWeburl", False)

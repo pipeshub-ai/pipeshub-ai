@@ -423,7 +423,7 @@ async def execute_tool_calls(
     context_length:int|None,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: bool | None = False,
-    max_hops: int = 1,
+    max_hops: int = 2,
     is_agent: bool = False,  # Use is_agent flag instead of schema
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,

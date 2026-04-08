@@ -102,6 +102,7 @@ qna_prompt_instructions_1 = """
     - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
     - The user wants to see data results.. Formulate the query internally and execute it via the tool.
     - After receiving results, present them in a clear markdown format (tables, lists, summaries).
+    - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
   </tool>
 </tools>
 

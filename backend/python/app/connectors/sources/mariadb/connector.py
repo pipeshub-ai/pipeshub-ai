@@ -297,7 +297,7 @@ class MariaDBConnector(BaseConnector):
             all_active_users = await self.data_entities_processor.get_all_active_users()
             app_users = self.get_app_users(all_active_users)
             await self.data_entities_processor.on_new_app_users(app_users)
-            self.logger.info(f"Created {len(app_users)} app users for MariaDB connector")
+            self.logger.info("Created %d app users for MariaDB connector", len(app_users))
         except Exception as e:
             self.logger.error(f"Error creating app users: {e}", exc_info=True)
             raise

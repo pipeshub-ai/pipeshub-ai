@@ -614,10 +614,9 @@ def create_execute_query_tool(
             or {"ok": false, "error": "..."}
         """
         logger.info(
-            "🔍 [execute_sql_query_tool] Called with source_name=%s, connector_id=%s, reason=%s",
+            "🔍 [execute_sql_query_tool] Called with source_name=%s, connector_id=%s",
             source_name,
             connector_id,
-            reason,
         )
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
         
