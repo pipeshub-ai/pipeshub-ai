@@ -15,10 +15,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
 import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import {
-  resolveMessageBrokerConfig,
-  createMessageProducer,
-} from '../../../libs/services/message-broker.factory';
+import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Auth Service Container',
@@ -89,8 +86,12 @@ export class AuthServiceContainer {
         .toConstantValue(configurationService);
 
       // Create broker-agnostic message producer
-      const brokerConfig = resolveMessageBrokerConfig(appConfig);
-      const messageProducer = createMessageProducer(brokerConfig, logger);
+      const brokerConfig =
+        messageBrokerFactory.resolveMessageBrokerConfig(appConfig);
+      const messageProducer = messageBrokerFactory.createMessageProducer(
+        brokerConfig,
+        logger,
+      );
       await messageProducer.connect();
 
       container

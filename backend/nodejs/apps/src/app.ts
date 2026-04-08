@@ -60,11 +60,7 @@ import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
-import {
-  resolveMessageBrokerConfig,
-  ensureMessageTopicsExist,
-  REQUIRED_TOPICS,
-} from './libs/services/message-broker.factory';
+import * as messageBrokerFactory from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
@@ -111,8 +107,8 @@ export class Application {
       // Ensure message broker topics/streams exist
       try {
         this.logger.info('Ensuring message broker topics exist...');
-        const brokerConfig = resolveMessageBrokerConfig(appConfig);
-        await ensureMessageTopicsExist(brokerConfig, this.logger, REQUIRED_TOPICS);
+        const brokerConfig = messageBrokerFactory.resolveMessageBrokerConfig(appConfig);
+        await messageBrokerFactory.ensureMessageTopicsExist(brokerConfig, this.logger, messageBrokerFactory.REQUIRED_TOPICS);
         this.logger.info('Message broker topics check completed');
       } catch (brokerError: any) {
         this.logger.warn(

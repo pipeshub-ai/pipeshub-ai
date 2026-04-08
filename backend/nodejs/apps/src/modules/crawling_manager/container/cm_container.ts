@@ -12,10 +12,7 @@ import { RedisConfig } from '../../../libs/types/redis.types';
 import { ConnectorsCrawlingService } from '../services/connectors/connectors';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import {
-  resolveMessageBrokerConfig,
-  createMessageProducer,
-} from '../../../libs/services/message-broker.factory';
+import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Crawling Manager Container',
@@ -77,8 +74,12 @@ export class CrawlingManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerConfig = resolveMessageBrokerConfig(appConfig);
-      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
+      const brokerConfig =
+        messageBrokerFactory.resolveMessageBrokerConfig(appConfig);
+      const messageProducer = messageBrokerFactory.createMessageProducer(
+        brokerConfig,
+        container.get('Logger'),
+      );
       await messageProducer.connect();
 
       container
@@ -132,7 +133,7 @@ export class CrawlingManagerContainer {
         const messageProducer = this.instance.isBound('MessageProducer')
           ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
-          
+
         if (redisService && redisService.isConnected()) {
           await redisService.disconnect();
         }

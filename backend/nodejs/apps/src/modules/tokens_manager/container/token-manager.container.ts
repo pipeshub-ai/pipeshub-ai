@@ -10,10 +10,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import {
-  resolveMessageBrokerConfig,
-  createMessageProducer,
-} from '../../../libs/services/message-broker.factory';
+import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Token Manager',
@@ -76,8 +73,8 @@ export class TokenManagerContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerConfig = resolveMessageBrokerConfig(config);
-      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
+      const brokerConfig = messageBrokerFactory.resolveMessageBrokerConfig(config);
+      const messageProducer = messageBrokerFactory.createMessageProducer(brokerConfig, container.get('Logger'));
       await messageProducer.connect();
 
       container

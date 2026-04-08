@@ -8,10 +8,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import {
-  resolveMessageBrokerConfig,
-  createMessageProducer,
-} from '../../../libs/services/message-broker.factory';
+import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 
 const loggerConfig = {
   service: 'Knowledge Base Service',
@@ -58,8 +55,8 @@ export class KnowledgeBaseContainer {
         .toConstantValue(keyValueStoreService);
 
       // Create broker-agnostic message producer
-      const brokerConfig = resolveMessageBrokerConfig(appConfig);
-      const messageProducer = createMessageProducer(brokerConfig, this.logger);
+      const brokerConfig = messageBrokerFactory.resolveMessageBrokerConfig(appConfig);
+      const messageProducer = messageBrokerFactory.createMessageProducer(brokerConfig, this.logger);
       await messageProducer.connect();
 
       container
