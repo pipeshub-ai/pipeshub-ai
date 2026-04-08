@@ -27,9 +27,9 @@ import {
   updatePermissionsSchema,
   deletePermissionsSchema,
   moveRecordSchema,
-} from '../../../../src/modules/knowledge_base/validators/validators'
+} from '../../../../src/modules/knowledge_base/schemas/knowledge_base'
 
-describe('knowledge_base/validators/validators', () => {
+describe('knowledge_base/schemas/knowledge_base', () => {
   afterEach(() => {
     sinon.restore()
   })

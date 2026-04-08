@@ -62,7 +62,7 @@ import {
   getKnowledgeHubNodesSchema,
   getKnowledgeHubChildNodesSchema,
   getKbUploadLimitsResponseSchema,
-} from '../validators/validators';
+} from '../schemas/knowledge_base';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';

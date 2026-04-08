@@ -60,7 +60,7 @@ import {
   updateKBPermissionResponseSchema,
   updateRecordResponseSchema,
   uploadRecordsResponseSchema,
-} from '../validators/validators';
+} from '../schemas/knowledge_base';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import { NotificationService } from '../../notification/service/notification.service';
 import { safeParsePagination } from '../../../utils/safe-integer';

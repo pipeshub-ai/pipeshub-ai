@@ -12,7 +12,7 @@ import {
   reindexFailedRecordSchema,
   resyncConnectorSchema,
   moveRecordSchema,
-} from '../../../../src/modules/knowledge_base/validators/validators'
+} from '../../../../src/modules/knowledge_base/schemas/knowledge_base'
 
 describe('Knowledge Base Validators - branch coverage', () => {
 

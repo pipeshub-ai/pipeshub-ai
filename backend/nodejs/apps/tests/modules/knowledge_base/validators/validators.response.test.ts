@@ -25,7 +25,7 @@ import {
   getKnowledgeHubNodesResponseSchema,
   getKBChildrenResponseSchema,
   getFolderChildrenResponseSchema,
-} from '../../../../src/modules/knowledge_base/validators/validators'
+} from '../../../../src/modules/knowledge_base/schemas/knowledge_base'
 
 const TS = 1775196920754
 
