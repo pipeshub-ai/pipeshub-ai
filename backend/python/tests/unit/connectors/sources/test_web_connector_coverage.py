@@ -44,7 +44,8 @@ def _make_connector():
     cs = AsyncMock()
     c = WebConnector(
         logger=logger, data_entities_processor=dep,
-        data_store_provider=dsp, config_service=cs, connector_id="web-c-1"
+        data_store_provider=dsp, config_service=cs, connector_id="web-c-1",
+        scope="personal", created_by="test-user-id",
     )
     return c
 

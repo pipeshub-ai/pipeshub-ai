@@ -1,6 +1,11 @@
 from logging import Logger
-from typing import Union
 
+from app.services.messaging.config import (
+    ConsumerType,
+    MessageBrokerType,
+    RedisStreamsConfig,
+    get_message_broker_type,
+)
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import (
@@ -12,6 +17,11 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
+from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
+from app.services.messaging.redis_streams.indexing_consumer import (
+    IndexingRedisStreamsConsumer,
+)
+from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 
 
 class MessagingFactory:
@@ -20,44 +30,58 @@ class MessagingFactory:
     @staticmethod
     def create_producer(
         logger: Logger,
-        config: Union[KafkaProducerConfig, None] = None,
-        broker_type: str = "kafka",
+        config: KafkaProducerConfig | RedisStreamsConfig | None = None,
+        broker_type: MessageBrokerType | None = None,
     ) -> IMessagingProducer:
-        """Create a messaging producer"""
-        if broker_type.lower() == "kafka":
+        """Create a messaging producer based on broker type"""
+        if broker_type is None:
+            broker_type = get_message_broker_type()
+
+        if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka producer config is required")
+            if not isinstance(config, KafkaProducerConfig):
+                raise TypeError(
+                    f"Expected KafkaProducerConfig, got {type(config).__name__}"
+                )
             return KafkaMessagingProducer(logger, config)
         else:
-            raise ValueError(f"Unsupported broker type: {broker_type}")
+            if config is None:
+                raise ValueError("Redis Streams config is required")
+            if not isinstance(config, RedisStreamsConfig):
+                raise TypeError(
+                    f"Expected RedisStreamsConfig, got {type(config).__name__}"
+                )
+            return RedisStreamsProducer(logger, config)
 
     @staticmethod
     def create_consumer(
         logger: Logger,
-        config: Union[KafkaConsumerConfig, None] = None,
-        broker_type: str = "kafka",
-        consumer_type: str = "simple",
+        config: KafkaConsumerConfig | RedisStreamsConfig | None = None,
+        broker_type: MessageBrokerType | None = None,
+        consumer_type: ConsumerType = ConsumerType.SIMPLE,
     ) -> IMessagingConsumer:
-        """Create a messaging consumer
+        """Create a messaging consumer based on broker type"""
+        if broker_type is None:
+            broker_type = get_message_broker_type()
 
-        Args:
-            logger: Logger instance
-            config: Kafka consumer configuration
-            broker_type: Type of message broker (currently only "kafka" supported)
-            consumer_type: Type of consumer to create:
-                - "simple": Basic consumer with single semaphore (default)
-                - "indexing": Dual-semaphore consumer for indexing pipeline
-
-        Returns:
-            IMessagingConsumer instance
-        """
-        if broker_type.lower() == "kafka":
+        if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka consumer config is required")
-
-            if consumer_type == "indexing":
+            if not isinstance(config, KafkaConsumerConfig):
+                raise TypeError(
+                    f"Expected KafkaConsumerConfig, got {type(config).__name__}"
+                )
+            if consumer_type == ConsumerType.INDEXING:
                 return IndexingKafkaConsumer(logger, config)
-            else:
-                return KafkaMessagingConsumer(logger, config)
+            return KafkaMessagingConsumer(logger, config)
         else:
-            raise ValueError(f"Unsupported broker type: {broker_type}")
+            if config is None:
+                raise ValueError("Redis Streams config is required")
+            if not isinstance(config, RedisStreamsConfig):
+                raise TypeError(
+                    f"Expected RedisStreamsConfig, got {type(config).__name__}"
+                )
+            if consumer_type == ConsumerType.INDEXING:
+                return IndexingRedisStreamsConsumer(logger, config)
+            return RedisStreamsConsumer(logger, config)

@@ -102,7 +102,7 @@ class TestConsumeLoop:
     async def test_successful_message_commits_offset(self, consumer):
         """Successfully processed message results in offset commit."""
         msg = _make_message(
-            value=json.dumps({"key": "val"}).encode("utf-8"), offset=10
+            value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=10
         )
         tp = _make_topic_partition()
 
@@ -132,7 +132,7 @@ class TestConsumeLoop:
     async def test_failed_message_does_not_commit(self, consumer):
         """Failed processing logs warning and does not commit."""
         msg = _make_message(
-            value=json.dumps({"key": "val"}).encode("utf-8"), offset=20
+            value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=20
         )
         tp = _make_topic_partition()
 
@@ -162,7 +162,7 @@ class TestConsumeLoop:
     async def test_per_message_exception_continues_loop(self, consumer):
         """Exception in individual message processing doesn't stop the loop."""
         msg1 = _make_message(
-            value=json.dumps({"k": 1}).encode("utf-8"), offset=30
+            value=json.dumps({"eventType": "test", "payload": {"k": 1}}).encode("utf-8"), offset=30
         )
         # Make process_message raise by using a message whose attribute access fails
         msg2 = MagicMock()
@@ -212,7 +212,7 @@ class TestConsumeLoop:
     async def test_process_message_raises_in_loop(self, consumer):
         """Exception raised during commit in inner loop is caught and continues."""
         msg = _make_message(
-            value=json.dumps({"k": 1}).encode("utf-8"), offset=40
+            value=json.dumps({"eventType": "test", "payload": {"k": 1}}).encode("utf-8"), offset=40
         )
         tp = _make_topic_partition()
 
@@ -317,9 +317,9 @@ class TestConsumeLoop:
         tp2 = _make_topic_partition(topic="topic-b", partition=1)
 
         msg1 = _make_message(topic="topic-a", partition=0, offset=1,
-                             value=json.dumps({"a": 1}).encode("utf-8"))
+                             value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"))
         msg2 = _make_message(topic="topic-b", partition=1, offset=2,
-                             value=json.dumps({"b": 2}).encode("utf-8"))
+                             value=json.dumps({"eventType": "test", "payload": {"b": 2}}).encode("utf-8"))
 
         call_count = 0
 
@@ -383,7 +383,7 @@ class TestProcessMessageOuterException:
     @pytest.mark.asyncio
     async def test_unexpected_exception_after_message_id(self, consumer):
         """When exception occurs after message_id is set, finally marks it processed."""
-        msg = _make_message(value=b'{"a": 1}', offset=99)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=99)
 
         # Make message_handler a non-coroutine to trigger a different type of error
         # Actually, let's trigger an unexpected error in the handler path
@@ -421,7 +421,7 @@ class TestProcessMessageOuterException:
     async def test_handler_returns_false(self, consumer):
         """When handler returns False, __process_message returns False."""
         consumer.message_handler = AsyncMock(return_value=False)
-        msg = _make_message(value=json.dumps({"a": 1}).encode("utf-8"), offset=55)
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=55)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
         assert result is False
@@ -454,7 +454,7 @@ class TestProcessMessageWrapperException:
         consumer.consumer = mock_aio
 
         msg = _make_message(
-            value=json.dumps({"k": "v"}).encode("utf-8"), offset=70
+            value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"), offset=70
         )
         tp = _make_topic_partition()
 
@@ -473,7 +473,7 @@ class TestProcessMessageWrapperException:
         consumer.consumer = mock_aio
 
         msg = _make_message(
-            value=json.dumps({"k": "v"}).encode("utf-8"), offset=71
+            value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"), offset=71
         )
         tp = _make_topic_partition()
 
@@ -490,7 +490,7 @@ class TestProcessMessageWrapperException:
         consumer.consumer = mock_aio
 
         msg = _make_message(
-            value=json.dumps({"k": "v"}).encode("utf-8"), offset=72
+            value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"), offset=72
         )
         tp = _make_topic_partition()
 
@@ -607,7 +607,7 @@ class TestStartConsumeStop:
     async def test_full_lifecycle_with_messages(self, consumer):
         """Start, process one message, then stop."""
         msg = _make_message(
-            value=json.dumps({"data": "test"}).encode("utf-8"), offset=100
+            value=json.dumps({"eventType": "test", "payload": {"data": "test"}}).encode("utf-8"), offset=100
         )
         tp = _make_topic_partition()
 

@@ -2575,6 +2575,7 @@ class TestGetAgent:
 
         services = {"graph_provider": AsyncMock(), "config_service": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "models": []})
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_read": True})
 
         request = MagicMock()
 
@@ -2644,6 +2645,7 @@ class TestDeleteAgent:
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": True})
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
         services["graph_provider"].hard_delete_agent = AsyncMock(return_value={"agents_deleted": 1, "toolsets_deleted": 0, "tools_deleted": 0, "knowledge_deleted": 0, "edges_deleted": 0})
         services["graph_provider"].commit_transaction = AsyncMock()
@@ -2662,6 +2664,7 @@ class TestDeleteAgent:
         from app.api.routes.agent import delete_agent, AgentNotFoundError
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value=None)
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
 
         request = MagicMock()
@@ -2678,6 +2681,7 @@ class TestDeleteAgent:
         from app.api.routes.agent import delete_agent, PermissionDeniedError
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": False})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": False})
 
         request = MagicMock()
@@ -2696,6 +2700,7 @@ class TestDeleteAgent:
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_delete": True})
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
         services["graph_provider"].hard_delete_agent = AsyncMock(return_value={"agents_deleted": 0})
         services["graph_provider"].rollback_transaction = AsyncMock()
@@ -2722,6 +2727,7 @@ class TestShareAgent:
         from app.api.routes.agent import share_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_share": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_share": True})
         services["graph_provider"].share_agent = AsyncMock(return_value=True)
 
@@ -2740,6 +2746,7 @@ class TestShareAgent:
         from app.api.routes.agent import share_agent, PermissionDeniedError
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_share": False})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_share": False})
 
         request = MagicMock()
@@ -2759,6 +2766,7 @@ class TestUnshareAgent:
         from app.api.routes.agent import unshare_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_share": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_share": True})
         services["graph_provider"].unshare_agent = AsyncMock(return_value=True)
 
@@ -2897,6 +2905,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
 
@@ -2915,6 +2924,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent, AgentNotFoundError
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
 
         request = MagicMock()
@@ -2932,6 +2942,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent, PermissionDeniedError
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": False})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": False})
 
         request = MagicMock()
@@ -2949,6 +2960,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": False})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
@@ -2969,6 +2981,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].delete_edge = AsyncMock()
@@ -2989,6 +3002,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
@@ -3012,6 +3026,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
@@ -3033,6 +3048,7 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
@@ -3086,6 +3102,7 @@ class TestAgentChat:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"email": "a@b.com", "_key": "k1"})
         services["graph_provider"].get_document = AsyncMock(return_value={"accountType": "enterprise"})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3125,6 +3142,7 @@ class TestAgentChat:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
 
         request = MagicMock()
@@ -3151,6 +3169,7 @@ class TestAgentChat:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1", "knowledge": [], "toolsets": [], "connectors": ["c1"],
         })
@@ -3187,6 +3206,7 @@ class TestAgentChat:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
             "knowledge": [
@@ -3228,6 +3248,7 @@ class TestAgentChat:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1", "knowledge": [], "toolsets": [],
         })
@@ -3373,6 +3394,7 @@ class TestChatStream:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
         services["config_service"].get_config = AsyncMock(return_value={"llm": []})
 
@@ -3401,6 +3423,7 @@ class TestChatStream:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": ["mk1_mn1"],
@@ -3433,6 +3456,7 @@ class TestChatStream:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
             "knowledge": [
@@ -3479,6 +3503,7 @@ class TestChatStream:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
             "knowledge": [],
@@ -3524,6 +3549,7 @@ class TestChatStream:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
             "knowledge": [{"connectorId": "google_drive", "filters": {}}],
@@ -3558,6 +3584,7 @@ class TestChatStream:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1", "knowledge": [], "toolsets": [], "models": ["mk1_mn1"],
         })
@@ -3588,6 +3615,7 @@ class TestUpdateAgentToolsetDeletion:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
@@ -3619,6 +3647,7 @@ class TestUpdateAgentToolsetDeletion:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
@@ -3642,6 +3671,7 @@ class TestUpdateAgentToolsetDeletion:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
@@ -4148,3 +4178,297 @@ class TestStreamResponseFullCoverage:
             ):
                 chunks.append(chunk)
             assert any("error" in c for c in chunks)
+
+
+class TestServiceAccountAgentRoutes:
+    @pytest.mark.asyncio
+    async def test_create_agent_service_account_forces_org_permission(self):
+        from app.api.routes.agent import create_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].batch_upsert_nodes = AsyncMock(return_value=True)
+        services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+
+        request = MagicMock()
+        request.body = AsyncMock(
+            return_value=b'{"name":"SA","isServiceAccount":true,"shareWithOrg":false,'
+            b'"models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}]}'
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+            result = await create_agent(request)
+
+        assert result.status_code == 200
+        agent_nodes = services["graph_provider"].batch_upsert_nodes.await_args_list[0].args[0]
+        assert agent_nodes[0]["isServiceAccount"] is True
+        permission_edges = services["graph_provider"].batch_create_edges.await_args_list[0].args[0]
+        assert any(edge.get("type") == "ORG" for edge in permission_edges)
+
+    @pytest.mark.asyncio
+    async def test_get_agent_internal_requires_service_account_agent(self):
+        from app.api.routes.agent import get_agent_internal
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value={"_key": "a1", "isServiceAccount": False})
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+            with pytest.raises(HTTPException) as exc:
+                await get_agent_internal(MagicMock(), "a1")
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_update_agent_rejects_disabling_org_sharing_for_service_account(self):
+        from app.api.routes.agent import InvalidRequestError, update_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"name": "A1", "isServiceAccount": True, "shareWithOrg": True}
+        )
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"shareWithOrg":false}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+            with pytest.raises(InvalidRequestError, match="Cannot disable org-wide sharing"):
+                await update_agent(request, "a1")
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self):
+        from fastapi.responses import StreamingResponse
+        from app.api.routes.agent import chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "name": "A1",
+            "isServiceAccount": True,
+            "knowledge": [],
+            "toolsets": [{"name": "jira", "instanceId": "inst-1", "displayName": "Jira", "tools": []}],
+            "models": ["mk1_mn1"],
+        })
+
+        async def mock_config(path, *args, **kwargs):
+            if "toolsets" in str(path):
+                return {"isAuthenticated": True}
+            return {"llm": []}
+
+        services["config_service"].get_config = mock_config
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"hello"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "slack-bot@x", "orgId": "o1", "isServiceAccount": True, "email": "slack-bot@x"},
+             ), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), None)), \
+             patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/services/toolsets/inst-1/a1") as mock_cfg_path, \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock) as mock_user_doc:
+            result = await chat_stream(request, "a1")
+
+        assert isinstance(result, StreamingResponse)
+        mock_user_doc.assert_not_awaited()
+        mock_cfg_path.assert_called_with("inst-1", "a1")
+
+    @pytest.mark.asyncio
+    async def test_get_agent_internal_success(self):
+        """get_agent_internal returns 200 with isServiceAccount=True for a SA agent."""
+        from app.api.routes.agent import get_agent_internal
+
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"llm": []})
+        services = {
+            "graph_provider": AsyncMock(),
+            "logger": MagicMock(),
+            "config_service": config_service,
+        }
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"_key": "a1", "isServiceAccount": True, "models": []}
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+            result = await get_agent_internal(MagicMock(), "a1")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["isServiceAccount"] is True
+        assert body["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_get_agent_internal_agent_not_found(self):
+        """get_agent_internal raises when agent does not exist."""
+        from app.api.routes.agent import get_agent_internal
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value=None)
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+            with pytest.raises(HTTPException) as exc:
+                await get_agent_internal(MagicMock(), "missing-agent")
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_agent_no_permission_raises_404(self):
+        """get_agent raises AgentNotFoundError when user has no permission."""
+        from app.api.routes.agent import get_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value=None)
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            with pytest.raises(HTTPException) as exc:
+                await get_agent(MagicMock(), "a1")
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_agent_success_returns_enriched_agent(self):
+        """get_agent returns 200 with the enriched agent dict."""
+        from app.api.routes.agent import get_agent
+
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"llm": []})
+        services = {
+            "graph_provider": AsyncMock(),
+            "logger": MagicMock(),
+            "config_service": config_service,
+        }
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": True, "can_delete": True}
+        )
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"_key": "a1", "name": "MyAgent", "models": []}
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            result = await get_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["status"] == "success"
+        assert body["agent"]["name"] == "MyAgent"
+        assert body["agent"]["can_edit"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_agent_no_permission_raises(self):
+        """update_agent raises when check_agent_permission returns None."""
+        from app.api.routes.agent import update_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value=None)
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"name": "New Name"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            with pytest.raises(HTTPException) as exc:
+                await update_agent(request, "a1")
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_update_agent_no_edit_permission_raises_403(self):
+        """update_agent raises 403 when user has view-only access."""
+        from app.api.routes.agent import update_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": False}
+        )
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"name": "New Name"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            with pytest.raises(HTTPException) as exc:
+                await update_agent(request, "a1")
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_update_agent_converting_to_sa_forces_org_share(self):
+        """update_agent sets shareWithOrg=True when upgrading a regular agent to SA."""
+        from app.api.routes.agent import update_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": True}
+        )
+        services["graph_provider"].get_agent = AsyncMock(
+            return_value={"name": "A1", "isServiceAccount": False, "shareWithOrg": False}
+        )
+        services["graph_provider"].update_agent = AsyncMock(return_value={"_key": "a1"})
+        services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"isServiceAccount":true}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            result = await update_agent(request, "a1")
+
+        assert result.status_code == 200
+        # The body passed to update_agent should have shareWithOrg forced True
+        update_call_body = services["graph_provider"].update_agent.await_args[0][1]
+        assert update_call_body.get("shareWithOrg") is True
+
+    @pytest.mark.asyncio
+    async def test_get_agents_returns_paginated_response(self):
+        """get_agents returns success with pagination envelope."""
+        from app.api.routes.agent import get_agents
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_all_agents = AsyncMock(
+            return_value={"agents": [{"name": "A1"}], "totalItems": 1}
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            result = await get_agents(MagicMock(), page=1, limit=20, search=None)
+
+        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["success"] is True
+        assert len(body["agents"]) == 1
+        assert body["pagination"]["totalItems"] == 1
+        assert body["pagination"]["currentPage"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_agents_returns_list_backward_compat(self):
+        """get_agents handles plain list response from older graph providers."""
+        from app.api.routes.agent import get_agents
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_all_agents = AsyncMock(
+            return_value=[{"name": "A"}, {"name": "B"}]
+        )
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            result = await get_agents(MagicMock(), page=1, limit=20, search=None)
+
+        body = json.loads(result.body)
+        assert body["pagination"]["totalItems"] == 2

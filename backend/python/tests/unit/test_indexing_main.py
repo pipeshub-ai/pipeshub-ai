@@ -7,6 +7,13 @@ import httpx
 import pytest
 from fastapi.responses import JSONResponse
 
+from app.services.messaging.config import (
+    IndexingEvent,
+    MessageBrokerType,
+    PipelineEvent,
+    PipelineEventData,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -170,8 +177,8 @@ class TestRecoverInProgressRecords:
         gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
 
         async def mock_handler(payload):
-            yield {"event": "parsing_complete"}
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
@@ -187,7 +194,7 @@ class TestRecoverInProgressRecords:
         gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
 
         async def mock_handler(payload):
-            yield {"event": "parsing_complete"}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
@@ -203,7 +210,7 @@ class TestRecoverInProgressRecords:
         gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
 
         async def mock_handler(payload):
-            yield {"event": "some_other_event"}
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
@@ -228,12 +235,12 @@ class TestRecoverInProgressRecords:
 
         async def mock_handler(payload):
             handler_calls.append(payload)
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
 
-        assert handler_calls[0]["eventType"] == "reindexRecord"
+        assert handler_calls[0].eventType == "reindexRecord"
 
     async def test_in_progress_record_new_record_when_version_zero(self):
         """Record with version 0 is treated as NEW_RECORD."""
@@ -255,12 +262,12 @@ class TestRecoverInProgressRecords:
 
         async def mock_handler(payload):
             handler_calls.append(payload)
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
 
-        assert handler_calls[0]["eventType"] == "newRecord"
+        assert handler_calls[0].eventType == "newRecord"
 
     async def test_in_progress_record_new_record_when_no_virtual_record_id(self):
         """Record with version > 0 but no virtualRecordId is treated as NEW_RECORD."""
@@ -281,12 +288,12 @@ class TestRecoverInProgressRecords:
 
         async def mock_handler(payload):
             handler_calls.append(payload)
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
 
-        assert handler_calls[0]["eventType"] == "newRecord"
+        assert handler_calls[0].eventType == "newRecord"
 
     async def test_connector_not_found_skips_record(self):
         """Record with missing connector is skipped."""
@@ -347,7 +354,7 @@ class TestRecoverInProgressRecords:
         gp.get_document = AsyncMock(return_value={"isActive": True})
 
         async def mock_handler(payload):
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
@@ -398,7 +405,7 @@ class TestRecoverInProgressRecords:
         gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
 
         async def mock_handler(payload):
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
@@ -423,7 +430,7 @@ class TestRecoverInProgressRecords:
         gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
 
         async def mock_handler(payload):
-            yield {"event": "indexing_complete"}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
             await recover_in_progress_records(mock_container, gp)
@@ -447,7 +454,8 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
@@ -486,7 +494,8 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -508,7 +517,8 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
         ):
@@ -526,7 +536,8 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
         ):
@@ -548,7 +559,8 @@ class TestStartKafkaConsumers:
         mock_consumer.worker_loop.is_running.return_value = False
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
         ):
@@ -569,7 +581,8 @@ class TestStartKafkaConsumers:
         mock_consumer.worker_loop = None  # no worker loop
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
         ):
@@ -586,7 +599,8 @@ class TestStartKafkaConsumers:
         mock_consumer.stop = AsyncMock()
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, side_effect=RuntimeError("handler fail")),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
@@ -613,7 +627,8 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock(side_effect=start_side_effect)
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
@@ -692,7 +707,8 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -740,7 +756,8 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -784,7 +801,8 @@ class TestStartKafkaConsumers:
             return future
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -1230,7 +1248,7 @@ class TestStartKafkaConsumersCleanupPath:
         def info_side_effect(msg, *args, **kwargs):
             nonlocal call_count
             call_count += 1
-            if "Record Kafka consumer started" in str(msg):
+            if "Record message consumer started" in str(msg):
                 raise RuntimeError("post-append error")
             return original_info(msg, *args, **kwargs)
 
@@ -1246,7 +1264,8 @@ class TestStartKafkaConsumersCleanupPath:
             return future
 
         with (
-            patch("app.indexing_main.KafkaUtils.create_record_kafka_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),

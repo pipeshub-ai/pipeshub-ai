@@ -1,22 +1,22 @@
-import { Kafka, Admin, ITopicConfig } from 'kafkajs';
+import { Kafka, Admin, ITopicConfig, ITopicMetadata } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
+import { IMessageAdmin, TopicDefinition } from '../types/messaging.types';
+import { KAFKA_ADMIN_CLIENT_ID } from '../constants/messaging.constants';
+import { MessageBrokerType } from '../types/messaging.types';
 import { Logger } from './logger.service';
 
-export interface TopicDefinition {
-  topic: string;
-  numPartitions?: number;
-  replicationFactor?: number;
-}
-
 // Required topics for the application
-export const REQUIRED_KAFKA_TOPICS: TopicDefinition[] = [
+export const REQUIRED_TOPICS: TopicDefinition[] = [
   { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'entity-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'sync-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'health-check', numPartitions: 1, replicationFactor: 1 },
 ];
 
-export class KafkaAdminService {
+/** @deprecated Use REQUIRED_TOPICS instead */
+export const REQUIRED_KAFKA_TOPICS = REQUIRED_TOPICS;
+
+export class KafkaAdminService implements IMessageAdmin {
   private kafka: Kafka;
   private admin: Admin;
   private logger: Logger;
@@ -24,7 +24,7 @@ export class KafkaAdminService {
   constructor(config: KafkaConfig, logger: Logger) {
     this.logger = logger;
     this.kafka = new Kafka({
-      clientId: config.clientId || 'pipeshub-admin',
+      clientId: config.clientId ?? KAFKA_ADMIN_CLIENT_ID,
       brokers: config.brokers,
       ssl: config.ssl,
       sasl: config.sasl,
@@ -38,7 +38,7 @@ export class KafkaAdminService {
    * This is especially important for AWS MSK where auto.create.topics.enable is disabled by default.
    */
   async ensureTopicsExist(
-    topics: TopicDefinition[] = REQUIRED_KAFKA_TOPICS,
+    topics: TopicDefinition[] = REQUIRED_TOPICS,
   ): Promise<void> {
     try {
       await this.admin.connect();
@@ -76,14 +76,13 @@ export class KafkaAdminService {
         this.logger.info('Topics may already exist or creation was skipped');
       }
     } catch (error: any) {
-      // Handle the case where topics already exist (race condition)
       if (error.type === 'TOPIC_ALREADY_EXISTS') {
         this.logger.info('Topics already exist (concurrent creation detected)');
         return;
       }
 
       this.logger.error('Failed to ensure Kafka topics exist', {
-        error: error.message || error,
+        error: (error as Error).message,
       });
       throw error;
     } finally {
@@ -114,7 +113,9 @@ export class KafkaAdminService {
   /**
    * Describes the configuration of specified topics
    */
-  async describeTopics(topics: string[]): Promise<any> {
+  async describeTopics(
+    topics: string[],
+  ): Promise<{ topics: ITopicMetadata[] }> {
     try {
       await this.admin.connect();
       const metadata = await this.admin.fetchTopicMetadata({ topics });
@@ -143,7 +144,8 @@ export async function ensureKafkaTopicsExist(
   topics?: TopicDefinition[],
 ): Promise<void> {
   const config: KafkaConfig = {
-    clientId: 'pipeshub-admin',
+    type: MessageBrokerType.KAFKA,
+    clientId: KAFKA_ADMIN_CLIENT_ID,
     brokers: kafkaConfig.brokers,
     ssl: kafkaConfig.ssl,
     sasl: kafkaConfig.sasl,

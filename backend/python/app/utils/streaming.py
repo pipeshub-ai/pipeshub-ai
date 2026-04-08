@@ -387,6 +387,8 @@ async def execute_tool_calls(
     is_multimodal_llm: Optional[bool] = False,
     max_hops: int = 1,
     is_agent: bool = False,  # Use is_agent flag instead of schema
+    is_service_account: bool = False,
+    filter_groups: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[Dict[str, Any], tuple[List[Dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -606,13 +608,19 @@ async def execute_tool_calls(
 
             virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
             vector_db_limit =  get_vectorDb_limit(context_length)
+            # For service-account agents pass the agent-scoped filter_groups so the
+            # fallback retrieval honours the same KB/connector scope that the primary
+            # retrieval used.  Also forward is_service_account so per-user permission
+            # checks are bypassed — otherwise a user who has no direct access to the
+            # agent's knowledge sources would always get an empty fallback result.
             result = await retrieval_service.search_with_filters(
                 queries=[all_queries[0]],
                 org_id=org_id,
                 user_id=user_id,
                 limit=vector_db_limit,
-                filter_groups=None,
+                filter_groups=filter_groups if is_service_account else None,
                 virtual_record_ids_from_tool=virtual_record_ids,
+                is_service_account=is_service_account,
             )
 
             search_results = result.get("searchResults", [])
@@ -1284,6 +1292,8 @@ async def stream_llm_response_with_tools(
     mode: Optional[str] = "json",
     is_agent: bool = False,  # Use is_agent flag instead of schema
     conversation_id: Optional[str] = None,
+    is_service_account: bool = False,
+    filter_groups: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1337,7 +1347,9 @@ async def stream_llm_response_with_tools(
                 org_id=org_id,
                 context_length=context_length,
                 is_multimodal_llm=is_multimodal_llm,
-                is_agent=is_agent  # Pass is_agent flag through to execute_tool_calls
+                is_agent=is_agent,
+                is_service_account=is_service_account,
+                filter_groups=filter_groups,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":

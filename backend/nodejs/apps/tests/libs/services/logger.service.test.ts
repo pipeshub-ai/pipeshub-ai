@@ -2,45 +2,42 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { Logger, LogLevel, getLogLevel } from '../../../src/libs/services/logger.service';
+import { envGuard } from '../../helpers/env-guard';
 
 describe('Logger', () => {
+  const env = envGuard();
+
   // Reset the singleton between tests
   beforeEach(() => {
+    env.snapshot();
     (Logger as any).instance = null;
   });
 
   afterEach(() => {
+    env.restore();
     sinon.restore();
     (Logger as any).instance = null;
   });
 
   describe('getLogLevel', () => {
     it('should return Info as default when LOG_LEVEL is not set', () => {
-      const original = process.env.LOG_LEVEL;
       delete process.env.LOG_LEVEL;
       expect(getLogLevel()).to.equal(LogLevel.Info);
-      process.env.LOG_LEVEL = original;
     });
 
     it('should return the LOG_LEVEL when set to a valid value', () => {
-      const original = process.env.LOG_LEVEL;
       process.env.LOG_LEVEL = 'debug';
       expect(getLogLevel()).to.equal(LogLevel.Debug);
-      process.env.LOG_LEVEL = original;
     });
 
     it('should be case insensitive', () => {
-      const original = process.env.LOG_LEVEL;
       process.env.LOG_LEVEL = 'ERROR';
       expect(getLogLevel()).to.equal(LogLevel.Error);
-      process.env.LOG_LEVEL = original;
     });
 
     it('should return Info for invalid values', () => {
-      const original = process.env.LOG_LEVEL;
       process.env.LOG_LEVEL = 'invalid';
       expect(getLogLevel()).to.equal(LogLevel.Info);
-      process.env.LOG_LEVEL = original;
     });
   });
 

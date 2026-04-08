@@ -6,6 +6,7 @@ import { TYPES } from '../../../libs/types/container.types';
 import { NotificationProducer } from '../service/notification.producer';
 import { NotificationConsumer } from '../service/notification.consumer';
 
+
 export class NotificationContainer {
   private static container: Container | null = null;
 
@@ -17,8 +18,13 @@ export class NotificationContainer {
     );
     container.bind<AuthTokenService>(TYPES.AuthTokenService).toConstantValue(authTokenService);
     container.bind(NotificationService).toSelf().inSingletonScope();
+
+    // NotificationProducer and NotificationConsumer now use composition,
+    // they require 'MessageProducer' and 'MessageConsumer' bindings
+    // which should be bound by the parent container before resolving these
     container.bind(NotificationProducer).toSelf().inSingletonScope();
     container.bind(NotificationConsumer).toSelf().inSingletonScope();
+
     this.container = container;
     return container;
   }

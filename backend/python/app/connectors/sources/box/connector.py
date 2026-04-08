@@ -209,6 +209,8 @@ class BoxConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
 
         super().__init__(
@@ -217,7 +219,9 @@ class BoxConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id=connector_id
+            connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.BOX
@@ -2125,6 +2129,8 @@ class BoxConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BoxConnector":
         """Factory method to create a Box connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -2139,7 +2145,9 @@ class BoxConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id=connector_id
+            connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
     async def cleanup(self) -> None:

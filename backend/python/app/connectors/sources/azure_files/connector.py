@@ -265,6 +265,8 @@ class AzureFilesConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             app=AzureFilesApp(connector_id),
@@ -273,6 +275,8 @@ class AzureFilesConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.AZURE_FILES
@@ -294,8 +298,6 @@ class AzureFilesConnector(BaseConnector):
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.share_name: str | None = None
-        self.connector_scope: str | None = None
-        self.created_by: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
 
@@ -341,25 +343,8 @@ class AzureFilesConnector(BaseConnector):
             connection_string
         )
 
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
-
-        # Fetch creator email once to avoid repeated DB queries during sync
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
-                    if user and user.get("email"):
-                        self.creator_email = user.get("email")
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not get user for created_by {self.created_by}: {e}"
-                )
+        # Load creator email if needed (for personal scope permission creation)
+        await self._load_creator_email()
 
         try:
             client = await AzureFilesClient.build_from_services(
@@ -424,9 +409,28 @@ class AzureFilesConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
 
             # Get sync filters
             sync_filters = (
@@ -501,7 +505,7 @@ class AzureFilesConnector(BaseConnector):
                 continue
 
             permissions = []
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1133,7 +1137,7 @@ class AzureFilesConnector(BaseConnector):
         try:
             permissions: list[Permission] = []
 
-            if self.connector_scope == ConnectorScope.TEAM.value:
+            if self.scope == ConnectorScope.TEAM.value:
                 permissions.append(
                     Permission(
                         type=PermissionType.READ,
@@ -1753,6 +1757,8 @@ class AzureFilesConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         **kwargs: object,
     ) -> "AzureFilesConnector":
         """Factory method to create and initialize connector."""
@@ -1781,5 +1787,7 @@ class AzureFilesConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 

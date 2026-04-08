@@ -67,6 +67,8 @@ def connector(mock_deps):
             data_store_provider=mock_deps["data_store_provider"],
             config_service=mock_deps["config_service"],
             connector_id="notion-comp-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     c.workspace_id = "ws-1"
     return c

@@ -14,6 +14,7 @@ import {
   EncryptionConfig,
   DefaultStorageConfig,
 } from '../../../../src/modules/tokens_manager/services/cm.service'
+import { envGuard } from '../../../helpers/env-guard'
 
 describe('tokens_manager/services/cm.service', () => {
   afterEach(() => {
@@ -588,11 +589,13 @@ describe('tokens_manager/services/cm.service', () => {
   // ConfigService method tests with mocked internals
   // =========================================================================
   describe('ConfigService methods (mocked)', () => {
+    const env = envGuard()
     let configService: any
     let mockKvStore: any
     let mockEncryption: any
 
     beforeEach(() => {
+      env.snapshot()
       mockKvStore = {
         get: sinon.stub(),
         set: sinon.stub().resolves(),
@@ -612,6 +615,10 @@ describe('tokens_manager/services/cm.service', () => {
       configService.keyValueStoreService = mockKvStore
       configService.encryptionService = mockEncryption
       configService.configManagerConfig = {}
+    })
+
+    afterEach(() => {
+      env.restore()
     })
 
     describe('connect', () => {
@@ -651,9 +658,6 @@ describe('tokens_manager/services/cm.service', () => {
         expect(result.brokers).to.deep.equal(['broker1:9092', 'broker2:9092'])
         expect(result.ssl).to.be.false
         expect(result.sasl).to.be.undefined
-
-        delete process.env.KAFKA_BROKERS
-        delete process.env.KAFKA_SSL
       })
 
       it('should include SASL config when KAFKA_USERNAME is set', async () => {
@@ -668,12 +672,6 @@ describe('tokens_manager/services/cm.service', () => {
         expect(result.sasl).to.exist
         expect(result.sasl.mechanism).to.equal('plain')
         expect(result.sasl.username).to.equal('user')
-
-        delete process.env.KAFKA_BROKERS
-        delete process.env.KAFKA_SSL
-        delete process.env.KAFKA_USERNAME
-        delete process.env.KAFKA_PASSWORD
-        delete process.env.KAFKA_SASL_MECHANISM
       })
     })
 
@@ -688,10 +686,6 @@ describe('tokens_manager/services/cm.service', () => {
 
         const result = await configService.getRedisConfig()
         expect(result.host).to.equal('localhost')
-
-        delete process.env.REDIS_HOST
-        delete process.env.REDIS_PORT
-        delete process.env.REDIS_DB
       })
     })
 
@@ -704,8 +698,6 @@ describe('tokens_manager/services/cm.service', () => {
 
         const result = await configService.getMongoConfig()
         expect(result.uri).to.equal('mongodb://localhost:27017')
-
-        delete process.env.MONGO_URI
       })
     })
 
@@ -719,9 +711,6 @@ describe('tokens_manager/services/cm.service', () => {
 
         const result = await configService.getQdrantConfig()
         expect(result.host).to.equal('localhost')
-
-        delete process.env.QDRANT_API_KEY
-        delete process.env.QDRANT_HOST
       })
     })
 
@@ -736,10 +725,6 @@ describe('tokens_manager/services/cm.service', () => {
 
         const result = await configService.getArangoConfig()
         expect(result.url).to.equal('http://localhost:8529')
-
-        delete process.env.ARANGO_URL
-        delete process.env.ARANGO_USERNAME
-        delete process.env.ARANGO_PASSWORD
       })
     })
 
@@ -753,10 +738,6 @@ describe('tokens_manager/services/cm.service', () => {
         expect(result.host).to.equal('localhost')
         expect(result.port).to.equal(2379)
         expect(result.dialTimeout).to.equal(5000)
-
-        delete process.env.ETCD_HOST
-        delete process.env.ETCD_PORT
-        delete process.env.ETCD_DIAL_TIMEOUT
       })
     })
 
@@ -772,7 +753,6 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.PORT = '4000'
         const result = await configService.getAuthBackendUrl()
         expect(result).to.equal('http://localhost:4000')
-        delete process.env.PORT
       })
 
       it('should use default port 3000 when no PORT env var', async () => {
@@ -836,8 +816,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('{}')
         const result = await configService.getConnectorUrl()
         expect(result).to.equal('http://connector:8088')
-        delete process.env.CONNECTOR_BACKEND
-        delete process.env.CONNECTOR_PUBLIC_BACKEND
       })
     })
 
@@ -855,7 +833,6 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.CONNECTOR_PUBLIC_BACKEND = 'http://fallback-connector:8088'
         const result = await configService.getConnectorPublicUrl()
         expect(result).to.equal('http://fallback-connector:8088')
-        delete process.env.CONNECTOR_PUBLIC_BACKEND
       })
     })
 
@@ -865,7 +842,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('{}')
         const result = await configService.getIndexingUrl()
         expect(result).to.equal('http://indexing:8091')
-        delete process.env.INDEXING_BACKEND
       })
     })
 
@@ -891,7 +867,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('{}')
         const result = await configService.getFrontendUrl()
         expect(result).to.equal('http://frontend:3000')
-        delete process.env.FRONTEND_PUBLIC_URL
       })
 
       it('should return stored frontend URL when no env var', async () => {
@@ -908,7 +883,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('{}')
         const result = await configService.getAiBackendUrl()
         expect(result).to.equal('http://query:8000')
-        delete process.env.QUERY_BACKEND
       })
 
       it('should fall back to default localhost:8000', async () => {
@@ -1007,30 +981,32 @@ describe('tokens_manager/services/cm.service', () => {
     })
 
     describe('initializeOAuthIssuer', () => {
-      it('should not overwrite existing issuer', async () => {
+      it('should always persist resolved issuer even when one exists', async () => {
         mockKvStore.get.resolves(JSON.stringify({ oauthProvider: { issuer: 'http://existing-issuer' } }))
+        process.env.OAUTH_ISSUER = 'http://fresh-issuer'
         await configService.initializeOAuthIssuer()
-        // set should not be called since issuer already exists
-        expect(mockKvStore.set.called).to.be.false
+        expect(mockKvStore.set.calledOnce).to.be.true
+        const saved = JSON.parse(mockKvStore.set.firstCall.args[1])
+        expect(saved.oauthProvider.issuer).to.equal('http://fresh-issuer')
+        delete process.env.OAUTH_ISSUER
       })
 
-      it('should set issuer from env var in development', async () => {
+      it('should set issuer from env var', async () => {
         mockKvStore.get.resolves('{}')
         process.env.OAUTH_ISSUER = 'http://dev-issuer'
         await configService.initializeOAuthIssuer()
         expect(mockKvStore.set.calledOnce).to.be.true
-        delete process.env.OAUTH_ISSUER
       })
 
-      it('should set issuer from development fallback when no env var', async () => {
+      it('should fall back to localhost when frontend URL contains localhost', async () => {
         mockKvStore.get.resolves('{}')
         delete process.env.OAUTH_ISSUER
-        process.env.NODE_ENV = 'development'
+        delete process.env.FRONTEND_PUBLIC_URL
         process.env.PORT = '3001'
         await configService.initializeOAuthIssuer()
-        expect(mockKvStore.set.calledOnce).to.be.true
-        process.env.NODE_ENV = 'test'
-        delete process.env.PORT
+        expect(mockKvStore.set.called).to.be.true
+        const saved = JSON.parse(mockKvStore.set.lastCall.args[1])
+        expect(saved.oauthProvider.issuer).to.equal('http://localhost:3001')
       })
     })
 
@@ -1040,25 +1016,25 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves('{}')
         const result = await configService.getOAuthIssuer()
         expect(result).to.equal('http://issuer.example.com')
-        delete process.env.OAUTH_ISSUER
       })
 
-      it('should return stored issuer when no env var', async () => {
+      it('should return frontend URL when it does not contain localhost', async () => {
         delete process.env.OAUTH_ISSUER
-        mockKvStore.get.resolves(JSON.stringify({ oauthProvider: { issuer: 'http://stored-issuer' } }))
+        delete process.env.FRONTEND_PUBLIC_URL
+        mockKvStore.get.resolves(JSON.stringify({
+          frontend: { publicEndpoint: 'https://app.example.com' },
+        }))
         const result = await configService.getOAuthIssuer()
-        expect(result).to.equal('http://stored-issuer')
+        expect(result).to.equal('https://app.example.com')
       })
 
-      it('should fall back to dev localhost when in development', async () => {
+      it('should fall back to localhost when frontend URL contains localhost', async () => {
         delete process.env.OAUTH_ISSUER
-        process.env.NODE_ENV = 'development'
+        delete process.env.FRONTEND_PUBLIC_URL
         process.env.PORT = '3001'
         mockKvStore.get.resolves('{}')
         const result = await configService.getOAuthIssuer()
         expect(result).to.equal('http://localhost:3001')
-        process.env.NODE_ENV = 'test'
-        delete process.env.PORT
       })
     })
 
@@ -1074,14 +1050,12 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.MCP_SCOPES = 'scope1, scope2, scope3'
         const result = await configService.getMcpScopes()
         expect(result).to.deep.equal(['scope1', 'scope2', 'scope3'])
-        delete process.env.MCP_SCOPES
       })
 
       it('should filter empty scopes', async () => {
         process.env.MCP_SCOPES = 'scope1,,scope2,'
         const result = await configService.getMcpScopes()
         expect(result).to.deep.equal(['scope1', 'scope2'])
-        delete process.env.MCP_SCOPES
       })
     })
 
@@ -1090,7 +1064,6 @@ describe('tokens_manager/services/cm.service', () => {
         process.env.REPLICA_SET_AVAILABLE = 'true'
         const result = await configService.getRsAvailable()
         expect(result).to.equal('true')
-        delete process.env.REPLICA_SET_AVAILABLE
       })
 
       it('should return false for localhost mongo URI', async () => {
@@ -1099,7 +1072,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves(null)
         const result = await configService.getRsAvailable()
         expect(result).to.equal('false')
-        delete process.env.MONGO_URI
       })
 
       it('should return false for @mongodb:27017 URI', async () => {
@@ -1108,7 +1080,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves(null)
         const result = await configService.getRsAvailable()
         expect(result).to.equal('false')
-        delete process.env.MONGO_URI
       })
 
       it('should return true for remote mongo URI', async () => {
@@ -1117,7 +1088,6 @@ describe('tokens_manager/services/cm.service', () => {
         mockKvStore.get.resolves(null)
         const result = await configService.getRsAvailable()
         expect(result).to.equal('true')
-        delete process.env.MONGO_URI
       })
     })
 

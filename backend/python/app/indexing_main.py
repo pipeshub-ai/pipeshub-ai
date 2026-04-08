@@ -20,8 +20,10 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMessage, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -172,22 +174,22 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                         event_type = EventTypes.NEW_RECORD.value
                         logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
-                    # Process the record using the same handler that processes Kafka messages
+                    # Process the record using the same handler that processes stream messages
                     # record_message_handler returns an async generator, so we need to consume it
                     # Track whether we received the indexing_complete event to verify full recovery
                     parsing_complete = False
                     indexing_complete = False
 
-                    async for event in record_message_handler({
-                        "eventType": event_type,
-                        "payload": payload
-                    }):
-                        event_name = event.get("event", "unknown")
-                        logger.debug(f"   Recovery event: {event_name}")
+                    recovery_message = StreamMessage(
+                        eventType=event_type,
+                        payload=payload,
+                    )
+                    async for event in record_message_handler(recovery_message):
+                        logger.debug(f"   Recovery event: {event.event}")
 
-                        if event_name == "parsing_complete":
+                        if event.event == IndexingEvent.PARSING_COMPLETE:
                             parsing_complete = True
-                        elif event_name == "indexing_complete":
+                        elif event.event == IndexingEvent.INDEXING_COMPLETE:
                             indexing_complete = True
 
                     # Only report success if indexing actually completed
@@ -232,23 +234,23 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Don't raise - we want to continue starting the service even if recovery fails
-        logger.warning("⚠️ Continuing to start Kafka consumers despite recovery errors")
+        logger.warning("⚠️ Continuing to start message consumers despite recovery errors")
 
 async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any]:
-    """Start all Kafka consumers at application level"""
+    """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
+    broker_type = get_message_broker_type()
 
     try:
-        # 1. Create Entity Consumer
-        logger.info("🚀 Starting Entity Kafka Consumer...")
-        record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
+        logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
+        record_consumer_config = await MessagingUtils.create_record_consumer_config(app_container)
 
         record_kafka_consumer = MessagingFactory.create_consumer(
-            broker_type="kafka",
+            broker_type=broker_type,
             logger=logger,
-            config=record_kafka_consumer_config,
-            consumer_type="indexing"
+            config=record_consumer_config,
+            consumer_type=ConsumerType.INDEXING
         )
 
         # TODO: Remove this once the graph provider is fixed
@@ -282,11 +284,11 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         consumers.append(("record", record_kafka_consumer))
-        logger.info("✅ Record Kafka consumer started")
+        logger.info("✅ Record message consumer started")
 
         return consumers
     except Exception as e:
-        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        logger.error(f"❌ Error starting message consumers: {str(e)}")
         # Cleanup any started consumers
         for name, consumer in consumers:
             try:
@@ -304,7 +306,7 @@ async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
     for name, consumer in consumers:
         try:
             await consumer.stop()
-            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+            logger.info(f"✅ {name.title()} message consumer stopped")
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
 
@@ -327,26 +329,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
-    # Recover in-progress records before starting Kafka consumers
+    # Recover in-progress records before starting message consumers
     try:
         await recover_in_progress_records(app_container, graph_provider)
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Continue even if recovery fails
 
-    # Start all Kafka consumers centrally
+    # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
         app_container.kafka_consumers = consumers
-        logger.info("✅ All Kafka consumers started successfully")
+        logger.info("✅ All message consumers started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    # Stop Kafka consumers
+    # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)
     except Exception as e:
@@ -363,7 +365,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     lifespan=lifespan,
     title="Vector Search API",
-    description="API for semantic search and document retrieval with Kafka consumer",
+    description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
 )
 

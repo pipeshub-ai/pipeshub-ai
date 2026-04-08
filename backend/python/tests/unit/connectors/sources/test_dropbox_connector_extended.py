@@ -86,7 +86,7 @@ def _make_connector():
     cs = AsyncMock()
     cs.get_config = AsyncMock()
 
-    c = DropboxConnector(logger, dep, dsp, cs, "conn-dbx-ext")
+    c = DropboxConnector(logger, dep, dsp, cs, "conn-dbx-ext", "team", "test-user-id")
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()

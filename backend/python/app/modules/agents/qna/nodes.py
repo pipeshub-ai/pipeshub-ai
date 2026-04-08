@@ -6487,6 +6487,14 @@ async def respond_node(
         org_id = state.get("org_id", "")
         graph_provider = state.get("graph_provider")
         is_multimodal_llm = state.get("is_multimodal_llm", False)
+        is_service_account = bool(state.get("is_service_account", False))
+        # Build agent-scoped filter_groups for the service-account fallback retrieval
+        # (mirrors what retrieval.py builds from state["filters"])
+        agent_filters = state.get("filters") or {}
+        agent_filter_groups = {
+            "apps": list(set(agent_filters.get("apps", []) or [])),
+            "kb": [k for k in (agent_filters.get("kb", []) or []) if k and k != "NO_KB_SELECTED"],
+        } if is_service_account else None
 
         # blob_store is not set by retrieval.py (which creates its own local instance);
         # create one here so stream_llm_response_with_tools can use it when the token
@@ -6576,6 +6584,8 @@ async def respond_node(
             mode="json",
             is_agent=True,  # Use agent schemas (with referenceData support)
             conversation_id=state.get("conversation_id"),
+            is_service_account=is_service_account,
+            filter_groups=agent_filter_groups,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

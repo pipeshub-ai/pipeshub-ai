@@ -116,6 +116,12 @@ spec:
               value: {{ .Values.neo4j.auth.database | quote }}
             {{- end }}
             
+            # Message broker config
+            - name: MESSAGE_BROKER
+              value: {{ .Values.messageBroker.type | default "kafka" | quote }}
+            - name: REDIS_STREAMS_MAXLEN
+              value: {{ .Values.messageBroker.redisStreamsMaxLen | default "10000" | quote }}
+
             # Kafka config
             - name: KAFKA_BROKERS
               value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"

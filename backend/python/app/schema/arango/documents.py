@@ -14,8 +14,16 @@ orgs_schema = {
             "accountType": {"type": "string", "enum": ["individual", "enterprise"]},
             "name": {"type": "string"},
             "isActive": {"type": "boolean", "default": False},
+            "website": {"type": ["string", "null"]},
+            "industry": {"type": ["string", "null"]},
+            "ownershipType": {"type": ["string", "null"]},
+            "phone": {"type": ["string", "null"]},
+            "dunsId": {"type": ["string", "null"]},
+            "isExternal": {"type": "boolean", "default": False},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
         },
         "required": ["accountType", "isActive"],
         "additionalProperties": False,
@@ -37,6 +45,7 @@ user_schema = {
             "fullName": {"type": "string"},
             "email": {"type": "string", "format": "email"},
             "designation": {"type": "string"},
+            "profileId": {"type": ["string", "null"]},
             "businessPhones": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -102,6 +111,7 @@ app_role_schema = {
             "description": {"type": "string"},
             # should be a uuid
             "externalRoleId": {"type": "string", "minLength": 1},
+            "parentRoleId": {"type": ["string", "null"]},
             "connectorName": {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
@@ -400,16 +410,17 @@ ticket_record_schema = {
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
             "reporterName": {"type": ["string", "null"]},
+            "dueDateTimestamp": {"type": ["number", "null"]},
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
             "labels":{
-                "type": ["array","null"],
+                "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
             "assignee_source_id":{
-                "type": ["array","null"],
+                "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
@@ -491,6 +502,47 @@ pull_request_record_schema = {
             },
         },
     },
+}
+
+product_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "productCode": {"type": ["string", "null"]},
+            "productFamily": {"type": ["string", "null"]},
+            "isActive": {"type": ["boolean", "null"]},
+            "sku": {"type": ["string", "null"]},
+            "listPrice": {"type": ["number", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the product record schema.",
+
+}
+
+deal_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": ["string", "null"]},
+            "amount": {"type": ["number", "null"]},
+            "expectedRevenue": {"type": ["number", "null"]},
+            "expectedCloseDate": {"type": ["string", "null"]},
+            "conversionProbability": {"type": ["number", "null"]},
+            "type": {"type": ["string", "null"]},
+            "ownerId": {"type": ["string", "null"]},
+            "isWon": {"type": ["boolean", "null"]},
+            "isClosed": {"type": ["boolean", "null"]},
+            "createdDate": {"type": ["string", "null"]},
+            "closeDate": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the deal record schema.",
 }
 
 record_group_schema = {
@@ -644,6 +696,7 @@ agent_schema = {
                 "default": [],
             },
             "isActive": {"type": "boolean", "default": True},
+            "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
@@ -959,6 +1012,9 @@ people_schema = {
             "email": {"type": "string", "format": "email"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "firstName": {"type": ["string", "null"]},
+            "lastName": {"type": ["string", "null"]},
+            "phone": {"type": ["string", "null"]},
         },
         "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
         "additionalProperties": False,

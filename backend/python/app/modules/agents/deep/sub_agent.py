@@ -350,6 +350,11 @@ async def _execute_simple_sub_agent(
         budget = _ToolCallBudget(max_calls)
         tools = _wrap_tools_with_budget(tools, budget, log)
 
+        # For retrieval tasks, strip final_results from what the LLM sees in its context
+        # window. Raw blocks from multiple retrieval calls accumulate to millions of tokens.
+        if is_retrieval:
+            tools = _wrap_retrieval_tools_for_context_efficiency(tools, state, log)
+
         # Build tool schemas description for the system prompt
         tool_schemas_text = _format_tools_for_prompt(tools, log)
 
@@ -898,6 +903,9 @@ async def _execute_multi_step_sub_agent(
         # Wrap tools with budget for this step
         budget = _ToolCallBudget(_MAX_TOOL_CALLS_PER_STEP)
         step_tools = _wrap_tools_with_budget(tools, budget, log)
+        step_is_retrieval = any(d in ("retrieval", "knowledge") for d in task.get("domains", []))
+        if step_is_retrieval:
+            step_tools = _wrap_retrieval_tools_for_context_efficiency(step_tools, state, log)
 
         try:
             from langchain.agents import create_agent
@@ -1060,6 +1068,26 @@ def _extract_tool_results(
     """Extract tool results from agent messages and process retrieval outputs."""
     tool_results = []
 
+    # Process full retrieval results stored in the deep retrieval buffer.
+    # These were stripped from ToolMessages to prevent context explosion —
+    # _wrap_retrieval_tools_for_context_efficiency saves them here while only
+    # returning a compact summary to the LangGraph react agent.
+    deep_buffer = state.pop("_deep_retrieval_buffer", None)
+    if deep_buffer:
+        for full_result in deep_buffer:
+            try:
+                from app.modules.agents.qna.nodes import _process_retrieval_output
+                if isinstance(full_result, str):
+                    try:
+                        parsed = json.loads(full_result)
+                        _process_retrieval_output(parsed, state, log)
+                    except json.JSONDecodeError:
+                        _process_retrieval_output(full_result, state, log)
+                elif isinstance(full_result, dict):
+                    _process_retrieval_output(full_result, state, log)
+            except Exception as e:
+                log.warning("Failed to process buffered retrieval output: %s", e)
+
     for msg in messages:
         if not isinstance(msg, ToolMessage):
             continue
@@ -1067,8 +1095,9 @@ def _extract_tool_results(
         tool_name = msg.name if hasattr(msg, "name") else "unknown"
         result_content = msg.content
 
-        # Process retrieval results to extract final_results
-        if "retrieval" in tool_name.lower():
+        # Process retrieval results from ToolMessage only if NOT using the buffer
+        # (buffer path already handled above — avoids double-processing)
+        if "retrieval" in tool_name.lower() and not deep_buffer:
             try:
                 from app.modules.agents.qna.nodes import _process_retrieval_output
                 if isinstance(result_content, str):
@@ -1163,6 +1192,86 @@ def _wrap_tools_with_budget(
             wrapped.append(new_tool)
         except Exception as e:
             log.warning("Failed to wrap tool %s: %s, using original", tool_name, e)
+            wrapped.append(tool)
+
+    return wrapped
+
+
+def _wrap_retrieval_tools_for_context_efficiency(
+    tools: list,
+    state: DeepAgentState,
+    log: logging.Logger,
+) -> list:
+    """
+    Wrap retrieval tools to strip final_results from the LLM's context window.
+
+    Retrieval tool output contains final_results with full document block content.
+    A sub-agent making 5 calls with limit=100 accumulates 8M+ tokens in its message
+    history, crashing the LLM with a context length error.
+
+    This wrapper:
+    1. Stores the full result (with final_results) in state["_deep_retrieval_buffer"]
+    2. Returns only content/status/metadata to the LangGraph react agent
+
+    The full results are later processed by _extract_tool_results for citations.
+    """
+    from langchain_core.tools import StructuredTool as LCStructuredTool
+
+    wrapped = []
+    for tool in tools:
+        tool_name = getattr(tool, "name", "unknown")
+        is_retrieval_tool = "retrieval" in tool_name.lower() or "knowledge" in tool_name.lower()
+
+        if not is_retrieval_tool:
+            wrapped.append(tool)
+            continue
+
+        orig_coro = getattr(tool, "coroutine", None)
+        orig_func = getattr(tool, "func", None)
+        if orig_coro is None and orig_func is None:
+            wrapped.append(tool)
+            continue
+
+        async def _context_efficient_coro(
+            _orig_coro=orig_coro,
+            _orig_func=orig_func,
+            _tool_name=tool_name,
+            **kwargs: object,
+        ) -> str:
+            result = await _orig_coro(**kwargs) if _orig_coro else _orig_func(**kwargs)
+            try:
+                buffer = state.setdefault("_deep_retrieval_buffer", [])
+                buffer.append(result)
+                if isinstance(result, str):
+                    try:
+                        parsed = json.loads(result)
+                        stripped = {
+                            "status": parsed.get("status", "success"),
+                            "content": parsed.get("content", ""),
+                            "metadata": parsed.get("metadata", {}),
+                        }
+                        return json.dumps(stripped, ensure_ascii=False)
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+            except Exception as e:
+                log.warning("Failed to strip retrieval output for %s: %s", _tool_name, e)
+            return result
+
+        try:
+            new_tool = LCStructuredTool.from_function(
+                func=_context_efficient_coro,
+                coroutine=_context_efficient_coro,
+                name=tool_name,
+                description=getattr(tool, "description", ""),
+                args_schema=getattr(tool, "args_schema", None),
+                return_direct=getattr(tool, "return_direct", False),
+            )
+            if hasattr(tool, "_original_name"):
+                new_tool._original_name = tool._original_name
+            wrapped.append(new_tool)
+            log.debug("Wrapped retrieval tool %s for context efficiency", tool_name)
+        except Exception as e:
+            log.warning("Failed to wrap retrieval tool %s for context efficiency: %s", tool_name, e)
             wrapped.append(tool)
 
     return wrapped
@@ -1361,20 +1470,20 @@ def _build_sub_agent_tool_guidance(
     if is_retrieval:
         parts.append(
             "\n## Knowledge Base Search Strategy\n"
-            "Your goal is to retrieve the MOST COMPREHENSIVE set of relevant information.\n"
+            "Your goal is to retrieve the MOST RELEVANT set of information.\n"
             "1. **Derive search queries from the TASK DESCRIPTION**, not the raw user message. "
             "The task description contains the resolved topic.\n"
-            "2. **Make 3-5 diverse search calls** with DIFFERENT query formulations:\n"
+            "2. **Make 2-3 diverse search calls** with DIFFERENT query formulations:\n"
             "   - First: a broad semantic query capturing the main topic\n"
             "   - Then: rephrase using synonyms, related terms, or different angles\n"
             "   - Then: targeted queries for specific sub-topics or details\n"
-            "3. **Use limit=100** on each call to maximise results per query.\n"
+            "3. **Use limit=10** on each call.\n"
             "4. **You have a hard budget of 5 search calls.** The retrieval system "
-            "returns ALL matching blocks per query, so additional queries with similar "
+            "returns matching blocks per query, so additional queries with similar "
             "terms will return the same results. Quality of query diversity matters "
             "more than quantity of calls.\n"
             "5. The retrieval results will be processed downstream for citations — "
-            "your job is to surface as much relevant content as possible."
+            "your job is to surface relevant content with focused queries."
         )
 
     # Generic link extraction guidance (for non-retrieval tasks)

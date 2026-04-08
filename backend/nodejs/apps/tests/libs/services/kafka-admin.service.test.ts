@@ -137,6 +137,36 @@ describe('KafkaAdminService', () => {
       const createCall = mockAdmin.createTopics.firstCall.args[0];
       expect(createCall.topics).to.have.lengthOf(REQUIRED_KAFKA_TOPICS.length);
     });
+
+    it('should use default numPartitions and replicationFactor when not provided', async () => {
+      mockAdmin.listTopics.resolves([]);
+      const config = { brokers: ['localhost:9092'] };
+      const service = new KafkaAdminService(config, mockLogger);
+      const topicsWithoutDefaults = [
+        { topic: 'no-defaults-1' },
+        { topic: 'no-defaults-2' },
+      ];
+      await service.ensureTopicsExist(topicsWithoutDefaults);
+      const createCall = mockAdmin.createTopics.firstCall.args[0];
+      expect(createCall.topics[0].numPartitions).to.equal(1);
+      expect(createCall.topics[0].replicationFactor).to.equal(1);
+      expect(createCall.topics[1].numPartitions).to.equal(1);
+      expect(createCall.topics[1].replicationFactor).to.equal(1);
+    });
+
+    it('should use explicit numPartitions and replicationFactor when provided', async () => {
+      mockAdmin.listTopics.resolves([]);
+      const config = { brokers: ['localhost:9092'] };
+      const service = new KafkaAdminService(config, mockLogger);
+      const topics = [
+        { topic: 'custom-partitions', numPartitions: 3, replicationFactor: 2 },
+      ];
+      await service.ensureTopicsExist(topics);
+      const createCall = mockAdmin.createTopics.firstCall.args[0];
+      expect(createCall.topics[0].numPartitions).to.equal(3);
+      expect(createCall.topics[0].replicationFactor).to.equal(2);
+    });
+
   });
 
   describe('listTopics', () => {

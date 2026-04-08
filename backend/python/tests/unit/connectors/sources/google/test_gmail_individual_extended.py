@@ -106,6 +106,8 @@ def connector():
             data_store_provider=_make_mock_data_store_provider(),
             config_service=AsyncMock(),
             connector_id="gmail-ind-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
@@ -357,5 +359,7 @@ class TestCreateConnector:
             data_store_provider=_make_mock_data_store_provider(),
             config_service=AsyncMock(),
             connector_id="test-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert result is not None

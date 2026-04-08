@@ -16,28 +16,17 @@ import json
 import logging
 import threading
 from concurrent.futures import Future
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+import ssl
+
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage, messaging_env
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
-    IndexingEvent,
-    IndexingKafkaConsumer,
-    MAX_CONCURRENT_INDEXING,
-    MAX_CONCURRENT_PARSING,
-    MAX_PENDING_INDEXING_TASKS,
-    SHUTDOWN_TASK_TIMEOUT,
-)
-import ssl
-from app.services.messaging.kafka.consumer.indexing_consumer import (
     FUTURE_CLEANUP_INTERVAL,
-    IndexingEvent,
     IndexingKafkaConsumer,
-    MAX_CONCURRENT_INDEXING,
-    MAX_CONCURRENT_PARSING,
-    MAX_PENDING_INDEXING_TASKS,
-    SHUTDOWN_TASK_TIMEOUT,
 )
 
 
@@ -129,10 +118,9 @@ class TestWaitForActiveFuturesExtended:
         with consumer._futures_lock:
             consumer._active_futures.add(f)
 
-        # Patch SHUTDOWN_TASK_TIMEOUT to very small value
-        with patch(
-            "app.services.messaging.kafka.consumer.indexing_consumer.SHUTDOWN_TASK_TIMEOUT",
-            0.01,
+        # Patch shutdown_task_timeout to very small value
+        with patch.object(
+            type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.01,
         ):
             consumer._wait_for_active_futures()
         # Should not raise
@@ -168,7 +156,7 @@ class TestApplyBackpressure:
 
         # Add futures to reach capacity
         with consumer._futures_lock:
-            for _ in range(MAX_PENDING_INDEXING_TASKS):
+            for _ in range(messaging_env.max_pending_indexing_tasks):
                 f = Future()
                 consumer._active_futures.add(f)
 
@@ -205,7 +193,7 @@ class TestApplyBackpressure:
         consumer._backpressure_logged = True
 
         with consumer._futures_lock:
-            for _ in range(MAX_PENDING_INDEXING_TASKS):
+            for _ in range(messaging_env.max_pending_indexing_tasks):
                 f = Future()
                 consumer._active_futures.add(f)
 
@@ -221,9 +209,11 @@ class TestParseMessageAdditional:
 
     def test_bytes_value_isinstance_check(self, consumer):
         """Ensure isinstance check works for bytes -> str conversion."""
-        msg = _make_message(value=json.dumps({"x": 1}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"x": 1}}).encode("utf-8"))
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
-        assert result == {"x": 1}
+        assert isinstance(result, StreamMessage)
+        assert result.eventType == "test"
+        assert result.payload == {"x": 1}
 
 
 # ===================================================================
@@ -240,10 +230,10 @@ class TestProcessMessageWrapperExtended:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": "indexing_complete", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
 
@@ -259,10 +249,10 @@ class TestProcessMessageWrapperExtended:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(msg):
-            yield {"event": "unknown_event", "data": {}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is True
@@ -357,12 +347,12 @@ class TestStartProcessingTaskCallback:
             consumer.running = True
 
             async def handler(msg):
-                yield {"event": "parsing_complete"}
-                yield {"event": "indexing_complete"}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
             consumer.message_handler = handler
 
-            msg = _make_message(value=json.dumps({"k": "v"}).encode("utf-8"))
+            msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
             # Wait for task completion
@@ -504,20 +494,24 @@ class TestGetActiveTaskCount:
 
 class TestParseMessage:
     def test_json_string(self, consumer):
-        msg = _make_message(value='{"key": "value"}')
+        msg = _make_message(value='{"eventType": "test", "payload": {"key": "value"}}')
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
-        assert result == {"key": "value"}
+        assert isinstance(result, StreamMessage)
+        assert result.eventType == "test"
+        assert result.payload == {"key": "value"}
 
     def test_bytes_message(self, consumer):
-        msg = _make_message(value=b'{"key": "value"}')
+        msg = _make_message(value=b'{"eventType": "test", "payload": {"key": "value"}}')
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
-        assert result == {"key": "value"}
+        assert isinstance(result, StreamMessage)
+        assert result.payload == {"key": "value"}
 
     def test_double_encoded_json(self, consumer):
-        inner = json.dumps({"key": "value"})
+        inner = json.dumps({"eventType": "test", "payload": {"key": "value"}})
         msg = _make_message(value=json.dumps(inner))
         result = consumer._IndexingKafkaConsumer__parse_message(msg)
-        assert result == {"key": "value"}
+        assert isinstance(result, StreamMessage)
+        assert result.payload == {"key": "value"}
 
     def test_invalid_json(self, consumer):
         msg = _make_message(value="not json")
@@ -566,7 +560,7 @@ class TestProcessMessageWrapper:
     async def test_no_semaphores(self, consumer):
         consumer.parsing_semaphore = None
         consumer.indexing_semaphore = None
-        msg = _make_message(value=b'{"key": "val"}')
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is False
 
@@ -583,7 +577,7 @@ class TestProcessMessageWrapper:
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
         consumer.message_handler = None
-        msg = _make_message(value=b'{"key": "val"}')
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is False
 
@@ -593,11 +587,11 @@ class TestProcessMessageWrapper:
         consumer.indexing_semaphore = asyncio.Semaphore(1)
 
         async def handler(parsed):
-            yield {"event": IndexingEvent.PARSING_COMPLETE}
-            yield {"event": IndexingEvent.INDEXING_COMPLETE}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         consumer.message_handler = handler
-        msg = _make_message(value=b'{"key": "val"}')
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is True
 
@@ -611,7 +605,7 @@ class TestProcessMessageWrapper:
             yield  # noqa: unreachable
 
         consumer.message_handler = handler
-        msg = _make_message(value=b'{"key": "val"}')
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
         assert result is False
         assert consumer.parsing_semaphore._value == 1
@@ -641,7 +635,7 @@ class TestApplyBackpressureFullCoverage:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        for _ in range(MAX_PENDING_INDEXING_TASKS + 1):
+        for _ in range(messaging_env.max_pending_indexing_tasks + 1):
             f = Future()
             consumer._active_futures.add(f)
         consumer._IndexingKafkaConsumer__apply_backpressure()
@@ -763,7 +757,7 @@ class TestConsumeLoop:
     async def test_processes_messages(self, consumer):
         consumer.running = True
         mock_consumer = MagicMock()
-        msg = _make_message(value=b'{"key": "val"}')
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
         call_count = 0
 
         async def mock_getmany(**kwargs):

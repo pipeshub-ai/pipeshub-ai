@@ -89,6 +89,8 @@ def connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="bs-full-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()

@@ -255,6 +255,8 @@ class ZoomConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             ZoomApp(connector_id),
@@ -263,6 +265,8 @@ class ZoomConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.ZOOM
@@ -723,14 +727,14 @@ class ZoomConnector(BaseConnector):
 
                 # Fetch cloud recording share URL for this meeting.
                 # Falls through silently on any error (scope not granted, no recording, etc.)
-                share_url = ""
+                recording_url = ""
                 if meeting_id:
                     try:
                         ds = await self._get_fresh_datasource()
                         rec_resp = await ds.recording_get(meeting_id)
                         if rec_resp.success and rec_resp.data:
                             recording = ZoomRecordingDetail.model_validate(rec_resp.data)
-                            share_url = recording.share_url
+                            recording_url = recording.share_url
                     except Exception as rec_exc:
                         self.logger.warning(
                             "Zoom: recording fetch failed for %s: %s", meeting_id, rec_exc
@@ -742,7 +746,7 @@ class ZoomConnector(BaseConnector):
                     meeting_detail=meeting_detail,
                     host_email=host_email,
                     record_group_id=record_group_id,
-                    share_url=share_url,
+                    recording_url=recording_url,
                 )
                 encoded_uuid = self._encode_uuid(meeting_uuid)
                 perms = await self._build_meeting_permissions(
@@ -850,9 +854,9 @@ class ZoomConnector(BaseConnector):
         meeting_detail: Optional[ZoomMeetingDetail],
         host_email: str,
         record_group_id: Optional[str],
-        share_url: str = "",
+        recording_url: str = "",
     ) -> MeetingRecord:
-        topic = meeting_obj.topic
+        topic = meeting_obj.topic.strip()
         host_id = meeting_obj.host_id
         start_time = meeting_obj.start_time
         end_time = meeting_obj.end_time
@@ -871,10 +875,12 @@ class ZoomConnector(BaseConnector):
 
         display_name = f"{topic} ({start_time})" if start_time else topic
 
-        # 1. Cloud recording share page (direct link to recording player).
-        # 2. Transcript listing page — more useful than a dead join link for past meetings;
-        #    user can search by the indexed meeting topic or ID.
-        weburl = share_url or "https://zoom.us/recording/meeting/transcript"
+        # Transcript listing page with #:~:text= fragment so the browser scrolls to and
+        # highlights the specific meeting row when the user clicks through from search results.
+        weburl = (
+            "https://zoom.us/recording/meeting/transcript"
+            + "#:~:text=" + urllib.parse.quote(topic)
+        )
 
         now_ms = get_epoch_timestamp_in_ms()
         record = MeetingRecord(
@@ -903,6 +909,7 @@ class ZoomConnector(BaseConnector):
             duration_minutes=duration_minutes,
             start_time=start_time,
             end_time=end_time,
+            recording_url=recording_url or None,
             preview_renderable=False,
             is_dependent_node=False,
             parent_node_id=None,
@@ -1194,6 +1201,8 @@ class ZoomConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "ZoomConnector":
         """Factory method — creates the connector instance without calling init().
 
@@ -1211,4 +1220,6 @@ class ZoomConnector(BaseConnector):
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )

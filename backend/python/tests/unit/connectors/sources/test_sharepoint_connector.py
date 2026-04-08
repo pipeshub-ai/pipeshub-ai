@@ -79,7 +79,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1")
+    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "user-1")
 
 
 # ===========================================================================
@@ -361,7 +361,7 @@ def _make_connector_cov():
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1")
+    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
 
 
 class TestSharePointSiteUrlConstruction:
@@ -542,6 +542,8 @@ class TestSharePointCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-sp",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, SharePointConnector)
 
@@ -575,7 +577,7 @@ def _make_mock_deps_fullcov():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps_fullcov()
-    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1")
+    return SharePointConnector(logger, dep, dsp, cs, "conn-sp-1", "team", "test-user-id")
 
 
 def _make_file_record(**overrides):
@@ -2377,7 +2379,7 @@ class TestCreateConnector:
             mock_dep.return_value = mock_instance
 
             connector = await SharePointConnector.create_connector(
-                logger, dsp, cs, "conn-sp-new"
+                logger, dsp, cs, "conn-sp-new", "team", "test-user-id"
             )
 
             assert isinstance(connector, SharePointConnector)

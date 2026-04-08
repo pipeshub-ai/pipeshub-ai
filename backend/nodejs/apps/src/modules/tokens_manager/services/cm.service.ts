@@ -683,43 +683,32 @@ export class ConfigService {
 
     const parsedUrl = JSON.parse(url);
 
-    // Only initialize if not already set
-    if (!parsedUrl.oauthProvider?.issuer) {
-      parsedUrl.oauthProvider = {
-        ...parsedUrl.oauthProvider,
-        issuer:
-          normalizeUrl(process.env.OAUTH_ISSUER!) ||
-          (process.env.NODE_ENV === 'development'
-            ? `http://localhost:${process.env.PORT ?? 3000}`
-            : await this.getFrontendUrl()),
-      };
+    parsedUrl.oauthProvider = {
+      ...parsedUrl.oauthProvider,
+      issuer: await this.getOAuthIssuer(),
+    };
 
-      await this.keyValueStoreService.set<string>(
-        configPaths.endpoint,
-        JSON.stringify(parsedUrl),
-      );
-    }
+    await this.keyValueStoreService.set<string>(
+      configPaths.endpoint,
+      JSON.stringify(parsedUrl),
+    );
   }
 
   /**
-   * Get the OAuth issuer URL. This is a pure getter with no side effects.
-   * Call initializeOAuthIssuer() during application startup to seed the config.
+   * Get the OAuth issuer URL.
+   * Priority: OAUTH_ISSUER env var > frontend URL (if it serves the API) > localhost fallback.
    */
   public async getOAuthIssuer(): Promise<string> {
-    const url =
-      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
-      '{}';
+    const explicit = normalizeUrl(process.env.OAUTH_ISSUER!);
+    if (explicit) return explicit;
 
-    const parsedUrl = JSON.parse(url);
+    const frontendUrl = await this.getFrontendUrl();
 
-    // Return stored value, or fall back to env var, or default
-    return (
-      normalizeUrl(process.env.OAUTH_ISSUER!) ||
-      normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
-      (process.env.NODE_ENV === 'development'
-        ? `http://localhost:${process.env.PORT ?? 3000}`
-        : await this.getFrontendUrl())
-    );
+    if (frontendUrl.includes('localhost')) {
+      return `http://localhost:${process.env.PORT ?? 3000}`;
+    }
+
+    return frontendUrl;
   }
 
   public async getMcpScopes(): Promise<string[]> {

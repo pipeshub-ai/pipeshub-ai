@@ -11,13 +11,13 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.config.constants.service import config_node_constants
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
+    AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
@@ -28,6 +28,7 @@ from app.models.entities import (
     MailRecord,
     Person,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -35,10 +36,8 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
-    PullRequestRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -80,7 +79,10 @@ class DataSourceEntitiesProcessor:
         RecordType.SHAREPOINT_PAGE,
         RecordType.PROJECT,
         RecordType.LINK,
-        RecordType.TICKET
+        RecordType.TICKET,
+        RecordType.DEAL,
+        RecordType.CASE,
+        RecordType.TASK
     ]
 
     # Record relation types that connectors create for related external records
@@ -104,25 +106,14 @@ class DataSourceEntitiesProcessor:
         self.org_id = ""
 
     async def initialize(self) -> None:
-        producer_config = await self.config_service.get_config(
-            config_node_constants.KAFKA.value
-        )
+        from app.services.messaging.utils import MessagingUtils
 
-        # Ensure bootstrap_servers is a list
-        bootstrap_servers = producer_config.get("brokers") or producer_config.get("bootstrap_servers")
-        if isinstance(bootstrap_servers, str):
-            bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
-
-        kafka_producer_config = KafkaProducerConfig(
-            bootstrap_servers=bootstrap_servers,
-            client_id=producer_config.get("client_id", "connectors"),
-            ssl=producer_config.get("ssl", False),
-            sasl=producer_config.get("sasl"),
+        config = await MessagingUtils.create_producer_config_from_service(
+            self.config_service, "connectors"
         )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
-            broker_type="kafka",
             logger=self.logger,
-            config=kafka_producer_config,
+            config=config,
         )
         await self.messaging_producer.initialize()
         async with self.data_store_provider.transaction() as tx_store:
@@ -184,7 +175,7 @@ class DataSourceEntitiesProcessor:
             return WebpageRecord(**base_params)
         elif parent_record_type in [RecordType.MAIL, RecordType.GROUP_MAIL]:
             return MailRecord(**base_params)
-        elif parent_record_type == RecordType.TICKET:
+        elif parent_record_type in [RecordType.TICKET, RecordType.CASE, RecordType.TASK]:
             return TicketRecord(**base_params)
         elif parent_record_type == RecordType.PROJECT:
             return ProjectRecord(**base_params)
@@ -862,7 +853,7 @@ class DataSourceEntitiesProcessor:
                             f"with AUTO_INDEX_OFF status"
                         )
                         continue
-                        
+
                     if record.is_internal:
                         self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
                         continue
@@ -924,7 +915,7 @@ class DataSourceEntitiesProcessor:
             if not records:
                 self.logger.info("No records to reindex")
                 return
-            
+
             skipped_records = 0
 
             # Reset status to QUEUED for all records before reindexing
@@ -1362,9 +1353,17 @@ class DataSourceEntitiesProcessor:
         pass
 
 
+
     async def get_all_active_users(self) -> list[User]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True)
+
+    async def get_user_by_user_id(self, user_id: str) -> User | None:
+        async with self.data_store_provider.transaction() as tx_store:
+            raw = await tx_store.get_user_by_user_id(user_id)
+        if not raw:
+            return None
+        return User.from_arango_user(raw) if isinstance(raw, dict) else raw
 
     async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
@@ -1373,6 +1372,19 @@ class DataSourceEntitiesProcessor:
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+
+    async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
+        """
+        Get app metadata (scope, createdBy, etc.) from the database.
+        
+        Args:
+            connector_id: The connector/app ID
+            
+        Returns:
+            AppMetadata object or None if not found
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_by_id(connector_id)
 
     async def on_user_group_member_removed(
         self,

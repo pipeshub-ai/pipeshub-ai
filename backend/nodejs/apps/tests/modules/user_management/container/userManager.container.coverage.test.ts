@@ -3,12 +3,27 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { UserManagerContainer } from '../../../../src/modules/user_management/container/userManager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
 describe('UserManagerContainer - coverage', () => {
   let originalInstance: any
 
   beforeEach(() => {
     originalInstance = (UserManagerContainer as any).instance
+
+    // Stub message broker factory to prevent real Kafka/Redis connections
+    sinon.stub(messageBrokerFactory, 'resolveMessageBrokerConfig').returns({
+      type: 'kafka',
+      kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+    } as any)
+    sinon.stub(messageBrokerFactory, 'createMessageProducer').returns({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    } as any)
   })
 
   afterEach(() => {
@@ -17,7 +32,8 @@ describe('UserManagerContainer - coverage', () => {
   })
 
   describe('initialize', () => {
-    it('should create container with all bindings', async () => {
+    it('should create container with all bindings', async function () {
+      this.timeout(30000)
       const mockKvStore = {
         connect: sinon.stub().resolves(),
         disconnect: sinon.stub().resolves(),
@@ -101,17 +117,17 @@ describe('UserManagerContainer - coverage', () => {
   })
 
   describe('dispose - additional coverage', () => {
-    it('should disconnect KeyValueStoreService and stop EntitiesEventProducer', async () => {
+    it('should disconnect KeyValueStoreService and MessageProducer', async () => {
       const mockKvStore = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
-      const mockEntityEvents = { isConnected: sinon.stub().returns(true), stop: sinon.stub().resolves() }
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['KeyValueStoreService', 'EntitiesEventProducer'].includes(key),
+          ['KeyValueStoreService', 'MessageProducer'].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'KeyValueStoreService') return mockKvStore
-          if (key === 'EntitiesEventProducer') return mockEntityEvents
+          if (key === 'MessageProducer') return mockMessageProducer
           return null
         }),
       }
@@ -120,21 +136,21 @@ describe('UserManagerContainer - coverage', () => {
       await UserManagerContainer.dispose()
 
       expect(mockKvStore.disconnect.calledOnce).to.be.true
-      expect(mockEntityEvents.stop.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect((UserManagerContainer as any).instance).to.be.null
     })
 
     it('should skip disconnect when services are not connected', async () => {
       const mockKvStore = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() }
-      const mockEntityEvents = { isConnected: sinon.stub().returns(false), stop: sinon.stub() }
+      const mockMessageProducer = { isConnected: sinon.stub().returns(false), disconnect: sinon.stub() }
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['KeyValueStoreService', 'EntitiesEventProducer'].includes(key),
+          ['KeyValueStoreService', 'MessageProducer'].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'KeyValueStoreService') return mockKvStore
-          if (key === 'EntitiesEventProducer') return mockEntityEvents
+          if (key === 'MessageProducer') return mockMessageProducer
           return null
         }),
       }
@@ -143,7 +159,7 @@ describe('UserManagerContainer - coverage', () => {
       await UserManagerContainer.dispose()
 
       expect(mockKvStore.disconnect.called).to.be.false
-      expect(mockEntityEvents.stop.called).to.be.false
+      expect(mockMessageProducer.disconnect.called).to.be.false
     })
 
     it('should handle errors during disconnect gracefully', async () => {

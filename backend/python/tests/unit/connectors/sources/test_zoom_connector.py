@@ -33,11 +33,14 @@ def _make_connector() -> ZoomConnector:
         data_store_provider=dsp,
         config_service=config_service,
         connector_id="zoom-conn-1",
+        scope="personal",
+        created_by="test-user-1",
     )
 
 
 class TestZoomConnectorRecordBuilders:
-    def test_build_meeting_record_uses_share_url_when_provided(self) -> None:
+    def test_build_meeting_record_weburl_is_transcript_page_with_text_fragment(self) -> None:
+        """weburl is always the transcript listing page with #:~:text= for the topic."""
         connector = _make_connector()
         meeting_obj = ZoomMeetingReport(
             id=82768386593,
@@ -58,18 +61,48 @@ class TestZoomConnectorRecordBuilders:
             meeting_detail=detail,
             host_email="host@example.com",
             record_group_id="group-1",
-            share_url="https://us02web.zoom.us/rec/share/token123",
         )
 
         assert rec.record_name == "python basics overview (2026-03-30T18:00:00Z)"
         assert rec.external_revision_id == (
             "2026-03-30T18:00:00Z|2026-03-30T19:00:00Z|python basics overview"
         )
-        # share_url is priority 1 — join_url is ignored
-        assert rec.weburl == "https://us02web.zoom.us/rec/share/token123"
+        assert rec.weburl == (
+            "https://zoom.us/recording/meeting/transcript"
+            "#:~:text=python%20basics%20overview"
+        )
 
-    def test_build_meeting_record_falls_back_to_transcript_page(self) -> None:
-        """When no share_url is available, weburl is the transcript listing page."""
+    def test_build_meeting_record_recording_url_stored_separately(self) -> None:
+        """recording_url is stored on the record and does not affect weburl."""
+        connector = _make_connector()
+        meeting_obj = ZoomMeetingReport(
+            id=82768386593,
+            topic="python basics overview",
+            host_id="host-1",
+            start_time="2026-03-30T18:00:00Z",
+            end_time="2026-03-30T19:00:00Z",
+            duration=60,
+            type=2,
+        )
+
+        rec = connector._build_meeting_record(
+            meeting_obj=meeting_obj,
+            meeting_uuid="uuid-1",
+            meeting_detail=None,
+            host_email="host@example.com",
+            record_group_id="group-1",
+            recording_url="https://us02web.zoom.us/rec/share/token123",
+        )
+
+        assert rec.recording_url == "https://us02web.zoom.us/rec/share/token123"
+        # weburl is always the transcript page — recording_url does not change it
+        assert rec.weburl == (
+            "https://zoom.us/recording/meeting/transcript"
+            "#:~:text=python%20basics%20overview"
+        )
+
+    def test_build_meeting_record_no_recording_url_is_none(self) -> None:
+        """When no recording_url is passed, the field is None on the record."""
         connector = _make_connector()
         meeting_obj = ZoomMeetingReport(
             id=111222333,
@@ -90,7 +123,8 @@ class TestZoomConnectorRecordBuilders:
         )
 
         assert rec.record_name == "Fallback URL"
-        assert rec.weburl == "https://zoom.us/recording/meeting/transcript"
+        assert rec.recording_url is None
+        assert rec.weburl == "https://zoom.us/recording/meeting/transcript#:~:text=Fallback%20URL"
 
 
 
@@ -353,8 +387,8 @@ class TestZoomConnectorSyncFlow:
 
 class TestProcessOneMeeting:
     @pytest.mark.asyncio
-    async def test_recording_fetch_failure_falls_back_to_transcript_page(self) -> None:
-        """When recording_get raises, sync continues and weburl is transcript listing page."""
+    async def test_recording_fetch_failure_recording_url_is_none(self) -> None:
+        """When recording_get raises, sync continues and recording_url is None on the record."""
         connector = _make_connector()
         ds = MagicMock()
         ds.recording_get = AsyncMock(side_effect=Exception("403 Forbidden"))
@@ -375,11 +409,14 @@ class TestProcessOneMeeting:
 
         assert result is not None
         rec, _ = result
-        assert rec.weburl == "https://zoom.us/recording/meeting/transcript"
+        # weburl is always the transcript page regardless
+        assert rec.weburl is not None and "zoom.us/recording/meeting/transcript" in rec.weburl
+        # recording_url is None — no recording was fetched
+        assert rec.recording_url is None
 
     @pytest.mark.asyncio
-    async def test_recording_share_url_is_used_when_available(self) -> None:
-        """When recording_get succeeds, share_url is used as weburl."""
+    async def test_recording_url_stored_when_recording_get_succeeds(self) -> None:
+        """When recording_get succeeds, share_url is stored in recording_url (not in weburl)."""
         connector = _make_connector()
         ds = MagicMock()
         ds.recording_get = AsyncMock(return_value=MagicMock(
@@ -403,7 +440,9 @@ class TestProcessOneMeeting:
 
         assert result is not None
         rec, _ = result
-        assert rec.weburl == "https://us02web.zoom.us/rec/share/abc123"
+        assert rec.recording_url == "https://us02web.zoom.us/rec/share/abc123"
+        # weburl is always the transcript page — recording_url is stored separately
+        assert rec.weburl is not None and "zoom.us/recording/meeting/transcript" in rec.weburl
 
     @pytest.mark.asyncio
     async def test_empty_uuid_skipped_before_recording_fetch(self) -> None:

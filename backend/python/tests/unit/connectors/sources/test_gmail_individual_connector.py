@@ -131,6 +131,8 @@ def _make_connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="gmail-cov95",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.connector_name = Connectors.GOOGLE_MAIL
         conn.sync_filters = FilterCollection()
@@ -1620,6 +1622,8 @@ class TestCreateConnector:
                 data_store_provider=ds_provider,
                 config_service=config_service,
                 connector_id="gmail-test",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert result is not None
             mock_dep_instance.initialize.assert_called_once()
