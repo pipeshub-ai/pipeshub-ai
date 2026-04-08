@@ -20,7 +20,6 @@ import {
   updateRecord,
   getKBContent,
   getFolderContents,
-  getAllRecords,
   getRecordById,
   reindexRecord,
   reindexRecordGroup,
@@ -722,68 +721,6 @@ describe('Knowledge Base Controller', () => {
     it('should call next when kbId is missing', async () => {
       const handler = getFolderContents(createMockAppConfig())
       const req = createMockRequest({ params: { folderId: 'f-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAllRecords', () => {
-    it('should return a handler function', () => {
-      const handler = getAllRecords(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: 'org-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next with BadRequestError for page less than 1', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ query: { page: '0' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next with BadRequestError for limit greater than 100', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ query: { limit: '200' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next with BadRequestError for limit less than 1', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ query: { limit: '0' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1610,58 +1547,6 @@ describe('Knowledge Base Controller', () => {
       const req = createMockRequest({
         params: { kbId: 'kb-1', folderId: 'folder-1' },
         query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-  })
-
-  describe('getAllRecords (happy path)', () => {
-    it('should get all records with defaults', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should get all records with search and filters', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [{ name: 'file.pdf' }], total: 1 },
-      })
-
-      const req = createMockRequest({
-        query: {
-          page: '1',
-          limit: '50',
-          search: 'test',
-          recordTypes: 'file',
-          origins: 'upload',
-          connectors: 'c1',
-          indexingStatus: 'completed',
-          sortBy: 'name',
-          sortOrder: 'asc',
-        },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3065,24 +2950,6 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when getAllRecords connector returns non-200', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: null,
-      })
-
-      const req = createMockRequest({
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
     it('should call next when getRecordById connector returns non-200', async () => {
       const handler = getRecordById(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
@@ -3454,86 +3321,6 @@ describe('Knowledge Base Controller', () => {
       const req = createMockRequest({
         params: { kbId: 'kb-1' },
         query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllRecords with date filters
-  // -----------------------------------------------------------------------
-  describe('getAllRecords (date filter coverage)', () => {
-    it('should handle dateFrom and dateTo filters', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        query: {
-          dateFrom: '1000000',
-          dateTo: '2000000',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next for invalid dateFrom', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { dateFrom: 'not-a-number' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next for invalid dateTo', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { dateTo: 'not-a-number' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next for invalid sortBy field', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { sortBy: 'invalidColumn' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next for invalid sortOrder', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { sortOrder: 'random' },
       })
       const res = createMockResponse()
       const next = createMockNext()

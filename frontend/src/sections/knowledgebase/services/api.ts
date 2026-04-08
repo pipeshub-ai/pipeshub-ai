@@ -171,7 +171,6 @@ export class KnowledgeBaseAPI {
     params?: any
   ): Promise<FolderContents> {
     const url = folderId ? `${API_BASE}/${kbId}/folder/${folderId}/children` : `${API_BASE}/${kbId}/children`;
-    const debugUrl_ALlRecords = `${API_BASE}/records`;
     const response = await axios.get(url, { params });
     if (!response.data) throw new Error('Failed to fetch folder contents');
     return response.data;
@@ -346,13 +345,6 @@ export class KnowledgeBaseAPI {
   static async createRecordsInFolder(kbId: string, folderId: string, data: any): Promise<any> {
     const response = await axios.post(`${API_BASE}/${kbId}/folder/${folderId}/records`, data);
     if (!response.data) throw new Error('Failed to create records in folder');
-    return response.data;
-  }
-
-  // Get all records across knowledge bases
-  static async getAllRecords(params?: any): Promise<any> {
-    const response = await axios.get(`${API_BASE}/records`, { params });
-    if (!response.data) throw new Error('Failed to fetch all records');
     return response.data;
   }
 

@@ -1967,368 +1967,411 @@ components:
           example: "507f1f77bcf86cd799439013"
 
     # ==================== KNOWLEDGE BASE SCHEMAS ====================
-    KnowledgeBase:
+    # ==================== KB RESPONSE SCHEMAS (strict, matching Zod validators) ====================
+
+    # --- Shared sub-schemas ---
+
+    KBPagination:
       type: object
+      description: Pagination info for KB list endpoints
+      additionalProperties: false
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required: [page, limit, totalCount, totalPages, hasNext, hasPrev]
+
+    KBChildrenPagination:
+      type: object
+      description: Pagination info for KB/folder children endpoints
+      additionalProperties: false
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalItems:
+          type: integer
+        totalPages:
+          type: integer
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required: [page, limit, totalItems, totalPages, hasNext, hasPrev]
+
+    KBUserPermission:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+        canUpload:
+          type: boolean
+        canCreateFolders:
+          type: boolean
+        canEdit:
+          type: boolean
+        canDelete:
+          type: boolean
+        canManagePermissions:
+          type: boolean
+      required: [role, canUpload, canCreateFolders, canEdit, canDelete, canManagePermissions]
+
+    KBChildrenStringArrayFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        recordTypes:
+          type: array
+          items:
+            type: string
+        origins:
+          type: array
+          items:
+            type: string
+        connectors:
+          type: array
+          items:
+            type: string
+        indexingStatus:
+          type: array
+          items:
+            type: string
+      required: [recordTypes, origins, connectors, indexingStatus]
+
+    KBChildrenAppliedFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        search:
+          type: string
+        record_types:
+          type: array
+          items:
+            type: string
+        origins:
+          type: array
+          items:
+            type: string
+        connectors:
+          type: array
+          items:
+            type: string
+        indexing_status:
+          type: array
+          items:
+            type: string
+        sort_by:
+          type: string
+        sort_order:
+          type: string
+      required: [sort_by, sort_order]
+
+    KBChildrenFileRecord:
+      type: object
+      additionalProperties: false
       properties:
         id:
           type: string
-          description: Unique knowledge base identifier
         name:
           type: string
-          description: Name of the knowledge base
+        extension:
+          type: string
+          nullable: true
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: number
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
+        path:
+          type: string
+          nullable: true
+        isFile:
+          type: boolean
+      required: [id, name, isFile]
+
+    KBChildrenFolder:
+      type: object
+      description: A folder item in KB children response
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+          nullable: true
+        level:
+          type: integer
+        parent_id:
+          nullable: true
+        webUrl:
+          type: string
+        recordGroupId:
+          type: string
+        type:
+          type: string
+          enum: [folder]
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            subfolders:
+              type: integer
+            records:
+              type: integer
+            totalItems:
+              type: integer
+          required: [subfolders, records, totalItems]
+        hasChildren:
+          type: boolean
+      required: [id, name, level, parent_id, webUrl, recordGroupId, type, createdAtTimestamp, updatedAtTimestamp, counts, hasChildren]
+
+    FolderChildrenFolder:
+      type: object
+      description: A folder item in folder children response (parent_id is a string)
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+          nullable: true
+        level:
+          type: integer
+        parent_id:
+          type: string
+        webUrl:
+          type: string
+        recordGroupId:
+          type: string
+        type:
+          type: string
+          enum: [folder]
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            subfolders:
+              type: integer
+            records:
+              type: integer
+            totalItems:
+              type: integer
+          required: [subfolders, records, totalItems]
+        hasChildren:
+          type: boolean
+      required: [id, name, level, parent_id, webUrl, recordGroupId, type, createdAtTimestamp, updatedAtTimestamp, counts, hasChildren]
+
+    KBChildrenRecord:
+      type: object
+      description: A record item in KB/folder children response
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        recordName:
+          type: string
+        name:
+          type: string
+        recordType:
+          type: string
+        externalRecordId:
+          type: string
+        origin:
+          type: string
+        connectorName:
+          type: string
+        indexingStatus:
+          type: string
+        version:
+          type: integer
+        isLatestVersion:
+          type: boolean
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        sourceCreatedAtTimestamp:
+          type: number
+          nullable: true
+        sourceLastModifiedTimestamp:
+          type: number
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
+        orgId:
+          type: string
+        type:
+          type: string
+          enum: [record]
+        fileRecord:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KBChildrenFileRecord'
+      required:
+        - id
+        - recordName
+        - name
+        - recordType
+        - externalRecordId
+        - origin
+        - connectorName
+        - indexingStatus
+        - version
+        - isLatestVersion
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - orgId
+        - type
+        - fileRecord
+
+    KBChildrenContainer:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+        type:
+          type: string
+        webUrl:
+          type: string
+        recordGroupId:
+          type: string
+      required: [id, name, path, type, webUrl, recordGroupId]
+
+    KBFolderItem:
+      type: object
+      description: A folder summary in KB list/get responses
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        webUrl:
+          type: string
+      required: [id, name]
+
+    KBListItem:
+      type: object
+      description: A knowledge base item in list response
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
         connectorId:
           type: string
           nullable: true
-          description: Associated connector ID (null for manual KBs)
         createdAtTimestamp:
           type: integer
-          format: int64
-          description: Creation timestamp in milliseconds
         updatedAtTimestamp:
           type: integer
-          format: int64
-          description: Last update timestamp in milliseconds
         createdBy:
           type: string
-          description: User ID of the creator
         userRole:
           type: string
-          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
-          description: User's role in this knowledge base
         folders:
           type: array
           items:
-            $ref: '#/components/schemas/Folder'
-          description: Folders in this knowledge base
-      required:
-        - name
+            $ref: '#/components/schemas/KBFolderItem'
+      required: [id, name, connectorId, createdAtTimestamp, updatedAtTimestamp, createdBy, userRole, folders]
 
-    Folder:
+    KBPermissionItem:
       type: object
+      additionalProperties: false
       properties:
         id:
           type: string
-          description: Unique folder identifier
-        name:
-          type: string
-          description: Name of the folder
-        parentId:
-          type: string
-          description: Parent folder or KB ID
-        kbId:
-          type: string
-          description: Knowledge base ID
-        orgId:
-          type: string
-          description: Organization ID
-        createdAtTimestamp:
-          type: integer
-          format: int64
-          description: Creation timestamp
-        updatedAtTimestamp:
-          type: integer
-          format: int64
-          description: Last update timestamp
-        isDeleted:
-          type: boolean
-          description: Whether the folder is deleted
-          default: false
-      required:
-        - name
-        - kbId
-        - orgId
-
-    Record:
-      type: object
-      description: |
-        A record represents a single document, file, or content item within a knowledge base.
-        Records can originate from file uploads or external connectors (Google Drive, OneDrive, etc.).
-      properties:
-        id:
-          type: string
-          description: Unique record identifier (UUID format)
-          example: "550e8400-e29b-41d4-a716-446655440000"
-        recordName:
-          type: string
-          description: Display name of the record
-          example: "Q4 Financial Report.pdf"
-        name:
-          type: string
-          description: Display name (alias for recordName)
-        externalRecordId:
-          type: string
-          description: External storage document ID (links to Storage module)
-          example: "507f1f77bcf86cd799439011"
-        recordType:
-          type: string
-          enum: [FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET, OTHERS]
-          description: |
-            Type of content:
-            - FILE: Uploaded documents (PDF, DOCX, etc.)
-            - WEBPAGE: Web pages crawled or bookmarked
-            - COMMENT: Comments from collaboration tools
-            - MESSAGE: Chat/messaging content (Slack, Teams)
-            - EMAIL: Email messages (Gmail, Outlook)
-            - TICKET: Support tickets (Jira, ServiceNow)
-            - OTHERS: Miscellaneous content types
-          example: "FILE"
-        origin:
-          type: string
-          enum: [UPLOAD, CONNECTOR]
-          description: |
-            Source of the record:
-            - UPLOAD: Manually uploaded via API/UI
-            - CONNECTOR: Synced from external connector
-          example: "UPLOAD"
-        connectorId:
-          type: string
-          description: ID of the connector that synced this record (null for uploads)
-          example: "conn_123456"
-        connectorName:
-          type: string
-          enum: [KB, ONEDRIVE, GOOGLE_DRIVE, CONFLUENCE, JIRA, SLACK, SHAREPOINT_ONLINE, GMAIL, DROPBOX, OUTLOOK, SERVICENOW, BOOKSTACK, WEB]
-          description: Name of the source connector
-          example: "GOOGLE_DRIVE"
-        orgId:
-          type: string
-          description: Organization ID that owns this record
-          example: "org_abc123"
-        kbId:
-          type: string
-          description: Knowledge base ID containing this record
-          example: "kb_xyz789"
-        folderId:
+        userId:
           type: string
           nullable: true
-          description: Parent folder ID (null if at KB root)
-          example: "folder_456"
-        version:
-          type: integer
-          description: Current version number (increments on updates)
-          default: 0
-          example: 3
-        isLatestVersion:
-          type: boolean
-          description: Whether this is the latest version
-        createdAtTimestamp:
-          type: integer
-          format: int64
-          description: Creation timestamp in milliseconds
-          example: 1704153600000
-        updatedAtTimestamp:
-          type: integer
-          format: int64
-          description: Last update timestamp in milliseconds
-          example: 1704240000000
-        sourceCreatedAtTimestamp:
-          type: integer
-          format: int64
-          description: Source creation timestamp (from connector)
-        sourceLastModifiedTimestamp:
-          type: integer
-          format: int64
-          description: Source last modified timestamp (from connector)
-        indexingStatus:
+        email:
           type: string
-          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
-          description: |
-            Current indexing/processing status:
-            - NOT_STARTED: Awaiting indexing
-            - QUEUED: In indexing queue
-            - IN_PROGRESS: Currently being indexed
-            - COMPLETED: Successfully indexed and searchable
-            - FAILED: Indexing failed (check error details)
-            - PAUSED: Indexing paused by user
-            - FILE_TYPE_NOT_SUPPORTED: Unsupported file format
-            - AUTO_INDEX_OFF: Auto-indexing disabled for this record
-            - EMPTY: File has no extractable content
-            - ENABLE_MULTIMODAL_MODELS: Requires multimodal AI models
-          example: "COMPLETED"
-        isDeleted:
-          type: boolean
-          description: Soft delete flag
-          default: false
-        isArchived:
-          type: boolean
-          description: Archive flag for inactive records
-          default: false
-        webUrl:
+          nullable: true
+        name:
           type: string
-          format: uri
-          description: Direct URL to access the original content
-          example: "https://drive.google.com/file/d/abc123"
-        mimeType:
+        role:
           type: string
-          description: MIME type of the file content
-          example: "application/pdf"
-        sizeInBytes:
-          type: integer
-          format: int64
-          description: File size in bytes
-          example: 1048576
-        extension:
-          type: string
-          description: File extension (without dot)
-          example: "pdf"
-        sha256Hash:
-          type: string
-          description: SHA-256 hash for content deduplication
+          nullable: true
         type:
           type: string
-          description: Node type identifier
-          example: "record"
-        fileRecord:
-          type: object
-          nullable: true
-          description: File-specific metadata (present when recordType is FILE)
-          properties:
-            id:
-              type: string
-            name:
-              type: string
-            extension:
-              type: string
-            mimeType:
-              type: string
-            sizeInBytes:
-              type: integer
-              format: int64
-            webUrl:
-              type: string
-            path:
-              type: string
-              nullable: true
-            isFile:
-              type: boolean
-        mailRecord:
-          type: object
-          nullable: true
-          description: Email-specific metadata (present when recordType is EMAIL)
-        ticketRecord:
-          type: object
-          nullable: true
-          description: Ticket-specific metadata (present when recordType is TICKET)
-          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-      required:
-        - recordName
-        - recordType
-        - origin
-        - orgId
-
-    RecordsResponse:
-      type: object
-      description: Paginated response for records listing
-      properties:
-        records:
-          type: array
-          items:
-            $ref: '#/components/schemas/Record'
-        pagination:
-          $ref: '#/components/schemas/PaginationInfo'
-        filters:
-          type: object
-          properties:
-            applied:
-              type: object
-              description: Currently applied filters
-            available:
-              type: object
-              description: Available filter options with counts
-
-    UploadResult:
-      type: object
-      description: Result of a file upload operation
-      properties:
-        message:
-          type: string
-          example: "Files uploaded successfully"
-        uploadResults:
-          type: array
-          items:
-            type: object
-            properties:
-              recordId:
-                type: string
-              recordName:
-                type: string
-              status:
-                type: string
-                enum: [success, failed]
-              error:
-                type: string
-
-    ConnectorStats:
-      type: object
-      description: Statistics for a connector's records
-      properties:
-        success:
-          type: boolean
-        data:
-          type: object
-          properties:
-            orgId:
-              type: string
-            connectorId:
-              type: string
-            origin:
-              type: string
-            stats:
-              type: object
-              properties:
-                total:
-                  type: integer
-                indexingStatus:
-                  type: object
-                  additionalProperties:
-                    type: integer
-            byRecordType:
-              type: array
-              items:
-                type: object
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+      required: [id, userId, email, name, role, type, createdAtTimestamp, updatedAtTimestamp]
 
     FilterOption:
       type: object
       description: A single filter option for knowledge hub filters
+      additionalProperties: false
       properties:
         id:
           type: string
-          description: Filter ID value to send in requests
         label:
           type: string
-          description: Display label for the filter
         type:
           type: string
           nullable: true
         connectorType:
           type: string
           nullable: true
+      required: [id, label, type, connectorType]
 
     KnowledgeHubNode:
       type: object
-      description: A node in the knowledge hub tree structure (NodeItem)
+      description: A node in the knowledge hub tree structure
+      additionalProperties: false
       properties:
         id:
           type: string
-          description: Unique identifier for the node
         name:
           type: string
-          description: Display name of the node
         nodeType:
           type: string
-          enum: [app, recordGroup, folder, record]
-          description: Type of the node
         parentId:
           type: string
           nullable: true
-          description: ID of the parent node
         origin:
           type: string
-          enum: [COLLECTION, CONNECTOR]
-          description: Origin type
         connector:
           type: string
           nullable: true
-          description: Connector name (only for CONNECTOR origin)
         recordType:
           type: string
           nullable: true
@@ -2338,15 +2381,10 @@ components:
         indexingStatus:
           type: string
           nullable: true
-        isInternal:
-          type: boolean
-          description: True when the node is an internal/system record group or record (doesn't come from source)
         createdAt:
           type: integer
-          description: Creation timestamp (epoch ms)
         updatedAt:
           type: integer
-          description: Update timestamp (epoch ms)
         sizeInBytes:
           type: integer
           nullable: true
@@ -2367,6 +2405,7 @@ components:
         permission:
           type: object
           nullable: true
+          additionalProperties: false
           properties:
             role:
               type: string
@@ -2374,12 +2413,1270 @@ components:
               type: boolean
             canDelete:
               type: boolean
+          required: [role, canEdit, canDelete]
         sharingStatus:
           type: string
           nullable: true
+        isInternal:
+          type: boolean
+      required:
+        - id
+        - name
+        - nodeType
+        - parentId
+        - origin
+        - connector
+        - recordType
+        - recordGroupType
+        - indexingStatus
+        - createdAt
+        - updatedAt
+        - sizeInBytes
+        - mimeType
+        - extension
+        - webUrl
+        - hasChildren
+        - previewRenderable
+        - permission
+        - sharingStatus
+        - isInternal
 
+    KHCurrentNode:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        nodeType:
+          type: string
+        subType:
+          type: string
+      required: [id, name, nodeType]
+
+    KHBreadcrumbItem:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        nodeType:
+          type: string
+        subType:
+          type: string
+      required: [id, name, nodeType]
+
+    KHPagination:
+      type: object
+      additionalProperties: false
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalItems:
+          type: integer
+        totalPages:
+          type: integer
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required: [page, limit, totalItems, totalPages, hasNext, hasPrev]
+
+    KHDateRange:
+      type: object
+      additionalProperties: false
+      properties:
+        gte:
+          type: integer
+        lte:
+          type: integer
+
+    KHSizeRange:
+      type: object
+      additionalProperties: false
+      properties:
+        gte:
+          type: integer
+        lte:
+          type: integer
+
+    KHAppliedFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        q:
+          type: string
+          nullable: true
+        nodeTypes:
+          type: array
+          items:
+            type: string
+          nullable: true
+        recordTypes:
+          type: array
+          items:
+            type: string
+          nullable: true
+        origins:
+          type: array
+          items:
+            type: string
+          nullable: true
+        connectorIds:
+          type: array
+          items:
+            type: string
+          nullable: true
+        indexingStatus:
+          type: array
+          items:
+            type: string
+          nullable: true
+        createdAt:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KHDateRange'
+        updatedAt:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KHDateRange'
+        size:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KHSizeRange'
+        sortBy:
+          type: string
+        sortOrder:
+          type: string
+      required: [q, nodeTypes, recordTypes, origins, connectorIds, indexingStatus, createdAt, updatedAt, size, sortBy, sortOrder]
+
+    KHAvailableFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        nodeTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+        recordTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+        origins:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+        connectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+        indexingStatus:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+        sortBy:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+        sortOrder:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterOption'
+      required: [nodeTypes, recordTypes, origins, connectors, indexingStatus, sortBy, sortOrder]
+
+    KHFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        applied:
+          $ref: '#/components/schemas/KHAppliedFilters'
+        available:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KHAvailableFilters'
+      required: [applied, available]
+
+    KHCountItem:
+      type: object
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+        count:
+          type: integer
+      required: [label, count]
+
+    KHCounts:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KHCountItem'
+        total:
+          type: integer
+      required: [items, total]
+
+    KHPermissions:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+        canUpload:
+          type: boolean
+        canCreateFolders:
+          type: boolean
+        canEdit:
+          type: boolean
+        canDelete:
+          type: boolean
+        canManagePermissions:
+          type: boolean
+      required: [role, canUpload, canCreateFolders, canEdit, canDelete, canManagePermissions]
+
+    # --- Top-level response schemas ---
+
+    # GET /knowledgeBase - listKnowledgeBasesResponseSchema
+    KBListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        knowledgeBases:
+          type: array
+          items:
+            $ref: '#/components/schemas/KBListItem'
+        pagination:
+          $ref: '#/components/schemas/KBPagination'
+        filters:
+          type: object
+          additionalProperties: false
+          properties:
+            applied:
+              type: object
+              additionalProperties: false
+              properties:
+                search:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                sort_by:
+                  type: string
+                  enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
+                sort_order:
+                  type: string
+                  enum: [asc, desc]
+            available:
+              type: object
+              additionalProperties: false
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                sortFields:
+                  type: array
+                  items:
+                    type: string
+                sortOrders:
+                  type: array
+                  items:
+                    type: string
+              required: [permissions, sortFields, sortOrders]
+          required: [applied, available]
+      required: [knowledgeBases, pagination, filters]
+
+    # PUT/DELETE KB - kbSuccessResponseSchema
+    KBSuccessResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required: [success]
+
+    # POST /knowledgeBase - createKBResponseSchema
+    KBCreateResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        userRole:
+          type: string
+      required: [id, name, createdAtTimestamp, updatedAtTimestamp, userRole]
+
+    # GET /knowledgeBase/:kbId - getKBResponseSchema
+    KBGetResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        connectorId:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        createdBy:
+          type: string
+        userRole:
+          type: string
+        folders:
+          type: array
+          items:
+            $ref: '#/components/schemas/KBFolderItem'
+      required: [id, name, connectorId, createdAtTimestamp, updatedAtTimestamp, createdBy, userRole, folders]
+
+    # GET /knowledgeBase/:kbId/children - getKBChildrenResponseSchema
+    KBChildrenResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        container:
+          $ref: '#/components/schemas/KBChildrenContainer'
+        folders:
+          type: array
+          items:
+            $ref: '#/components/schemas/KBChildrenFolder'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/KBChildrenRecord'
+        level:
+          type: integer
+        totalCount:
+          type: integer
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            folders:
+              type: integer
+            records:
+              type: integer
+            totalItems:
+              type: integer
+            totalFolders:
+              type: integer
+            totalRecords:
+              type: integer
+          required: [folders, records, totalItems, totalFolders, totalRecords]
+        availableFilters:
+          $ref: '#/components/schemas/KBChildrenStringArrayFilters'
+        paginationMode:
+          type: string
+        userPermission:
+          $ref: '#/components/schemas/KBUserPermission'
+        pagination:
+          $ref: '#/components/schemas/KBChildrenPagination'
+        filters:
+          type: object
+          additionalProperties: false
+          properties:
+            applied:
+              $ref: '#/components/schemas/KBChildrenAppliedFilters'
+            available:
+              $ref: '#/components/schemas/KBChildrenStringArrayFilters'
+          required: [applied, available]
+      required:
+        - success
+        - container
+        - folders
+        - records
+        - level
+        - totalCount
+        - counts
+        - availableFilters
+        - paginationMode
+        - userPermission
+        - pagination
+        - filters
+
+    # GET /knowledgeBase/:kbId/folder/:folderId/children - getFolderChildrenResponseSchema
+    KBFolderChildrenResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        folders:
+          type: array
+          items:
+            $ref: '#/components/schemas/FolderChildrenFolder'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/KBChildrenRecord'
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            folders:
+              type: integer
+            records:
+              type: integer
+            totalItems:
+              type: integer
+            foldersShown:
+              type: integer
+            recordsShown:
+              type: integer
+          required: [folders, records, totalItems, foldersShown, recordsShown]
+        totalCount:
+          type: integer
+        availableFilters:
+          $ref: '#/components/schemas/KBChildrenStringArrayFilters'
+        userPermission:
+          $ref: '#/components/schemas/KBUserPermission'
+        pagination:
+          $ref: '#/components/schemas/KBChildrenPagination'
+        filters:
+          type: object
+          additionalProperties: false
+          properties:
+            applied:
+              $ref: '#/components/schemas/KBChildrenAppliedFilters'
+            available:
+              $ref: '#/components/schemas/KBChildrenStringArrayFilters'
+          required: [applied, available]
+      required:
+        - success
+        - folders
+        - records
+        - counts
+        - totalCount
+        - availableFilters
+        - userPermission
+        - pagination
+        - filters
+
+    # GET /knowledgeBase/:kbId/permissions - listKBPermissionsResponseSchema
+    KBPermissionsListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        kbId:
+          type: string
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/KBPermissionItem'
+        totalCount:
+          type: integer
+      required: [kbId, permissions, totalCount]
+
+    # DELETE /knowledgeBase/:kbId/permissions - removeKBPermissionResponseSchema
+    KBPermissionRemoveResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        kbId:
+          type: string
+        userIds:
+          type: array
+          items:
+            type: string
+        teamIds:
+          type: array
+          items:
+            type: string
+      required: [kbId, userIds, teamIds]
+
+    # PUT /knowledgeBase/:kbId/permissions - updateKBPermissionResponseSchema
+    KBPermissionUpdateResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        kbId:
+          type: string
+        userIds:
+          type: array
+          items:
+            type: string
+        teamIds:
+          type: array
+          items:
+            type: string
+        newRole:
+          type: string
+      required: [kbId, userIds, teamIds, newRole]
+
+    # POST /knowledgeBase/:kbId/permissions - createKBPermissionResponseSchema
+    KBPermissionCreateResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        kbId:
+          type: string
+        permissionResult:
+          type: object
+          additionalProperties: false
+          properties:
+            success:
+              type: boolean
+            grantedCount:
+              type: integer
+            grantedUsers:
+              type: array
+              items:
+                type: string
+            grantedTeams:
+              type: array
+              items:
+                type: string
+            role:
+              type: string
+            kbId:
+              type: string
+            details:
+              type: object
+          required: [success, grantedCount, grantedUsers, grantedTeams, role, kbId, details]
+      required: [kbId, permissionResult]
+
+    # POST /knowledgeBase/:kbId/upload - uploadRecordsResponseSchema
+    KBUploadResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+        totalFiles:
+          type: integer
+        successfulFiles:
+          type: integer
+        failedFiles:
+          type: integer
+        status:
+          type: string
+          enum: [processing]
+        failedFilesDetails:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              fileName:
+                type: string
+              filePath:
+                type: string
+              error:
+                type: string
+            required: [fileName, filePath, error]
+        records:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _key:
+                type: string
+              recordName:
+                type: string
+              externalRecordId:
+                type: string
+              recordType:
+                type: string
+              origin:
+                type: string
+              indexingStatus:
+                type: string
+              createdAtTimestamp:
+                type: integer
+              updatedAtTimestamp:
+                type: integer
+              sourceCreatedAtTimestamp:
+                type: integer
+              sourceLastModifiedTimestamp:
+                type: integer
+              version:
+                type: integer
+              webUrl:
+                type: string
+              mimeType:
+                type: string
+              fileRecord:
+                type: object
+                additionalProperties: false
+                properties:
+                  _key:
+                    type: string
+                  name:
+                    type: string
+                  extension:
+                    type: string
+                    nullable: true
+                  mimeType:
+                    type: string
+                  sizeInBytes:
+                    type: integer
+                  webUrl:
+                    type: string
+                required: [_key, name, extension, mimeType, sizeInBytes, webUrl]
+            required:
+              - _key
+              - recordName
+              - externalRecordId
+              - recordType
+              - origin
+              - indexingStatus
+              - createdAtTimestamp
+              - updatedAtTimestamp
+              - sourceCreatedAtTimestamp
+              - sourceLastModifiedTimestamp
+              - version
+              - webUrl
+              - mimeType
+              - fileRecord
+      required: [message, totalFiles, successfulFiles, failedFiles, status, failedFilesDetails, records]
+
+    # POST /knowledgeBase/:kbId/folder - createFolderResponseSchema
+    KBFolderCreateResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        webUrl:
+          type: string
+      required: [id, name, webUrl]
+
+    # GET /knowledgeBase/record/:recordId - getRecordByIdResponseSchema
+    KBRecordGetResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        record:
+          type: object
+          description: Full record object (passthrough - additional properties allowed)
+          properties:
+            id:
+              type: string
+            _key:
+              type: string
+            _id:
+              type: string
+            _rev:
+              type: string
+            recordName:
+              type: string
+            recordType:
+              type: string
+            origin:
+              type: string
+            orgId:
+              type: string
+            externalRecordId:
+              type: string
+            connectorId:
+              type: string
+              nullable: true
+            connectorName:
+              type: string
+            createdAtTimestamp:
+              type: number
+            updatedAtTimestamp:
+              type: number
+            version:
+              type: integer
+            indexingStatus:
+              type: string
+            extractionStatus:
+              type: string
+            isDeleted:
+              type: boolean
+            isArchived:
+              type: boolean
+            isVLMOcrProcessed:
+              type: boolean
+            isDirty:
+              type: boolean
+            isLatestVersion:
+              type: boolean
+            previewRenderable:
+              type: boolean
+              nullable: true
+            hideWeburl:
+              type: boolean
+            isDependentNode:
+              type: boolean
+            isInternal:
+              type: boolean
+            isShared:
+              type: boolean
+              nullable: true
+            webUrl:
+              type: string
+              nullable: true
+            mimeType:
+              type: string
+              nullable: true
+            externalGroupId:
+              type: string
+              nullable: true
+            externalParentId:
+              type: string
+              nullable: true
+            externalRootGroupId:
+              type: string
+              nullable: true
+            externalRevisionId:
+              type: string
+              nullable: true
+            recordGroupId:
+              type: string
+              nullable: true
+            virtualRecordId:
+              type: string
+              nullable: true
+            md5Checksum:
+              type: string
+              nullable: true
+            reason:
+              type: string
+              nullable: true
+            summaryDocumentId:
+              type: string
+              nullable: true
+            deletedByUserId:
+              type: string
+              nullable: true
+            parentNodeId:
+              type: string
+              nullable: true
+            lastSyncTimestamp:
+              type: number
+              nullable: true
+            sourceCreatedAtTimestamp:
+              type: number
+              nullable: true
+            sourceLastModifiedTimestamp:
+              type: number
+              nullable: true
+            lastExtractionTimestamp:
+              type: number
+              nullable: true
+            lastIndexTimestamp:
+              type: number
+              nullable: true
+            sizeInBytes:
+              type: number
+              nullable: true
+            fileRecord:
+              type: object
+              nullable: true
+              description: File-specific metadata (passthrough)
+            mailRecord:
+              type: object
+              nullable: true
+              description: Email-specific metadata (passthrough)
+            ticketRecord:
+              type: object
+              nullable: true
+              description: Ticket-specific metadata (passthrough)
+          required: [id, _id, recordName, recordType, origin, orgId, externalRecordId, connectorId, createdAtTimestamp, updatedAtTimestamp, version, indexingStatus, isDeleted, isArchived, fileRecord, mailRecord, ticketRecord]
+        knowledgeBase:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
+            orgId:
+              type: string
+              nullable: true
+          required: [id, name]
+        folder:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              nullable: true
+          required: [id, name]
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            departments:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+            categories:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+            subcategories1:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+            subcategories2:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+            subcategories3:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+            topics:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+            languages:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                required: [id, name]
+          required: [departments, categories, subcategories1, subcategories2, subcategories3, topics, languages]
+        permissions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+              relationship:
+                type: string
+              accessType:
+                type: string
+            required: [id, name, type, relationship, accessType]
+      required: [record, knowledgeBase, folder, metadata, permissions]
+
+    # PUT /knowledgeBase/record/:recordId - updateRecordResponseSchema
+    KBRecordUpdateResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+        record:
+          type: object
+          additionalProperties: false
+          properties:
+            _key:
+              type: string
+            _id:
+              type: string
+            _rev:
+              type: string
+            recordName:
+              type: string
+            recordType:
+              type: string
+            origin:
+              type: string
+            orgId:
+              type: string
+            externalRecordId:
+              type: string
+            connectorId:
+              type: string
+              nullable: true
+            connectorName:
+              type: string
+            createdAtTimestamp:
+              type: number
+            updatedAtTimestamp:
+              type: number
+            version:
+              type: integer
+            indexingStatus:
+              type: string
+            extractionStatus:
+              type: string
+            isDeleted:
+              type: boolean
+            isArchived:
+              type: boolean
+            isVLMOcrProcessed:
+              type: boolean
+            isDirty:
+              type: boolean
+            isLatestVersion:
+              type: boolean
+            previewRenderable:
+              type: boolean
+              nullable: true
+            hideWeburl:
+              type: boolean
+            isDependentNode:
+              type: boolean
+            isInternal:
+              type: boolean
+            isShared:
+              type: boolean
+              nullable: true
+            webUrl:
+              type: string
+              nullable: true
+            mimeType:
+              type: string
+              nullable: true
+            externalGroupId:
+              type: string
+              nullable: true
+            externalParentId:
+              type: string
+              nullable: true
+            externalRootGroupId:
+              type: string
+              nullable: true
+            externalRevisionId:
+              type: string
+              nullable: true
+            recordGroupId:
+              type: string
+              nullable: true
+            virtualRecordId:
+              type: string
+              nullable: true
+            md5Checksum:
+              type: string
+              nullable: true
+            reason:
+              type: string
+              nullable: true
+            summaryDocumentId:
+              type: string
+              nullable: true
+            deletedByUserId:
+              type: string
+              nullable: true
+            parentNodeId:
+              type: string
+              nullable: true
+            lastSyncTimestamp:
+              type: number
+              nullable: true
+            sourceCreatedAtTimestamp:
+              type: number
+              nullable: true
+            sourceLastModifiedTimestamp:
+              type: number
+              nullable: true
+            lastExtractionTimestamp:
+              type: number
+              nullable: true
+            lastIndexTimestamp:
+              type: number
+              nullable: true
+            sizeInBytes:
+              type: number
+              nullable: true
+          required:
+            - _key
+            - _id
+            - _rev
+            - recordName
+            - recordType
+            - origin
+            - orgId
+            - externalRecordId
+            - connectorId
+            - createdAtTimestamp
+            - updatedAtTimestamp
+            - version
+            - indexingStatus
+            - isDeleted
+            - isArchived
+            - webUrl
+            - mimeType
+            - externalGroupId
+            - externalParentId
+            - externalRootGroupId
+            - externalRevisionId
+            - recordGroupId
+            - virtualRecordId
+            - md5Checksum
+            - reason
+            - summaryDocumentId
+            - deletedByUserId
+            - parentNodeId
+            - lastSyncTimestamp
+            - sourceCreatedAtTimestamp
+            - sourceLastModifiedTimestamp
+            - lastExtractionTimestamp
+            - lastIndexTimestamp
+            - sizeInBytes
+        fileUploaded:
+          type: boolean
+        meta:
+          type: object
+          additionalProperties: false
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+          required: [requestId, timestamp]
+      required: [message, record, fileUploaded, meta]
+
+    # DELETE /knowledgeBase/record/:recordId - deleteRecordResponseSchema
+    KBRecordDeleteResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        recordId:
+          type: string
+        connector:
+          type: string
+          nullable: true
+        timestamp:
+          nullable: true
+          description: Can be a number or string
+      required: [success, message, recordId, connector, timestamp]
+
+    # POST /knowledgeBase/reindex/record/:recordId - reindexRecordResponseSchema
+    KBReindexRecordResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        recordId:
+          type: string
+        recordName:
+          type: string
+        connector:
+          type: string
+        eventPublished:
+          type: boolean
+        userRole:
+          type: string
+        depth:
+          type: integer
+          minimum: -1
+          maximum: 100
+      required: [success, message, recordId, recordName, connector, eventPublished, userRole, depth]
+
+    # POST /knowledgeBase/reindex/record-group/:recordGroupId - reindexRecordGroupResponseSchema
+    KBReindexRecordGroupResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        recordGroupId:
+          type: string
+        depth:
+          type: integer
+          minimum: -1
+          maximum: 100
+        connector:
+          type: string
+        eventPublished:
+          type: boolean
+      required: [success, message, recordGroupId, depth, connector, eventPublished]
+
+    # Indexing status counts used in connector stats
+    ConnectorStatsIndexingStatusCounts:
+      type: object
+      additionalProperties: false
+      properties:
+        NOT_STARTED:
+          type: integer
+        PAUSED:
+          type: integer
+        IN_PROGRESS:
+          type: integer
+        COMPLETED:
+          type: integer
+        FAILED:
+          type: integer
+        FILE_TYPE_NOT_SUPPORTED:
+          type: integer
+        AUTO_INDEX_OFF:
+          type: integer
+        EMPTY:
+          type: integer
+        ENABLE_MULTIMODAL_MODELS:
+          type: integer
+        QUEUED:
+          type: integer
+      required: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
+
+    # GET /knowledgeBase/stats/:connectorId - getConnectorStatsResponseSchema
+    KBConnectorStatsResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          additionalProperties: false
+          properties:
+            orgId:
+              type: string
+            connectorId:
+              type: string
+            origin:
+              type: string
+              enum: [CONNECTOR]
+            stats:
+              type: object
+              additionalProperties: false
+              properties:
+                total:
+                  type: integer
+                indexingStatus:
+                  $ref: '#/components/schemas/ConnectorStatsIndexingStatusCounts'
+              required: [total, indexingStatus]
+            byRecordType:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  recordType:
+                    type: string
+                  total:
+                    type: integer
+                  indexingStatus:
+                    $ref: '#/components/schemas/ConnectorStatsIndexingStatusCounts'
+                required: [recordType, total, indexingStatus]
+          required: [orgId, connectorId, origin, stats, byRecordType]
+      required: [success, data]
+
+    # POST /knowledgeBase/reindex-failed/connector - reindexFailedRecordsResponseSchema
+    KBReindexFailedResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        reindexResponse:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+          required: [success]
+      required: [reindexResponse]
+
+    # POST /knowledgeBase/resync/connector - resyncConnectorRecordsResponseSchema
+    KBResyncConnectorResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        resyncConnectorResponse:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+          required: [success]
+      required: [resyncConnectorResponse]
+
+    # GET /knowledgeBase/limits - getKbUploadLimitsResponseSchema
+    KBUploadLimitsResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        maxFilesPerRequest:
+          type: integer
+        maxFileSizeBytes:
+          type: integer
+      required: [maxFilesPerRequest, maxFileSizeBytes]
+
+    # GET /knowledgeBase/knowledge-hub/nodes - getKnowledgeHubNodesResponseSchema
     KnowledgeHubNodesResponse:
       type: object
+      additionalProperties: false
       description: Response for Knowledge Hub nodes API
       properties:
         success:
@@ -2390,208 +3687,36 @@ components:
         id:
           type: string
           nullable: true
-          description: Current parent node ID (null for root)
         currentNode:
-          type: object
           nullable: true
-          properties:
-            id:
-              type: string
-            name:
-              type: string
-            nodeType:
-              type: string
-            subType:
-              type: string
-              nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KHCurrentNode'
         parentNode:
-          type: object
           nullable: true
-          properties:
-            id:
-              type: string
-            name:
-              type: string
-            nodeType:
-              type: string
-            subType:
-              type: string
-              nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KHCurrentNode'
         items:
           type: array
           items:
             $ref: '#/components/schemas/KnowledgeHubNode'
         pagination:
-          type: object
-          nullable: true
-          properties:
-            page:
-              type: integer
-            limit:
-              type: integer
-            totalItems:
-              type: integer
-            totalPages:
-              type: integer
-            hasNext:
-              type: boolean
-            hasPrev:
-              type: boolean
+          $ref: '#/components/schemas/KHPagination'
         filters:
-          type: object
-          nullable: true
-          properties:
-            applied:
-              type: object
-              properties:
-                q:
-                  type: string
-                  nullable: true
-                nodeTypes:
-                  type: array
-                  items:
-                    type: string
-                  nullable: true
-                recordTypes:
-                  type: array
-                  items:
-                    type: string
-                  nullable: true
-                origins:
-                  type: array
-                  items:
-                    type: string
-                  nullable: true
-                connectorIds:
-                  type: array
-                  items:
-                    type: string
-                  nullable: true
-                indexingStatus:
-                  type: array
-                  items:
-                    type: string
-                  nullable: true
-                createdAt:
-                  type: object
-                  nullable: true
-                updatedAt:
-                  type: object
-                  nullable: true
-                size:
-                  type: object
-                  nullable: true
-                sortBy:
-                  type: string
-                sortOrder:
-                  type: string
-            available:
-              type: object
-              nullable: true
-              properties:
-                nodeTypes:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
-                recordTypes:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
-                origins:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
-                connectors:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
-                indexingStatus:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
-                sortBy:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
-                sortOrder:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/FilterOption'
+          $ref: '#/components/schemas/KHFilters'
         breadcrumbs:
           type: array
           nullable: true
           items:
-            type: object
-            properties:
-              id:
-                type: string
-              name:
-                type: string
-              nodeType:
-                type: string
-              subType:
-                type: string
-                nullable: true
+            $ref: '#/components/schemas/KHBreadcrumbItem'
         counts:
-          type: object
           nullable: true
-          properties:
-            items:
-              type: array
-              items:
-                type: object
-                properties:
-                  label:
-                    type: string
-                  count:
-                    type: integer
-            total:
-              type: integer
+          allOf:
+            - $ref: '#/components/schemas/KHCounts'
         permissions:
-          type: object
           nullable: true
-          properties:
-            role:
-              type: string
-            canUpload:
-              type: boolean
-            canCreateFolders:
-              type: boolean
-            canEdit:
-              type: boolean
-            canDelete:
-              type: boolean
-            canManagePermissions:
-              type: boolean
-
-    KBPermission:
-      type: object
-      properties:
-        id:
-          type: string
-          description: Permission entry ID
-        userId:
-          type: string
-          description: User ID
-        email:
-          type: string
-          description: User email
-        name:
-          type: string
-          description: User display name
-        role:
-          type: string
-          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
-        type:
-          type: string
-          enum: [USER, TEAM]
-          description: Whether permission is for a user or team
-        createdAtTimestamp:
-          type: integer
-          format: int64
-        updatedAtTimestamp:
-          type: integer
-          format: int64
+          allOf:
+            - $ref: '#/components/schemas/KHPermissions'
+      required: [success, error, id, currentNode, parentNode, items, pagination, filters, breadcrumbs, counts, permissions]
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     AppType:
@@ -10444,7 +11569,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/KBCreateResponse'
         '400':
           description: |
             Invalid request:<br>
@@ -10529,41 +11654,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  knowledgeBases:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KnowledgeBase'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                        description: Current page number
-                      limit:
-                        type: integer
-                        description: Items per page
-                      totalCount:
-                        type: integer
-                        description: Total number of items
-                      totalPages:
-                        type: integer
-                        description: Total number of pages
-                      hasNext:
-                        type: boolean
-                        description: Whether there is a next page
-                      hasPrev:
-                        type: boolean
-                        description: Whether there is a previous page
-                  filters:
-                    type: object
-                    description: Applied and available filters
-                    properties:
-                      applied:
-                        type: object
-                      available:
-                        type: object
+                $ref: '#/components/schemas/KBListResponse'
         '400':
           description: Invalid query parameters
         '401':
@@ -10598,7 +11689,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/KBGetResponse'
         '401':
           description: Unauthorized - Valid bearer token required
         '403':
@@ -10649,7 +11740,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/KBSuccessResponse'
         '400':
           description: Invalid request - Name validation failed
         '401':
@@ -10691,14 +11782,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Knowledge base deleted successfully"
+                $ref: '#/components/schemas/KBSuccessResponse'
         '401':
           description: Unauthorized - Valid bearer token required
         '403':
@@ -10707,301 +11791,15 @@ paths:
           description: Knowledge base not found
 
   # -------------------- Records Endpoints --------------------
-  /knowledgeBase/records:
-    get:
-      tags:
-        - Records
-      summary: Get all records across knowledge bases
-      description: |
-        Retrieve records from all knowledge bases accessible to the user.<br><br>
-        <b>Overview:</b><br>
-        Search and filter records across your entire organization. Useful for global search, reporting, and cross-KB content discovery.<br><br>
-        <b>Filtering Options:</b><br>
-        <ul>
-        <li><b>search:</b> Full-text search in record names</li>
-        <li><b>recordTypes:</b> FILE, WEBPAGE, EMAIL, MESSAGE, TICKET, etc.</li>
-        <li><b>origins:</b> UPLOAD or CONNECTOR</li>
-        <li><b>connectors:</b> Filter by connector source</li>
-        <li><b>indexingStatus:</b> COMPLETED, FAILED, IN_PROGRESS, etc.</li>
-        <li><b>dateFrom/dateTo:</b> Filter by creation date range</li>
-        </ul>
-        <b>Response Includes:</b><br>
-        <ul>
-        <li>Paginated record list</li>
-        <li>Applied and available filter counts</li>
-        <li>Pagination metadata</li>
-        </ul>
-      operationId: getAllRecords
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: search
-          in: query
-          description: Search query (max 1000 chars)
-          schema:
-            type: string
-            maxLength: 1000
-        - name: recordTypes
-          in: query
-          description: Filter by record types (comma-separated)
-          schema:
-            type: string
-            example: "FILE,WEBPAGE,EMAIL"
-        - name: origins
-          in: query
-          description: Filter by origin (comma-separated)
-          schema:
-            type: string
-            enum: [UPLOAD, CONNECTOR]
-        - name: connectors
-          in: query
-          description: Filter by connector names (comma-separated)
-          schema:
-            type: string
-            example: "GOOGLE_DRIVE,ONEDRIVE"
-        - name: indexingStatus
-          in: query
-          description: Filter by indexing status (comma-separated)
-          schema:
-            type: string
-            example: "COMPLETED,FAILED"
-        - name: dateFrom
-          in: query
-          description: Start date filter (Unix timestamp ms)
-          schema:
-            type: integer
-            format: int64
-        - name: dateTo
-          in: query
-          description: End date filter (Unix timestamp ms)
-          schema:
-            type: integer
-            format: int64
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RecordsResponse'
-        '401':
-          description: Unauthorized
-
-  /knowledgeBase/{kbId}/records:
-    get:
-      tags:
-        - Records
-      summary: Get records for a knowledge base
-      description: |
-        Retrieve a paginated list of records within a specific knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Returns all records (documents, files, content) stored in the specified KB, with powerful filtering and sorting capabilities.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li><b>search:</b> Search by record name (partial match, max 1000 chars)</li>
-        <li><b>recordTypes:</b> FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET</li>
-        <li><b>origins:</b> UPLOAD (manual uploads) or CONNECTOR (synced)</li>
-        <li><b>indexingStatus:</b> Filter by processing state</li>
-        <li><b>dateFrom/dateTo:</b> Creation date range (Unix timestamps)</li>
-        </ul>
-        <b>Sorting:</b><br>
-        Default sorts by <code>createdAtTimestamp</code> descending (newest first).
-      operationId: getKBRecords
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          description: Knowledge base ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: search
-          in: query
-          description: Search query for record names
-          schema:
-            type: string
-            maxLength: 1000
-        - name: recordTypes
-          in: query
-          description: Filter by record types (comma-separated)
-          schema:
-            type: string
-        - name: origins
-          in: query
-          description: Filter by origin
-          schema:
-            type: string
-        - name: indexingStatus
-          in: query
-          description: Filter by indexing status
-          schema:
-            type: string
-        - name: dateFrom
-          in: query
-          description: Start date filter (Unix timestamp)
-          schema:
-            type: integer
-            format: int64
-        - name: dateTo
-          in: query
-          description: End date filter (Unix timestamp)
-          schema:
-            type: integer
-            format: int64
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Successful operation
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  container:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      type:
-                        type: string
-                      webUrl:
-                        type: string
-                      recordGroupId:
-                        type: string
-                  folders:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Folder'
-                  records:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Record'
-                  level:
-                    type: integer
-                  totalCount:
-                    type: integer
-                  counts:
-                    type: object
-                    properties:
-                      folders:
-                        type: integer
-                      records:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalFolders:
-                        type: integer
-                      totalRecords:
-                        type: integer
-                  availableFilters:
-                    type: object
-                  paginationMode:
-                    type: string
-                  userPermission:
-                    type: object
-                    properties:
-                      role:
-                        type: string
-                      canUpload:
-                        type: boolean
-                      canCreateFolders:
-                        type: boolean
-                      canEdit:
-                        type: boolean
-                      canDelete:
-                        type: boolean
-                      canManagePermissions:
-                        type: boolean
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filters:
-                    type: object
-                    description: Applied and available filters
-        '401':
-          description: Unauthorized
-        '403':
-          description: No access to this knowledge base
-        '404':
-          description: Knowledge base not found
-
   /knowledgeBase/{kbId}/children:
     get:
       tags:
         - Records
-      summary: Get KB children (alias for records)
+      summary: Get KB children (folders and records)
       description: |
         Retrieve a paginated list of children (folders and records) within a specific knowledge base.<br><br>
         <b>Overview:</b><br>
-        This is an alias endpoint for <code>/knowledgeBase/{kbId}/records</code>. It returns all direct children of the KB root, including both folders and records.<br><br>
+        Returns all direct children of the KB root, including both folders and records.<br><br>
         <b>Filtering:</b><br>
         <ul>
         <li><b>search:</b> Search by record name (partial match, max 1000 chars)</li>
@@ -11086,87 +11884,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  container:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      type:
-                        type: string
-                      webUrl:
-                        type: string
-                      recordGroupId:
-                        type: string
-                  folders:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Folder'
-                  records:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Record'
-                  level:
-                    type: integer
-                  totalCount:
-                    type: integer
-                  counts:
-                    type: object
-                    properties:
-                      folders:
-                        type: integer
-                      records:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalFolders:
-                        type: integer
-                      totalRecords:
-                        type: integer
-                  availableFilters:
-                    type: object
-                  paginationMode:
-                    type: string
-                  userPermission:
-                    type: object
-                    properties:
-                      role:
-                        type: string
-                      canUpload:
-                        type: boolean
-                      canCreateFolders:
-                        type: boolean
-                      canEdit:
-                        type: boolean
-                      canDelete:
-                        type: boolean
-                      canManagePermissions:
-                        type: boolean
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filters:
-                    type: object
-                    description: Applied and available filters
+                $ref: '#/components/schemas/KBChildrenResponse'
         '401':
           description: Unauthorized
         '403':
@@ -11208,56 +11926,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  record:
-                    $ref: '#/components/schemas/Record'
-                  knowledgeBase:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      orgId:
-                        type: string
-                  folder:
-                    type: object
-                    nullable: true
-                  metadata:
-                    type: object
-                    properties:
-                      departments:
-                        type: array
-                        items:
-                          type: object
-                      categories:
-                        type: array
-                        items:
-                          type: object
-                      topics:
-                        type: array
-                        items:
-                          type: object
-                      languages:
-                        type: array
-                        items:
-                          type: object
-                  permissions:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        type:
-                          type: string
-                        relationship:
-                          type: string
-                        accessType:
-                          type: string
+                $ref: '#/components/schemas/KBRecordGetResponse'
         '401':
           description: Unauthorized
         '404':
@@ -11311,14 +11980,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  record:
-                    $ref: '#/components/schemas/Record'
+                $ref: '#/components/schemas/KBRecordUpdateResponse'
         '400':
           description: Invalid request
         '401':
@@ -11356,6 +12018,10 @@ paths:
       responses:
         '200':
           description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBRecordDeleteResponse'
         '401':
           description: Unauthorized
         '403':
@@ -11463,7 +12129,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/KBFolderCreateResponse'
         '400':
           description: Invalid folder name
         '401':
@@ -11474,71 +12140,6 @@ paths:
           description: Knowledge base not found
 
   /knowledgeBase/{kbId}/folder/{folderId}:
-    get:
-      tags:
-        - Folders
-      summary: Get folder contents
-      description: |
-        Retrieve the contents of a folder including subfolders and records.<br><br>
-        <b>Overview:</b><br>
-        Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
-        <b>Navigation:</b><br>
-        Use this endpoint to browse folder hierarchies. Response includes folder metadata and child items.
-      operationId: getFolderContents
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          description: Knowledge base ID
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Folder ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 20
-            maximum: 100
-        - name: search
-          in: query
-          schema:
-            type: string
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Folder contents retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RecordsResponse'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Folder or knowledge base not found
-
     put:
       tags:
         - Folders
@@ -11581,7 +12182,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/KBSuccessResponse'
         '400':
           description: Invalid folder name
         '401':
@@ -11619,6 +12220,10 @@ paths:
       responses:
         '200':
           description: Folder deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBSuccessResponse'
         '401':
           description: Unauthorized
         '403':
@@ -11630,11 +12235,11 @@ paths:
     get:
       tags:
         - Folders
-      summary: Get folder children (alias for folder contents)
+      summary: Get folder children
       description: |
         Retrieve the children (subfolders and records) of a folder.<br><br>
         <b>Overview:</b><br>
-        This is an alias endpoint for <code>/knowledgeBase/{kbId}/folder/{folderId}</code>. Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
+        Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
         <b>Navigation:</b><br>
         Use this endpoint to browse folder hierarchies. Response includes folder metadata and child items.
       operationId: getFolderChildren
@@ -11686,7 +12291,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordsResponse'
+                $ref: '#/components/schemas/KBFolderChildrenResponse'
         '401':
           description: Unauthorized
         '404':
@@ -11738,7 +12343,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/KBFolderCreateResponse'
         '400':
           description: Invalid folder name
         '401':
@@ -11815,7 +12420,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UploadResult'
+                $ref: '#/components/schemas/KBUploadResponse'
         '400':
           description: Invalid request - Check file types and sizes
         '401':
@@ -11878,7 +12483,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UploadResult'
+                $ref: '#/components/schemas/KBUploadResponse'
         '400':
           description: Invalid request
         '401':
@@ -11907,16 +12512,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  maxFilesPerRequest:
-                    type: integer
-                    example: 1000
-                    description: Maximum number of files per upload request
-                  maxFileSizeBytes:
-                    type: integer
-                    example: 31457280
-                    description: Maximum file size in bytes (default 30MB)
+                $ref: '#/components/schemas/KBUploadLimitsResponse'
         '401':
           description: Unauthorized
 
@@ -11958,6 +12554,10 @@ paths:
       responses:
         '200':
           description: Reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBReindexRecordResponse'
         '401':
           description: Unauthorized
         '404':
@@ -11998,6 +12598,10 @@ paths:
       responses:
         '200':
           description: Reindexing triggered for all records in group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBReindexRecordGroupResponse'
         '401':
           description: Unauthorized
         '404':
@@ -12038,6 +12642,10 @@ paths:
       responses:
         '200':
           description: Resync initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBResyncConnectorResponse'
         '400':
           description: Invalid connector parameters
         '401':
@@ -12067,7 +12675,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConnectorStats'
+                $ref: '#/components/schemas/KBConnectorStatsResponse'
         '401':
           description: Unauthorized
         '404':
@@ -12100,11 +12708,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Reindex of failed records triggered"
+                $ref: '#/components/schemas/KBReindexFailedResponse'
         '401':
           description: Unauthorized
         '404':
@@ -12146,10 +12750,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/KBSuccessResponse'
         '401':
           description: Unauthorized
         '404':
@@ -12209,22 +12810,12 @@ paths:
               required:
                 - role
       responses:
-        '200':
+        '201':
           description: Permissions granted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  kbId:
-                    type: string
-                  permissionResult:
-                    type: object
-                    properties:
-                      grantedCount:
-                        type: integer
-                      updatedCount:
-                        type: integer
+                $ref: '#/components/schemas/KBPermissionCreateResponse'
         '400':
           description: Invalid request
         '401':
@@ -12255,16 +12846,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  kbId:
-                    type: string
-                  permissions:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KBPermission'
-                  totalCount:
-                    type: integer
+                $ref: '#/components/schemas/KBPermissionsListResponse'
         '401':
           description: Unauthorized
         '403':
@@ -12313,6 +12895,10 @@ paths:
       responses:
         '200':
           description: Permissions updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBPermissionUpdateResponse'
         '400':
           description: Invalid request
         '401':
@@ -12356,6 +12942,10 @@ paths:
       responses:
         '200':
           description: Permissions removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBPermissionRemoveResponse'
         '400':
           description: Invalid request or cannot remove last owner
         '401':

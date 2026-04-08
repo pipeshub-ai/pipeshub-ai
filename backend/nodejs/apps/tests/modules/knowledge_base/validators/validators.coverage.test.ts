@@ -1,25 +1,24 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import {
-  getRecordByIdSchema,
+  recordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
   reindexFailedRecordSchema,
-  resyncConnectorSchema,
-  getConnectorStatsSchema,
+  resyncSchema,
+  connectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllRecordsSchema,
-  getAllKBRecordsSchema,
-  createKBSchema,
-  getKBSchema,
-  listKnowledgeBasesSchema,
-  updateKBSchema,
-  deleteKBSchema,
+  allRecordsSchema,
+  createSchema,
+  kbIdParamSchema,
+  listSchema,
+  updateSchema,
+  deleteSchema,
   createFolderSchema,
-  kbPermissionSchema,
+  permissionBodySchema,
   getFolderSchema,
   updateFolderSchema,
   deleteFolderSchema,
@@ -27,7 +26,7 @@ import {
   updatePermissionsSchema,
   deletePermissionsSchema,
   moveRecordSchema,
-} from '../../../../src/modules/knowledge_base/validators/validators'
+} from '../../../../src/modules/knowledge_base/schemas/knowledge_base'
 
 describe('Knowledge Base Validators - coverage', () => {
   // -----------------------------------------------------------------------
@@ -154,179 +153,18 @@ describe('Knowledge Base Validators - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // getAllRecordsSchema - search validation
+  // allRecordsSchema
   // -----------------------------------------------------------------------
-  describe('getAllRecordsSchema - search XSS validation', () => {
-    it('should reject script tags in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '<script>alert(1)</script>' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject event handlers in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'onerror="alert(1)"' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject javascript: protocol in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'javascript:alert(1)' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject format specifiers in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'test %s injection' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject closing script tags', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '</script >' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should accept safe search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'hello world' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should trim and transform search value', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '  hello  ' },
-      })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.search).to.equal('hello')
-      }
-    })
-
-    it('should transform empty search to undefined', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '   ' },
-      })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.search).to.be.undefined
-      }
-    })
-
-    it('should parse comma-separated recordTypes', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { recordTypes: 'FILE,WEBPAGE,EMAIL' },
-      })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.recordTypes).to.deep.equal(['FILE', 'WEBPAGE', 'EMAIL'])
-      }
-    })
-
-    it('should parse comma-separated origins', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { origins: 'UPLOAD,CONNECTOR' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should parse comma-separated connectors', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { connectors: 'google,slack' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should parse comma-separated indexingStatus', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { indexingStatus: 'QUEUED,COMPLETED' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should parse comma-separated permissions', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { permissions: 'OWNER,READER' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should validate dateFrom as positive integer', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { dateFrom: '1700000000' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid dateFrom', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { dateFrom: 'abc' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject invalid dateTo', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { dateTo: 'abc' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should validate allowed sortBy fields', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { sortBy: 'createdAtTimestamp' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid sortBy field', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { sortBy: 'invalidField' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid sortOrder', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { sortOrder: 'asc' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should accept source filter', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { source: 'local' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject unknown query params (strict mode)', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { unknownParam: 'value' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllKBRecordsSchema
-  // -----------------------------------------------------------------------
-  describe('getAllKBRecordsSchema', () => {
+  describe('allRecordsSchema', () => {
     it('should accept valid query params', () => {
-      const result = getAllKBRecordsSchema.safeParse({
+      const result = allRecordsSchema.safeParse({
         query: { page: '1', limit: '20', search: 'test' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject script tags in search', () => {
-      const result = getAllKBRecordsSchema.safeParse({
+      const result = allRecordsSchema.safeParse({
         query: { search: '<script>xss</script>' },
       })
       expect(result.success).to.be.false
@@ -334,11 +172,11 @@ describe('Knowledge Base Validators - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // kbPermissionSchema
+  // permissionBodySchema
   // -----------------------------------------------------------------------
-  describe('kbPermissionSchema', () => {
+  describe('permissionBodySchema', () => {
     it('should accept valid user permission', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: ['user1'], role: 'READER' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -346,7 +184,7 @@ describe('Knowledge Base Validators - coverage', () => {
     })
 
     it('should accept valid team permission', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { teamIds: ['team1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -354,7 +192,7 @@ describe('Knowledge Base Validators - coverage', () => {
     })
 
     it('should reject when no userIds or teamIds', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { role: 'READER' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -362,7 +200,7 @@ describe('Knowledge Base Validators - coverage', () => {
     })
 
     it('should reject when userIds provided without role', () => {
-      const result = kbPermissionSchema.safeParse({
+      const result = permissionBodySchema.safeParse({
         body: { userIds: ['user1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
@@ -392,25 +230,25 @@ describe('Knowledge Base Validators - coverage', () => {
   })
 
   // -----------------------------------------------------------------------
-  // listKnowledgeBasesSchema
+  // listSchema
   // -----------------------------------------------------------------------
-  describe('listKnowledgeBasesSchema', () => {
+  describe('listSchema', () => {
     it('should accept valid query params', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { page: '1', limit: '20', sortBy: 'name', sortOrder: 'asc' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject unknown query params (strict mode)', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { unknownParam: 'value' },
       })
       expect(result.success).to.be.false
     })
 
     it('should accept search with permissions filter', () => {
-      const result = listKnowledgeBasesSchema.safeParse({
+      const result = listSchema.safeParse({
         query: { permissions: 'OWNER,READER' },
       })
       expect(result.success).to.be.true
@@ -442,8 +280,8 @@ describe('Knowledge Base Validators - coverage', () => {
   // Simple schemas
   // -----------------------------------------------------------------------
   describe('simple schemas', () => {
-    it('getRecordByIdSchema should accept valid input', () => {
-      const result = getRecordByIdSchema.safeParse({
+    it('recordByIdSchema should accept valid input', () => {
+      const result = recordByIdSchema.safeParse({
         params: { recordId: 'rec-1' },
         query: { convertTo: 'pdf' },
       })
@@ -473,22 +311,22 @@ describe('Knowledge Base Validators - coverage', () => {
       expect(result.success).to.be.true
     })
 
-    it('resyncConnectorSchema should accept valid input', () => {
-      const result = resyncConnectorSchema.safeParse({
+    it('resyncSchema should accept valid input', () => {
+      const result = resyncSchema.safeParse({
         body: { connectorName: 'google', connectorId: 'c-1', fullSync: true },
       })
       expect(result.success).to.be.true
     })
 
-    it('createKBSchema should accept valid input', () => {
-      const result = createKBSchema.safeParse({
+    it('createSchema should accept valid input', () => {
+      const result = createSchema.safeParse({
         body: { kbName: 'My KB' },
       })
       expect(result.success).to.be.true
     })
 
-    it('updateKBSchema should accept valid input', () => {
-      const result = updateKBSchema.safeParse({
+    it('updateSchema should accept valid input', () => {
+      const result = updateSchema.safeParse({
         body: { kbName: 'Updated KB' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
