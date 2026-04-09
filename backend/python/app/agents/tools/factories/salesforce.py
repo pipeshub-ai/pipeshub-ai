@@ -2,9 +2,12 @@
 Client factories for Salesforce.
 """
 
+from logging import Logger
 from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
+from app.config.configuration_service import ConfigurationService
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.salesforce.salesforce import SalesforceClient
 
 
@@ -13,10 +16,10 @@ class SalesforceClientFactory(ClientFactory):
 
     async def create_client(
         self,
-        config_service,
-        logger,
+        config_service: ConfigurationService,
+        logger: Logger,
         toolset_config: Dict[str, Any],
-        state=None
+        state: ChatState | None = None,
     ) -> SalesforceClient:
         """
         Create Salesforce client instance from toolset configuration.

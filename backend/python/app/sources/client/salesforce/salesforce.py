@@ -209,7 +209,7 @@ class SalesforceClient(IClient):
                 )
 
             credentials_config = toolset_config.get("credentials", {}) or {}
-            access_token = str(credentials_config.get("access_token", ""))
+            access_token = credentials_config.get("access_token")
             if not access_token:
                 raise ValueError("Access token required for Salesforce client (OAuth)")
 
@@ -220,7 +220,9 @@ class SalesforceClient(IClient):
                 config_service=config_service,
                 logger=logger,
             )
-            instance_url = str(oauth_config.get("instance_url")).strip()
+            instance_url = oauth_config.get("instance_url")
+            if isinstance(instance_url, str):
+                instance_url = instance_url.strip()
 
             if not instance_url:
                 raise ValueError(

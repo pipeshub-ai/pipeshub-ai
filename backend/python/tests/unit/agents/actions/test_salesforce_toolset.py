@@ -788,8 +788,6 @@ class TestSearchProducts:
         assert "Family = 'Software'" in q
         assert "IsActive = true" not in q
 
-
-class TestSearchProducts2:
     @pytest.mark.asyncio
     async def test_exception(self):
         sf = _build_salesforce()
