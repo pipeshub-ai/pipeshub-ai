@@ -75,7 +75,8 @@ _OBJECTID_RE = re.compile(r"^[a-f\d]{24}$", re.IGNORECASE)
 _DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
-_INTEGRATION_TESTS_ROOT = Path(__file__).resolve().parent.parent
+# integration-tests/response-validation/helper/response_validator.py → repo integration-tests/
+_INTEGRATION_TESTS_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _parse_field(raw: dict[str, object]) -> FieldSchema:
