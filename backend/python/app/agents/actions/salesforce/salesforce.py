@@ -1,7 +1,8 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,54 @@ logger = logging.getLogger(__name__)
 # Default API version used across all tools
 DEFAULT_API_VERSION = "59.0"
 
+
+# ---------------------------------------------------------------------------
+# Chatter message-segment models
+# ---------------------------------------------------------------------------
+
+
+class ChatterMarkupType(str, Enum):
+    """Supported Chatter markup types."""
+    BOLD = "Bold"
+    ITALIC = "Italic"
+    PARAGRAPH = "Paragraph"
+    UNORDERED_LIST = "UnorderedList"
+    ORDERED_LIST = "OrderedList"
+    LIST_ITEM = "ListItem"
+
+
+class TextSegment(BaseModel):
+    """A plain-text Chatter segment."""
+    type: Literal["Text"] = "Text"
+    text: str
+
+
+class MarkupBeginSegment(BaseModel):
+    """Opens a markup span (Bold, Italic, Paragraph)."""
+    type: Literal["MarkupBegin"] = "MarkupBegin"
+    markupType: ChatterMarkupType = Field(alias="markupType")
+
+    model_config = {"populate_by_name": True}
+
+
+class MarkupEndSegment(BaseModel):
+    """Closes a markup span (Bold, Italic, Paragraph)."""
+    type: Literal["MarkupEnd"] = "MarkupEnd"
+    markupType: ChatterMarkupType = Field(alias="markupType")
+
+    model_config = {"populate_by_name": True}
+
+
+class HyperlinkSegment(BaseModel):
+    """A hyperlink Chatter segment."""
+    type: Literal["Hyperlink"] = "Hyperlink"
+    url: str
+    text: str
+
+
+ChatterSegment = Union[
+    TextSegment, MarkupBeginSegment, MarkupEndSegment, HyperlinkSegment
+]
 
 # ---------------------------------------------------------------------------
 # Pydantic input schemas
@@ -584,30 +633,51 @@ class Salesforce:
         error = response.error or "Unknown error"
         return False, json.dumps({"error": error})
 
+    @staticmethod
+    def _sanitize_soql_value(value: str) -> str:
+        """Escape characters that are special in SOQL string literals."""
+        value = value.replace("\\", "\\\\")
+        value = value.replace("'", "\\'")
+        return value
+
+    # Regex for valid Salesforce API names (sObject names, field names, etc.)
+    _VALID_API_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*(__[a-zA-Z0-9]+)?$")
+
+    @classmethod
+    def _validate_api_name(cls, name: str) -> str:
+        """Validate that a string is a legitimate Salesforce API name.
+
+        Raises ValueError if the name contains characters that could be used
+        for SOQL injection.
+        """
+        if not cls._VALID_API_NAME_RE.match(name):
+            raise ValueError(f"Invalid Salesforce API name: {name!r}")
+        return name
+
     def _build_soql_conditions(self, conditions: List[str]) -> str:
         """Build a WHERE clause from a list of conditions."""
         if not conditions:
             return ""
         return " WHERE " + " AND ".join(conditions)
 
-    def _markdown_to_chatter_segments(self, text: str) -> List[Dict[str, Any]]:
-        """Convert a small subset of markdown into Salesforce Chatter messageSegments.
+    def _markdown_to_chatter_segments(self, text: str) -> List[ChatterSegment]:
+        """Convert markdown into Salesforce Chatter messageSegments.
 
         Supports:
-        - **bold** / __bold__   → MarkupBegin/MarkupEnd type=Bold
-        - *italic* / _italic_   → MarkupBegin/MarkupEnd type=Italic
-        - [label](url)          → Hyperlink segment
-        - blank line            → Paragraph break
-        - newline               → preserved as text
-
-        Anything that doesn't match falls through as plain Text.
+        - # / ## / ### headings  → Bold text + paragraph break
+        - **bold** / __bold__    → MarkupBegin/MarkupEnd type=Bold
+        - *italic* / _italic_    → MarkupBegin/MarkupEnd type=Italic
+        - [label](url)           → Hyperlink segment
+        - - / * / + bullet lists → UnorderedList + ListItem
+        - 1. / 2. numbered lists → OrderedList + ListItem
+        - --- / *** / ___ hr     → Paragraph break (newline separator)
+        - blank line             → Paragraph break
+        - newline                → preserved as text
         """
         if not text:
-            return [{"type": "Text", "text": ""}]
+            return [TextSegment(text="")]
 
-        segments: List[Dict[str, Any]] = []
-        # Split into paragraphs on blank lines so we can emit Paragraph markup between them.
-        paragraphs = re.split(r"\n\s*\n", text)
+        segments: List[ChatterSegment] = []
 
         # Inline pattern: bold (**x** or __x__), italic (*x* or _x_), link [x](y)
         inline_re = re.compile(
@@ -616,40 +686,119 @@ class Salesforce:
 
         def _emit_text(s: str) -> None:
             if s:
-                segments.append({"type": "Text", "text": s})
+                segments.append(TextSegment(text=s))
 
-        for p_idx, paragraph in enumerate(paragraphs):
-            if p_idx > 0:
-                # Paragraph break between paragraphs
-                segments.append({"type": "MarkupBegin", "markupType": "Paragraph"})
-                segments.append({"type": "MarkupEnd", "markupType": "Paragraph"})
-
+        def _emit_inline(line: str) -> None:
+            """Parse inline markdown (bold, italic, links) within a line."""
             pos = 0
-            for m in inline_re.finditer(paragraph):
-                _emit_text(paragraph[pos:m.start()])
+            for m in inline_re.finditer(line):
+                _emit_text(line[pos:m.start()])
                 bold = m.group(2) or m.group(3)
                 italic = m.group(4) or m.group(5)
                 link_label = m.group(6)
                 link_url = m.group(7)
                 if bold:
-                    segments.append({"type": "MarkupBegin", "markupType": "Bold"})
+                    segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.BOLD))
                     _emit_text(bold)
-                    segments.append({"type": "MarkupEnd", "markupType": "Bold"})
+                    segments.append(MarkupEndSegment(markupType=ChatterMarkupType.BOLD))
                 elif italic:
-                    segments.append({"type": "MarkupBegin", "markupType": "Italic"})
+                    segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.ITALIC))
                     _emit_text(italic)
-                    segments.append({"type": "MarkupEnd", "markupType": "Italic"})
+                    segments.append(MarkupEndSegment(markupType=ChatterMarkupType.ITALIC))
                 elif link_label and link_url:
-                    segments.append({
-                        "type": "Hyperlink",
-                        "url": link_url,
-                        "text": link_label,
-                    })
+                    segments.append(HyperlinkSegment(url=link_url, text=link_label))
                 pos = m.end()
-            _emit_text(paragraph[pos:])
+            _emit_text(line[pos:])
+
+        def _emit_paragraph_break() -> None:
+            segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.PARAGRAPH))
+            segments.append(MarkupEndSegment(markupType=ChatterMarkupType.PARAGRAPH))
+
+        # Regexes for block-level elements
+        heading_re = re.compile(r"^(#{1,6})\s+(.*)")
+        hr_re = re.compile(r"^[-*_]{3,}\s*$")
+        ul_re = re.compile(r"^[-*+]\s+(.*)")
+        ol_re = re.compile(r"^\d+[.)]\s+(.*)")
+
+        lines = text.split("\n")
+        i = 0
+        first_block = True
+
+        while i < len(lines):
+            line = lines[i]
+
+            # Blank line → paragraph break
+            if not line.strip():
+                if not first_block:
+                    _emit_paragraph_break()
+                i += 1
+                continue
+
+            # Horizontal rule → paragraph break (visual separator)
+            if hr_re.match(line):
+                if not first_block:
+                    _emit_paragraph_break()
+                i += 1
+                continue
+
+            # Heading → bold text
+            hm = heading_re.match(line)
+            if hm:
+                if not first_block:
+                    _emit_paragraph_break()
+                first_block = False
+                heading_text = hm.group(2).strip()
+                segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.BOLD))
+                _emit_inline(heading_text)
+                segments.append(MarkupEndSegment(markupType=ChatterMarkupType.BOLD))
+                i += 1
+                continue
+
+            # Unordered list block
+            um = ul_re.match(line)
+            if um:
+                if not first_block:
+                    _emit_paragraph_break()
+                first_block = False
+                segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.UNORDERED_LIST))
+                while i < len(lines):
+                    um = ul_re.match(lines[i])
+                    if not um:
+                        break
+                    segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.LIST_ITEM))
+                    _emit_inline(um.group(1))
+                    segments.append(MarkupEndSegment(markupType=ChatterMarkupType.LIST_ITEM))
+                    i += 1
+                segments.append(MarkupEndSegment(markupType=ChatterMarkupType.UNORDERED_LIST))
+                continue
+
+            # Ordered list block
+            om = ol_re.match(line)
+            if om:
+                if not first_block:
+                    _emit_paragraph_break()
+                first_block = False
+                segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.ORDERED_LIST))
+                while i < len(lines):
+                    om = ol_re.match(lines[i])
+                    if not om:
+                        break
+                    segments.append(MarkupBeginSegment(markupType=ChatterMarkupType.LIST_ITEM))
+                    _emit_inline(om.group(1))
+                    segments.append(MarkupEndSegment(markupType=ChatterMarkupType.LIST_ITEM))
+                    i += 1
+                segments.append(MarkupEndSegment(markupType=ChatterMarkupType.ORDERED_LIST))
+                continue
+
+            # Regular text line
+            if not first_block:
+                _emit_text("\n")
+            first_block = False
+            _emit_inline(line)
+            i += 1
 
         if not segments:
-            segments.append({"type": "Text", "text": text})
+            segments.append(TextSegment(text=text))
         return segments
 
     # ------------------------------------------------------------------
@@ -1013,6 +1162,8 @@ class Salesforce:
             logger.info(
                 "salesforce.list_recent_records called: sobject=%s, limit=%d", sobject, limit
             )
+            sobject = self._validate_api_name(sobject)
+            limit = int(limit)
             query = f"SELECT Id, Name, LastModifiedDate FROM {sobject} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
@@ -1065,9 +1216,9 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{name}%'")
+                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if industry:
-                conditions.append(f"Industry = '{industry}'")
+                conditions.append(f"Industry = '{self._sanitize_soql_value(industry)}'")
             where = self._build_soql_conditions(conditions)
             query = f"SELECT Id, Name, Industry, Phone, Website, Type, BillingCity, BillingState, BillingCountry FROM Account{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             logger.info("salesforce.search_accounts query: %s", query)
@@ -1189,11 +1340,11 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{name}%'")
+                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if email:
-                conditions.append(f"Email LIKE '%{email}%'")
+                conditions.append(f"Email LIKE '%{self._sanitize_soql_value(email)}%'")
             if account_id:
-                conditions.append(f"AccountId = '{account_id}'")
+                conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
             query = f"SELECT Id, FirstName, LastName, Name, Email, Phone, Title, Department, Account.Name FROM Contact{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             logger.info("salesforce.search_contacts query: %s", query)
@@ -1312,11 +1463,11 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{name}%'")
+                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if company:
-                conditions.append(f"Company LIKE '%{company}%'")
+                conditions.append(f"Company LIKE '%{self._sanitize_soql_value(company)}%'")
             if status:
-                conditions.append(f"Status = '{status}'")
+                conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             where = self._build_soql_conditions(conditions)
             query = f"SELECT Id, FirstName, LastName, Name, Company, Email, Phone, Status, LeadSource, Title FROM Lead{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             logger.info("salesforce.search_leads query: %s", query)
@@ -1436,11 +1587,11 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{name}%'")
+                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if stage:
-                conditions.append(f"StageName = '{stage}'")
+                conditions.append(f"StageName = '{self._sanitize_soql_value(stage)}'")
             if account_id:
-                conditions.append(f"AccountId = '{account_id}'")
+                conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
             query = f"SELECT Id, Name, StageName, Amount, CloseDate, Probability, Account.Name, Type FROM Opportunity{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             logger.info("salesforce.search_opportunities query: %s", query)
@@ -1560,13 +1711,13 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if subject:
-                conditions.append(f"Subject LIKE '%{subject}%'")
+                conditions.append(f"Subject LIKE '%{self._sanitize_soql_value(subject)}%'")
             if status:
-                conditions.append(f"Status = '{status}'")
+                conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             if priority:
-                conditions.append(f"Priority = '{priority}'")
+                conditions.append(f"Priority = '{self._sanitize_soql_value(priority)}'")
             if account_id:
-                conditions.append(f"AccountId = '{account_id}'")
+                conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
             query = f"SELECT Id, CaseNumber, Subject, Status, Priority, Origin, Description, Account.Name, Contact.Name FROM Case{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             logger.info("salesforce.search_cases query: %s", query)
@@ -1688,11 +1839,11 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{name}%'")
+                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if product_code:
-                conditions.append(f"ProductCode LIKE '%{product_code}%'")
+                conditions.append(f"ProductCode LIKE '%{self._sanitize_soql_value(product_code)}%'")
             if family:
-                conditions.append(f"Family = '{family}'")
+                conditions.append(f"Family = '{self._sanitize_soql_value(family)}'")
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
@@ -1804,7 +1955,7 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if name:
-                conditions.append(f"Name LIKE '%{name}%'")
+                conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
@@ -1877,7 +2028,7 @@ class Salesforce:
                 effective_pricebook_id = pricebook_id
                 if not effective_pricebook_id:
                     opp_query = (
-                        f"SELECT Pricebook2Id FROM Opportunity WHERE Id = '{opportunity_id}' LIMIT 1"
+                        f"SELECT Pricebook2Id FROM Opportunity WHERE Id = '{self._sanitize_soql_value(opportunity_id)}' LIMIT 1"
                     )
                     opp_resp = await self.client.soql_query(
                         api_version=self.api_version, q=opp_query
@@ -1896,7 +2047,7 @@ class Salesforce:
 
                 pbe_query = (
                     f"SELECT Id, UnitPrice FROM PricebookEntry "
-                    f"WHERE Product2Id = '{product_id}' AND Pricebook2Id = '{effective_pricebook_id}' "
+                    f"WHERE Product2Id = '{self._sanitize_soql_value(product_id)}' AND Pricebook2Id = '{self._sanitize_soql_value(effective_pricebook_id)}' "
                     f"AND IsActive = true LIMIT 1"
                 )
                 logger.info("salesforce.add_product_to_opportunity pbe lookup: %s", pbe_query)
@@ -1989,17 +2140,17 @@ class Salesforce:
         try:
             conditions: List[str] = []
             if subject:
-                conditions.append(f"Subject LIKE '%{subject}%'")
+                conditions.append(f"Subject LIKE '%{self._sanitize_soql_value(subject)}%'")
             if status:
-                conditions.append(f"Status = '{status}'")
+                conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             if priority:
-                conditions.append(f"Priority = '{priority}'")
+                conditions.append(f"Priority = '{self._sanitize_soql_value(priority)}'")
             if owner_id:
-                conditions.append(f"OwnerId = '{owner_id}'")
+                conditions.append(f"OwnerId = '{self._sanitize_soql_value(owner_id)}'")
             if what_id:
-                conditions.append(f"WhatId = '{what_id}'")
+                conditions.append(f"WhatId = '{self._sanitize_soql_value(what_id)}'")
             if who_id:
-                conditions.append(f"WhoId = '{who_id}'")
+                conditions.append(f"WhoId = '{self._sanitize_soql_value(who_id)}'")
             where = self._build_soql_conditions(conditions)
             query = (
                 f"SELECT Id, Subject, Status, Priority, ActivityDate, Description, "
@@ -2175,7 +2326,8 @@ class Salesforce:
                 feed_element_id, is_rich_text,
             )
             segments = (
-                self._markdown_to_chatter_segments(text) if is_rich_text else None
+                [s.model_dump(by_alias=True) for s in self._markdown_to_chatter_segments(text)]
+                if is_rich_text else None
             )
             response = await self.client.feed_elements_capability_comments_items(
                 feed_element_id=feed_element_id,
@@ -2228,7 +2380,8 @@ class Salesforce:
                 record_id, is_rich_text,
             )
             segments = (
-                self._markdown_to_chatter_segments(text) if is_rich_text else None
+                [s.model_dump(by_alias=True) for s in self._markdown_to_chatter_segments(text)]
+                if is_rich_text else None
             )
             response = await self.client.feed_elements_post_and_search(
                 version=self.api_version,

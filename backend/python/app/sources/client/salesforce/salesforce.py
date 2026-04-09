@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.api.routes.toolsets import get_oauth_credentials_for_toolset, get_toolset_by_id
+from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
@@ -165,8 +165,6 @@ class SalesforceClient(IClient):
                 raise ValueError("Access token is required")
             if not instance_url:
                 raise ValueError("Instance URL is required")
-            print("access_token", access_token)
-            print("instance_url", instance_url)
             config = SalesforceConfig(
                 instance_url=instance_url,
                 access_token=access_token,
