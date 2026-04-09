@@ -9820,6 +9820,7 @@ class Neo4jProvider(IGraphDBProvider):
                 record_data.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
                 record_data.setdefault("lastSyncTimestamp", timestamp)
                 record_data.setdefault("isVLMOcrProcessed", False)
+                record_data.setdefault("indexingStatus", "NOT_STARTED")
                 record_data.setdefault("extractionStatus", "NOT_STARTED")
                 record_data.setdefault("isLatestVersion", True)
                 record_data.setdefault("isDirty", False)

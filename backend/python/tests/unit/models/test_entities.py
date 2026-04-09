@@ -60,7 +60,7 @@ class TestRecord:
         assert rec.external_revision_id is None
         assert rec.mime_type == MimeTypes.UNKNOWN.value
         assert rec.inherit_permissions is True
-        assert rec.indexing_status == ProgressStatus.QUEUED.value
+        assert rec.indexing_status == ProgressStatus.NOT_STARTED.value
         assert rec.extraction_status == ProgressStatus.NOT_STARTED.value
         assert rec.reason is None
         assert rec.weburl is None
