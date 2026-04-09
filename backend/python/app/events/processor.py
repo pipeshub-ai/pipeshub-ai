@@ -1939,15 +1939,15 @@ class Processor:
             else:
                 self.logger.error(f"❌ Unknown record type: {record_type}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             
             if not parser:
                 self.logger.error(f"❌ No parser found for {record_type}")
                 await self._mark_record(recordId, ProgressStatus.FAILED)
-                yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             
             # Create a file-like stream from the JSON content
@@ -1958,12 +1958,12 @@ class Processor:
             
             # Parse using the dedicated SQL parser (handles DDL, rows, etc.)
             block_containers = parser.parse_stream(file_stream)
-            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             if not block_containers.block_groups and not block_containers.blocks:
                 self.logger.info(f"No content to index for {record_type}: {recordName}")
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
-                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             
             self.logger.info(f"📊 Created {len(block_containers.block_groups)} block group(s) and {len(block_containers.blocks)} block(s) for {record_type}: {recordName}")
@@ -1987,7 +1987,7 @@ class Processor:
             await pipeline.apply(ctx)
             
             # Signal indexing complete
-            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
             
             self.logger.info(f"✅ {record_type} processing completed successfully for: {recordName} ({len(block_containers.block_groups)} block group(s), {len(block_containers.blocks)} block(s))")
             

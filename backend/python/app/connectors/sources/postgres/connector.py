@@ -275,6 +275,8 @@ class PostgreSQLConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str = ConnectorScope.TEAM.value,
+        created_by: Optional[str] = None,
     ) -> None:
         super().__init__(
             PostgreSQLApp(connector_id),
@@ -283,6 +285,8 @@ class PostgreSQLConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.POSTGRESQL
@@ -388,8 +392,9 @@ class PostgreSQLConnector(BaseConnector):
                     return False
 
             self.database_name = database
-            self.connector_scope = config.get("scope", ConnectorScope.TEAM.value)
-            self.created_by = config.get("created_by")
+            self.scope = config.get("scope", self.scope or ConnectorScope.TEAM.value)
+            self.connector_scope = self.scope
+            self.created_by = config.get("created_by", self.created_by)
 
             pg_config = PostgreSQLConfig(
                 host=host,
@@ -1319,4 +1324,6 @@ class PostgreSQLConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            kwargs.get("scope", ConnectorScope.TEAM.value),
+            kwargs.get("created_by"),
         )
