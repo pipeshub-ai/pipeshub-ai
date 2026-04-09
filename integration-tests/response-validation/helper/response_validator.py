@@ -21,17 +21,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import List, Optional, Union
 
 import yaml
 
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
-
-VALID_TYPES = frozenset({"string", "integer", "number", "boolean", "object", "array", "null"})
-VALID_FORMATS = frozenset({"email", "objectid", "date", "datetime"})
-
 
 @dataclass
 class FieldSchema:
@@ -143,7 +139,7 @@ def load_yaml_schema(file_path: Union[str, Path]) -> ResponseSchema:
         path = _INTEGRATION_TESTS_ROOT / path
 
     with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
+        raw = yaml.safe_load(fh) or {}
 
     name: str = raw.get("name", path.stem)
     description: str = raw.get("description", "")

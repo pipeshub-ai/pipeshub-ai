@@ -23,7 +23,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["helper", "connectors", "connectors.*", "messaging*", "user_management*"]
+include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
