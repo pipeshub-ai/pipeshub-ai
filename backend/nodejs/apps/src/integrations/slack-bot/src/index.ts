@@ -33,6 +33,7 @@ interface CitationData {
       departments: string[];
       categories: string[];
       webUrl?: string;
+      connector?: string;
     };
     chunkIndex?: string | number;
   }
@@ -1504,7 +1505,8 @@ function rewriteInlineRecordCitationsForSlack(
 
     let citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
     const recordType = citation.citationData.metadata.recordType;
-    if (recordType === "FILE") {
+    const connector = citation.citationData.metadata.connector;
+    if (recordType === "FILE" && connector !== "WEB") {
       citationWebUrl = (process.env.FRONTEND_PUBLIC_URL || "http://localhost:3000") + "/record/" + citation.citationData.metadata.recordId;
     }
     if (!citationWebUrl) {
@@ -1675,6 +1677,13 @@ export function removeContinuousDuplicateMarkdownLinks(text: string): string {
   return text.replace(linkPattern, "$1" + " ");
 }
 
+function addSpaceBetweenMarkdownLinks(input: string): string {
+  // Match a markdown link followed immediately by another markdown link
+  const pattern = /(\[[^\]]+\]\([^)]+\))(?=\[[^\]]+\]\([^)]+\))/g;
+
+  // Replace by adding a space after the first link
+  return input.replace(pattern, "$1 ");
+}
 
 async function processSlackMessage(
   typedMessage: SlackMessagePayload,
@@ -2232,6 +2241,7 @@ async function processSlackMessage(
       botResponse.citations,
     );
     answerBody = removeContinuousDuplicateMarkdownLinks(answerBody);
+    answerBody = addSpaceBetweenMarkdownLinks(answerBody);
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
