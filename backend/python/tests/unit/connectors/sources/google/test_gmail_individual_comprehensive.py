@@ -77,6 +77,8 @@ def _make_connector():
             data_store_provider=data_store_provider,
             config_service=config_service,
             connector_id="gmail-comp-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         connector.connector_name = Connectors.GOOGLE_MAIL
         return connector

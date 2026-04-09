@@ -180,6 +180,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_parent_child_edge_to_record(self, record_id):
         return 0
 
+    async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
+        pass
+
 
 class TestDataStoreProvider:
     """Tests for DataStoreProvider base class."""

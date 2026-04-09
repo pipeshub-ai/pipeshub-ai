@@ -12,7 +12,7 @@ The adaptation process:
 """
 
 import copy
-from typing import Dict, Optional
+from typing import Optional
 
 from app.config.constants.arangodb import CollectionNames
 from app.schema.arango.documents import (
@@ -25,6 +25,7 @@ from app.schema.arango.documents import (
     file_record_schema,
     link_record_schema,
     mail_record_schema,
+    meeting_record_schema,
     orgs_schema,
     people_schema,
     project_record_schema,
@@ -37,7 +38,7 @@ from app.schema.arango.documents import (
 )
 
 
-def adapt_schema(arango_schema: Optional[Dict]) -> Optional[Dict]:
+def adapt_schema(arango_schema: Optional[dict]) -> Optional[dict]:
     """
     Adapt an ArangoDB schema for use with jsonschema library.
 
@@ -70,7 +71,7 @@ def adapt_schema(arango_schema: Optional[Dict]) -> Optional[Dict]:
 
 # Build the node schema registry mapping collection names to adapted schemas
 # This mirrors the NODE_COLLECTIONS list from base_arango_service.py (lines 89-123)
-NODE_SCHEMA_REGISTRY: Dict[str, Optional[Dict]] = {
+NODE_SCHEMA_REGISTRY: dict[str, Optional[dict]] = {
     CollectionNames.RECORDS.value: adapt_schema(record_schema),
     CollectionNames.DRIVES.value: None,  # No schema
     CollectionNames.FILES.value: adapt_schema(file_record_schema),
@@ -99,6 +100,7 @@ NODE_SCHEMA_REGISTRY: Dict[str, Optional[Dict]] = {
     CollectionNames.AGENT_INSTANCES.value: adapt_schema(agent_schema),
     CollectionNames.AGENT_TEMPLATES.value: adapt_schema(agent_template_schema),
     CollectionNames.TICKETS.value: adapt_schema(ticket_record_schema),
+    CollectionNames.MEETINGS.value: adapt_schema(meeting_record_schema),
     CollectionNames.PROJECTS.value: adapt_schema(project_record_schema),
     CollectionNames.SYNC_POINTS.value: None,  # No schema
     CollectionNames.TEAMS.value: adapt_schema(team_schema),
@@ -106,7 +108,7 @@ NODE_SCHEMA_REGISTRY: Dict[str, Optional[Dict]] = {
 }
 
 
-def get_node_schema(collection: str) -> Optional[Dict]:
+def get_node_schema(collection: str) -> Optional[dict]:
     """
     Get the adapted JSON Schema for a collection.
 

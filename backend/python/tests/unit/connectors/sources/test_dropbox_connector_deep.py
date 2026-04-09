@@ -90,7 +90,7 @@ def _make_connector():
     })
 
     with patch("app.connectors.sources.dropbox.connector.DropboxApp"):
-        c = DropboxConnector(logger, dep, dsp, cs, "conn-db-deep")
+        c = DropboxConnector(logger, dep, dsp, cs, "conn-db-deep", "team", "test-user-id")
 
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()

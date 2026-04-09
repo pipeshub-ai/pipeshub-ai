@@ -16,7 +16,6 @@ import {
   Snackbar,
   Alert,
   useMediaQuery,
-  ButtonGroup,
   Chip,
   FormControlLabel,
   Switch,
@@ -26,9 +25,8 @@ import saveIcon from '@iconify-icons/mdi/content-save';
 import homeIcon from '@iconify-icons/mdi/home';
 import menuIcon from '@iconify-icons/mdi/menu';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
-import fileIcon from '@iconify-icons/mdi/file-document-outline';
-import shareIcon from '@iconify-icons/mdi/share-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
+import robotIcon from '@iconify-icons/mdi/robot';
 import type { AgentBuilderHeaderProps } from '../../types/agent';
 import AgentPermissionsDialog from './agent-permissions-dialog';
 
@@ -52,6 +50,8 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
   setShareWithOrg,
   hasToolsets,
   isReadOnly = false,
+  isServiceAccount,
+  onEnableServiceAccount,
 }) => {
   const theme = useTheme();
   const [shareAgentDialogOpen, setShareAgentDialogOpen] = useState(false);
@@ -257,11 +257,91 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
 
       <Box sx={{ flexGrow: 1 }} />
 
+      {/* Service Account Indicator / Enable Button */}
+      {!isMobile && (
+        <>
+          {isServiceAccount ? (
+            /* Badge: agent is already a service account */
+            <Tooltip title="This agent acts as a service account with its own dedicated credentials and full knowledge access.">
+              <Chip
+                icon={<Icon icon={robotIcon} width={14} height={14} />}
+                label={isTablet ? 'Service A/c' : 'Service Account'}
+                size="small"
+                variant="outlined"
+                sx={{
+                  height: 28,
+                  fontSize: '0.75rem',
+                  fontWeight: 500,
+                  letterSpacing: '0.02em',
+                  borderRadius: 1.5,
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.common.white, 0.04)
+                    : alpha(theme.palette.common.black, 0.03),
+                  color: theme.palette.text.primary,
+                  borderColor: alpha(theme.palette.divider, isDark ? 0.85 : 1),
+                  '& .MuiChip-icon': { color: theme.palette.text.secondary },
+                  cursor: 'default',
+                }}
+              />
+            </Tooltip>
+          ) : (
+            /* Button: available for both new agents and existing non-service-account agents */
+            onEnableServiceAccount && !isReadOnly && (
+              <Tooltip
+                title={
+                  editingAgent
+                    ? 'Convert this agent to a Service Account — it will get its own dedicated credentials and full knowledge access, shared by all users. This cannot be undone.'
+                    : 'Enable service account mode — the agent gets its own dedicated credentials and full knowledge access, shared by all users.'
+                }
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<Icon icon={robotIcon} width={15} height={15} />}
+                  onClick={onEnableServiceAccount}
+                  disabled={saving}
+                  sx={{
+                    height: 32,
+                    px: 1.75,
+                    borderRadius: 1.5,
+                    fontSize: '0.75rem',
+                    fontWeight: 500,
+                    letterSpacing: '0.02em',
+                    textTransform: 'none',
+                    whiteSpace: 'nowrap',
+                    borderColor: alpha(theme.palette.divider, isDark ? 0.9 : 1),
+                    color: theme.palette.text.primary,
+                    backgroundColor: isDark
+                      ? alpha(theme.palette.common.white, 0.03)
+                      : theme.palette.background.paper,
+                    '&:hover': {
+                      borderColor: alpha(theme.palette.text.primary, 0.2),
+                      backgroundColor: alpha(theme.palette.text.primary, isDark ? 0.06 : 0.04),
+                    },
+                    '&:disabled': {
+                      borderColor: theme.palette.divider,
+                      color: theme.palette.action.disabled,
+                      backgroundColor: 'transparent',
+                    },
+                  }}
+                >
+                  {editingAgent
+                    ? isTablet ? 'Convert' : 'Convert to Service A/c'
+                    : isTablet ? 'Service A/c' : 'Service Account'}
+                </Button>
+              </Tooltip>
+            )
+          )}
+        </>
+      )}
+
       {/* Share with Org Toggle */}
       {!isMobile && (
         <Tooltip
           title={
-            shareWithOrg
+            isServiceAccount
+              ? 'Service account agents are always shared with the entire organization'
+              : shareWithOrg
               ? 'Click to stop sharing this agent with the entire organization'
               : 'Share this agent with all members of your organization.'
           }
@@ -274,7 +354,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
                   onChange={(e) => {
                     setShareWithOrg(e.target.checked);
                   }}
-                  disabled={saving || isReadOnly}
+                  disabled={saving || isReadOnly || isServiceAccount}
                   size="small"
                   color="primary"
                 />

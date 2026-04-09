@@ -204,6 +204,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-1",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -229,6 +231,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-2",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is expected_connector
@@ -252,6 +256,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-3",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -275,6 +281,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-4",
+            scope="personal",
+            created_by="user-123",
             custom_param="value123",
         )
 
@@ -309,6 +317,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-5",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is mock_connector
@@ -333,6 +343,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-6",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -356,6 +368,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-7",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -373,6 +387,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-8",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -400,6 +416,8 @@ class TestCreateAndStartSync:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-10",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert result is None
 
@@ -428,6 +446,8 @@ class TestCreateAndStartSync:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-11",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert result is mock_connector
         mock_stm.start_sync.assert_awaited_once()
@@ -456,6 +476,8 @@ class TestCreateAndStartSync:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-12",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert result is mock_connector
         mock_stm.start_sync.assert_not_awaited()
@@ -484,6 +506,8 @@ class TestCreateAndStartSync:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-13",
+            scope="personal",
+            created_by="test-user-id",
         )
         assert result is None
         logger.error.assert_called()
@@ -511,5 +535,7 @@ class TestCreateAndStartSync:
                 data_store_provider=data_store,
                 config_service=config_service,
                 connector_id="conn-14",
+                scope="personal",
+                created_by="test-user-id",
             )
         assert result is mock_connector

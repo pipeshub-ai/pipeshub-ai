@@ -63,6 +63,8 @@ from app.connectors.sources.web.connector import (
 # ---------------------------------------------------------------------------
 def _make_connector():
     """Build a WebConnector with all dependencies mocked."""
+    from app.models.entities import AppMetadata
+    
     logger = MagicMock()
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-1"
@@ -74,7 +76,24 @@ def _make_connector():
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.on_record_metadata_update = AsyncMock()
     data_entities_processor.on_record_content_update = AsyncMock()
+    data_entities_processor.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="web-conn-1",
+        name="Web Crawler",
+        type="web",
+        app_group="WEB",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
+    
     data_store_provider = MagicMock()
+    mock_tx = MagicMock()
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    data_store_provider.transaction.return_value = mock_tx
+    
     config_service = AsyncMock()
     connector = WebConnector(
         logger=logger,
@@ -82,6 +101,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id="web-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     return connector
 
@@ -1310,15 +1331,20 @@ class TestWebConnectorRunSyncDeep:
         connector.reload_config = AsyncMock()
         connector._crawl_single_page = AsyncMock()
         connector.process_retry_urls = AsyncMock()
-        mock_user = MagicMock()
-        mock_user.email = "user@example.com"
-        mock_user.full_name = "User"
-        mock_user.is_active = True
-        mock_user.org_id = "org-1"
-        mock_user.source_user_id = "u1"
-        mock_user.id = "u1"
-        mock_user.title = None
-        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[mock_user])
+        connector.scope = "PERSONAL"
+        connector.created_by = "user-1"
+        connector.creator_email = "user@test.com"
+        from app.models.entities import User
+        mock_user = User(
+            email="user@example.com",
+            full_name="User",
+            is_active=True,
+            org_id="org-1",
+            source_user_id="u1",
+            id="u1",
+            title=None,
+        )
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=mock_user)
         await connector.run_sync()
         connector.data_entities_processor.on_new_app_users.assert_awaited()
 
@@ -1399,7 +1425,8 @@ def _make_connector_cov():
     cs = AsyncMock()
     c = WebConnector(
         logger=logger, data_entities_processor=dep,
-        data_store_provider=dsp, config_service=cs, connector_id="web-c-1"
+        data_store_provider=dsp, config_service=cs, connector_id="web-c-1",
+        scope="personal", created_by="test-user-id",
     )
     return c
 
@@ -1988,6 +2015,8 @@ def _make_connector_fullcov():
         data_store_provider=dsp,
         config_service=cs,
         connector_id="web-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     return connector
 
@@ -2896,5 +2925,7 @@ class TestCreateConnectorFactory:
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
-            conn = await WebConnector.create_connector(logger, dsp, cs, "wc-factory")
+            conn = await WebConnector.create_connector(
+                logger, dsp, cs, "wc-factory", "team", "test-user-id"
+            )
             assert isinstance(conn, WebConnector)

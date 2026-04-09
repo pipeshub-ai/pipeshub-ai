@@ -7,6 +7,12 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { SyncEventProducer } from '../services/sync_events.service';
+import { IMessageProducer } from '../../../libs/types/messaging.types';
+import {
+  resolveMessageBrokerConfig,
+  createMessageProducer,
+} from '../../../libs/services/message-broker.factory';
+
 const loggerConfig = {
   service: 'Knowledge Base Service',
 };
@@ -41,8 +47,6 @@ export class KnowledgeBaseContainer {
     appConfig: AppConfig,
   ): Promise<void> {
     try {
-      // Initialize services
-
       const configurationManagerConfig =
         container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
       const keyValueStoreService = KeyValueStoreService.getInstance(
@@ -53,14 +57,21 @@ export class KnowledgeBaseContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
 
+      // Create broker-agnostic message producer
+      const brokerConfig = resolveMessageBrokerConfig(appConfig);
+      const messageProducer = createMessageProducer(brokerConfig, this.logger);
+      await messageProducer.connect();
+
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
+
       this.logger.info('before events producer');
 
       const recordsEventProducer = new RecordsEventProducer(
-        appConfig.kafka,
+        messageProducer,
         this.logger,
       );
-
-      // Start the Kafka producer
       await recordsEventProducer.start();
 
       container
@@ -70,11 +81,9 @@ export class KnowledgeBaseContainer {
       this.logger.info('After events producer binding');
 
       const syncEventProducer = new SyncEventProducer(
-        appConfig.kafka,
+        messageProducer,
         this.logger,
       );
-
-      // start the kafka producer for sync-events
       await syncEventProducer.start();
 
       container
@@ -113,27 +122,20 @@ export class KnowledgeBaseContainer {
   static async dispose(): Promise<void> {
     if (this.instance) {
       try {
-        // Stop the Kafka producer
-        if (this.instance.isBound('RecordsEventProducer')) {
-          const recordsEventProducer = this.instance.get<RecordsEventProducer>(
-            'RecordsEventProducer',
-          );
-          await recordsEventProducer.stop();
+        const messageProducer = this.instance.isBound('MessageProducer')
+          ? this.instance.get<IMessageProducer>('MessageProducer')
+          : null;
+
+        if (messageProducer && messageProducer.isConnected()) {
+          await messageProducer.disconnect();
         }
 
-        // stop the sync-event kafka
-        if (this.instance.isBound('SyncEventProducer')) {
-          const syncEventProducer =
-            this.instance.get<SyncEventProducer>('SyncEventProducer');
-          await syncEventProducer.stop();
-        }
         const keyValueStoreService = this.instance.isBound(
           'KeyValueStoreService',
         )
           ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
           : null;
 
-        // Disconnect services if they have a disconnect method
         if (keyValueStoreService && keyValueStoreService.isConnected()) {
           await keyValueStoreService.disconnect();
           this.logger.info('KeyValueStoreService disconnected successfully');

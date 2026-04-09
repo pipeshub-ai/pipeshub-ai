@@ -59,6 +59,8 @@ def _make_connector():
         data_store_provider=dsp,
         config_service=cs,
         connector_id="notion-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     conn._mock_tx = mock_tx
     return conn
@@ -3159,7 +3161,9 @@ class TestCreateConnector:
             dsp.transaction.return_value = mock_tx
             cs = AsyncMock()
 
-            connector = await NotionConnector.create_connector(logger, dsp, cs, "conn-1")
+            connector = await NotionConnector.create_connector(
+                logger, dsp, cs, "conn-1", "team", "test-user-id"
+            )
             assert isinstance(connector, NotionConnector)
             mock_dep.initialize.assert_awaited_once()
 

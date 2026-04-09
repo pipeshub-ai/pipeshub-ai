@@ -1,10 +1,16 @@
-from typing import Any, Dict, List, Optional
+import json
+import logging
+from typing import Any
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.servicenow.servicenow import (
     ServiceNowClient,
     ServiceNowResponse,
+)
+from app.sources.external.servicenow.models import (
+    ServiceNowAPIError,
+    TableAPIResponse,
 )
 
 
@@ -23,12 +29,13 @@ class ServiceNowDataSource:
         """
         self.client = client.get_client()
         self.base_url = client.get_base_url()
+        self.logger = logging.getLogger(__name__)
 
     def _build_url(self, path: str) -> str:
         """Build full URL from path."""
         return f"{self.base_url}{path}"
 
-    def _build_params(self, **kwargs) -> Dict[str, Any]:
+    def _build_params(self, **kwargs) -> dict[str, Any]:
         """Build query parameters, filtering out None values."""
         return {k: v for k, v in kwargs.items() if v is not None}
 
@@ -36,15 +43,21 @@ class ServiceNowDataSource:
         """Handle API response and return ServiceNowResponse."""
         try:
             if response.status >= HttpStatusCode.BAD_REQUEST.value:
+                error_body = response.text()
+                self.logger.debug(
+                    f"ServiceNow API Error Response: status={response.status}, "
+                    f"body={error_body[:500]}"
+                )
                 return ServiceNowResponse(
                     success=False,
                     error=f"HTTP {response.status}",
-                    message=response.text(),
+                    message=error_body,
                 )
 
             # Handle 204 No Content (successful delete operations)
             response_text = response.text()
             if response.status == HttpStatusCode.NO_CONTENT or not response_text:
+                self.logger.debug(f"ServiceNow API No Content Response: status={response.status}")
                 return ServiceNowResponse(
                     success=True,
                     data={"message": "Operation completed successfully"},
@@ -58,8 +71,46 @@ class ServiceNowDataSource:
             data = response.json() if response_text else {}
             return ServiceNowResponse(success=True, data=data)
         except Exception as e:
-            return ServiceNowResponse(
-                success=False, error=str(e), message="Failed to parse response"
+            self.logger.error(f"Failed to parse ServiceNow response: {str(e)[:500]}")
+            return ServiceNowResponse(success=False, error=str(e), message="Failed to parse response")
+
+    async def _handle_table_response(self, response) -> TableAPIResponse:
+        """Handle Table API response and return TableAPIResponse.
+
+        This method is used specifically for Table API calls to provide
+        strongly-typed responses with Pydantic models instead of generic dicts.
+        Raises exceptions for errors instead of returning error response objects.
+
+        Args:
+            response: HTTP response object from the API call
+
+        Returns:
+            TableAPIResponse with parsed data
+
+        Raises:
+            ServiceNowAPIError: If the API returns an error or response parsing fails
+        """
+        if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            error_body = response.text()
+            self.logger.error(f"ServiceNow Table API error: HTTP {response.status} - {error_body[:500]}")
+            raise ServiceNowAPIError(
+                status_code=response.status,
+                message=f"HTTP {response.status}",
+                details=error_body
+            )
+
+        if response.status == HttpStatusCode.NO_CONTENT or not response.text():
+            return TableAPIResponse(result=[])
+
+        try:
+            data = response.json()
+            return TableAPIResponse(**data)
+        except Exception as e:
+            self.logger.error(f"Failed to parse ServiceNow Table API response: {e}")
+            raise ServiceNowAPIError(
+                status_code=500,
+                message="Failed to parse API response",
+                details=str(e)
             )
 
     async def get_ace_fetchClientScripts_acePageId_pageId(
@@ -81,7 +132,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_fetchComponentContentTypeProps(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -102,7 +153,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_fetchControlProps(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -123,7 +174,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_fetchReusableBlockContentTree(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -158,7 +209,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_fetch_translation(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -178,7 +229,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_ace_fetchdata(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_ace_fetchdata(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -197,7 +248,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_ace_fetchmeta(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_ace_fetchmeta(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -230,7 +281,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_ace_refresh_block(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_ace_refresh_block(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -249,7 +300,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_ace_reusableblock(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_ace_reusableblock(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -268,7 +319,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_ace_setControl(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_ace_setControl(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -288,7 +339,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_updateClientContext(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -309,7 +360,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_updateClientScripts(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -330,7 +381,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ace_updateContentBlockContext(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -350,7 +401,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_ace_updatemetadata(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_ace_updatemetadata(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -430,7 +481,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_actsub_preferences(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_actsub_preferences(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -532,7 +583,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_subscriptions_subscribe_sub_obj_Id(
-        self, sub_obj_Id: str, data: Dict[str, Any]
+        self, sub_obj_Id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """This is to subscribe to the subscribable object
         Args:
@@ -588,7 +639,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_actsub_userstream_profileId(
-        self, profileId: str, data: Dict[str, Any]
+        self, profileId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -624,7 +675,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_agent_initiated_message_channel_specific_validation(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -661,7 +712,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_agent_initiated_message_send_message(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -684,17 +735,17 @@ class ServiceNowDataSource:
     async def get_now_stats_tableName(
         self,
         tableName: str,
-        sysparm_query: Optional[str] = None,
-        sysparm_avg_fields: Optional[str] = None,
-        sysparm_count: Optional[str] = None,
-        sysparm_min_fields: Optional[str] = None,
-        sysparm_max_fields: Optional[str] = None,
-        sysparm_sum_fields: Optional[str] = None,
-        sysparm_group_by: Optional[str] = None,
-        sysparm_order_by: Optional[str] = None,
-        sysparm_having: Optional[str] = None,
-        sysparm_display_value: Optional[str] = None,
-        sysparm_query_category: Optional[str] = None,
+        sysparm_query: str | None = None,
+        sysparm_avg_fields: str | None = None,
+        sysparm_count: str | None = None,
+        sysparm_min_fields: str | None = None,
+        sysparm_max_fields: str | None = None,
+        sysparm_sum_fields: str | None = None,
+        sysparm_group_by: str | None = None,
+        sysparm_order_by: str | None = None,
+        sysparm_having: str | None = None,
+        sysparm_display_value: str | None = None,
+        sysparm_query_category: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve statistical calculations for a table
         Args:
@@ -733,7 +784,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_aisa_search(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_aisa_search(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -753,7 +804,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_aisa_action_resolves(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -774,7 +825,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_aisa_action_sc_cat_item_order(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -865,7 +916,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_it_service_compareEdgesData(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Edges properties for comparison map.
         Args:
@@ -900,7 +951,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_it_service_edgesData(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -963,7 +1014,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_it_service_getParentServices(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1166,7 +1217,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_app_service_convertToDynamicService(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1187,7 +1238,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_app_service_convertToManualService(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1207,7 +1258,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_app_service_create(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_app_service_create(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Create or update an application service, including connections between CIs
         Args:
             data: Request body data
@@ -1227,7 +1278,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_app_service_createDynamicService(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1248,7 +1299,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_app_service_updateDynamicNumberOfLevels(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1269,7 +1320,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_app_service_getContent_sys_id(
-        self, sys_id: str, mode: Optional[str] = None
+        self, sys_id: str, mode: str | None = None
     ) -> ServiceNowResponse:
         """Get the content of an application service including connections between CIs
         Args:
@@ -1287,7 +1338,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_app_service_find_service(
-        self, name: Optional[str] = None, number: Optional[str] = None
+        self, name: str | None = None, number: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1305,7 +1356,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_app_service_register_service(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1326,7 +1377,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_app_service_populate_service_service_sys_id(
-        self, service_sys_id: str, data: Dict[str, Any]
+        self, service_sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1350,7 +1401,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_app_service_service_details_service_sys_id(
-        self, service_sys_id: str, data: Dict[str, Any]
+        self, service_sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1393,7 +1444,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_atf_agent_online(
-        self, id: Optional[str] = None
+        self, id: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1411,10 +1462,10 @@ class ServiceNowDataSource:
 
     async def get_now_attachment(
         self,
-        sysparm_query: Optional[str] = None,
-        sysparm_suppress_pagination_header: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_query_category: Optional[str] = None,
+        sysparm_query: str | None = None,
+        sysparm_suppress_pagination_header: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_query_category: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve metadata for attachments
         Args:
@@ -1440,12 +1491,12 @@ class ServiceNowDataSource:
 
     async def post_attachment_file(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         table_name: str,
         table_sys_id: str,
         file_name: str,
-        encryption_context: Optional[str] = None,
-        creation_time: Optional[str] = None,
+        encryption_context: str | None = None,
+        creation_time: str | None = None,
     ) -> ServiceNowResponse:
         """Upload an attachment from a binary request
         Args:
@@ -1476,7 +1527,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_attachment_upload(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_attachment_upload(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Upload an attachment from a multipart form
         Args:
             data: Request body data
@@ -1573,7 +1624,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_change_nextavailabletime_sys_id(
-        self, sys_id: str, data: Dict[str, Any]
+        self, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1597,7 +1648,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_change_nextavailabletime_sys_id(
-        self, sys_id: str, data: Dict[str, Any]
+        self, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1674,7 +1725,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def patch_now_change_request_calendar_table_sysid(
-        self, table: str, sysid: str, data: Dict[str, Any]
+        self, table: str, sysid: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -1717,12 +1768,12 @@ class ServiceNowDataSource:
 
     async def post_cilifecyclemgmt_actions(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         requestorId: str,
         sysIds: str,
         actionName: str,
-        oldActionNames: Optional[str] = None,
-        leaseTime: Optional[str] = None,
+        oldActionNames: str | None = None,
+        leaseTime: str | None = None,
     ) -> ServiceNowResponse:
         """Add CI Action
         Args:
@@ -1813,11 +1864,11 @@ class ServiceNowDataSource:
 
     async def post_cilifecyclemgmt_distinctStatuses(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         requestorId: str,
         sysIds: str,
         opsLabels: str,
-        oldOpsLabels: Optional[str] = None,
+        oldOpsLabels: str | None = None,
     ) -> ServiceNowResponse:
         """Set Distinct Operational States
         Args:
@@ -1849,7 +1900,7 @@ class ServiceNowDataSource:
     async def patch_cilifecyclemgmt_leases_sys_id(
         self,
         sys_id: str,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         requestorId: str,
         actionName: str,
         leaseTime: str,
@@ -1940,7 +1991,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cilifecyclemgmt_operators(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Register Operator
         Args:
@@ -1994,11 +2045,11 @@ class ServiceNowDataSource:
 
     async def post_cilifecyclemgmt_statuses(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         requestorId: str,
         sysIds: str,
         opsLabel: str,
-        oldOpsLabels: Optional[str] = None,
+        oldOpsLabels: str | None = None,
     ) -> ServiceNowResponse:
         """Set Operational State
         Args:
@@ -2075,7 +2126,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ci_lifecycle_manager_edit_exclusion_list(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2110,7 +2161,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ci_lifecycle_manager_exclude_cis(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2207,7 +2258,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ci_lifecycle_manager_policy(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2242,7 +2293,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_ci_lifecycle_manager_policy_sys_id(
-        self, sys_id: str, data: Dict[str, Any]
+        self, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2320,7 +2371,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_ci_lifecycle_manager_status_sys_id(
-        self, sys_id: str, data: Dict[str, Any]
+        self, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2384,7 +2435,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_now_clientextension_name(
-        self, name: str, sysparm_scope: Optional[str] = None
+        self, name: str, sysparm_scope: str | None = None
     ) -> ServiceNowResponse:
         """Get all UI Scripts which are registered instances of a Client Extension Point
         Args:
@@ -2437,7 +2488,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cmdb_ingest_data_source_sys_id(
-        self, data_source_sys_id: str, data: Dict[str, Any]
+        self, data_source_sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Create a record to be ingested by the CMDB
         Args:
@@ -2461,9 +2512,9 @@ class ServiceNowDataSource:
     async def get_cmdb_instance_className(
         self,
         className: str,
-        sysparm_query: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_offset: Optional[str] = None,
+        sysparm_query: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_offset: str | None = None,
     ) -> ServiceNowResponse:
         """Query records for a CMDB class
         Args:
@@ -2487,7 +2538,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cmdb_instance_className(
-        self, className: str, data: Dict[str, Any]
+        self, className: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Create a record with associated relations
         Args:
@@ -2527,7 +2578,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_cmdb_instance_className_sys_id(
-        self, className: str, sys_id: str, data: Dict[str, Any]
+        self, className: str, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Replace CI record
         Args:
@@ -2550,7 +2601,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def patch_cmdb_instance_className_sys_id(
-        self, className: str, sys_id: str, data: Dict[str, Any]
+        self, className: str, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Update CI record
         Args:
@@ -2573,7 +2624,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_instance_relation_className_sys_id(
-        self, className: str, sys_id: str, data: Dict[str, Any]
+        self, className: str, sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Create Relation for the CI
         Args:
@@ -2683,7 +2734,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_cmdb_workspace_api_encodedquery(
-        self, table: Optional[str] = None, query: Optional[str] = None
+        self, table: str | None = None, query: str | None = None
     ) -> ServiceNowResponse:
         """Returns a friendly display name of an encoded query.
         Args:
@@ -2701,7 +2752,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_collaboration_chat_event_processor_chats(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2738,7 +2789,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_cxs_action_handler(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_cxs_action_handler(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -2757,7 +2808,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_cxs_feedback(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_cxs_feedback(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -2776,7 +2827,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_feedback_link(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_feedback_link(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -2796,7 +2847,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_get_actions_by_condition(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2836,10 +2887,10 @@ class ServiceNowDataSource:
 
     async def get_cxs_search(
         self,
-        start: Optional[str] = None,
-        cx: Optional[str] = None,
-        num: Optional[str] = None,
-        q: Optional[str] = None,
+        start: str | None = None,
+        cx: str | None = None,
+        num: str | None = None,
+        q: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2860,11 +2911,11 @@ class ServiceNowDataSource:
 
     async def post_cxs_search(
         self,
-        data: Dict[str, Any],
-        q: Optional[str] = None,
-        cx: Optional[str] = None,
-        start: Optional[str] = None,
-        num: Optional[str] = None,
+        data: dict[str, Any],
+        q: str | None = None,
+        cx: str | None = None,
+        start: str | None = None,
+        num: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2888,7 +2939,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_cxs_actions_attach(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_cxs_actions_attach(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -2908,7 +2959,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_copy_incident_resolution(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2929,7 +2980,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_chg_to_inc(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2950,7 +3001,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_inc_to_chg(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2971,7 +3022,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_inc_to_chg_req(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -2992,7 +3043,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_inc_to_chg_rest(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3013,7 +3064,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_inc_to_outage(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3034,7 +3085,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_inc_to_prb(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3055,7 +3106,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_inc_to_prb_rest(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3076,7 +3127,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_incident(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3097,7 +3148,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_incident_rest(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3118,7 +3169,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_prb_to_chg_req(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3139,7 +3190,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_prb_to_inc(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3160,7 +3211,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_prb_to_incident(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3181,7 +3232,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_cxs_actions_link_prb_to_outage(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3203,10 +3254,10 @@ class ServiceNowDataSource:
 
     async def post_consumerAccount_conversation(
         self,
-        data: Dict[str, Any],
-        conversationType: Optional[str] = None,
-        count: Optional[str] = None,
-        userId: Optional[str] = None,
+        data: dict[str, Any],
+        conversationType: str | None = None,
+        count: str | None = None,
+        userId: str | None = None,
     ) -> ServiceNowResponse:
         """Fetch conversations tied to the user based on conversation type and count
         Args:
@@ -3233,11 +3284,11 @@ class ServiceNowDataSource:
 
     async def post_consumerAccount_read(
         self,
-        data: Dict[str, Any],
-        messageId: Optional[str] = None,
-        conversationId: Optional[str] = None,
-        sysparm_deviceType: Optional[str] = None,
-        identifier: Optional[str] = None,
+        data: dict[str, Any],
+        messageId: str | None = None,
+        conversationId: str | None = None,
+        sysparm_deviceType: str | None = None,
+        identifier: str | None = None,
     ) -> ServiceNowResponse:
         """Update last read message for a consumer account
         Args:
@@ -3268,10 +3319,10 @@ class ServiceNowDataSource:
 
     async def get_consumerAccount_unreadConversation(
         self,
-        portal: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_return_only: Optional[str] = None,
-        client_type: Optional[str] = None,
+        portal: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_return_only: str | None = None,
+        client_type: str | None = None,
     ) -> ServiceNowResponse:
         """Get unread messages which are associated with the currently logged in user's consumer account.
         Args:
@@ -3296,7 +3347,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_consumerAccount_unreadConversationCount(
-        self, sysparm_deviceType: Optional[str] = None
+        self, sysparm_deviceType: str | None = None
     ) -> ServiceNowResponse:
         """Get unread conversation count which are associated with the currently logged in user's consumer account.
         Args:
@@ -3314,9 +3365,9 @@ class ServiceNowDataSource:
 
     async def get_consumerAccount_unreadMessage(
         self,
-        sysparm_limit: Optional[str] = None,
-        sysparm_return_only: Optional[str] = None,
-        portal: Optional[str] = None,
+        sysparm_limit: str | None = None,
+        sysparm_return_only: str | None = None,
+        portal: str | None = None,
     ) -> ServiceNowResponse:
         """Get unread messages which are associated with the currently logged in user's consumer account.
         Args:
@@ -3341,12 +3392,12 @@ class ServiceNowDataSource:
     async def post_consumerAccount_conversation_consumerAccountId(
         self,
         consumerAccountId: str,
-        data: Dict[str, Any],
-        closedConversationCount: Optional[str] = None,
-        activeConversationCount: Optional[str] = None,
-        notificationConversationCount: Optional[str] = None,
-        archivedChatEnabled: Optional[str] = None,
-        conversationId: Optional[str] = None,
+        data: dict[str, Any],
+        closedConversationCount: str | None = None,
+        activeConversationCount: str | None = None,
+        notificationConversationCount: str | None = None,
+        archivedChatEnabled: str | None = None,
+        conversationId: str | None = None,
     ) -> ServiceNowResponse:
         """Fetch conversations tied to the consumer account based on conversation type and count
         Args:
@@ -3383,12 +3434,12 @@ class ServiceNowDataSource:
     async def get_consumerAccount_message_consumerAccountId(
         self,
         consumerAccountId: str,
-        lastMessageId: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_sort: Optional[str] = None,
-        sysparm_age: Optional[str] = None,
-        sysparm_deviceType: Optional[str] = None,
-        conversationId: Optional[str] = None,
+        lastMessageId: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_sort: str | None = None,
+        sysparm_age: str | None = None,
+        sysparm_deviceType: str | None = None,
+        conversationId: str | None = None,
     ) -> ServiceNowResponse:
         """Get all topics and messages which are associated to this consumer account.
         Args:
@@ -3418,7 +3469,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_latest_auxiliary_consumerAccountId(
-        self, consumerAccountId: str, conversationId: Optional[str] = None
+        self, consumerAccountId: str, conversationId: str | None = None
     ) -> ServiceNowResponse:
         """Fetch all of the latest auxiliary information for a given conversation
         Args:
@@ -3440,9 +3491,9 @@ class ServiceNowDataSource:
     async def get_consumerAccount_sync_consumerAccountId(
         self,
         consumerAccountId: str,
-        snCsSessionId: Optional[str] = None,
-        serialNumber: Optional[str] = None,
-        conversationId: Optional[str] = None,
+        snCsSessionId: str | None = None,
+        serialNumber: str | None = None,
+        conversationId: str | None = None,
     ) -> ServiceNowResponse:
         """Fetch all messages since a serial number for a given session.
         Args:
@@ -3468,10 +3519,10 @@ class ServiceNowDataSource:
     async def post_consumerAccount_sync_consumerAccountId(
         self,
         consumerAccountId: str,
-        data: Dict[str, Any],
-        snCsSessionId: Optional[str] = None,
-        serialNumber: Optional[str] = None,
-        conversationId: Optional[str] = None,
+        data: dict[str, Any],
+        snCsSessionId: str | None = None,
+        serialNumber: str | None = None,
+        conversationId: str | None = None,
     ) -> ServiceNowResponse:
         """Fetch all messages since a serial number for a given session and update the last read status
         Args:
@@ -3500,7 +3551,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_member_drop_user_id(
-        self, user_id: str, data: Dict[str, Any], interaction_id: Optional[str] = None
+        self, user_id: str, data: dict[str, Any], interaction_id: str | None = None
     ) -> ServiceNowResponse:
         """Drop agent from a conversation.
         Args:
@@ -3523,7 +3574,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_member_update_user_id(
-        self, user_id: str, data: Dict[str, Any], role: Optional[str] = None
+        self, user_id: str, data: dict[str, Any], role: str | None = None
     ) -> ServiceNowResponse:
         """Update agent's memberType in a conversation.
         Args:
@@ -3545,7 +3596,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_now_cs_message(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_now_cs_message(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -3565,7 +3616,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_cs_preview_logging_flag(
-        self, flag: str, data: Dict[str, Any]
+        self, flag: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3587,7 +3638,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_copy_assessments_copy(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3622,7 +3673,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_csdm_app_service_create_app_service(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3685,7 +3736,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_csdm_app_service_get_cis_for_tags(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3882,7 +3933,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_csdm_app_service_update_app_service(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3903,7 +3954,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_csdm_app_service_validate_app_service(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3938,7 +3989,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_csdm_app_service_validate_tag_list(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -3960,10 +4011,10 @@ class ServiceNowDataSource:
 
     async def get_v1_attachment_csm(
         self,
-        sysparm_query: Optional[str] = None,
-        sysparm_suppress_pagination_header: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_query_category: Optional[str] = None,
+        sysparm_query: str | None = None,
+        sysparm_suppress_pagination_header: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_query_category: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve metadata for attachments
         Args:
@@ -3989,11 +4040,11 @@ class ServiceNowDataSource:
 
     async def post_attachment_csm_file(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         table_name: str,
         table_sys_id: str,
         file_name: str,
-        encryption_context: Optional[str] = None,
+        encryption_context: str | None = None,
     ) -> ServiceNowResponse:
         """Upload an attachment from a binary request
         Args:
@@ -4023,7 +4074,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_attachment_csm_upload(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Upload an attachment from a multipart form
         Args:
@@ -4089,7 +4140,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_data_classification_addClassification(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4110,7 +4161,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_data_classification_classify(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4131,7 +4182,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_data_classification_clear(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4166,7 +4217,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_data_classification_getClassification(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4187,7 +4238,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_documents_generation_api_redact(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4207,7 +4258,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_v1_email(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_v1_email(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Create a new email
         Args:
             data: Request body data
@@ -4227,7 +4278,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_v1_email_id(
-        self, id: str, sysparm_fields: Optional[str] = None
+        self, id: str, sysparm_fields: str | None = None
     ) -> ServiceNowResponse:
         """Get an email
         Args:
@@ -4259,7 +4310,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_follow_notifications_action(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4279,7 +4330,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_now_feedback(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_now_feedback(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -4302,10 +4353,10 @@ class ServiceNowDataSource:
         self,
         field: str,
         table: str,
-        mapSysId: Optional[str] = None,
-        mapKey: Optional[str] = None,
-        useLatLon: Optional[str] = None,
-        isManual: Optional[str] = None,
+        mapSysId: str | None = None,
+        mapKey: str | None = None,
+        useLatLon: str | None = None,
+        isManual: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4349,10 +4400,10 @@ class ServiceNowDataSource:
 
     async def post_analytics_events(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         sysparm_event_action: str,
         sysparm_event_priority: str,
-        sysparm_track_async: Optional[str] = None,
+        sysparm_track_async: str | None = None,
     ) -> ServiceNowResponse:
         """Analytics API to track Events
         Args:
@@ -4380,7 +4431,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_analytics_updateContext(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """API to Set Context Attributes on the Glide Session Properties
         Args:
@@ -4415,7 +4466,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_global_file_management_moveFiles(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4450,7 +4501,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_globalsearch_search(
-        self, sysparm_search: str, sysparm_groups: Optional[str] = None
+        self, sysparm_search: str, sysparm_groups: str | None = None
     ) -> ServiceNowResponse:
         """Search group[s] with a keyword-based query
         Args:
@@ -4483,7 +4534,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_now_graphql(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_now_graphql(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Submit a GraphQL query
         Args:
             data: Request body data
@@ -4502,7 +4553,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_log_update(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_log_update(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -4574,7 +4625,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_embedded_help_actions_content_action(
-        self, content: str, action: str, data: Dict[str, Any]
+        self, content: str, action: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4597,7 +4648,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_guided_setup_nav_action(
-        self, action: str, data: Dict[str, Any]
+        self, action: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4618,7 +4669,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_task_update(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_task_update(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -4638,7 +4689,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_guided_tours_analytics(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4673,7 +4724,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_autolaunch_override(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4707,7 +4758,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_autolaunch_tour(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_autolaunch_tour(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -4782,7 +4833,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_guided_tours_tours(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_guided_tours_tours(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -4817,7 +4868,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_guided_tours_tours_id(
-        self, id: str, data: Dict[str, Any]
+        self, id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4854,7 +4905,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_tours_steps_tour_id(
-        self, tour_id: str, data: Dict[str, Any]
+        self, tour_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4876,7 +4927,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_tours_steps_tour_id_step_id(
-        self, tour_id: str, step_id: str, data: Dict[str, Any]
+        self, tour_id: str, step_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -4917,7 +4968,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_now_identifyreconcile(
-        self, data: Dict[str, Any], sysparm_data_source: Optional[str] = None
+        self, data: dict[str, Any], sysparm_data_source: str | None = None
     ) -> ServiceNowResponse:
         """Create or Update CI
         Args:
@@ -4940,9 +4991,9 @@ class ServiceNowDataSource:
 
     async def post_identifyreconcile_enhanced(
         self,
-        data: Dict[str, Any],
-        sysparm_data_source: Optional[str] = None,
-        options: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_data_source: str | None = None,
+        options: str | None = None,
     ) -> ServiceNowResponse:
         """Create or Update CI Enhanced
         Args:
@@ -4967,7 +5018,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_identifyreconcile_query(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Identify CI
         Args:
@@ -4989,9 +5040,9 @@ class ServiceNowDataSource:
 
     async def post_identifyreconcile_queryEnhanced(
         self,
-        data: Dict[str, Any],
-        sysparm_data_source: Optional[str] = None,
-        options: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_data_source: str | None = None,
+        options: str | None = None,
     ) -> ServiceNowResponse:
         """Identify CI Enhanced
         Args:
@@ -5016,7 +5067,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_build_build_application(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5037,7 +5088,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_build_convert_application(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5058,7 +5109,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_build_scaffold_application(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5079,7 +5130,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_build_sync_application(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5100,7 +5151,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_importprogresschecker_getStatus(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5121,7 +5172,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_now_import_stagingTableName(
-        self, stagingTableName: str, data: Dict[str, Any]
+        self, stagingTableName: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Create a record in an Import Set staging table
         Args:
@@ -5143,7 +5194,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_import_insertMultiple_stagingTableName(
-        self, stagingTableName: str, data: Dict[str, Any]
+        self, stagingTableName: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Insert Multiple Records from same request
         Args:
@@ -5183,7 +5234,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_initiate_message_validate_phone_number(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5217,7 +5268,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_now_interaction(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_now_interaction(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Create An Interaction
         Args:
             data: Request body data
@@ -5237,7 +5288,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_interaction_close_interaction_id(
-        self, interaction_id: str, data: Dict[str, Any]
+        self, interaction_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Close an Interaction
         Args:
@@ -5259,7 +5310,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_interactive_analysis_table_tableName(
-        self, tableName: str, sysparm_list_view: Optional[str] = None
+        self, tableName: str, sysparm_list_view: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5279,8 +5330,8 @@ class ServiceNowDataSource:
     async def post_interactive_analysis_table_tableName(
         self,
         tableName: str,
-        data: Dict[str, Any],
-        sysparm_list_view: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_list_view: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5303,7 +5354,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def delete_interactive_analysis_table_tableName(
-        self, tableName: str, sysparm_list_view: Optional[str] = None
+        self, tableName: str, sysparm_list_view: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5322,9 +5373,9 @@ class ServiceNowDataSource:
 
     async def get_life_cycle_api_validate(
         self,
-        table: Optional[str] = None,
-        life_cycle_stage_status: Optional[str] = None,
-        life_cycle_stage: Optional[str] = None,
+        table: str | None = None,
+        life_cycle_stage_status: str | None = None,
+        life_cycle_stage: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5347,7 +5398,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_life_cycle_api_value(
-        self, table: Optional[str] = None, life_cycle_stage: Optional[str] = None
+        self, table: str | None = None, life_cycle_stage: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5366,10 +5417,10 @@ class ServiceNowDataSource:
 
     async def get_now_list_query(
         self,
-        sysparm_operator: Optional[str] = None,
-        sysparm_field: Optional[str] = None,
-        sysparm_sys_id: Optional[str] = None,
-        sysparm_table: Optional[str] = None,
+        sysparm_operator: str | None = None,
+        sysparm_field: str | None = None,
+        sysparm_sys_id: str | None = None,
+        sysparm_table: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5394,7 +5445,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_manual_ci_addManualCI(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5415,7 +5466,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_manual_ci_doSkipAndResume(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5478,7 +5529,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_manual_ci_removeManualEP(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5499,7 +5550,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sn_map_data_id(
-        self, id: str, data: Dict[str, Any]
+        self, id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5521,7 +5572,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_mid_telemetry_metrics(
-        self, data: Dict[str, Any], mid_sys_id: str
+        self, data: dict[str, Any], mid_sys_id: str
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5560,7 +5611,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_aggregate_daily_items_counts(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Retrieve items count per day within a given timespan
         Args:
@@ -5581,7 +5632,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_alert(
-        self, data: Dict[str, Any], ScreenId: Optional[str] = None
+        self, data: dict[str, Any], ScreenId: str | None = None
     ) -> ServiceNowResponse:
         """Get an alert from a form screen
         Args:
@@ -5723,7 +5774,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_item_view_preview(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_item_view_preview(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -5827,7 +5878,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_mcb_view_config(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_mcb_view_config(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -5878,7 +5929,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_view_config_preview(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5914,7 +5965,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def patch_mcb_view_config_sysId(
-        self, sysId: str, data: Dict[str, Any]
+        self, sysId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -5935,7 +5986,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_mcb_view_template(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_mcb_view_template(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -5984,7 +6035,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def patch_mcb_view_template_sysId(
-        self, sysId: str, data: Dict[str, Any]
+        self, sysId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -6023,7 +6074,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_chat_handshake_action_id(
-        self, action_id: str, data: Dict[str, Any]
+        self, action_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Launch Virtual Agent with given information in request
         Args:
@@ -6045,7 +6096,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_filter(
-        self, data: Dict[str, Any], document_id: Optional[str] = None
+        self, data: dict[str, Any], document_id: str | None = None
     ) -> ServiceNowResponse:
         """Get Filter
         Args:
@@ -6066,7 +6117,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_filter_list(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_filter_list(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Get Filter List
         Args:
             data: Request body data
@@ -6086,7 +6137,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_filter_list_display_values(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Get Filter Reference Display Values
         Args:
@@ -6106,7 +6157,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_custom_map(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_custom_map(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Returns a document with a custom map template containing the reference list data.
         Args:
             data: Request body data
@@ -6125,7 +6176,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_visualization(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_visualization(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Get Visualization List
         Args:
             data: Request body data
@@ -6145,7 +6196,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_transactions_info(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Provides information about transactions
         Args:
@@ -6197,7 +6248,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_document_pre_fetch(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_document_pre_fetch(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Pre-fetch documents
         Args:
             data: Request body data
@@ -6216,7 +6267,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_event_result(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_event_result(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Retrieve event result
         Args:
             data: Request body data
@@ -6249,7 +6300,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_favorite(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_favorite(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Create Favorite item
         Args:
             data: Request body data
@@ -6269,7 +6320,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_favorite_navigate_favorite_id(
-        self, favorite_id: str, time_zone_id: Optional[str] = None
+        self, favorite_id: str, time_zone_id: str | None = None
     ) -> ServiceNowResponse:
         """Navigate to favorite screen
         Args:
@@ -6287,7 +6338,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_sg_favorite_favorite_id(
-        self, favorite_id: str, data: Dict[str, Any]
+        self, favorite_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Update Favorite item
         Args:
@@ -6326,7 +6377,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_generative_wwna_action_execute(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -6390,7 +6441,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_icon_families(
-        self, location: Optional[str] = None
+        self, location: str | None = None
     ) -> ServiceNowResponse:
         """Get icon families
         Args:
@@ -6436,7 +6487,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_impersonation_users(
-        self, start: Optional[str] = None, filter: Optional[str] = None
+        self, start: str | None = None, filter: str | None = None
     ) -> ServiceNowResponse:
         """Get Impersonation User List
         Args:
@@ -6468,7 +6519,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_offline_incremental_result_token(
-        self, result_token: str, lastUpdateTS: Optional[str] = None
+        self, result_token: str, lastUpdateTS: str | None = None
     ) -> ServiceNowResponse:
         """Retrieve incremental offline data updates
         Args:
@@ -6517,7 +6568,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_offline_synchronize(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Synchronize
         Args:
@@ -6537,7 +6588,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_group(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_group(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Get group by pagination context
         Args:
             data: Request body data
@@ -6556,7 +6607,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_push_action(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_push_action(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Post a writeback request from a Push Action
         Args:
             data: Request body data
@@ -6575,7 +6626,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_record_document(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_record_document(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Post a record document
         Args:
             data: Request body data
@@ -6595,7 +6646,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_reference_input_display_values(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Returns a display values for reference inputs.
         Args:
@@ -6615,7 +6666,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_reference_list(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_reference_list(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Returns a document with a list template containing the reference list data.
         Args:
             data: Request body data
@@ -6648,7 +6699,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_document(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_document(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Post a document
         Args:
             data: Request body data
@@ -6667,7 +6718,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_item(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_item(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Get Item
         Args:
             data: Request body data
@@ -6686,7 +6737,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_list(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_list(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Get List
         Args:
             data: Request body data
@@ -6706,7 +6757,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_migrate_madrid(
-        self, data: Dict[str, Any], sysparm_scope: str, sysparm_client_type: str
+        self, data: dict[str, Any], sysparm_scope: str, sysparm_client_type: str
     ) -> ServiceNowResponse:
         """New schema migration
         Args:
@@ -6745,7 +6796,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_sg_preferences(
-        self, sysparm_pref_name: Optional[str] = None
+        self, sysparm_pref_name: str | None = None
     ) -> ServiceNowResponse:
         """Mobile Get User Preferences
         Args:
@@ -6761,7 +6812,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_preferences(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_preferences(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Updating user preferences
         Args:
             data: Request body data
@@ -6796,7 +6847,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_validate_credentials(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Authentication API
         Args:
@@ -6816,7 +6867,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_sg_writeback(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_sg_writeback(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Submit Action
         Args:
             data: Request body data
@@ -6836,7 +6887,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sg_mobile_script_include(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Execute script include
         Args:
@@ -6860,15 +6911,15 @@ class ServiceNowDataSource:
         self,
         sysparm_search_config: str,
         sysparm_term: str,
-        sysparm_search_app_config: Optional[str] = None,
-        sysparm_nass_enabled: Optional[str] = None,
-        sysparm_channel: Optional[str] = None,
-        sysparm_evam_definition_id: Optional[str] = None,
-        sysparm_deployment_channel_id: Optional[str] = None,
-        sysparm_search_purview: Optional[str] = None,
-        sysparm_sources: Optional[str] = None,
-        sysparm_next_token: Optional[str] = None,
-        sysparm_disable_spell_check: Optional[str] = None,
+        sysparm_search_app_config: str | None = None,
+        sysparm_nass_enabled: str | None = None,
+        sysparm_channel: str | None = None,
+        sysparm_evam_definition_id: str | None = None,
+        sysparm_deployment_channel_id: str | None = None,
+        sysparm_search_purview: str | None = None,
+        sysparm_sources: str | None = None,
+        sysparm_next_token: str | None = None,
+        sysparm_disable_spell_check: str | None = None,
     ) -> ServiceNowResponse:
         """Search for mobile
         Args:
@@ -6907,7 +6958,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_publish_autocomplete(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Publish a search analytics event of type 'autocomplete'
         Args:
@@ -6929,10 +6980,10 @@ class ServiceNowDataSource:
 
     async def put_publish_refinement(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         sysparm_search_context_application_id: str,
         sysparm_term: str,
-        sysparm_search_config: Optional[str] = None,
+        sysparm_search_config: str | None = None,
     ) -> ServiceNowResponse:
         """Publish a search analytics event of type 'Refinement'
         Args:
@@ -6961,11 +7012,11 @@ class ServiceNowDataSource:
 
     async def put_publish_resultclicked(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         sysparm_search_context_application_id: str,
         sysparm_term: str,
         sysparm_click_rank: str,
-        sysparm_search_config: Optional[str] = None,
+        sysparm_search_config: str | None = None,
     ) -> ServiceNowResponse:
         """Publish a search analytics event of type 'ResultClicked'
         Args:
@@ -7012,9 +7063,9 @@ class ServiceNowDataSource:
     async def get_search_autocomplete(
         self,
         sysparm_search_config: str,
-        sysparm_term: Optional[str] = None,
-        sysparm_search_app_config: Optional[str] = None,
-        sysparm_nass_enabled: Optional[str] = None,
+        sysparm_term: str | None = None,
+        sysparm_search_app_config: str | None = None,
+        sysparm_nass_enabled: str | None = None,
     ) -> ServiceNowResponse:
         """Search suggestions for mobile
         Args:
@@ -7042,8 +7093,8 @@ class ServiceNowDataSource:
         self,
         sysparm_search_config: str,
         sysparm_term: str,
-        sysparm_search_app_config: Optional[str] = None,
-        sysparm_nass_enabled: Optional[str] = None,
+        sysparm_search_app_config: str | None = None,
+        sysparm_nass_enabled: str | None = None,
     ) -> ServiceNowResponse:
         """Delete recent search term for mobile
         Args:
@@ -7067,7 +7118,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_section_initialize(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_section_initialize(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Initialize items feeds for sections screen
         Args:
             data: Request body data
@@ -7114,7 +7165,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_theme_variant(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_theme_variant(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Update Theme Variant
         Args:
             data: Request body data
@@ -7148,7 +7199,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_model_explainability_getimportantfeatures(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7169,7 +7220,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_next_best_action_predict_nba_recommendation(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7190,7 +7241,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_next_best_action_train_nba_recommendation(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7224,7 +7275,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlq_nlq_query_log(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlq_nlq_query_log(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7244,7 +7295,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_nlu_cancelLookupTraining_lookupId(
-        self, lookupId: str, data: Dict[str, Any]
+        self, lookupId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7280,7 +7331,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_clonemodel(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_clonemodel(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7300,7 +7351,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_nlu_enableSysEntity(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7364,7 +7415,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_nlu_getEntities(
-        self, modelId: Optional[str] = None, intentId: Optional[str] = None
+        self, modelId: str | None = None, intentId: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7382,7 +7433,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_nlu_getLookupModelDetails(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7403,7 +7454,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_nlu_getMappedIntents(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7438,7 +7489,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_importModelCSV(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_importModelCSV(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7457,7 +7508,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_importentity(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_importentity(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7476,7 +7527,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_importintent(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_importintent(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7510,7 +7561,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_predictSync(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_predictSync(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7529,7 +7580,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_publish(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_publish(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7548,7 +7599,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_test(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_test(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7567,7 +7618,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_train(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_train(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7587,7 +7638,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_nlu_trainLookup_lookupId(
-        self, lookupId: str, data: Dict[str, Any]
+        self, lookupId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7609,7 +7660,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_nlu_updateUtterance(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7629,7 +7680,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_nlu_validate(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_nlu_validate(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -7650,10 +7701,10 @@ class ServiceNowDataSource:
 
     async def post_on_call_rota_addextracoverage(
         self,
-        data: Dict[str, Any],
-        rota_id: Optional[str] = None,
-        end_date: Optional[str] = None,
-        start_date: Optional[str] = None,
+        data: dict[str, Any],
+        rota_id: str | None = None,
+        end_date: str | None = None,
+        start_date: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7680,7 +7731,7 @@ class ServiceNowDataSource:
 
     async def post_on_call_rota_addoverride(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         roster_id: str,
         start_date_time: str,
         end_date_time: str,
@@ -7715,11 +7766,11 @@ class ServiceNowDataSource:
 
     async def post_on_call_rota_addtimeoff(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         end_date_time: str,
         start_date_time: str,
         user_id: str,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7763,7 +7814,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_contact_preferences_save(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7821,7 +7872,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_creation_wizard_deleteRoster(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7842,7 +7893,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_creation_wizard_deleteShift(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7926,7 +7977,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_creation_wizard_shiftStateUpdate(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -7947,7 +7998,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_creationwizard_save(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8118,7 +8169,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_steps_incrementescalationlevel_escalation_set_sys_id(
-        self, escalation_set_sys_id: str, data: Dict[str, Any]
+        self, escalation_set_sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8276,7 +8327,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_getrostersbyrotas(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8297,7 +8348,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_on_call_rota_getrostersbyrotas_rota_id(
-        self, rota_id: str, rota_ids: Optional[str] = None
+        self, rota_id: str, rota_ids: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8315,7 +8366,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_getrotasbygroup(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8353,7 +8404,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_glidestack_action(
-        self, action: str, data: Dict[str, Any]
+        self, action: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8407,9 +8458,9 @@ class ServiceNowDataSource:
         self,
         end_date_time: str,
         start_date_time: str,
-        rota_ids: Optional[str] = None,
-        roster_ids: Optional[str] = None,
-        group_id: Optional[str] = None,
+        rota_ids: str | None = None,
+        roster_ids: str | None = None,
+        group_id: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8478,7 +8529,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_replaceCoverage(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8548,7 +8599,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_saveUserContactPreference(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8569,7 +8620,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_searchoncallgroups(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8604,7 +8655,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_on_call_rota_sections(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8641,7 +8692,7 @@ class ServiceNowDataSource:
     async def get_on_call_rota_subscribeCalendar_tiny_id(
         self,
         tiny_id: str,
-        nolog_token: Optional[str] = None,  # Changed from ni.nolog.token
+        nolog_token: str | None = None,  # Changed from ni.nolog.token
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8660,10 +8711,10 @@ class ServiceNowDataSource:
 
     async def get_on_call_rota_whoisoncall(
         self,
-        rota_ids: Optional[str] = None,
-        roster_ids: Optional[str] = None,
-        group_ids: Optional[str] = None,
-        date_time: Optional[str] = None,
+        rota_ids: str | None = None,
+        roster_ids: str | None = None,
+        group_ids: str | None = None,
+        date_time: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8741,7 +8792,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_scripted_setup_and_execute(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8885,7 +8936,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_par_scheduled_export_save(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Inserts new scheduled job for export
         Args:
@@ -8906,7 +8957,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def patch_par_scheduled_export_update_export_id(
-        self, export_id: str, data: Dict[str, Any]
+        self, export_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8928,7 +8979,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_passwordexclusionlist_progress_worker_state_workerId(
-        self, data: Dict[str, Any], workerId: Optional[str] = None
+        self, data: dict[str, Any], workerId: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8953,7 +9004,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_passwordexclusionlist_reinstall(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8974,7 +9025,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_passwordexclusionlist_set_group_group_id(
-        self, data: Dict[str, Any], group_id: Optional[str] = None
+        self, data: dict[str, Any], group_id: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -8997,7 +9048,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_passwordexclusionlist_uninstall(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9145,7 +9196,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_agent_intelligence_solution_create_training_request(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9166,7 +9217,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_agent_intelligence_train_default_solutions(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9206,7 +9257,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_push_installation_pushApplicationName(
-        self, pushApplicationName: str, data: Dict[str, Any]
+        self, pushApplicationName: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Adds or updates tokens to receive push notifications
         Args:
@@ -9228,7 +9279,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_push_removeInstallation_pushApplicationName(
-        self, pushApplicationName: str, data: Dict[str, Any]
+        self, pushApplicationName: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Deactivates tokens to receive push notifications
         Args:
@@ -9250,7 +9301,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_count_state_platform_pushApplicationName(
-        self, platform: str, pushApplicationName: str, data: Dict[str, Any]
+        self, platform: str, pushApplicationName: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Enable/disable sending badge count for push notifications to user
         Args:
@@ -9279,7 +9330,7 @@ class ServiceNowDataSource:
         platform: str,
         pushApplicationName: str,
         types: str,
-        mobileRequestIds: Optional[str] = None,
+        mobileRequestIds: str | None = None,
     ) -> ServiceNowResponse:
         """Delete push notifications
         Args:
@@ -9301,7 +9352,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_notification_status_platform_pushApplicationName_state(
-        self, platform: str, pushApplicationName: str, state: str, data: Dict[str, Any]
+        self, platform: str, pushApplicationName: str, state: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """Read/Unread push notifications
         Args:
@@ -9331,8 +9382,8 @@ class ServiceNowDataSource:
         platform: str,
         pushApplicationName: str,
         types: str,
-        sysparm_limit: Optional[str] = None,
-        sysparm_offset: Optional[str] = None,
+        sysparm_limit: str | None = None,
+        sysparm_offset: str | None = None,
     ) -> ServiceNowResponse:
         """Fetch Push notifications for mobile
         Args:
@@ -9355,7 +9406,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_related_list_edit_create(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9407,7 +9458,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_now_reporting_alias_report_id(
-        self, report_id: str, data: Dict[str, Any]
+        self, report_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9430,11 +9481,11 @@ class ServiceNowDataSource:
 
     async def get_now_reporting(
         self,
-        sysparm_contains: Optional[str] = None,
-        sysparm_sortby: Optional[str] = None,
-        sysparm_sortdir: Optional[str] = None,
-        sysparm_page: Optional[str] = None,
-        sysparm_per_page: Optional[str] = None,
+        sysparm_contains: str | None = None,
+        sysparm_sortby: str | None = None,
+        sysparm_sortdir: str | None = None,
+        sysparm_page: str | None = None,
+        sysparm_per_page: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve the list of reports
         Args:
@@ -9462,11 +9513,11 @@ class ServiceNowDataSource:
 
     async def get_reporting_favorites(
         self,
-        sysparm_contains: Optional[str] = None,
-        sysparm_sortby: Optional[str] = None,
-        sysparm_sortdir: Optional[str] = None,
-        sysparm_page: Optional[str] = None,
-        sysparm_per_page: Optional[str] = None,
+        sysparm_contains: str | None = None,
+        sysparm_sortby: str | None = None,
+        sysparm_sortdir: str | None = None,
+        sysparm_page: str | None = None,
+        sysparm_per_page: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve the list of favorite reports
         Args:
@@ -9492,7 +9543,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def put_reporting_favorites(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def put_reporting_favorites(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -9626,7 +9677,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_sa_business_service_submitQuestionnaire(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9647,7 +9698,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sa_business_service_updateBusinessService(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9685,7 +9736,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_schedule_page_event_schedule_page_sys_id(
-        self, schedule_page_sys_id: str, data: Dict[str, Any]
+        self, schedule_page_sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9725,7 +9776,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def put_schedule_page_info_info_type_schedule_page_sys_id(
-        self, info_type: str, schedule_page_sys_id: str, data: Dict[str, Any]
+        self, info_type: str, schedule_page_sys_id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -9766,34 +9817,34 @@ class ServiceNowDataSource:
 
     async def get_pa_scorecards(
         self,
-        sysparm_uuid: Optional[str] = None,
-        sysparm_breakdown: Optional[str] = None,
-        sysparm_breakdown_relation: Optional[str] = None,
-        sysparm_elements_filter: Optional[str] = None,
-        sysparm_display: Optional[str] = None,
-        sysparm_favorites: Optional[str] = None,
-        sysparm_key: Optional[str] = None,
-        sysparm_target: Optional[str] = None,
-        sysparm_contains: Optional[str] = None,
-        sysparm_tags: Optional[str] = None,
-        sysparm_per_page: Optional[str] = None,
-        sysparm_page: Optional[str] = None,
-        sysparm_sortby: Optional[str] = None,
-        sysparm_sortdir: Optional[str] = None,
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_include_scores: Optional[str] = None,
-        sysparm_from: Optional[str] = None,
-        sysparm_to: Optional[str] = None,
-        sysparm_step: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_include_available_breakdowns: Optional[str] = None,
-        sysparm_include_available_aggregates: Optional[str] = None,
-        sysparm_include_realtime: Optional[str] = None,
-        sysparm_include_target_color_scheme: Optional[str] = None,
-        sysparm_include_forecast_scores: Optional[str] = None,
-        sysparm_include_trendline_scores: Optional[str] = None,
-        sysparm_include_prediction_interval: Optional[str] = None,
+        sysparm_uuid: str | None = None,
+        sysparm_breakdown: str | None = None,
+        sysparm_breakdown_relation: str | None = None,
+        sysparm_elements_filter: str | None = None,
+        sysparm_display: str | None = None,
+        sysparm_favorites: str | None = None,
+        sysparm_key: str | None = None,
+        sysparm_target: str | None = None,
+        sysparm_contains: str | None = None,
+        sysparm_tags: str | None = None,
+        sysparm_per_page: str | None = None,
+        sysparm_page: str | None = None,
+        sysparm_sortby: str | None = None,
+        sysparm_sortdir: str | None = None,
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_include_scores: str | None = None,
+        sysparm_from: str | None = None,
+        sysparm_to: str | None = None,
+        sysparm_step: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_include_available_breakdowns: str | None = None,
+        sysparm_include_available_aggregates: str | None = None,
+        sysparm_include_realtime: str | None = None,
+        sysparm_include_target_color_scheme: str | None = None,
+        sysparm_include_forecast_scores: str | None = None,
+        sysparm_include_trendline_scores: str | None = None,
+        sysparm_include_prediction_interval: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve list of Scorecards
         Args:
@@ -9866,7 +9917,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_pa_scorecards(
-        self, data: Dict[str, Any], sysparm_uuid: Optional[str] = None
+        self, data: dict[str, Any], sysparm_uuid: str | None = None
     ) -> ServiceNowResponse:
         """Select a Scorecard as favorite
         Args:
@@ -9888,7 +9939,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def delete_pa_scorecards(
-        self, sysparm_uuid: Optional[str] = None
+        self, sysparm_uuid: str | None = None
     ) -> ServiceNowResponse:
         """Deselect a Scorecard as favorite
         Args:
@@ -9983,7 +10034,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_search_sources(
-        self, sysparm_search_context_config_id: Optional[str] = None
+        self, sysparm_search_context_config_id: str | None = None
     ) -> ServiceNowResponse:
         """Get search sources of an application
         Args:
@@ -10004,9 +10055,9 @@ class ServiceNowDataSource:
     async def get_sources_textsearch(
         self,
         sysparm_term: str,
-        sysparm_limit: Optional[str] = None,
-        sysparm_page: Optional[str] = None,
-        sysparm_search_sources: Optional[str] = None,
+        sysparm_limit: str | None = None,
+        sysparm_page: str | None = None,
+        sysparm_search_sources: str | None = None,
     ) -> ServiceNowResponse:
         """Perform text search against multiple search sources using provided term without interleaving
         Args:
@@ -10034,8 +10085,8 @@ class ServiceNowDataSource:
         self,
         sys_id: str,
         sysparm_term: str,
-        sysparm_limit: Optional[str] = None,
-        sysparm_page: Optional[str] = None,
+        sysparm_limit: str | None = None,
+        sysparm_page: str | None = None,
     ) -> ServiceNowResponse:
         """Perform text search against a single search source using provided term
         Args:
@@ -10062,8 +10113,8 @@ class ServiceNowDataSource:
         self,
         sysparm_search_context_config_id: str,
         sysparm_term: str,
-        sysparm_next_token: Optional[str] = None,
-        sysparm_search_sources: Optional[str] = None,
+        sysparm_next_token: str | None = None,
+        sysparm_search_sources: str | None = None,
     ) -> ServiceNowResponse:
         """Perform text search using provided term
         Args:
@@ -10141,7 +10192,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sla_glidestack_action(
-        self, action: str, data: Dict[str, Any]
+        self, action: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10242,7 +10293,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_help_documents(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_help_documents(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -10276,7 +10327,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_help_feedback(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_help_feedback(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -10313,7 +10364,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_help_interactions_id(
-        self, id: str, data: Dict[str, Any]
+        self, id: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10364,8 +10415,8 @@ class ServiceNowDataSource:
 
     async def get_sn_exp_framework_context(
         self,
-        exp_param_name: Optional[str] = None,
-        fallback_variant: Optional[str] = None,
+        exp_param_name: str | None = None,
+        fallback_variant: str | None = None,
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10385,7 +10436,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_sn_exp_framework_feedback(
-        self, data: Dict[str, Any], exp_param_name: Optional[str] = None
+        self, data: dict[str, Any], exp_param_name: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10406,7 +10457,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_now_splunk_token(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_now_splunk_token(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -10446,8 +10497,8 @@ class ServiceNowDataSource:
         self,
         sysparm_term: str,
         sysparm_sp_portal_id: str,
-        sysparm_suggestions_limit: Optional[str] = None,
-        sysparm_search_sources: Optional[str] = None,
+        sysparm_suggestions_limit: str | None = None,
+        sysparm_search_sources: str | None = None,
     ) -> ServiceNowResponse:
         """SERVICE PORTAL API: Get suggestions for a term
         Args:
@@ -10475,7 +10526,7 @@ class ServiceNowDataSource:
         self,
         sysparm_term: str,
         sysparm_search_context_config_id: str,
-        sysparm_search_sources: Optional[str] = None,
+        sysparm_search_sources: str | None = None,
     ) -> ServiceNowResponse:
         """SCOPED APPLICATION API: Get suggestions for a term
         Args:
@@ -10498,7 +10549,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def get_syntax_editor_cache_token_type(
-        self, token_type: str, name: Optional[str] = None
+        self, token_type: str, name: str | None = None
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10530,7 +10581,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_syntax_editor_getReferences(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10551,7 +10602,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_syntax_editor_intellisense_tableName(
-        self, tableName: str, data: Dict[str, Any]
+        self, tableName: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -10575,19 +10626,19 @@ class ServiceNowDataSource:
     async def get_now_table_tableName(
         self,
         tableName: str,
-        sysparm_query: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_offset: Optional[str] = None,
-        sysparm_display_value: Optional[str] = None,
-        sysparm_no_count: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_suppress_pagination_header: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
-        sysparm_query_category: Optional[str] = None,
-        sysparm_query_no_domain: Optional[str] = None,
-        impersonate_user: Optional[str] = None,
-    ) -> ServiceNowResponse:
+        sysparm_query: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_offset: str | None = None,
+        sysparm_display_value: str | None = None,
+        sysparm_no_count: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_suppress_pagination_header: str | None = None,
+        sysparm_view: str | None = None,
+        sysparm_query_category: str | None = None,
+        sysparm_query_no_domain: str | None = None,
+        impersonate_user: str | None = None,
+    ) -> TableAPIResponse:
         """Retrieve records from a table
         Args:
             tableName: Path parameter
@@ -10603,7 +10654,9 @@ class ServiceNowDataSource:
             sysparm_no_count: Do not execute a select count(*) on table (default: false)
             impersonate_user: ServiceNow username or sys_id to impersonate (requires impersonator role)
         Returns:
-            ServiceNowResponse object with success status and data/error"""
+            TableAPIResponse with records in .result field
+        Raises:
+            ServiceNowAPIError: If API request fails"""
         url = self._build_url(f"/table/{tableName}")
         params = self._build_params(
             sysparm_query=sysparm_query,
@@ -10632,18 +10685,32 @@ class ServiceNowDataSource:
         )
 
         response = await self.client.execute(request)
-        return await self._handle_response(response)
+
+        # Log table-specific response for debugging
+        if response.status < HttpStatusCode.BAD_REQUEST.value and response.text():
+            try:
+                response_data = response.json()
+                self.logger.debug(
+                    f"Table API Response for table='{tableName}': "
+                    f"status={response.status}, "
+                    f"result_count={len(response_data.get('result', []))}, "
+                    f"keys={list(response_data.keys())}"
+                )
+            except Exception:
+                pass
+
+        return await self._handle_table_response(response)
 
     async def post_now_table_tableName(
         self,
         tableName: str,
-        data: Dict[str, Any],
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_input_display_value: Optional[str] = None,
-        sysparm_suppress_auto_sys_field: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_input_display_value: str | None = None,
+        sysparm_suppress_auto_sys_field: str | None = None,
+        sysparm_view: str | None = None,
     ) -> ServiceNowResponse:
         """Create a record
         Args:
@@ -10681,11 +10748,11 @@ class ServiceNowDataSource:
         self,
         tableName: str,
         sys_id: str,
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
-        sysparm_query_no_domain: Optional[str] = None,
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_view: str | None = None,
+        sysparm_query_no_domain: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve a record
         Args:
@@ -10717,14 +10784,14 @@ class ServiceNowDataSource:
         self,
         tableName: str,
         sys_id: str,
-        data: Dict[str, Any],
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_input_display_value: Optional[str] = None,
-        sysparm_suppress_auto_sys_field: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
-        sysparm_query_no_domain: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_input_display_value: str | None = None,
+        sysparm_suppress_auto_sys_field: str | None = None,
+        sysparm_view: str | None = None,
+        sysparm_query_no_domain: str | None = None,
     ) -> ServiceNowResponse:
         """Modify a record
         Args:
@@ -10762,7 +10829,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def delete_now_table_tableName_sys_id(
-        self, tableName: str, sys_id: str, sysparm_query_no_domain: Optional[str] = None
+        self, tableName: str, sys_id: str, sysparm_query_no_domain: str | None = None
     ) -> ServiceNowResponse:
         """Delete a record
         Args:
@@ -10784,14 +10851,14 @@ class ServiceNowDataSource:
         self,
         tableName: str,
         sys_id: str,
-        data: Dict[str, Any],
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_input_display_value: Optional[str] = None,
-        sysparm_suppress_auto_sys_field: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
-        sysparm_query_no_domain: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_input_display_value: str | None = None,
+        sysparm_suppress_auto_sys_field: str | None = None,
+        sysparm_view: str | None = None,
+        sysparm_query_no_domain: str | None = None,
     ) -> ServiceNowResponse:
         """Update a record
         Args:
@@ -10828,7 +10895,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def put_now_table_batch_api(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def put_now_table_batch_api(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -10848,7 +10915,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_now_table_batch_api(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11004,7 +11071,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_now_ua_gcf(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_now_ua_gcf(self, data: dict[str, Any]) -> ServiceNowResponse:
         """
         Args:
             data: Request body data
@@ -11024,7 +11091,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_ua_gcf_postAnalytic(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11047,8 +11114,8 @@ class ServiceNowDataSource:
     async def get_now_uiextension_name(
         self,
         name: str,
-        sysparm_scope: Optional[str] = None,
-        sysparm_variables: Optional[str] = None,
+        sysparm_scope: str | None = None,
+        sysparm_variables: str | None = None,
     ) -> ServiceNowResponse:
         """Get the HTML output from running a UIExtensionPoint
         Args:
@@ -11071,16 +11138,16 @@ class ServiceNowDataSource:
     async def get_ui_glideRecord_tableName(
         self,
         tableName: str,
-        sysparm_query: Optional[str] = None,
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_suppress_pagination_header: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_limit: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
-        sysparm_query_category: Optional[str] = None,
-        sysparm_orderBy: Optional[str] = None,
-        sysparm_orderByDesc: Optional[str] = None,
+        sysparm_query: str | None = None,
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_suppress_pagination_header: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_limit: str | None = None,
+        sysparm_view: str | None = None,
+        sysparm_query_category: str | None = None,
+        sysparm_orderBy: str | None = None,
+        sysparm_orderByDesc: str | None = None,
     ) -> ServiceNowResponse:
         """Query records from a table
         Args:
@@ -11120,8 +11187,8 @@ class ServiceNowDataSource:
     async def put_ui_glideRecord_tableName(
         self,
         tableName: str,
-        data: Dict[str, Any],
-        sysparm_input_display_value: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_input_display_value: str | None = None,
     ) -> ServiceNowResponse:
         """Update multiple record
         Args:
@@ -11148,13 +11215,13 @@ class ServiceNowDataSource:
     async def post_ui_glideRecord_tableName(
         self,
         tableName: str,
-        data: Dict[str, Any],
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_input_display_value: Optional[str] = None,
-        sysparm_suppress_auto_sys_field: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_input_display_value: str | None = None,
+        sysparm_suppress_auto_sys_field: str | None = None,
+        sysparm_view: str | None = None,
     ) -> ServiceNowResponse:
         """Create a record
         Args:
@@ -11192,10 +11259,10 @@ class ServiceNowDataSource:
         self,
         tableName: str,
         sys_id: str,
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_view: str | None = None,
     ) -> ServiceNowResponse:
         """Retrieve a record
         Args:
@@ -11225,13 +11292,13 @@ class ServiceNowDataSource:
         self,
         tableName: str,
         sys_id: str,
-        data: Dict[str, Any],
-        sysparm_display_value: Optional[str] = None,
-        sysparm_exclude_reference_link: Optional[str] = None,
-        sysparm_fields: Optional[str] = None,
-        sysparm_input_display_value: Optional[str] = None,
-        sysparm_suppress_auto_sys_field: Optional[str] = None,
-        sysparm_view: Optional[str] = None,
+        data: dict[str, Any],
+        sysparm_display_value: str | None = None,
+        sysparm_exclude_reference_link: str | None = None,
+        sysparm_fields: str | None = None,
+        sysparm_input_display_value: str | None = None,
+        sysparm_suppress_auto_sys_field: str | None = None,
+        sysparm_view: str | None = None,
     ) -> ServiceNowResponse:
         """Update a record
         Args:
@@ -11319,7 +11386,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_virtual_agent_design_intent(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11340,7 +11407,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_virtual_agent_design_model(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11412,7 +11479,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_model_validate_modelId(
-        self, modelId: str, data: Dict[str, Any]
+        self, modelId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11434,7 +11501,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_virtual_agent_design_request_translation(
-        self, data: Dict[str, Any]
+        self, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11486,7 +11553,7 @@ class ServiceNowDataSource:
         return await self._handle_response(response)
 
     async def post_virtual_agent_design_preferences_userId(
-        self, userId: str, data: Dict[str, Any]
+        self, userId: str, data: dict[str, Any]
     ) -> ServiceNowResponse:
         """
         Args:
@@ -11555,7 +11622,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_wrapup_code(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_wrapup_code(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Create Wrap Up Codes
         Args:
             data: Request body data
@@ -11609,7 +11676,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def post_segment_create(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def post_segment_create(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Create Wrap Up Segment
         Args:
             data: Request body data
@@ -11628,7 +11695,7 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
         return await self._handle_response(response)
 
-    async def put_segment_update(self, data: Dict[str, Any]) -> ServiceNowResponse:
+    async def put_segment_update(self, data: dict[str, Any]) -> ServiceNowResponse:
         """Update Wrap Up Segment
         Args:
             data: Request body data
@@ -11669,7 +11736,7 @@ class ServiceNowDataSource:
     # =========================================================================
 
     async def get_kb_knowledge_by_id(
-        self, sys_id: str, fields: Optional[List[str]] = None
+        self, sys_id: str, fields: list[str] | None = None
     ) -> ServiceNowResponse:
         """
         Get a single KB article by sys_id with specified fields.
@@ -11725,7 +11792,7 @@ class ServiceNowDataSource:
             bytes: Binary file content
 
         Raises:
-            Exception: If download fails
+            ServiceNowAPIError: If download fails
         """
         url = self._build_url(f"/attachment/{attachment_sys_id}/file")
 
@@ -11735,7 +11802,11 @@ class ServiceNowDataSource:
         response = await self.client.execute(request)
 
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
-            raise Exception(f"Failed to download attachment: HTTP {response.status}")
+            raise ServiceNowAPIError(
+                status_code=response.status,
+                message=f"Failed to download attachment {attachment_sys_id}",
+                details=response.text()
+            )
 
         # Return binary content
         return response.response.content

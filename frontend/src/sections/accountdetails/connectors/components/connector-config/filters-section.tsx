@@ -87,8 +87,8 @@ const FiltersSection = forwardRef<HTMLDivElement, FiltersSectionProps>(
   const scrollPositionsRef = useRef<Record<string, number>>({}); // Store scroll positions per field
   const listboxRefs = useRef<Record<string, HTMLElement | null>>({}); // Store listbox refs per field
   const MAX_OPTIONS_IN_MEMORY = 5000; // Maximum options to keep in memory for performance
-  const INITIAL_LOAD_LIMIT = 100; // Initial load limit
-  const PAGINATION_LIMIT = 100; // Options per page
+  const INITIAL_LOAD_LIMIT = 20; // Initial load limit
+  const PAGINATION_LIMIT = 20; // Options per page
 
   // Fetch dynamic options when autocomplete opens
   const fetchDynamicOptions = useCallback(async (

@@ -94,7 +94,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-deep")
+    c = SharePointConnector(logger, dep, dsp, cs, "conn-sp-deep", "team", "test-user-id")
     return c, dep, dsp, cs, tx
 
 

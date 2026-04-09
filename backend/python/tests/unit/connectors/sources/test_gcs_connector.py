@@ -41,12 +41,33 @@ def mock_logger():
 
 @pytest.fixture()
 def mock_data_entities_processor():
+    from app.models.entities import AppMetadata
+    
     proc = MagicMock()
     proc.org_id = "org-gcs-1"
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
+    proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="gcs-conn-1",
+        name="GCS Connector",
+        type="google_cloud_storage",
+        app_group="STORAGE",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-gcs-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -56,7 +77,8 @@ def mock_data_store_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.ensure_team_app_edge = AsyncMock()
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
@@ -83,6 +105,8 @@ def gcs_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="gcs-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -342,18 +366,18 @@ class TestGCSRecordGroupsForBuckets:
         await gcs_connector._create_record_groups_for_buckets([])
 
     async def test_create_record_groups_team_scope(self, gcs_connector):
-        gcs_connector.connector_scope = ConnectorScope.TEAM.value
+        gcs_connector.scope = ConnectorScope.TEAM.value
         await gcs_connector._create_record_groups_for_buckets(["bucket1"])
         gcs_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_personal_scope_with_creator(self, gcs_connector, mock_data_store_provider):
-        gcs_connector.connector_scope = ConnectorScope.PERSONAL.value
+        gcs_connector.scope = ConnectorScope.PERSONAL.value
         gcs_connector.created_by = "user-1"
         await gcs_connector._create_record_groups_for_buckets(["bucket1"])
         gcs_connector.data_entities_processor.on_new_record_groups.assert_awaited()
 
     async def test_create_record_groups_retry_on_lock(self, gcs_connector):
-        gcs_connector.connector_scope = ConnectorScope.TEAM.value
+        gcs_connector.scope = ConnectorScope.TEAM.value
         gcs_connector.data_entities_processor.on_new_record_groups = AsyncMock(
             side_effect=[Exception("timeout waiting to lock"), None]
         )
@@ -415,6 +439,7 @@ def _make_mock_tx_store(existing_record=None, existing_revision_record=None, use
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_record_by_external_revision_id = AsyncMock(return_value=existing_revision_record)
     tx.get_user_by_id = AsyncMock(return_value=user or {"email": "user@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value=user or {"email": "user@test.com"})
     tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     return tx
 
@@ -447,6 +472,15 @@ def mock_data_entities_processor_fullcov():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-gcs-95",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -475,6 +509,8 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov, mock_da
             data_store_provider=mock_data_store_provider_fullcov,
             config_service=mock_config_service_fullcov,
             connector_id="gcs-95-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -492,7 +528,11 @@ class TestHelpers95:
     def test_get_folder_segments_leading_trailing(self):
         assert get_folder_path_segments_from_key("/a/b/") == ["a"]
 
-    def test_get_mimetype_known_and_in_enum(self):
+    @patch(
+        "app.connectors.sources.google_cloud_storage.connector.mimetypes.guess_type",
+        return_value=("application/zip", None),
+    )
+    def test_get_mimetype_known_and_in_enum(self, _mock_guess):
         result = get_mimetype_for_gcs("test.zip")
         assert result == "application/zip"
 
@@ -617,7 +657,7 @@ class TestInit95:
         ):
             mock_build.return_value = MagicMock()
             await connector.init()
-            assert connector.connector_scope == "TEAM"
+            assert connector.scope == ConnectorScope.PERSONAL.value
 
 
 class TestRunSync95:
@@ -700,7 +740,7 @@ class TestRunSync95:
 class TestCreateRecordGroupsForBuckets95:
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         connector.data_store_provider = _make_mock_data_store_provider(user={"email": "owner@test.com"})
         await connector._create_record_groups_for_buckets(["b1"])
@@ -708,17 +748,17 @@ class TestCreateRecordGroupsForBuckets95:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_email(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         connector.data_store_provider = _make_mock_data_store_provider(user={"email": None})
         await connector._create_record_groups_for_buckets(["b1"])
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_lookup_fails(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         tx = AsyncMock()
-        tx.get_user_by_id = AsyncMock(side_effect=Exception("db error"))
+        tx.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
         provider = MagicMock()
 
         @asynccontextmanager
@@ -731,13 +771,13 @@ class TestCreateRecordGroupsForBuckets95:
 
     @pytest.mark.asyncio
     async def test_skip_none_bucket_names(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         await connector._create_record_groups_for_buckets([None, "b1", None])
         assert connector.data_entities_processor.on_new_record_groups.await_count == 1
 
     @pytest.mark.asyncio
     async def test_lock_timeout_retry(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         connector.data_entities_processor.on_new_record_groups = AsyncMock(
             side_effect=[Exception("timeout waiting to lock key"), None]
         )
@@ -746,7 +786,7 @@ class TestCreateRecordGroupsForBuckets95:
 
     @pytest.mark.asyncio
     async def test_lock_timeout_exhausted(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         connector.data_entities_processor.on_new_record_groups = AsyncMock(
             side_effect=Exception("timeout waiting to lock key")
         )
@@ -755,7 +795,7 @@ class TestCreateRecordGroupsForBuckets95:
 
     @pytest.mark.asyncio
     async def test_non_lock_error(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         connector.data_entities_processor.on_new_record_groups = AsyncMock(
             side_effect=Exception("other error")
         )
@@ -1086,7 +1126,7 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_new_file(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "path/file.txt",
             "LastModified": "2025-06-01T00:00:00Z",
@@ -1104,7 +1144,7 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_folder_object(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "folder/",
             "LastModified": "2025-06-01T00:00:00Z",
@@ -1122,7 +1162,7 @@ class TestProcessGcsObject95:
         existing.version = 1
         existing.source_created_at = 1700000000000
         connector.data_store_provider = _make_mock_data_store_provider(existing)
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
 
         obj = {
             "Key": "file.txt",
@@ -1143,7 +1183,7 @@ class TestProcessGcsObject95:
         existing.version = 1
         existing.source_created_at = 1700000000000
         connector.data_store_provider = _make_mock_data_store_provider(existing)
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
 
         obj = {
             "Key": "file.txt",
@@ -1165,7 +1205,7 @@ class TestProcessGcsObject95:
         connector.data_store_provider = _make_mock_data_store_provider(
             existing_record=None, existing_revision_record=existing
         )
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
 
         obj = {
             "Key": "new/file.txt",
@@ -1179,7 +1219,7 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_no_revision_available(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         obj = {
             "Key": "file.txt",
             "LastModified": "2025-06-01T00:00:00Z",
@@ -1197,7 +1237,7 @@ class TestProcessGcsObject95:
         existing.version = 0
         existing.source_created_at = 1700000000000
         connector.data_store_provider = _make_mock_data_store_provider(existing)
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
 
         obj = {"Key": "file.txt", "LastModified": "2025-06-01T00:00:00Z", "Size": 100}
         record, perms = await connector._process_gcs_object(obj, "bucket")
@@ -1205,7 +1245,7 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_indexing_filter_disables_indexing(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         mock_indexing_filters = MagicMock()
         mock_indexing_filters.is_enabled.return_value = False
         connector.indexing_filters = mock_indexing_filters
@@ -1222,14 +1262,14 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_invalid_last_modified(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         obj = {"Key": "file.txt", "LastModified": "invalid-date", "Size": 100}
         record, perms = await connector._process_gcs_object(obj, "bucket")
         assert record is not None
 
     @pytest.mark.asyncio
     async def test_no_last_modified(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         obj = {"Key": "file.txt", "Size": 100}
         record, perms = await connector._process_gcs_object(obj, "bucket")
         assert record is not None
@@ -1246,14 +1286,14 @@ class TestProcessGcsObject95:
 class TestCreateGcsPermissions95:
     @pytest.mark.asyncio
     async def test_team_scope(self, connector):
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_gcs_permissions("bucket", "key")
         assert len(perms) == 1
         assert perms[0].entity_type.value == "ORG"
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_gcs_permissions("bucket", "key")
         assert len(perms) == 1
@@ -1261,17 +1301,17 @@ class TestCreateGcsPermissions95:
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_gcs_permissions("bucket", "key")
         assert len(perms) == 1
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_lookup_fails(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         tx = AsyncMock()
-        tx.get_user_by_id = AsyncMock(side_effect=Exception("db error"))
+        tx.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
         provider = MagicMock()
 
         @asynccontextmanager
@@ -1285,7 +1325,7 @@ class TestCreateGcsPermissions95:
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector):
-        connector.connector_scope = ConnectorScope.PERSONAL.value
+        connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         connector.data_store_provider = _make_mock_data_store_provider(user={"email": None})
         perms = await connector._create_gcs_permissions("bucket", "key")
@@ -1592,7 +1632,7 @@ class TestCheckAndFetchUpdatedRecord95:
     @pytest.mark.asyncio
     async def test_revision_changed(self, connector):
         connector.data_source = MagicMock()
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="bucket/file.txt",
@@ -1614,7 +1654,7 @@ class TestCheckAndFetchUpdatedRecord95:
     @pytest.mark.asyncio
     async def test_missing_current_revision(self, connector):
         connector.data_source = MagicMock()
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="bucket/file.txt",
@@ -1629,7 +1669,7 @@ class TestCheckAndFetchUpdatedRecord95:
     @pytest.mark.asyncio
     async def test_missing_stored_revision(self, connector):
         connector.data_source = MagicMock()
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="bucket/file.txt",
@@ -1644,7 +1684,7 @@ class TestCheckAndFetchUpdatedRecord95:
     @pytest.mark.asyncio
     async def test_indexing_disabled(self, connector):
         connector.data_source = MagicMock()
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         mock_indexing_filters = MagicMock()
         mock_indexing_filters.is_enabled.return_value = False
         connector.indexing_filters = mock_indexing_filters
@@ -1674,7 +1714,7 @@ class TestCheckAndFetchUpdatedRecord95:
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, connector):
         connector.data_source = MagicMock()
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="/file.txt",
@@ -1689,7 +1729,7 @@ class TestCheckAndFetchUpdatedRecord95:
     @pytest.mark.asyncio
     async def test_folder_record(self, connector):
         connector.data_source = MagicMock()
-        connector.connector_scope = ConnectorScope.TEAM.value
+        connector.scope = ConnectorScope.TEAM.value
         record = MagicMock(
             id="r1", external_record_group_id="bucket",
             external_record_id="bucket/folder/",
@@ -1793,6 +1833,8 @@ class TestCreateConnector95:
                 data_store_provider=mock_data_store_provider_fullcov,
                 config_service=mock_config_service_fullcov,
                 connector_id="gcs-new-1",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(result, GCSConnector)
             mock_proc.initialize.assert_awaited_once()

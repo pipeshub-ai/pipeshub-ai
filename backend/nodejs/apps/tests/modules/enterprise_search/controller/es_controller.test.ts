@@ -10752,4 +10752,161 @@ describe('Enterprise Search Controller', () => {
       expect(next.called).to.be.true
     })
   })
+
+  // -----------------------------------------------------------------------
+  // deleteAgentConversationById — error catch path (lines 6482-6490)
+  // -----------------------------------------------------------------------
+  describe('deleteAgentConversationById - error catch path', () => {
+    it('should call next with error when conversation.save() throws during delete', async () => {
+      // findOne resolves → validateAgentConversationAccess succeeds
+      // save() throws → deleteAgentConversation re-throws → hits catch 6482-6490
+      const mockConv = {
+        _id: new mongoose.Types.ObjectId(VALID_OID),
+        isDeleted: false,
+        deletedBy: null,
+        lastActivityAt: null,
+        save: sinon.stub().rejects(new Error('DB write error')),
+      }
+      sinon.stub(AgentConversation, 'findOne').resolves(mockConv as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(VALID_OID2),
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteAgentConversationById(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // addMessageStreamToAgentConversation — catch-block save paths
+  // (lines 6122-6147: save without session, save returns null, save throws)
+  // -----------------------------------------------------------------------
+  describe('addMessageStreamToAgentConversation - catch-block save coverage', () => {
+    function buildMockDocPair(secondSaveResult: 'null' | 'throw') {
+      // savedConvDoc is what the FIRST save inside performAddMessageStream returns.
+      // Its save() is called again inside the outer-catch block.
+      const savedConvDoc: any = {
+        _id: new mongoose.Types.ObjectId(VALID_OID),
+        status: 'inprogress',
+        failReason: undefined,
+        messages: [],
+        modelInfo: {},
+        lastActivityAt: null,
+      }
+      savedConvDoc.save =
+        secondSaveResult === 'null'
+          ? sinon.stub().resolves(null)       // → lines 6128-6138 (null check)
+          : sinon.stub().rejects(new Error('DB write failure')) // → lines 6141-6147
+
+      const mockDoc: any = {
+        _id: new mongoose.Types.ObjectId(VALID_OID),
+        status: 'complete',
+        failReason: undefined,
+        messages: [
+          { messageType: 'user_query', content: 'prev' },
+          { messageType: 'bot_response', content: 'resp' },
+        ],
+        modelInfo: {},
+        lastActivityAt: null,
+        save: sinon.stub().resolves(savedConvDoc), // first save → existingConversation = savedConvDoc
+      }
+      return mockDoc
+    }
+
+    it('should log error and write SSE event when catch-block save returns null (lines 6128-6138)', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const mockDoc = buildMockDocPair('null')
+
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+      // Make executeStream throw so the outer catch is triggered after existingConversation is set
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('AI stream unavailable'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test query' },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(VALID_OID2),
+        },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await handler(req, res)
+
+      // Error SSE event must be written and stream must end
+      const written = res.write.args.map((a: any) => a[0]).join('')
+      expect(written).to.include('error')
+      expect(res.end.called).to.be.true
+    })
+
+    it('should handle inner DB error when catch-block save throws (lines 6141-6147)', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const mockDoc = buildMockDocPair('throw')
+
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('AI unavailable'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test query' },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(VALID_OID2),
+        },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      // Should not throw — inner DB error is swallowed, outer error SSE is still written
+      await handler(req, res)
+
+      const written = res.write.args.map((a: any) => a[0]).join('')
+      expect(written).to.include('error')
+      expect(res.end.called).to.be.true
+    })
+
+    it('should write 500 SSE header when headers not yet sent in outer catch', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+
+      // Return null from findOne so existingConversation stays undefined and the
+      // outer catch hits the !res.headersSent branch (line 6149-6151)
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(null),
+      } as any)
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('early fail'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test' },
+        user: {
+          userId: new mongoose.Types.ObjectId(VALID_OID),
+          orgId: new mongoose.Types.ObjectId(VALID_OID2),
+        },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      // headersSent defaults to false in mock
+      res.headersSent = false
+
+      await handler(req, res)
+
+      // Should have written an error event
+      const written = res.write.args.map((a: any) => a[0]).join('')
+      expect(written).to.include('error')
+    })
+  })
 })

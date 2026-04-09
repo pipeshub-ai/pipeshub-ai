@@ -102,6 +102,13 @@ class DeepAgentState(ChatState, total=False):
     # Domain summaries from complex tasks (structured, concise)
     domain_summaries: Optional[List[Dict[str, Any]]]
 
+    # Temporary buffer for full retrieval tool outputs (context-efficiency optimization).
+    # Populated by _wrap_retrieval_tools_for_context_efficiency in sub_agent.py —
+    # the wrapper stores the full result here and returns only a compact summary to
+    # the react agent's message history to prevent context length explosions.
+    # Consumed (and then popped) by _extract_tool_results in the same call frame.
+    _deep_retrieval_buffer: Optional[List]
+
 
 # ---------------------------------------------------------------------------
 # Defaults for deep-agent-specific fields
@@ -117,6 +124,7 @@ _DEEP_DEFAULTS: Dict[str, Any] = {
     "deep_max_iterations": 3,
     "domain_summaries": [],
     "sub_agent_analyses": [],
+    "_deep_retrieval_buffer": None,
 }
 
 

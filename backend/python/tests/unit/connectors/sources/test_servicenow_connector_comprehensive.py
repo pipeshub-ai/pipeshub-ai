@@ -8,10 +8,22 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
 from app.connectors.sources.servicenow.servicenow.connector import (
     ORGANIZATIONAL_ENTITIES,
     ServiceNowConnector,
 )
+from app.sources.external.servicenow.models import (
+    AttachmentMetadata,
+    KBKnowledge,
+    OrganizationalEntity,
+    ServiceNowAPIError,
+    SysUser,
+    SysUserGroup,
+    TableAPIRecord,
+    TableAPIResponse,
+)
+from app.utils.time_conversion import datetime_to_epoch_ms
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -50,12 +62,19 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
     return provider
 
 
-def _make_api_response(success=True, data=None, error=None):
-    resp = MagicMock()
-    resp.success = success
-    resp.data = data
-    resp.error = error
-    return resp
+def _table_api_response(records: list) -> TableAPIResponse:
+    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
+
+
+def _sys_user_row(**fields: object) -> dict:
+    base = {
+        "company": None,
+        "department": None,
+        "location": None,
+        "cost_center": None,
+    }
+    base.update(fields)
+    return base
 
 
 @pytest.fixture()
@@ -65,8 +84,11 @@ def mock_logger():
 
 @pytest.fixture()
 def mock_data_entities_processor():
-    proc = MagicMock()
-    proc.org_id = "org-sn-1"
+    # Plain object so org_id is a real str (MagicMock breaks Pydantic AppUser/AppUserGroup org_id).
+    class _Proc:
+        org_id = "org-sn-1"
+
+    proc = _Proc()
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
@@ -103,26 +125,28 @@ def connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="sn-comp-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     c.connector_name = Connectors.SERVICENOW
     return c
 
 
 # ===========================================================================
-# _parse_servicenow_datetime
+# datetime_to_epoch_ms (used by connector for ServiceNow timestamps)
 # ===========================================================================
 class TestParseServicenowDatetime:
-    def test_valid_datetime(self, connector):
-        result = connector._parse_servicenow_datetime("2023-01-15 10:30:45")
+    def test_valid_datetime(self):
+        result = datetime_to_epoch_ms("2023-01-15 10:30:45", ServiceNowDefaults.DATETIME_FORMAT)
         assert result is not None
         assert isinstance(result, int)
 
-    def test_invalid_format(self, connector):
-        result = connector._parse_servicenow_datetime("not-a-date")
+    def test_invalid_format(self):
+        result = datetime_to_epoch_ms("not-a-date", ServiceNowDefaults.DATETIME_FORMAT)
         assert result is None
 
-    def test_empty_string(self, connector):
-        result = connector._parse_servicenow_datetime("")
+    def test_empty_string(self):
+        result = datetime_to_epoch_ms("", ServiceNowDefaults.DATETIME_FORMAT)
         assert result is None
 
 
@@ -133,15 +157,15 @@ class TestTransformToAppUser:
     @pytest.mark.asyncio
     async def test_valid_user(self, connector):
         connector.connector_name = Connectors.SERVICENOW
-        user_data = {
-            "sys_id": "u1",
-            "email": "user@test.com",
-            "user_name": "testuser",
-            "first_name": "Test",
-            "last_name": "User",
-            "sys_created_on": "2023-01-01 00:00:00",
-            "sys_updated_on": "2023-06-01 00:00:00",
-        }
+        user_data = SysUser(
+            sys_id="u1",
+            email="user@test.com",
+            user_name="testuser",
+            first_name="Test",
+            last_name="User",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = await connector._transform_to_app_user(user_data)
         assert result is not None
         assert result.email == "user@test.com"
@@ -149,46 +173,48 @@ class TestTransformToAppUser:
 
     @pytest.mark.asyncio
     async def test_missing_sys_id(self, connector):
-        user_data = {"email": "user@test.com"}
+        user_data = TableAPIRecord(email="user@test.com")
         result = await connector._transform_to_app_user(user_data)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_missing_email(self, connector):
-        user_data = {"sys_id": "u1"}
+        user_data = TableAPIRecord(sys_id="u1")
         result = await connector._transform_to_app_user(user_data)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_name_fallback_to_username(self, connector):
         connector.connector_name = Connectors.SERVICENOW
-        user_data = {
-            "sys_id": "u1",
-            "email": "user@test.com",
-            "user_name": "testuser",
-            "first_name": "",
-            "last_name": "",
-        }
+        user_data = SysUser(
+            sys_id="u1",
+            email="user@test.com",
+            user_name="testuser",
+            first_name="",
+            last_name="",
+        )
         result = await connector._transform_to_app_user(user_data)
+        assert result is not None
         assert result.full_name == "testuser"
 
     @pytest.mark.asyncio
     async def test_name_fallback_to_email(self, connector):
         connector.connector_name = Connectors.SERVICENOW
-        user_data = {
-            "sys_id": "u1",
-            "email": "user@test.com",
-            "user_name": "",
-            "first_name": "",
-            "last_name": "",
-        }
+        user_data = SysUser(
+            sys_id="u1",
+            email="user@test.com",
+            user_name="",
+            first_name="",
+            last_name="",
+        )
         result = await connector._transform_to_app_user(user_data)
+        assert result is not None
         assert result.full_name == "user@test.com"
 
     @pytest.mark.asyncio
     async def test_whitespace_email(self, connector):
         connector.connector_name = Connectors.SERVICENOW
-        user_data = {"sys_id": "u1", "email": "  user@test.com  "}
+        user_data = SysUser(sys_id="u1", email="  user@test.com  ")
         result = await connector._transform_to_app_user(user_data)
         assert result is not None
         assert result.email == "user@test.com"
@@ -199,23 +225,23 @@ class TestTransformToAppUser:
 # ===========================================================================
 class TestTransformToUserGroup:
     def test_valid_group(self, connector):
-        data = {
-            "sys_id": "g1",
-            "name": "TestGroup",
-            "sys_created_on": "2023-01-01 00:00:00",
-            "sys_updated_on": "2023-06-01 00:00:00",
-        }
+        data = SysUserGroup(
+            sys_id="g1",
+            name="TestGroup",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_user_group(data)
         assert result is not None
         assert result.name == "TestGroup"
 
     def test_missing_sys_id(self, connector):
-        data = {"name": "TestGroup"}
+        data = SysUserGroup(sys_id="", name="TestGroup")
         result = connector._transform_to_user_group(data)
         assert result is None
 
     def test_missing_name(self, connector):
-        data = {"sys_id": "g1", "name": ""}
+        data = SysUserGroup(sys_id="g1", name="")
         result = connector._transform_to_user_group(data)
         assert result is None
 
@@ -225,29 +251,29 @@ class TestTransformToUserGroup:
 # ===========================================================================
 class TestTransformToOrgGroup:
     def test_valid_company(self, connector):
-        data = {
-            "sys_id": "c1",
-            "name": "Acme Corp",
-            "sys_created_on": "2023-01-01 00:00:00",
-        }
+        data = OrganizationalEntity(
+            sys_id="c1",
+            name="Acme Corp",
+            sys_created_on="2023-01-01 00:00:00",
+        )
         result = connector._transform_to_organizational_group(data, "COMPANY_")
         assert result is not None
         assert result.name == "COMPANY_Acme Corp"
         assert "COMPANY" in result.description
 
     def test_valid_department(self, connector):
-        data = {"sys_id": "d1", "name": "Engineering"}
+        data = OrganizationalEntity(sys_id="d1", name="Engineering")
         result = connector._transform_to_organizational_group(data, "DEPARTMENT_")
         assert result is not None
         assert result.name == "DEPARTMENT_Engineering"
 
     def test_missing_sys_id(self, connector):
-        data = {"name": "NoId"}
+        data = TableAPIRecord(name="NoId")
         result = connector._transform_to_organizational_group(data, "LOC_")
         assert result is None
 
     def test_missing_name(self, connector):
-        data = {"sys_id": "c1", "name": ""}
+        data = TableAPIRecord(sys_id="c1", name="")
         result = connector._transform_to_organizational_group(data, "CC_")
         assert result is None
 
@@ -258,14 +284,14 @@ class TestTransformToOrgGroup:
 class TestTransformToArticleWebpageRecord:
     def test_valid_article_with_category(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "art-1",
-            "short_description": "KB Article Title",
-            "kb_category": {"value": "cat-1"},
-            "kb_knowledge_base": {"value": "kb-1"},
-            "sys_created_on": "2023-01-01 00:00:00",
-            "sys_updated_on": "2023-06-01 00:00:00",
-        }
+        data = KBKnowledge(
+            sys_id="art-1",
+            short_description="KB Article Title",
+            kb_category="cat-1",
+            kb_knowledge_base="kb-1",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
         assert result.record_name == "KB Article Title"
@@ -274,12 +300,12 @@ class TestTransformToArticleWebpageRecord:
 
     def test_article_without_category_falls_back_to_kb(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "art-2",
-            "short_description": "No Category Article",
-            "kb_category": "",
-            "kb_knowledge_base": {"value": "kb-1"},
-        }
+        data = KBKnowledge(
+            sys_id="art-2",
+            short_description="No Category Article",
+            kb_category="",
+            kb_knowledge_base="kb-1",
+        )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
         assert result.external_record_group_id == "kb-1"
@@ -287,12 +313,12 @@ class TestTransformToArticleWebpageRecord:
 
     def test_article_without_category_or_kb_returns_none(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "art-3",
-            "short_description": "Orphan Article",
-            "kb_category": "",
-            "kb_knowledge_base": "",
-        }
+        data = KBKnowledge(
+            sys_id="art-3",
+            short_description="Orphan Article",
+            kb_category="",
+            kb_knowledge_base="",
+        )
         result = connector._transform_to_article_webpage_record(data)
         assert result is None
 
@@ -302,40 +328,40 @@ class TestTransformToArticleWebpageRecord:
         assert result is None
 
     def test_article_missing_description(self, connector):
-        data = {"sys_id": "art-4", "short_description": ""}
+        data = KBKnowledge(sys_id="art-4", short_description="")
         result = connector._transform_to_article_webpage_record(data)
         assert result is None
 
     def test_article_with_string_category_ref(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "art-5",
-            "short_description": "String Category",
-            "kb_category": "cat-str",
-        }
+        data = KBKnowledge(
+            sys_id="art-5",
+            short_description="String Category",
+            kb_category="cat-str",
+        )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
         assert result.external_record_group_id == "cat-str"
 
     def test_article_with_string_kb_ref(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "art-6",
-            "short_description": "String KB",
-            "kb_category": "",
-            "kb_knowledge_base": "kb-str",
-        }
+        data = KBKnowledge(
+            sys_id="art-6",
+            short_description="String KB",
+            kb_category="",
+            kb_knowledge_base="kb-str",
+        )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
         assert result.external_record_group_id == "kb-str"
 
     def test_web_url_generated(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "art-7",
-            "short_description": "URL Test",
-            "kb_category": "cat-1",
-        }
+        data = KBKnowledge(
+            sys_id="art-7",
+            short_description="URL Test",
+            kb_category="cat-1",
+        )
         result = connector._transform_to_article_webpage_record(data)
         assert result is not None
         assert "art-7" in result.weburl
@@ -347,15 +373,16 @@ class TestTransformToArticleWebpageRecord:
 class TestTransformToAttachmentFileRecord:
     def test_valid_attachment(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "att-1",
-            "file_name": "document.pdf",
-            "content_type": "application/pdf",
-            "size_bytes": "1024",
-            "table_sys_id": "art-1",
-            "sys_created_on": "2023-01-01 00:00:00",
-            "sys_updated_on": "2023-06-01 00:00:00",
-        }
+        data = AttachmentMetadata(
+            sys_id="att-1",
+            file_name="document.pdf",
+            content_type="application/pdf",
+            size_bytes="1024",
+            table_sys_id="art-1",
+            table_name="kb_knowledge",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_attachment_file_record(
             data,
             parent_record_group_type=RecordGroupType.SERVICENOW_CATEGORY,
@@ -368,29 +395,57 @@ class TestTransformToAttachmentFileRecord:
         assert result.parent_external_record_id == "art-1"
 
     def test_attachment_missing_sys_id(self, connector):
-        data = {"file_name": "test.txt"}
+        data = AttachmentMetadata(
+            sys_id="",
+            file_name="test.txt",
+            content_type="text/plain",
+            size_bytes="1",
+            table_sys_id="a",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_attachment_file_record(data)
         assert result is None
 
     def test_attachment_missing_filename(self, connector):
-        data = {"sys_id": "att-2", "file_name": ""}
+        data = AttachmentMetadata(
+            sys_id="att-2",
+            file_name="",
+            content_type="text/plain",
+            size_bytes="1",
+            table_sys_id="a",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_attachment_file_record(data)
         assert result is None
 
     def test_attachment_invalid_size(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {
-            "sys_id": "att-3",
-            "file_name": "test.txt",
-            "size_bytes": "invalid",
-        }
+        data = AttachmentMetadata(
+            sys_id="att-3",
+            file_name="test.txt",
+            content_type="text/plain",
+            size_bytes="invalid",
+            table_sys_id="a",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_attachment_file_record(data)
         assert result is not None
         assert result.size_in_bytes is None
 
     def test_attachment_no_extension(self, connector):
         connector.instance_url = "https://test.service-now.com"
-        data = {"sys_id": "att-4", "file_name": "Makefile"}
+        data = AttachmentMetadata(
+            sys_id="att-4",
+            file_name="Makefile",
+            content_type="text/plain",
+            size_bytes="1",
+            table_sys_id="a",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
         result = connector._transform_to_attachment_file_record(data)
         assert result is not None
         assert result.extension is None
@@ -447,14 +502,20 @@ class TestSyncUsers:
         connector.user_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": [
-                {"sys_id": "u1", "email": "u1@test.com", "first_name": "U", "last_name": "1", "sys_updated_on": "2023-07-01 00:00:00"},
-            ]}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+            _sys_user_row(
+                sys_id="u1",
+                email="u1@test.com",
+                first_name="U",
+                last_name="1",
+                sys_updated_on="2023-07-01 00:00:00",
+            ),
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        await connector._sync_users()
+        mock_user = MagicMock(spec=AppUser)
+        with patch.object(connector, "_transform_to_app_user", new_callable=AsyncMock, return_value=mock_user):
+            await connector._sync_users()
         mock_data_entities_processor.on_new_app_users.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -464,9 +525,7 @@ class TestSyncUsers:
         connector.user_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": []}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await connector._sync_users()
@@ -479,9 +538,10 @@ class TestFetchAllGroups:
     @pytest.mark.asyncio
     async def test_pagination(self, connector):
         mock_ds = AsyncMock()
+        page1 = [{"sys_id": f"g{i}", "name": "G"} for i in range(100)]
         mock_ds.get_now_table_tableName = AsyncMock(side_effect=[
-            _make_api_response(data={"result": [{"sys_id": "g1"}] * 100}),
-            _make_api_response(data={"result": [{"sys_id": "g2"}]}),
+            _table_api_response(page1),
+            _table_api_response([{"sys_id": "g100", "name": "G"}]),
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         groups = await connector._fetch_all_groups()
@@ -490,9 +550,7 @@ class TestFetchAllGroups:
     @pytest.mark.asyncio
     async def test_empty_result(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": []}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         groups = await connector._fetch_all_groups()
         assert groups == []
@@ -500,9 +558,9 @@ class TestFetchAllGroups:
     @pytest.mark.asyncio
     async def test_api_failure(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            success=False, error="API error"
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(
+            side_effect=ServiceNowAPIError(500, "API error", None)
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         groups = await connector._fetch_all_groups()
         assert groups == []
@@ -518,9 +576,9 @@ class TestFetchAllMemberships:
         connector.group_sync_point.update_sync_point = AsyncMock()
 
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": [{"sys_id": "m1", "user": "u1", "group": "g1", "sys_updated_on": "2023-07-01"}]}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+            {"sys_id": "m1", "user": "u1", "group": "g1", "sys_updated_on": "2023-07-01"},
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         memberships = await connector._fetch_all_memberships()
         assert len(memberships) == 1
@@ -533,9 +591,9 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_with_dict_ref(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": [{"user": {"value": "u1"}}]}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+            {"user": "u1"},
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         mock_app_user = MagicMock()
@@ -556,9 +614,9 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_with_string_ref(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": [{"user": "u1-str"}]}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+            {"user": "u1-str"},
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         tx = AsyncMock()
@@ -577,9 +635,9 @@ class TestGetAdminUsers:
     @pytest.mark.asyncio
     async def test_admin_users_api_failure(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            success=False, error="API fail"
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(
+            side_effect=ServiceNowAPIError(500, "API fail", None)
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         admins = await connector._get_admin_users()
         assert admins == []
@@ -702,9 +760,9 @@ class TestFetchContent:
     @pytest.mark.asyncio
     async def test_fetch_article_success(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": [{"text": "<p>Article content</p>"}]}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+            {"sys_id": "art-1", "text": "<p>Article content</p>"},
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         content = await connector._fetch_article_content("art-1")
         assert "<p>Article content</p>" in content
@@ -712,9 +770,9 @@ class TestFetchContent:
     @pytest.mark.asyncio
     async def test_fetch_article_empty_content(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": [{"text": ""}]}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
+            {"sys_id": "art-1", "text": ""},
+        ]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         content = await connector._fetch_article_content("art-1")
         assert "No content" in content
@@ -722,9 +780,7 @@ class TestFetchContent:
     @pytest.mark.asyncio
     async def test_fetch_article_not_found(self, connector):
         mock_ds = AsyncMock()
-        mock_ds.get_now_table_tableName = AsyncMock(return_value=_make_api_response(
-            data={"result": []}
-        ))
+        mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([]))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         with pytest.raises(HTTPException) as exc_info:
             await connector._fetch_article_content("art-missing")

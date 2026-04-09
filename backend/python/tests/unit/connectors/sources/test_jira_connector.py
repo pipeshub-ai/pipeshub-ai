@@ -73,7 +73,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-1")
+    return JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
 
 
 def _make_mock_response(status=200, data=None):
@@ -760,7 +760,7 @@ def _make_mock_deps_fullcov():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps_fullcov()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-1")
+    return JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
 
 
 def _make_mock_response_fullcov(status=200, data=None):
@@ -1919,6 +1919,8 @@ class TestReindexRecords:
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.JIRA,
             connector_id="conn-jira-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
 

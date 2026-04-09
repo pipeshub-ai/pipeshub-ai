@@ -71,6 +71,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id=connector_id,
+        scope="personal",
+        created_by="test-user-id",
     )
     connector.organization_id = "org-linear-1"
     connector.organization_name = "Test Org"

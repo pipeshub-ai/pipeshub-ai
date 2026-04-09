@@ -64,7 +64,7 @@ describe('CrawlingManagerContainer - coverage', () => {
         isConnected: sinon.stub().returns(true),
         disconnect: sinon.stub().resolves(),
       }
-      const mockSyncEvents = {
+      const mockMessageProducer = {
         isConnected: sinon.stub().returns(true),
         disconnect: sinon.stub().resolves(),
       }
@@ -75,7 +75,7 @@ describe('CrawlingManagerContainer - coverage', () => {
       const container = new Container()
       container.bind<any>('RedisService').toConstantValue(mockRedis)
       container.bind<any>(KeyValueStoreService).toConstantValue(mockKvStore)
-      container.bind<any>('SyncEventProducer').toConstantValue(mockSyncEvents)
+      container.bind<any>('MessageProducer').toConstantValue(mockMessageProducer)
       // We need the class symbol
       const { CrawlingWorkerService } = require('../../../../src/modules/crawling_manager/services/crawling_worker')
       container.bind<any>(CrawlingWorkerService).toConstantValue(mockCrawlingWorker)
@@ -85,7 +85,7 @@ describe('CrawlingManagerContainer - coverage', () => {
       await CrawlingManagerContainer.dispose()
       expect(mockRedis.disconnect.calledOnce).to.be.true
       expect(mockKvStore.disconnect.calledOnce).to.be.true
-      expect(mockSyncEvents.disconnect.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect(mockCrawlingWorker.close.calledOnce).to.be.true
     })
 

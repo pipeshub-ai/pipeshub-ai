@@ -6,7 +6,7 @@ import { TokenEventProducer } from '../../../../src/modules/tokens_manager/servi
 describe('tokens_manager/services/token-event.producer', () => {
   let producer: TokenEventProducer
   let mockLogger: any
-  let mockConfig: any
+  let mockProducer: any
 
   beforeEach(() => {
     mockLogger = {
@@ -15,10 +15,15 @@ describe('tokens_manager/services/token-event.producer', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    mockConfig = {
-      brokers: ['localhost:9092'],
+    mockProducer = {
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(false),
+      publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
     }
-    producer = new TokenEventProducer(mockConfig, mockLogger)
+    producer = new TokenEventProducer(mockProducer, mockLogger)
   })
 
   afterEach(() => {
@@ -34,8 +39,6 @@ describe('tokens_manager/services/token-event.producer', () => {
 
   describe('publishTokenEvent', () => {
     it('should call publish with correct topic and message format', async () => {
-      const publishStub = sinon.stub(producer, 'publish' as any).resolves()
-
       const event: any = {
         tokenReferenceId: 'ref-123',
         serviceType: 'google',
@@ -43,8 +46,8 @@ describe('tokens_manager/services/token-event.producer', () => {
 
       await producer.publishTokenEvent(event)
 
-      expect(publishStub.calledOnce).to.be.true
-      const [topic, message] = publishStub.firstCall.args
+      expect(mockProducer.publish.calledOnce).to.be.true
+      const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('token-events')
       expect(message.key).to.equal('ref-123-google')
       expect(message.value).to.deep.equal(event)
@@ -53,32 +56,29 @@ describe('tokens_manager/services/token-event.producer', () => {
 
   describe('start', () => {
     it('should call connect if not connected', async () => {
-      sinon.stub(producer, 'isConnected' as any).value(false)
-      const connectStub = sinon.stub(producer, 'connect' as any).resolves()
+      mockProducer.isConnected.returns(false)
 
       await producer.start()
 
-      expect(connectStub.calledOnce).to.be.true
+      expect(mockProducer.connect.calledOnce).to.be.true
     })
   })
 
   describe('stop', () => {
     it('should call disconnect if connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(true)
-      const disconnectStub = sinon.stub(producer, 'disconnect' as any).resolves()
+      mockProducer.isConnected.returns(true)
 
       await producer.stop()
 
-      expect(disconnectStub.calledOnce).to.be.true
+      expect(mockProducer.disconnect.calledOnce).to.be.true
     })
 
     it('should not call disconnect if not connected', async () => {
-      sinon.stub(producer, 'isConnected').returns(false)
-      const disconnectStub = sinon.stub(producer, 'disconnect' as any).resolves()
+      mockProducer.isConnected.returns(false)
 
       await producer.stop()
 
-      expect(disconnectStub.called).to.be.false
+      expect(mockProducer.disconnect.called).to.be.false
     })
   })
 })

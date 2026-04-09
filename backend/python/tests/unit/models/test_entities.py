@@ -1,15 +1,18 @@
-"""Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord."""
+"""Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.models.entities import (
+    DealRecord,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordType,
@@ -1656,3 +1659,310 @@ class TestLinkRecordToLlmContextBranches:
         assert "URL" in ctx
         assert "Title" not in ctx
         assert "Linked Record ID" not in ctx
+
+# ============================================================================
+# ProductRecord tests
+# ============================================================================
+
+
+class TestProductRecord:
+    def test_creation(self):
+        rec = ProductRecord(**_record_kwargs(
+            record_type=RecordType.PRODUCT,
+            product_code="PROD-001",
+            product_family="Software",
+        ))
+        assert rec.product_code == "PROD-001"
+        assert rec.product_family == "Software"
+        assert rec.record_type == RecordType.PRODUCT
+
+    def test_default_fields(self):
+        rec = ProductRecord(**_record_kwargs(record_type=RecordType.PRODUCT))
+        assert rec.product_code is None
+        assert rec.product_family is None
+
+    def test_to_llm_context_with_fields(self):
+        rec = ProductRecord(**_record_kwargs(
+            record_type=RecordType.PRODUCT,
+            product_code="PROD-001",
+            product_family="Hardware",
+        ))
+        ctx = rec.to_llm_context()
+        assert "Product Code" in ctx
+        assert "PROD-001" in ctx
+        assert "Product Family" in ctx
+        assert "Hardware" in ctx
+        assert "Product Information" in ctx
+
+    def test_to_llm_context_no_fields(self):
+        rec = ProductRecord(**_record_kwargs(record_type=RecordType.PRODUCT))
+        ctx = rec.to_llm_context()
+        assert "Product Information" not in ctx
+
+    def test_to_arango_record(self):
+        rec = ProductRecord(**_record_kwargs(
+            id="prod-1",
+            org_id="org-1",
+            record_type=RecordType.PRODUCT,
+            product_code="PROD-001",
+            product_family="Software",
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "prod-1"
+        assert arango["orgId"] == "org-1"
+        assert arango["productCode"] == "PROD-001"
+        assert arango["productFamily"] == "Software"
+
+    def test_to_kafka_record(self):
+        rec = ProductRecord(**_record_kwargs(
+            id="prod-1",
+            org_id="org-1",
+            record_type=RecordType.PRODUCT,
+            product_code="PROD-001",
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "prod-1"
+        assert kafka["recordType"] == "PRODUCT"
+        assert kafka["orgId"] == "org-1"
+
+    def test_from_arango_record(self):
+        product_doc = {
+            "productCode": "PROD-002",
+            "productFamily": "Cloud",
+        }
+        record_doc = {
+            "_key": "prod-2",
+            "orgId": "org-1",
+            "recordName": "My Product",
+            "recordType": "PRODUCT",
+            "externalRecordId": "ext-prod-2",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "DRIVE",
+            "connectorId": "conn-1",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+        }
+        rec = ProductRecord.from_arango_record(product_doc, record_doc)
+        assert rec.id == "prod-2"
+        assert rec.record_name == "My Product"
+        assert rec.product_code == "PROD-002"
+        assert rec.product_family == "Cloud"
+        assert rec.record_type == RecordType.PRODUCT
+
+
+# ============================================================================
+# DealRecord tests
+# ============================================================================
+
+
+class TestDealRecord:
+    def test_creation(self):
+        rec = DealRecord(**_record_kwargs(
+            record_type=RecordType.DEAL,
+            name="Big Enterprise Deal",
+            amount=50000.0,
+            expected_revenue=45000.0,
+            expected_close_date="2024-06-30",
+            conversion_probability=0.75,
+            type="New Business",
+            owner_id="user-001",
+            is_won=False,
+            is_closed=False,
+        ))
+        assert rec.name == "Big Enterprise Deal"
+        assert rec.amount == 50000.0
+        assert rec.expected_revenue == 45000.0
+        assert rec.expected_close_date == "2024-06-30"
+        assert rec.conversion_probability == 0.75
+        assert rec.type == "New Business"
+        assert rec.owner_id == "user-001"
+        assert rec.is_won is False
+        assert rec.is_closed is False
+        assert rec.record_type == RecordType.DEAL
+
+    def test_default_fields(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        assert rec.name is None
+        assert rec.amount is None
+        assert rec.expected_revenue is None
+        assert rec.expected_close_date is None
+        assert rec.conversion_probability is None
+        assert rec.type is None
+        assert rec.owner_id is None
+        assert rec.is_won is None
+        assert rec.is_closed is None
+        assert rec.created_date is None
+        assert rec.close_date is None
+
+    def test_to_llm_context_with_fields(self):
+        rec = DealRecord(**_record_kwargs(
+            record_type=RecordType.DEAL,
+            name="Enterprise Deal",
+            amount=100000.0,
+            expected_revenue=90000.0,
+            expected_close_date="2024-12-31",
+            conversion_probability=0.8,
+            type="Renewal",
+            owner_id="user-42",
+            is_won=True,
+            is_closed=True,
+            created_date="2024-01-01",
+            close_date="2024-12-31",
+        ))
+        ctx = rec.to_llm_context()
+        assert "Deal Information" in ctx
+        assert "Enterprise Deal" in ctx
+        assert "100000.0" in ctx
+        assert "90000.0" in ctx
+        assert "2024-12-31" in ctx
+        assert "0.8" in ctx
+        assert "Renewal" in ctx
+        assert "user-42" in ctx
+        assert "Won" in ctx
+        assert "Closed" in ctx
+
+    def test_to_llm_context_no_fields(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        ctx = rec.to_llm_context()
+        assert "Deal Information" not in ctx
+
+    def test_to_arango_record(self):
+        rec = DealRecord(**_record_kwargs(
+            id="deal-1",
+            org_id="org-1",
+            record_type=RecordType.DEAL,
+            name="Test Deal",
+            amount=20000.0,
+            expected_revenue=18000.0,
+            expected_close_date="2024-09-30",
+            conversion_probability=0.6,
+            type="Upsell",
+            owner_id="user-10",
+            is_won=False,
+            is_closed=False,
+            created_date="2024-03-01",
+            close_date="2024-09-30",
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "deal-1"
+        assert arango["orgId"] == "org-1"
+        assert arango["name"] == "Test Deal"
+        assert arango["amount"] == 20000.0
+        assert arango["expectedRevenue"] == 18000.0
+        assert arango["expectedCloseDate"] == "2024-09-30"
+        assert arango["conversionProbability"] == 0.6
+        assert arango["type"] == "Upsell"
+        assert arango["ownerId"] == "user-10"
+        assert arango["isWon"] is False
+        assert arango["isClosed"] is False
+        assert arango["createdDate"] == "2024-03-01"
+        assert arango["closeDate"] == "2024-09-30"
+
+    def test_to_kafka_record(self):
+        rec = DealRecord(**_record_kwargs(
+            id="deal-1",
+            org_id="org-1",
+            record_type=RecordType.DEAL,
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "deal-1"
+        assert kafka["recordType"] == "DEAL"
+        assert kafka["orgId"] == "org-1"
+
+    def test_from_arango_record(self):
+        deal_doc = {
+            "name": "Arango Deal",
+            "amount": 75000.0,
+            "expectedRevenue": 70000.0,
+            "expectedCloseDate": "2024-11-01",
+            "conversionProbability": 0.9,
+            "type": "New Business",
+            "ownerId": "user-99",
+            "isWon": False,
+            "isClosed": False,
+            "createdDate": "2024-02-15",
+            "closeDate": "2024-11-01",
+        }
+        record_doc = {
+            "_key": "deal-2",
+            "orgId": "org-1",
+            "recordName": "Arango Deal",
+            "recordType": "DEAL",
+            "externalRecordId": "ext-deal-2",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "DRIVE",
+            "connectorId": "conn-1",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+        }
+        rec = DealRecord.from_arango_record(deal_doc, record_doc)
+        assert rec.id == "deal-2"
+        assert rec.record_name == "Arango Deal"
+        assert rec.name == "Arango Deal"
+        assert rec.amount == 75000.0
+        assert rec.expected_revenue == 70000.0
+        assert rec.conversion_probability == 0.9
+        assert rec.owner_id == "user-99"
+        assert rec.record_type == RecordType.DEAL
+
+    def test_deal_info_edges_to_llm_lines_empty(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        lines = rec._deal_info_edges_to_llm_lines([])
+        assert any("No incoming dealInfo edges" in line for line in lines)
+
+    def test_deal_info_edges_to_llm_lines_with_edges(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        edges = [
+            {
+                "_from": "orgs/org-1",
+                "stage": "Prospecting",
+                "createdAtTimestamp": 1704067200000,
+                "updatedAtTimestamp": 1704153600000,
+            }
+        ]
+        lines = rec._deal_info_edges_to_llm_lines(edges)
+        assert any("orgs/org-1" in line for line in lines)
+        assert any("Prospecting" in line for line in lines)
+
+    def test_sold_in_edges_products_to_llm_lines_empty(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        lines = rec._sold_in_edges_products_to_llm_lines([])
+        assert any("No products in this deal" in line for line in lines)
+
+    def test_sold_in_edges_products_to_llm_lines_with_data(self):
+        rec = DealRecord(**_record_kwargs(record_type=RecordType.DEAL))
+        relations = [
+            {
+                "edge": {
+                    "_from": "records/prod-1",
+                    "quantities": [2],
+                    "unitPrices": [500.0],
+                    "totalPrices": [1000.0],
+                    "isDeletedFlags": [False],
+                    "createdAtTimestamp": 1704067200000,
+                    "updatedAtTimestamp": 1704153600000,
+                },
+                "product": {"recordName": "Widget Pro"},
+            }
+        ]
+        lines = rec._sold_in_edges_products_to_llm_lines(relations)
+        assert any("Widget Pro" in line for line in lines)
+        assert any("qty: 2" in line for line in lines)
+        assert any("unitPrice: 500.0" in line for line in lines)
+        assert any("totalPrice: 1000.0" in line for line in lines)
+
+    def test_to_llm_context_with_graph_provider(self):
+        rec = DealRecord(**_record_kwargs(
+            id="deal-gp",
+            record_type=RecordType.DEAL,
+            name="Graph Deal",
+            amount=5000.0,
+        ))
+        mock_provider = MagicMock()
+        mock_provider.get_edges_to_node = AsyncMock(return_value=[])
+        ctx = asyncio.run(rec.to_llm_context_with_graph(graph_provider=mock_provider))
+        assert "Graph Deal" in ctx
+        assert "DealInfo relations" in ctx
+        assert "Products in this deal" in ctx

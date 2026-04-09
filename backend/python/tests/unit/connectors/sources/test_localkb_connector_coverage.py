@@ -33,6 +33,8 @@ def _make_connector():
         data_store_provider=ds_provider,
         config_service=config_service,
         connector_id="kb-conn-1",
+        scope="personal",
+        created_by="test-user-id",
     )
 
 

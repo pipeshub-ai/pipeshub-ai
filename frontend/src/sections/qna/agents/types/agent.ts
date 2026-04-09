@@ -52,6 +52,10 @@ export interface AgentBuilderHeaderProps {
   setShareWithOrg: (value: boolean) => void;
   hasToolsets: boolean; // Whether the current flow has toolsets (blocks org sharing)
   isReadOnly?: boolean;
+  // Service Account
+  isServiceAccount: boolean;
+  /** Called when the user clicks "Enable Service Account" on a new agent (opens confirm dialog) */
+  onEnableServiceAccount?: () => void;
 }
 
 export interface AgentBuilderCanvasWrapperProps {
@@ -63,7 +67,10 @@ export interface AgentBuilderCanvasWrapperProps {
   configuredConnectors: Connector[];
   connectorRegistry: any[];
   toolsets: any[];
-  refreshToolsets: () => Promise<void>;
+  refreshToolsets: (agentKey?: string, isServiceAccount?: boolean, search?: string) => Promise<void>;
+  loadMoreToolsets: () => Promise<void>;
+  toolsetsHasMore: boolean;
+  toolsetsLoadingMore: boolean;
   isBusiness: boolean;
   activeToolsetTypes?: string[];
   nodes: any[];
@@ -80,6 +87,10 @@ export interface AgentBuilderCanvasWrapperProps {
   onNodeDelete?: (nodeId: string) => void;
   onError?: (error: string | AgentBuilderError) => void;
   isReadOnly?: boolean;
+  // Service Account
+  isServiceAccount?: boolean;
+  agentKey?: string;
+  onManageAgentToolsetCredentials?: (toolset: any) => void;
 }
 
 export interface AgentBuilderError {
@@ -127,7 +138,25 @@ export interface UseAgentBuilderDataReturn {
   loadedAgent: Agent | null;
   error: string | AgentBuilderError | null;
   setError: (error: string | AgentBuilderError | null) => void;
-  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth authentication
+  /**
+   * Refresh toolsets. For service-account agents, also pass agentKey and
+   * isServiceAccount so the hook can overlay agent-level auth status.
+   * Pass `search` to filter the result set server-side (resets to page 1).
+   */
+  refreshToolsets: (agentKey?: string, isServiceAccount?: boolean, search?: string) => Promise<void>;
+  /**
+   * Re-fetch the agent record from the API, update loadedAgent in-place, and
+   * immediately reload toolsets from the correct endpoint (user vs. agent-scoped).
+   * Use this after an in-place mutation (e.g. converting to service account) so
+   * the builder reflects the new state without a full page remount.
+   */
+  refreshAgent: (agentKey: string) => Promise<void>;
+  /** Load the next page of toolsets and append to the current list. */
+  loadMoreToolsets: () => Promise<void>;
+  /** Whether there are more toolset pages to load. */
+  toolsetsHasMore: boolean;
+  /** Whether a load-more request is in flight. */
+  toolsetsLoadingMore: boolean;
 }
 
 export interface UseAgentBuilderStateReturn {

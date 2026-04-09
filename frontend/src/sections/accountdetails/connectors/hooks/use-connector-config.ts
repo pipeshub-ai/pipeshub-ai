@@ -1237,12 +1237,29 @@ export const useConnectorConfig = ({
           ? validationAuthSchemas[validationAuthType]
           : { fields: [] };
         
+        // For OAuth type and non-admin users: Filter out OAuth credential fields from validation
+        // Non-admins must select an OAuth app (validated separately), they don't provide credentials
+        let fieldsToValidate = validationSchema.fields || [];
+        if (validationAuthType === 'OAUTH' && !isAdmin) {
+          // Filter out OAuth credential fields (clientId, clientSecret, etc.)
+          fieldsToValidate = fieldsToValidate.filter((field: any) => 
+            field.name !== 'clientId' && field.name !== 'clientSecret'
+          );
+        }
+        
         // Validate schema fields
         errors = validateSection(
           'auth',
-          validationSchema.fields || [],
+          fieldsToValidate,
           formData.auth
         );
+        
+        // For OAuth type and non-admin users: Validate that OAuth App is selected
+        if (validationAuthType === 'OAUTH' && !isAdmin) {
+          if (!formData.auth.oauthConfigId) {
+            errors.oauthConfigId = 'OAuth App selection is required. Please select an OAuth App.';
+          }
+        }
         
         // For OAuth type: Additional validation for creating new OAuth apps
         if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {
@@ -1606,11 +1623,27 @@ export const useConnectorConfig = ({
               ? validationAuthSchemas[validationAuthType]
               : connectorConfig.config.auth?.schema || { fields: [] };
             
+        // For OAuth type and non-admin users: Filter out OAuth credential fields from validation
+        // Non-admins must select an OAuth app (validated separately), they don't provide credentials
+        let fieldsToValidate = validationSchema.fields || [];
+        if (validationAuthType === 'OAUTH' && !isAdmin) {
+          fieldsToValidate = fieldsToValidate.filter((field: any) => 
+            field.name !== 'clientId' && field.name !== 'clientSecret' && field.name !== 'tenantId'
+          );
+        }
+            
             authErrors = validateSection(
               'auth',
-              validationSchema.fields || [],
+              fieldsToValidate,
               formData.auth
             );
+            
+            // For OAuth type and non-admin users: Validate that OAuth App is selected
+            if (validationAuthType === 'OAUTH' && !isAdmin) {
+              if (!formData.auth.oauthConfigId) {
+                authErrors.oauthConfigId = 'OAuth App selection is required. Please select an OAuth App.';
+              }
+            }
             
             // For OAuth type: Additional validation for creating new OAuth apps
             if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {
@@ -1828,11 +1861,27 @@ export const useConnectorConfig = ({
               ? validationAuthSchemas[validationAuthType]
               : connectorConfig.config.auth?.schema || { fields: [] };
             
+        // For OAuth type and non-admin users: Filter out OAuth credential fields from validation
+        // Non-admins must select an OAuth app (validated separately), they don't provide credentials
+        let fieldsToValidate = validationSchema.fields || [];
+        if (validationAuthType === 'OAUTH' && !isAdmin) {
+          fieldsToValidate = fieldsToValidate.filter((field: any) => 
+            field.name !== 'clientId' && field.name !== 'clientSecret' && field.name !== 'tenantId'
+          );
+        }
+            
             authErrors = validateSection(
               'auth',
-              validationSchema.fields || [],
+              fieldsToValidate,
               formData.auth
             );
+            
+            // For OAuth type and non-admin users: Validate that OAuth App is selected
+            if (validationAuthType === 'OAUTH' && !isAdmin) {
+              if (!formData.auth.oauthConfigId) {
+                authErrors.oauthConfigId = 'OAuth App selection is required. Please select an OAuth App.';
+              }
+            }
             
             // For OAuth type: Additional validation for creating new OAuth apps
             if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {

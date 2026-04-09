@@ -152,8 +152,9 @@ class OneDriveCredentials:
     .build_decorator()
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> None:
-        super().__init__(OneDriveApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str,
+        scope: str, created_by: str) -> None:
+        super().__init__(OneDriveApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
@@ -1681,11 +1682,12 @@ class OneDriveConnector(BaseConnector):
 
     @classmethod
     async def create_connector(cls, logger: Logger,
-                               data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> BaseConnector:
+                               data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str,
+                               scope: str, created_by: str, **kwargs) -> BaseConnector:
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by)
 
 
 # Additional helper class for managing OneDrive subscriptions
