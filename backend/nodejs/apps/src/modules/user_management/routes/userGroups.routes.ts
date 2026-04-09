@@ -71,6 +71,14 @@ export function createUserGroupRouter(container: Container) {
     },
   );
 
+  // Must be registered before `/:groupId` or `/health` is matched as groupId "health".
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   router.get(
     '/:groupId',
     authMiddleware.authenticate,
@@ -238,14 +246,6 @@ export function createUserGroupRouter(container: Container) {
       }
     },
   );
-
-  // Health check endpoint
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
-  });
 
   return router;
 }
