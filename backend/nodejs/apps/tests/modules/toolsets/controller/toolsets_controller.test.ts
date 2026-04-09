@@ -4,16 +4,7 @@ import sinon from 'sinon'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   getRegistryToolsets,
-  getConfiguredToolsets,
   getToolsetSchema,
-  createToolset,
-  checkToolsetStatus,
-  getToolsetConfig,
-  saveToolsetConfig,
-  updateToolsetConfig,
-  deleteToolsetConfig,
-  reauthenticateToolset,
-  getOAuthAuthorizationUrl,
   handleOAuthCallback,
   getToolsetInstances,
   createToolsetInstance,
@@ -77,7 +68,7 @@ describe('Toolsets Controller', () => {
 
   beforeEach(() => {
     executeStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
-    handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+    handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
     handleErrorStub = sinon.stub(connectorUtils, 'handleBackendError').callsFake((err: any) => err)
   })
 
@@ -134,40 +125,6 @@ describe('Toolsets Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // getConfiguredToolsets
-  // -----------------------------------------------------------------------
-  describe('getConfiguredToolsets', () => {
-    it('should return a handler function', () => {
-      const handler = getConfiguredToolsets(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next with error when userId is missing', async () => {
-      const handler = getConfiguredToolsets(createMockAppConfig())
-      const req = createMockRequest({ user: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call connector command for configured toolsets', async () => {
-      executeStub.resolves({ statusCode: 200, data: [] })
-      const handler = getConfiguredToolsets(createMockAppConfig())
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(executeStub.calledOnce).to.be.true
-      expect(executeStub.firstCall.args[0]).to.include('/toolsets/configured')
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // getToolsetSchema
   // -----------------------------------------------------------------------
   describe('getToolsetSchema', () => {
@@ -201,234 +158,6 @@ describe('Toolsets Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // createToolset
-  // -----------------------------------------------------------------------
-  describe('createToolset', () => {
-    it('should return a handler function', () => {
-      const handler = createToolset(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next with BadRequestError when name is missing', async () => {
-      const handler = createToolset(createMockAppConfig())
-      const req = createMockRequest({ body: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call connector command with body data', async () => {
-      executeStub.resolves({ statusCode: 200, data: { id: 'toolset-1' } })
-      const handler = createToolset(createMockAppConfig())
-      const body = { name: 'My Toolset', type: 'jira' }
-      const req = createMockRequest({ body })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(executeStub.calledOnce).to.be.true
-      expect(executeStub.firstCall.args[3]).to.deep.equal(body)
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // checkToolsetStatus
-  // -----------------------------------------------------------------------
-  describe('checkToolsetStatus', () => {
-    it('should return a handler function', () => {
-      const handler = checkToolsetStatus(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = checkToolsetStatus(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call connector command with toolsetId', async () => {
-      executeStub.resolves({ statusCode: 200, data: { status: 'active' } })
-      const handler = checkToolsetStatus(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(executeStub.firstCall.args[0]).to.include('/toolsets/ts-1/status')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getToolsetConfig
-  // -----------------------------------------------------------------------
-  describe('getToolsetConfig', () => {
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = getToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call connector command with correct path', async () => {
-      executeStub.resolves({ statusCode: 200, data: {} })
-      const handler = getToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(executeStub.firstCall.args[0]).to.include('/toolsets/ts-1/config')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // saveToolsetConfig
-  // -----------------------------------------------------------------------
-  describe('saveToolsetConfig', () => {
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = saveToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should POST config data to connector', async () => {
-      executeStub.resolves({ statusCode: 200, data: {} })
-      const handler = saveToolsetConfig(createMockAppConfig())
-      const configData = { apiKey: 'key', url: 'http://jira.example.com' }
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' }, body: configData })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(executeStub.firstCall.args[3]).to.deep.equal(configData)
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // updateToolsetConfig
-  // -----------------------------------------------------------------------
-  describe('updateToolsetConfig', () => {
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = updateToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should use PUT method for update', async () => {
-      executeStub.resolves({ statusCode: 200, data: {} })
-      const handler = updateToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' }, body: { key: 'val' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(executeStub.firstCall.args[1]).to.equal('PUT')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // deleteToolsetConfig
-  // -----------------------------------------------------------------------
-  describe('deleteToolsetConfig', () => {
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = deleteToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should use DELETE method', async () => {
-      executeStub.resolves({ statusCode: 200, data: {} })
-      const handler = deleteToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(executeStub.firstCall.args[1]).to.equal('DELETE')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // reauthenticateToolset
-  // -----------------------------------------------------------------------
-  describe('reauthenticateToolset', () => {
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = reauthenticateToolset(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should POST to reauthenticate endpoint', async () => {
-      executeStub.resolves({ statusCode: 200, data: {} })
-      const handler = reauthenticateToolset(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(executeStub.firstCall.args[0]).to.include('/toolsets/ts-1/reauthenticate')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getOAuthAuthorizationUrl
-  // -----------------------------------------------------------------------
-  describe('getOAuthAuthorizationUrl', () => {
-    it('should call next with BadRequestError when toolsetId is missing', async () => {
-      const handler = getOAuthAuthorizationUrl(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should pass base_url query param', async () => {
-      executeStub.resolves({ statusCode: 200, data: { authUrl: 'https://auth.example.com' } })
-      const handler = getOAuthAuthorizationUrl(createMockAppConfig())
-      const req = createMockRequest({
-        params: { toolsetId: 'ts-1' },
-        query: { base_url: 'http://localhost:3000' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(executeStub.firstCall.args[0]).to.include('base_url=')
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // handleOAuthCallback
   // -----------------------------------------------------------------------
   describe('handleOAuthCallback', () => {
@@ -445,7 +174,7 @@ describe('Toolsets Controller', () => {
       })
       // Restore handleResponseStub so we can test the redirect logic
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({
@@ -466,7 +195,7 @@ describe('Toolsets Controller', () => {
         data: { redirect_url: 'https://example.com/success' },
       })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code' } })
@@ -802,7 +531,10 @@ describe('Toolsets Controller', () => {
   // -----------------------------------------------------------------------
   describe('updateUserToolsetInstance (extended)', () => {
     it('should PUT credentials to correct endpoint', async () => {
-      executeStub.resolves({ statusCode: 200, data: {} })
+      executeStub.resolves({
+        statusCode: 200,
+        data: { status: 'success', message: 'Credentials updated successfully.' },
+      })
       const handler = updateUserToolsetInstance(createMockAppConfig())
       const body = { token: 'newtoken' }
       const req = createMockRequest({ params: { instanceId: 'inst-1' }, body })
@@ -1014,7 +746,7 @@ describe('Toolsets Controller', () => {
         data: null,
       })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code', state: 'state' } })
@@ -1033,7 +765,7 @@ describe('Toolsets Controller', () => {
         data: { redirect_url: 'javascript:alert(1)' },
       })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: { code: 'code' } })
@@ -1063,10 +795,10 @@ describe('Toolsets Controller', () => {
       expect(url).to.include('base_url=')
     })
 
-    it('should fall through to handleConnectorResponse for normal responses', async () => {
+    it('should fall through to handleValidatedConnectorResponse for normal responses', async () => {
       executeStub.resolves({ statusCode: 200, data: { result: 'ok' } })
       handleResponseStub.restore()
-      handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+      handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
 
       const handler = handleOAuthCallback(createMockAppConfig())
       const req = createMockRequest({ query: {} })
@@ -1094,17 +826,6 @@ describe('Toolsets Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('getConfiguredToolsets should call next when executeConnectorCommand throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = getConfiguredToolsets(createMockAppConfig())
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
     it('getToolsetSchema should call next when executeConnectorCommand throws', async () => {
       executeStub.rejects(new Error('network error'))
       const handler = getToolsetSchema(createMockAppConfig())
@@ -1116,82 +837,6 @@ describe('Toolsets Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('createToolset should call next when executeConnectorCommand throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = createToolset(createMockAppConfig())
-      const req = createMockRequest({ body: { name: 'My Toolset' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('checkToolsetStatus should call next when command throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = checkToolsetStatus(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('saveToolsetConfig should call next when command throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = saveToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' }, body: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('updateToolsetConfig should call next when command throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = updateToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' }, body: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('deleteToolsetConfig should call next when command throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = deleteToolsetConfig(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('reauthenticateToolset should call next when command throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = reauthenticateToolset(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('getOAuthAuthorizationUrl should call next when command throws', async () => {
-      executeStub.rejects(new Error('network error'))
-      const handler = getOAuthAuthorizationUrl(createMockAppConfig())
-      const req = createMockRequest({ params: { toolsetId: 'ts-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
   })
 
   // -------------------------------------------------------------------------

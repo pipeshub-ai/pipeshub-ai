@@ -9,7 +9,6 @@
 
 import { Router } from 'express';
 import { Container } from 'inversify';
-import { z } from 'zod';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -18,15 +17,6 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import {
   getRegistryToolsets,
   getToolsetSchema,
-  createToolset,
-  getConfiguredToolsets,
-  checkToolsetStatus,
-  getToolsetConfig,
-  saveToolsetConfig,
-  updateToolsetConfig,
-  deleteToolsetConfig,
-  reauthenticateToolset,
-  getOAuthAuthorizationUrl,
   handleOAuthCallback,
   // Instance management (new architecture)
   getToolsetInstances,
@@ -53,188 +43,27 @@ import {
   getAgentToolsetOAuthUrl,
 } from '../controller/toolsets_controller';
 
-// ============================================================================
-// Validation Schemas
-// ============================================================================
-
-/**
- * Schema for toolset list query parameters
- */
-const toolsetListSchema = z.object({
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-    include_tools: z
-      .preprocess((arg) => arg === 'true', z.boolean())
-      .optional(),
-  }),
-});
-
-/**
- * Schema for toolset type parameter
- */
-const toolsetTypeParamSchema = z.object({
-  params: z.object({
-    toolsetType: z.string().min(1, 'Toolset type is required'),
-  }),
-});
-
-/**
- * Schema for toolset ID parameter
- */
-const toolsetIdParamSchema = z.object({
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-});
-
-/**
- * Schema for creating a toolset instance
- */
-const createToolsetInstanceSchema = z.object({
-  body: z.object({
-    instanceName: z.string().min(1, 'Instance name is required'),
-    toolsetType: z.string().min(1, 'Toolset type is required'),
-    authType: z.string().min(1, 'Auth type is required'),
-    authConfig: z.record(z.any()).optional(),
-    baseUrl: z.string().optional(),
-    oauthConfigId: z.string().optional(),
-    oauthInstanceName: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for creating a toolset
- */
-const createToolsetSchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'Toolset name is required'),
-    displayName: z.string().optional(),
-    type: z.string().optional(),
-    auth: z.object({
-      type: z.string().min(1, 'Auth type is required'),
-      clientId: z.string().optional(),
-      clientSecret: z.string().optional(),
-      apiToken: z.string().optional(),
-      oauthAppId: z.string().optional(),
-      scopes: z.array(z.string()).optional(),
-      tenantId: z.string().optional(),
-    }),
-    baseUrl: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for saving toolset configuration
- */
-const saveToolsetConfigSchema = z.object({
-  body: z.object({
-    auth: z.object({
-      type: z.string().min(1, 'Auth type is required'),
-      clientId: z.string().optional(),
-      clientSecret: z.string().optional(),
-      apiToken: z.string().optional(),
-      oauthAppId: z.string().optional(),
-      scopes: z.array(z.string()).optional(),
-      tenantId: z.string().optional(),
-    }),
-    baseUrl: z.string().optional()
-  }),
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-});
-
-/**
- * Schema for getting OAuth authorization URL
- */
-const getOAuthAuthorizationUrlSchema = z.object({
-  params: z.object({
-    toolsetId: z.string().min(1, 'Toolset ID is required'),
-  }),
-  query: z.object({
-    base_url: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for handling OAuth callback
- */
-const handleOAuthCallbackSchema = z.object({
-  query: z.object({
-    code: z.string().optional(),
-    state: z.string().optional(),
-    error: z.string().optional(),
-    base_url: z.string().optional(),
-  }),
-});
-
-/**
- * Schema for updating user's credentials for a non-OAuth toolset instance
- */
-const updateUserToolsetInstanceSchema = z.object({
-  body: z.object({
-    auth: z.object({
-      email: z.string().optional(),
-      apiToken: z.string().optional(),
-      username: z.string().optional(),
-      password: z.string().optional(),
-    }),
-  }),
-  params: z.object({
-    instanceId: z.string().min(1, 'Instance ID is required'),
-  }),
-});
-
-
-/**
- * Schema for getting my toolsets.
- * HTTP query params always arrive as strings, so numeric fields must be
- * coerced and boolean fields preprocessed — identical to toolsetListSchema.
- */
-const getMyToolsetsSchema = z.object({
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-    includeRegistry: z
-      .preprocess((arg) => arg === 'true', z.boolean())
-      .optional(),
-    authStatus: z
-      .enum(['authenticated', 'not-authenticated'])
-      .optional(),
-  }),
-});
-
-/**
- * Schema for getting agent-scoped toolsets (service account agents).
- * Same shape as getMyToolsetsSchema but without authStatus — agent endpoints
- * return all instances merged with agent-level auth status without server-side
- * filtering by auth state (the UI handles that client-side).
- */
-const getAgentToolsetsSchema = z.object({
-  query: z.object({
-    page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
-      .optional(),
-    limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
-      .optional(),
-    search: z.string().optional(),
-    includeRegistry: z
-      .preprocess((arg) => arg === 'true', z.boolean())
-      .optional(),
-  }),
-});
+import {
+  toolsetListSchema,
+  toolsetTypeParamSchema,
+  toolsetInstanceIdParamSchema,
+  deleteToolsetOAuthConfigParamsSchema,
+  getInstanceOAuthAuthorizationUrlSchema,
+  handleOAuthCallbackSchema,
+  getMyToolsetsSchema,
+  getToolsetInstancesSchema,
+  createToolsetInstanceSchema,
+  updateToolsetInstanceSchema,
+  authenticateToolsetInstanceSchema,
+  updateUserToolsetInstanceSchema,
+  updateToolsetOAuthConfigSchema,
+  getAgentToolsetsSchema,
+  updateAgentToolsetInstanceSchema,
+  authenticateAgentToolsetSchema,
+  removeAgentToolsetCredentialsSchema,
+  reauthenticateAgentToolsetSchema,
+  getAgentToolsetOAuthUrlSchema,
+} from '../validators/toolsets_validator';
 
 // ============================================================================
 // Router Factory
@@ -279,122 +108,10 @@ export function createToolsetsRouter(container: Container): Router {
     getToolsetSchema(config)
   );
 
-  // ============================================================================
-  // Toolset Instance Routes (Database + etcd)
-  // ============================================================================
-
-  /**
-   * POST /
-   * Create a new toolset (creates node and saves config)
-   */
-  router.post(
-    '/',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(createToolsetSchema),
-    createToolset(config)
-  );
-
-  /**
-   * GET /configured
-   * Get all configured toolsets for the authenticated user
-   * User ID is extracted from auth token
-   */
-  router.get(
-    '/configured',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    getConfiguredToolsets(config)
-  );
-
-  /**
-   * GET /:toolsetId/status
-   * Check toolset authentication status
-   */
-  router.get(
-    '/:toolsetId/status',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    checkToolsetStatus(config)
-  );
-
-  /**
-   * GET /:toolsetId/config
-   * Get toolset configuration
-   */
-  router.get(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    getToolsetConfig(config)
-  );
-
-  /**
-   * POST /:toolsetId/config
-   * Save toolset configuration (OAuth credentials, API tokens, etc)
-   * @deprecated Use POST / for create or PUT /:toolsetId/config for update
-   */
-  router.post(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(saveToolsetConfigSchema),
-    saveToolsetConfig(config)
-  );
-
-  /**
-   * PUT /:toolsetId/config
-   * Update toolset configuration (OAuth credentials, API tokens, etc)
-   */
-  router.put(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(saveToolsetConfigSchema),
-    updateToolsetConfig(config)
-  );
-
-  /**
-   * DELETE /:toolsetId/config
-   * Delete toolset configuration (with safe delete check)
-   */
-  router.delete(
-    '/:toolsetId/config',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    deleteToolsetConfig(config)
-  );
-
-  /**
-   * POST /:toolsetId/reauthenticate
-   * Clear toolset OAuth credentials and mark as unauthenticated, requiring re-authentication
-   */
-  router.post(
-    '/:toolsetId/reauthenticate',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(toolsetIdParamSchema),
-    reauthenticateToolset(config)
-  );
 
   // ============================================================================
   // OAuth Routes
   // ============================================================================
-
-  /**
-   * GET /:toolsetId/oauth/authorize
-   * Get OAuth authorization URL for a toolset
-   */
-  router.get(
-    '/:toolsetId/oauth/authorize',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getOAuthAuthorizationUrlSchema),
-    getOAuthAuthorizationUrl(config)
-  );
 
   /**
    * GET /oauth/callback
@@ -432,6 +149,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getToolsetInstancesSchema),
     getToolsetInstances(config)
   );
 
@@ -455,6 +173,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetInstanceIdParamSchema),
     getToolsetInstance(config)
   );
 
@@ -466,6 +185,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(updateToolsetInstanceSchema),
     updateToolsetInstance(config)
   );
 
@@ -477,6 +197,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetInstanceIdParamSchema),
     deleteToolsetInstance(config)
   );
 
@@ -488,6 +209,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId/authenticate',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(authenticateToolsetInstanceSchema),
     authenticateToolsetInstance(config)
   );
 
@@ -512,6 +234,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId/credentials',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetInstanceIdParamSchema),
     removeToolsetCredentials(config)
   );
 
@@ -523,6 +246,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId/reauthenticate',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetInstanceIdParamSchema),
     reauthenticateToolsetInstance(config)
   );
 
@@ -534,6 +258,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId/oauth/authorize',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getInstanceOAuthAuthorizationUrlSchema),
     getInstanceOAuthAuthorizationUrl(config)
   );
 
@@ -545,6 +270,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/instances/:instanceId/status',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetInstanceIdParamSchema),
     getInstanceStatus(config)
   );
 
@@ -556,6 +282,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/oauth-configs/:toolsetType',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetTypeParamSchema),
     listToolsetOAuthConfigs(config)
   );
 
@@ -568,6 +295,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/oauth-configs/:toolsetType/:oauthConfigId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(updateToolsetOAuthConfigSchema),
     updateToolsetOAuthConfig(config)
   );
 
@@ -579,6 +307,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/oauth-configs/:toolsetType/:oauthConfigId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteToolsetOAuthConfigParamsSchema),
     deleteToolsetOAuthConfig(config)
   );
 
@@ -608,6 +337,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/authenticate',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(authenticateAgentToolsetSchema),
     authenticateAgentToolset(config)
   );
 
@@ -619,7 +349,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/credentials',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserToolsetInstanceSchema),
+    ValidationMiddleware.validate(updateAgentToolsetInstanceSchema),
     updateAgentToolsetCredentials(config)
   );
 
@@ -631,6 +361,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/credentials',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(removeAgentToolsetCredentialsSchema),
     removeAgentToolsetCredentials(config)
   );
 
@@ -642,6 +373,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/reauthenticate',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(reauthenticateAgentToolsetSchema),
     reauthenticateAgentToolset(config)
   );
 
@@ -653,6 +385,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/oauth/authorize',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAgentToolsetOAuthUrlSchema),
     getAgentToolsetOAuthUrl(config)
   );
 

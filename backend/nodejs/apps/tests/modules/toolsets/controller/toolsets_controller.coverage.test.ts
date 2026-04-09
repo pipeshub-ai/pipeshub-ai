@@ -4,16 +4,7 @@ import sinon from 'sinon'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   getRegistryToolsets,
-  getConfiguredToolsets,
   getToolsetSchema,
-  createToolset,
-  checkToolsetStatus,
-  getToolsetConfig,
-  saveToolsetConfig,
-  updateToolsetConfig,
-  deleteToolsetConfig,
-  reauthenticateToolset,
-  getOAuthAuthorizationUrl,
   handleOAuthCallback,
   getToolsetInstances,
   createToolsetInstance,
@@ -72,7 +63,7 @@ describe('ToolsetsController - additional coverage', () => {
   beforeEach(() => {
     executeStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
     handleErrorStub = sinon.stub(connectorUtils, 'handleBackendError')
-    handleResponseStub = sinon.stub(connectorUtils, 'handleConnectorResponse')
+    handleResponseStub = sinon.stub(connectorUtils, 'handleValidatedConnectorResponse')
   })
 
   afterEach(() => {
