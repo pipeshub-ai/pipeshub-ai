@@ -516,7 +516,7 @@ class Salesforce:
         if not self.instance_url or not record_id:
             return None
         if sobject:
-            return f"{self.instance_url}/lightning/r/{sobject}/{record_id}/view"
+            return f"{self.instance_url}/{record_id}"
         # Fallback: classic record URL (Salesforce will redirect to Lightning)
         return f"{self.instance_url}/{record_id}"
 
@@ -2002,7 +2002,7 @@ class Salesforce:
                 conditions.append(f"WhoId = '{who_id}'")
             where = self._build_soql_conditions(conditions)
             query = (
-                f"SELECT Id, Subject, Status, Priority, ActivityDate, Description, Type, "
+                f"SELECT Id, Subject, Status, Priority, ActivityDate, Description, "
                 f"OwnerId, Owner.Name, WhatId, What.Name, WhoId, Who.Name "
                 f"FROM Task{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
             )
