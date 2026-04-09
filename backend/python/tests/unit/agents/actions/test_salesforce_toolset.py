@@ -9,6 +9,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 
@@ -98,24 +99,19 @@ class TestInit:
 
 
 class TestBuildWebUrl:
-    def test_returns_url_when_all_present(self):
+    def test_returns_url_when_record_id_present(self):
         sf = _build_salesforce()
-        url = sf._build_web_url("Account", "001ABC")
+        url = sf._build_web_url("001ABC")
         assert url == "https://mycompany.my.salesforce.com/001ABC"
 
     def test_returns_none_when_no_record_id(self):
         sf = _build_salesforce()
-        assert sf._build_web_url("Account", None) is None
+        assert sf._build_web_url(None) is None
 
     def test_returns_none_when_no_instance_url(self):
         sf = _build_salesforce()
         sf.instance_url = ""
-        assert sf._build_web_url("Account", "001ABC") is None
-
-    def test_fallback_when_no_sobject(self):
-        sf = _build_salesforce()
-        url = sf._build_web_url(None, "001ABC")
-        assert url == "https://mycompany.my.salesforce.com/001ABC"
+        assert sf._build_web_url("001ABC") is None
 
 
 class TestEnrichWithWebUrls:
@@ -143,24 +139,24 @@ class TestEnrichWithWebUrls:
     def test_enriches_single_record(self):
         sf = _build_salesforce()
         data = {"Id": "001ABC", "attributes": {"type": "Account"}, "Name": "Acme"}
-        result = sf._enrich_with_web_urls(data, default_sobject="Account")
+        result = sf._enrich_with_web_urls(data)
         assert result["webUrl"] == "https://mycompany.my.salesforce.com/001ABC"
 
     def test_enriches_create_response(self):
         sf = _build_salesforce()
         data = {"id": "001NEW", "success": True}
-        result = sf._enrich_with_web_urls(data, default_sobject="Account")
+        result = sf._enrich_with_web_urls(data)
         assert result["webUrl"] == "https://mycompany.my.salesforce.com/001NEW"
 
     def test_non_dict_passthrough(self):
         sf = _build_salesforce()
         assert sf._enrich_with_web_urls("not a dict") == "not a dict"
 
-    def test_non_dict_record_in_records_list(self):
+    def test_non_dict_record_in_records_list_raises(self):
         sf = _build_salesforce()
         data = {"totalSize": 1, "records": ["not a dict"]}
-        result = sf._enrich_with_web_urls(data)
-        assert result["records"] == ["not a dict"]
+        with pytest.raises(ValidationError):
+            sf._enrich_with_web_urls(data)
 
     def test_record_without_id_no_weburl(self):
         sf = _build_salesforce()
@@ -169,11 +165,12 @@ class TestEnrichWithWebUrls:
         result = sf._enrich_with_web_urls(data)
         assert "webUrl" not in result["records"][0]
 
-    def test_create_response_without_default_sobject(self):
+    def test_create_response_gets_web_url_from_id(self):
+        """Create payloads only expose lowercase id; enrichment uses SalesforceRecord.record_id."""
         sf = _build_salesforce()
         data = {"id": "001NEW", "success": True}
-        result = sf._enrich_with_web_urls(data, default_sobject=None)
-        assert "webUrl" not in result
+        result = sf._enrich_with_web_urls(data)
+        assert result["webUrl"] == "https://mycompany.my.salesforce.com/001NEW"
 
     def test_dict_without_any_matching_pattern(self):
         sf = _build_salesforce()
@@ -410,7 +407,9 @@ class TestSoslSearch:
         )
         ok, body = await sf.sosl_search(search="FIND {Acme}")
         assert ok is True
-        sf.client.sosl_search.assert_awaited_once()
+        sf.client.sosl_search.assert_awaited_once_with(
+            api_version="59.0", q="FIND {Acme}"
+        )
 
     @pytest.mark.asyncio
     async def test_exception(self):
@@ -534,6 +533,9 @@ class TestDescribeObject:
         assert parsed["data"]["name"] == "Account"
         assert len(parsed["data"]["fields"]) == 1
         assert parsed["data"]["fields"][0]["name"] == "Name"
+        sf.client.s_object_describe.assert_awaited_once_with(
+            sobject_api_name="Account", version="59.0"
+        )
 
     @pytest.mark.asyncio
     async def test_success_with_picklist(self):
@@ -580,7 +582,8 @@ class TestDescribeObject:
             return_value=_success_response(["not", "a", "dict"])
         )
         ok, body = await sf.describe_object(sobject="Account")
-        assert ok is True
+        assert ok is False
+        assert "error" in json.loads(body)
 
     @pytest.mark.asyncio
     async def test_error_response(self):
@@ -1091,7 +1094,7 @@ class TestCreateTask:
         await sf.create_task(
             subject="Follow up", status="Not Started", priority="High",
             activity_date="2025-06-15", description="Call back",
-            owner_id="005OWNER", what_id="006OPP", who_id="003CONTACT", type="Call",
+            owner_id="005OWNER", what_id="006OPP", who_id="003CONTACT",
         )
         data = sf.client.sobject_create.call_args.kwargs["data"]
         assert data["Subject"] == "Follow up"
@@ -1100,7 +1103,6 @@ class TestCreateTask:
         assert data["OwnerId"] == "005OWNER"
         assert data["WhatId"] == "006OPP"
         assert data["WhoId"] == "003CONTACT"
-        assert data["Type"] == "Call"
 
     @pytest.mark.asyncio
     async def test_exception(self):
@@ -1138,7 +1140,8 @@ class TestAddProductToOpportunity:
         sf = _build_salesforce()
         ok, body = await sf.add_product_to_opportunity(opportunity_id="006OPP")
         assert ok is False
-        assert "pricebook_entry_id or product_id" in json.loads(body)["error"]
+        err = json.loads(body)["error"]
+        assert "pricebook_entry_id" in err and "product_id" in err
 
     @pytest.mark.asyncio
     async def test_lookup_pbe_from_product_id(self):
@@ -1289,7 +1292,7 @@ class TestGetRecordChatter:
         ok, _ = await sf.get_record_chatter(record_id="001ABC")
         assert ok is True
         sf.client.record_feed_elements.assert_awaited_once_with(
-            record_group_id="001ABC", version="59.0"
+            record_group_id="001ABC", version=sf.api_version
         )
 
     @pytest.mark.asyncio

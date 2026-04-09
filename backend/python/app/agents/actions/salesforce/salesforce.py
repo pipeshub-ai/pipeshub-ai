@@ -1,11 +1,90 @@
 import json
 import logging
 import re
-from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any
 
-from pydantic import BaseModel, Field
-
+from app.agents.actions.salesforce.salesforce_models import (
+    AccountData,
+    AddProductToOpportunityInput,
+    CaseData,
+    ChatterMarkupType,
+    ChatterSegment,
+    CreateAccountInput,
+    CreateCaseInput,
+    CreateContactInput,
+    CreateLeadInput,
+    CreateOpportunityInput,
+    CreateProductInput,
+    CreateRecordInput,
+    CreateTaskInput,
+    ContactData,
+    DEFAULT_API_VERSION,
+    DescribeObjectInput,
+    ERR_NEED_PBE_OR_PRODUCT,
+    ERR_NO_ACTIVE_PBE,
+    ERR_OPP_NO_PRICEBOOK,
+    GetRecordChatterInput,
+    GetRecordInput,
+    GetUserInfoInput,
+    HyperlinkSegment,
+    LeadData,
+    ListPricebooksInput,
+    ListRecentRecordsInput,
+    MarkupBeginSegment,
+    MarkupEndSegment,
+    MSG_SUCCESS,
+    MSG_UNKNOWN_ERROR,
+    ERR_LOG,
+    SF_CHATTER_FEED_ELEMENT_TYPE,
+    SF_FIELD_PRICEBOOK2_ID,
+    SF_FIELD_UNIT_PRICE,
+    SF_KEY_ATTRIBUTES,
+    SF_KEY_ID,
+    SF_KEY_ID_LOWER,
+    SF_KEY_RECORDS,
+    SF_KEY_SEARCH_RECORDS,
+    SF_KEY_SUCCESS,
+    OpportunityData,
+    OpportunityLineItemData,
+    PostChatterCommentInput,
+    PostChatterToRecordInput,
+    ProductData,
+    SearchAccountsInput,
+    SearchCasesInput,
+    SearchContactsInput,
+    SearchLeadsInput,
+    SearchOpportunitiesInput,
+    SearchProductsInput,
+    SearchTasksInput,
+    SalesforceRecord,
+    SF_JSON_DATA_KEY,
+    SF_JSON_ERROR_KEY,
+    SF_JSON_MESSAGE_KEY,
+    SF_SOBJECT_ACCOUNT,
+    SF_SOBJECT_CASE,
+    SF_SOBJECT_CONTACT,
+    SF_SOBJECT_LEAD,
+    SF_SOBJECT_OPPORTUNITY,
+    SF_SOBJECT_OPPORTUNITY_LINE_ITEM,
+    SF_SOBJECT_PRODUCT2,
+    SF_SOBJECT_TASK,
+    SOQL_LIST_PRICEBOOKS,
+    SOQL_LIST_RECENT_RECORDS,
+    SOQL_OPPORTUNITY_PRICEBOOK2_BY_ID,
+    SOQL_PRICEBOOK_ENTRY_BY_PRODUCT_AND_BOOK,
+    SOQL_SEARCH_ACCOUNTS,
+    SOQL_SEARCH_CASES,
+    SOQL_SEARCH_CONTACTS,
+    SOQL_SEARCH_LEADS,
+    SOQL_SEARCH_OPPORTUNITIES,
+    SOQL_SEARCH_PRODUCTS,
+    SOQL_SEARCH_TASKS,
+    SOQLQueryInput,
+    SOSLSearchInput,
+    TaskData,
+    TextSegment,
+    UpdateRecordInput,
+)
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
@@ -21,488 +100,7 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.sources.client.salesforce.salesforce import SalesforceClient, SalesforceResponse
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
-from app.modules.agents.qna.chat_state import ChatState
 logger = logging.getLogger(__name__)
-
-# Default API version used across all tools
-DEFAULT_API_VERSION = "59.0"
-
-
-# ---------------------------------------------------------------------------
-# Chatter message-segment models
-# ---------------------------------------------------------------------------
-
-
-class ChatterMarkupType(str, Enum):
-    """Supported Chatter markup types."""
-    BOLD = "Bold"
-    ITALIC = "Italic"
-    PARAGRAPH = "Paragraph"
-    UNORDERED_LIST = "UnorderedList"
-    ORDERED_LIST = "OrderedList"
-    LIST_ITEM = "ListItem"
-
-
-class TextSegment(BaseModel):
-    """A plain-text Chatter segment."""
-    type: Literal["Text"] = "Text"
-    text: str
-
-
-class MarkupBeginSegment(BaseModel):
-    """Opens a markup span (Bold, Italic, Paragraph)."""
-    type: Literal["MarkupBegin"] = "MarkupBegin"
-    markupType: ChatterMarkupType = Field(alias="markupType")
-
-    model_config = {"populate_by_name": True}
-
-
-class MarkupEndSegment(BaseModel):
-    """Closes a markup span (Bold, Italic, Paragraph)."""
-    type: Literal["MarkupEnd"] = "MarkupEnd"
-    markupType: ChatterMarkupType = Field(alias="markupType")
-
-    model_config = {"populate_by_name": True}
-
-
-class HyperlinkSegment(BaseModel):
-    """A hyperlink Chatter segment."""
-    type: Literal["Hyperlink"] = "Hyperlink"
-    url: str
-    text: str
-
-
-ChatterSegment = Union[
-    TextSegment, MarkupBeginSegment, MarkupEndSegment, HyperlinkSegment
-]
-
-# ---------------------------------------------------------------------------
-# Pydantic input schemas
-# ---------------------------------------------------------------------------
-
-class SOQLQueryInput(BaseModel):
-    """Schema for executing a SOQL query"""
-    query: str = Field(
-        description="The SOQL query string to execute (e.g., \"SELECT Id, Name FROM Account LIMIT 10\")"
-    )
-
-
-class SOSLSearchInput(BaseModel):
-    """Schema for executing a SOSL search"""
-    search: str = Field(
-        description="The SOSL search string (e.g., \"FIND {Acme} IN ALL FIELDS RETURNING Account(Id, Name), Contact(Id, Name)\")"
-    )
-
-
-class GetRecordInput(BaseModel):
-    """Schema for retrieving a Salesforce record by ID"""
-    sobject: str = Field(
-        description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
-    )
-    record_id: str = Field(description="The 15 or 18-character Salesforce record ID")
-    fields: Optional[str] = Field(
-        default=None,
-        description="Comma-separated list of fields to return (e.g., 'Id,Name,Email'). Omit to return all accessible fields.",
-    )
-
-
-class CreateRecordInput(BaseModel):
-    """Schema for creating a Salesforce record"""
-    sobject: str = Field(
-        description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
-    )
-    data: Dict[str, Any] = Field(
-        description="Field-value pairs for the new record (e.g., {\"Name\": \"Acme Corp\", \"Industry\": \"Technology\"})"
-    )
-
-
-class UpdateRecordInput(BaseModel):
-    """Schema for updating a Salesforce record"""
-    sobject: str = Field(
-        description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
-    )
-    record_id: str = Field(description="The 15 or 18-character Salesforce record ID")
-    data: Dict[str, Any] = Field(
-        description="Field-value pairs to update (e.g., {\"Name\": \"New Name\", \"Phone\": \"555-1234\"})"
-    )
-
-
-class DescribeObjectInput(BaseModel):
-    """Schema for describing a Salesforce object's metadata"""
-    sobject: str = Field(
-        description="The Salesforce object API name to describe (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
-    )
-
-
-class ListRecentRecordsInput(BaseModel):
-    """Schema for listing recent records of a Salesforce object"""
-    sobject: str = Field(
-        description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of recent records to return (default 10, max 50)",
-    )
-
-
-class SearchAccountsInput(BaseModel):
-    """Schema for searching Salesforce accounts"""
-    name: Optional[str] = Field(
-        default=None,
-        description="Account name to search for (partial match supported)",
-    )
-    industry: Optional[str] = Field(
-        default=None,
-        description="Filter by industry",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class SearchContactsInput(BaseModel):
-    """Schema for searching Salesforce contacts"""
-    name: Optional[str] = Field(
-        default=None,
-        description="Contact name to search for (partial match supported)",
-    )
-    email: Optional[str] = Field(
-        default=None,
-        description="Filter by email address",
-    )
-    account_id: Optional[str] = Field(
-        default=None,
-        description="Filter by parent Account ID",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class SearchLeadsInput(BaseModel):
-    """Schema for searching Salesforce leads"""
-    name: Optional[str] = Field(
-        default=None,
-        description="Lead name to search for (partial match supported)",
-    )
-    company: Optional[str] = Field(
-        default=None,
-        description="Filter by company name",
-    )
-    status: Optional[str] = Field(
-        default=None,
-        description="Filter by lead status (e.g., 'Open - Not Contacted', 'Working - Contacted', 'Closed - Converted')",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class SearchOpportunitiesInput(BaseModel):
-    """Schema for searching Salesforce opportunities"""
-    name: Optional[str] = Field(
-        default=None,
-        description="Opportunity name to search for (partial match supported)",
-    )
-    stage: Optional[str] = Field(
-        default=None,
-        description="Filter by stage name (e.g., 'Prospecting', 'Qualification', 'Closed Won')",
-    )
-    account_id: Optional[str] = Field(
-        default=None,
-        description="Filter by parent Account ID",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class SearchCasesInput(BaseModel):
-    """Schema for searching Salesforce cases"""
-    subject: Optional[str] = Field(
-        default=None,
-        description="Case subject to search for (partial match supported)",
-    )
-    status: Optional[str] = Field(
-        default=None,
-        description="Filter by case status (e.g., 'New', 'Working', 'Escalated', 'Closed')",
-    )
-    priority: Optional[str] = Field(
-        default=None,
-        description="Filter by priority (e.g., 'High', 'Medium', 'Low')",
-    )
-    account_id: Optional[str] = Field(
-        default=None,
-        description="Filter by parent Account ID",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class CreateAccountInput(BaseModel):
-    """Schema for creating a Salesforce account"""
-    name: str = Field(description="Account name (required)")
-    industry: Optional[str] = Field(default=None, description="Industry")
-    phone: Optional[str] = Field(default=None, description="Phone number")
-    website: Optional[str] = Field(default=None, description="Website URL")
-    description: Optional[str] = Field(default=None, description="Account description")
-    billing_city: Optional[str] = Field(default=None, description="Billing city")
-    billing_state: Optional[str] = Field(default=None, description="Billing state/province")
-    billing_country: Optional[str] = Field(default=None, description="Billing country")
-
-
-class CreateContactInput(BaseModel):
-    """Schema for creating a Salesforce contact"""
-    last_name: str = Field(description="Last name (required)")
-    first_name: Optional[str] = Field(default=None, description="First name")
-    email: Optional[str] = Field(default=None, description="Email address")
-    phone: Optional[str] = Field(default=None, description="Phone number")
-    title: Optional[str] = Field(default=None, description="Job title")
-    account_id: Optional[str] = Field(default=None, description="Parent Account ID to associate this contact with")
-    department: Optional[str] = Field(default=None, description="Department")
-
-
-class CreateLeadInput(BaseModel):
-    """Schema for creating a Salesforce lead"""
-    last_name: str = Field(description="Last name (required)")
-    company: str = Field(description="Company name (required)")
-    first_name: Optional[str] = Field(default=None, description="First name")
-    email: Optional[str] = Field(default=None, description="Email address")
-    phone: Optional[str] = Field(default=None, description="Phone number")
-    title: Optional[str] = Field(default=None, description="Job title")
-    status: Optional[str] = Field(default=None, description="Lead status (e.g., 'Open - Not Contacted')")
-    industry: Optional[str] = Field(default=None, description="Industry")
-
-
-class CreateOpportunityInput(BaseModel):
-    """Schema for creating a Salesforce opportunity"""
-    name: str = Field(description="Opportunity name (required)")
-    stage_name: str = Field(description="Stage name (required, e.g., 'Prospecting', 'Qualification', 'Needs Analysis')")
-    close_date: str = Field(description="Expected close date in YYYY-MM-DD format (required)")
-    account_id: Optional[str] = Field(default=None, description="Parent Account ID")
-    amount: Optional[float] = Field(default=None, description="Opportunity amount")
-    description: Optional[str] = Field(default=None, description="Opportunity description")
-    probability: Optional[float] = Field(default=None, ge=0, le=100, description="Probability percentage (0-100)")
-
-
-class CreateCaseInput(BaseModel):
-    """Schema for creating a Salesforce case"""
-    subject: str = Field(description="Case subject (required)")
-    status: Optional[str] = Field(default=None, description="Case status (e.g., 'New', 'Working', 'Escalated')")
-    priority: Optional[str] = Field(default=None, description="Priority (e.g., 'High', 'Medium', 'Low')")
-    origin: Optional[str] = Field(default=None, description="Case origin (e.g., 'Phone', 'Email', 'Web')")
-    description: Optional[str] = Field(default=None, description="Case description")
-    account_id: Optional[str] = Field(default=None, description="Parent Account ID")
-    contact_id: Optional[str] = Field(default=None, description="Associated Contact ID")
-
-
-class SearchProductsInput(BaseModel):
-    """Schema for searching Salesforce products"""
-    name: Optional[str] = Field(
-        default=None,
-        description="Product name to search for (partial match supported)",
-    )
-    product_code: Optional[str] = Field(
-        default=None,
-        description="Filter by product code (SKU)",
-    )
-    family: Optional[str] = Field(
-        default=None,
-        description="Filter by product family",
-    )
-    active_only: bool = Field(
-        default=True,
-        description="Only return active products. Default True.",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class CreateProductInput(BaseModel):
-    """Schema for creating a Salesforce product"""
-    name: str = Field(description="Product name (required)")
-    product_code: Optional[str] = Field(default=None, description="Product code / SKU")
-    description: Optional[str] = Field(default=None, description="Product description")
-    family: Optional[str] = Field(default=None, description="Product family")
-    is_active: bool = Field(default=True, description="Whether the product is active. Default True.")
-    quantity_unit_of_measure: Optional[str] = Field(
-        default=None,
-        description="Unit of measure (e.g., 'Each', 'Hours', 'Kg')",
-    )
-
-
-class ListPricebooksInput(BaseModel):
-    """Schema for listing Salesforce price books"""
-    name: Optional[str] = Field(
-        default=None,
-        description="Price book name to search for (partial match supported)",
-    )
-    active_only: bool = Field(
-        default=True,
-        description="Only return active price books. Default True.",
-    )
-    limit: int = Field(
-        default=20, ge=1, le=200,
-        description="Maximum number of results (default 20, max 200)",
-    )
-
-
-class AddProductToOpportunityInput(BaseModel):
-    """Schema for adding a product line item to a Salesforce opportunity"""
-    opportunity_id: str = Field(
-        description="The 15 or 18-character Salesforce Opportunity Id"
-    )
-    pricebook_entry_id: Optional[str] = Field(
-        default=None,
-        description="The PricebookEntry Id for the product. If omitted, provide product_id (and optionally pricebook_id) and the tool will look it up.",
-    )
-    product_id: Optional[str] = Field(
-        default=None,
-        description="The Product2 Id. Used to look up the PricebookEntry if pricebook_entry_id is not provided.",
-    )
-    pricebook_id: Optional[str] = Field(
-        default=None,
-        description="The Pricebook2 Id to use when looking up a PricebookEntry from product_id. If omitted, the opportunity's pricebook is used.",
-    )
-    quantity: float = Field(
-        default=1, gt=0,
-        description="Quantity of the product (default 1)",
-    )
-    unit_price: Optional[float] = Field(
-        default=None,
-        description="Unit sales price. If omitted, the PricebookEntry UnitPrice is used.",
-    )
-    description: Optional[str] = Field(
-        default=None,
-        description="Optional line item description",
-    )
-
-
-class SearchTasksInput(BaseModel):
-    """Schema for searching Salesforce tasks"""
-    subject: Optional[str] = Field(
-        default=None,
-        description="Task subject to search for (partial match supported)",
-    )
-    status: Optional[str] = Field(
-        default=None,
-        description="Filter by task status (e.g., 'Not Started', 'In Progress', 'Completed', 'Deferred')",
-    )
-    priority: Optional[str] = Field(
-        default=None,
-        description="Filter by priority (e.g., 'High', 'Normal', 'Low')",
-    )
-    owner_id: Optional[str] = Field(
-        default=None,
-        description="Filter by task owner User ID",
-    )
-    what_id: Optional[str] = Field(
-        default=None,
-        description="Filter by related record ID (Account, Opportunity, Case, etc.)",
-    )
-    who_id: Optional[str] = Field(
-        default=None,
-        description="Filter by related Contact or Lead ID",
-    )
-    limit: int = Field(
-        default=10, ge=1, le=50,
-        description="Maximum number of results (default 10, max 50)",
-    )
-
-
-class CreateTaskInput(BaseModel):
-    """Schema for creating a Salesforce task"""
-    subject: str = Field(description="Task subject (required)")
-    status: Optional[str] = Field(
-        default=None,
-        description="Task status (e.g., 'Not Started', 'In Progress', 'Completed')",
-    )
-    priority: Optional[str] = Field(
-        default=None,
-        description="Priority (e.g., 'High', 'Normal', 'Low')",
-    )
-    activity_date: Optional[str] = Field(
-        default=None,
-        description="Due date in YYYY-MM-DD format",
-    )
-    description: Optional[str] = Field(default=None, description="Task description / comments")
-    owner_id: Optional[str] = Field(
-        default=None,
-        description="User ID of the task owner. Defaults to the authenticated user.",
-    )
-    what_id: Optional[str] = Field(
-        default=None,
-        description="Related record ID (Account, Opportunity, Case, etc.) the task is about",
-    )
-    who_id: Optional[str] = Field(
-        default=None,
-        description="Related Contact or Lead ID the task is associated with",
-    )
-    type: Optional[str] = Field(
-        default=None,
-        description="Task type (e.g., 'Call', 'Email', 'Meeting')",
-    )
-
-
-class GetRecordChatterInput(BaseModel):
-    """Schema for fetching a Salesforce record's Chatter feed"""
-    record_id: str = Field(
-        description="The Salesforce record ID whose Chatter feed should be fetched (Account, Opportunity, Case, Contact, Lead, etc.)",
-    )
-
-
-class PostChatterCommentInput(BaseModel):
-    """Schema for posting a comment/reply on a Chatter feed item"""
-    feed_element_id: str = Field(
-        description="The Chatter FeedElement (FeedItem) ID to reply to (starts with '0D5')",
-    )
-    text: str = Field(
-        description=(
-            "The comment text to post (max 10,000 chars). When is_rich_text=True, supports "
-            "markdown: **bold**, *italic*, [label](url), and blank lines for paragraph breaks."
-        )
-    )
-    is_rich_text: bool = Field(
-        default=False,
-        description=(
-            "If True, the `text` is parsed as markdown and posted as Chatter rich text "
-            "(bold, italic, hyperlinks, paragraphs). Default False (plain text)."
-        ),
-    )
-
-
-class PostChatterToRecordInput(BaseModel):
-    """Schema for creating a new Chatter post on a Salesforce record"""
-    record_id: str = Field(
-        description="The Salesforce record ID to post to (Account, Opportunity, Case, Contact, Lead, User, etc.)",
-    )
-    text: str = Field(
-        description=(
-            "The post text (max 10,000 chars). When is_rich_text=True, supports markdown: "
-            "**bold**, *italic*, [label](url), and blank lines for paragraph breaks."
-        )
-    )
-    is_rich_text: bool = Field(
-        default=False,
-        description=(
-            "If True, the `text` is parsed as markdown and posted as Chatter rich text "
-            "(bold, italic, hyperlinks, paragraphs). Default False (plain text)."
-        ),
-    )
-
-
-class GetUserInfoInput(BaseModel):
-    """Schema for getting the current user's info"""
-    pass
-
 
 # ---------------------------------------------------------------------------
 # Toolset registration
@@ -560,17 +158,14 @@ class Salesforce:
         self.api_version = DEFAULT_API_VERSION
         self.instance_url = (client.get_base_url() or "").rstrip("/")
 
-    def _build_web_url(self, sobject: Optional[str], record_id: Optional[str]) -> Optional[str]:
+    def _build_web_url(self, record_id: str | None) -> str | None:
         """Build a Salesforce Lightning web URL for a record."""
         if not self.instance_url or not record_id:
             return None
-        if sobject:
-            return f"{self.instance_url}/{record_id}"
-        # Fallback: classic record URL (Salesforce will redirect to Lightning)
         return f"{self.instance_url}/{record_id}"
 
     def _enrich_with_web_urls(
-        self, data: Any, default_sobject: Optional[str] = None
+        self, data: Any
     ) -> Any:
         """Inject a webUrl field into records by inspecting attributes.type and Id.
 
@@ -580,41 +175,44 @@ class Salesforce:
         - Single record dicts (e.g., from sobject_get): {"Id": "...", "attributes": {...}}
         - Create responses: {"id": "...", "success": true}
         """
-        if not isinstance(data, dict):
+        if not isinstance(data, dict): # Does not have fixed schema
             return data
 
-        def _enrich_record(record: Dict[str, Any]) -> Dict[str, Any]:
-            if not isinstance(record, dict):
-                return record
-            record_id = record.get("Id") or record.get("id")
-            sobject = default_sobject
-            attrs = record.get("attributes")
-            if isinstance(attrs, dict) and attrs.get("type"):
-                sobject = attrs["type"]
-            web_url = self._build_web_url(sobject, record_id)
+        def _enrich_record(record: SalesforceRecord) -> SalesforceRecord:
+            web_url = self._build_web_url(record.record_id)
             if web_url:
-                record["webUrl"] = web_url
+                record.webUrl = web_url
             return record
 
+        def _to_record(raw: dict[str, Any]) -> SalesforceRecord: # Converts raw dict to SalesforceRecord
+            return SalesforceRecord.model_validate(raw)
+
         # SOQL/SOSL query response
-        records = data.get("records")
+        records = data.get(SF_KEY_RECORDS)
         if isinstance(records, list):
-            data["records"] = [_enrich_record(r) for r in records]
+            data[SF_KEY_RECORDS] = [
+                _enrich_record(_to_record(r)).model_dump(exclude_none=True)
+                for r in records
+            ]
 
         # SOSL searchRecords response
-        search_records = data.get("searchRecords")
+        search_records = data.get(SF_KEY_SEARCH_RECORDS)
         if isinstance(search_records, list):
-            data["searchRecords"] = [_enrich_record(r) for r in search_records]
+            data[SF_KEY_SEARCH_RECORDS] = [
+                _enrich_record(_to_record(r)).model_dump(exclude_none=True)
+                for r in search_records
+            ]
 
-        # Single record (from sobject_get) — has "attributes" or matches default_sobject
-        if "attributes" in data or (default_sobject and ("Id" in data or "id" in data)):
-            _enrich_record(data)
-
-        # Create response: {"id": "...", "success": true}
-        if "id" in data and "success" in data and default_sobject:
-            web_url = self._build_web_url(default_sobject, data.get("id"))
-            if web_url:
-                data["webUrl"] = web_url
+        # Create response: {"id": "...", "success": true} — more specific, check first
+        if SF_KEY_ID_LOWER in data and SF_KEY_SUCCESS in data:
+            record = _enrich_record(_to_record(data))
+            data.clear()
+            data.update(record.model_dump(exclude_none=True))
+        # Single record (from sobject_get) — has "attributes" or an Id field
+        elif SF_KEY_ATTRIBUTES in data or SF_KEY_ID in data or SF_KEY_ID_LOWER in data:
+            record = _enrich_record(_to_record(data))
+            data.clear()
+            data.update(record.model_dump(exclude_none=True))
 
         return data
 
@@ -622,16 +220,17 @@ class Salesforce:
         self,
         response: SalesforceResponse,
         success_message: str,
-        sobject: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        **_unused: Any,
+    ) -> tuple[bool, str]:
         """Return a standardised (success, json_string) tuple."""
         if response.success:
-            data = self._enrich_with_web_urls(response.data, default_sobject=sobject)
+            data = self._enrich_with_web_urls(response.data)
             return True, json.dumps(
-                {"message": success_message, "data": data}, default=str
+                {SF_JSON_MESSAGE_KEY: success_message, SF_JSON_DATA_KEY: data},
+                default=str,
             )
-        error = response.error or "Unknown error"
-        return False, json.dumps({"error": error})
+        error = response.error or MSG_UNKNOWN_ERROR
+        return False, json.dumps({SF_JSON_ERROR_KEY: error})
 
     @staticmethod
     def _sanitize_soql_value(value: str) -> str:
@@ -654,13 +253,13 @@ class Salesforce:
             raise ValueError(f"Invalid Salesforce API name: {name!r}")
         return name
 
-    def _build_soql_conditions(self, conditions: List[str]) -> str:
+    def _build_soql_conditions(self, conditions: list[str]) -> str:
         """Build a WHERE clause from a list of conditions."""
         if not conditions:
             return ""
         return " WHERE " + " AND ".join(conditions)
 
-    def _markdown_to_chatter_segments(self, text: str) -> List[ChatterSegment]:
+    def _markdown_to_chatter_segments(self, text: str) -> list[ChatterSegment]:
         """Convert markdown into Salesforce Chatter messageSegments.
 
         Supports:
@@ -677,7 +276,7 @@ class Salesforce:
         if not text:
             return [TextSegment(text="")]
 
-        segments: List[ChatterSegment] = []
+        segments: list[ChatterSegment] = []
 
         # Inline pattern: bold (**x** or __x__), italic (*x* or _x_), link [x](y)
         inline_re = re.compile(
@@ -838,17 +437,17 @@ class Salesforce:
             "Count the number of open cases",
         ],
     )
-    async def soql_query(self, query: str) -> Tuple[bool, str]:
+    async def soql_query(self, query: str) -> tuple[bool, str]:
         """Execute a SOQL query."""
         try:
             logger.info("salesforce.soql_query called with query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "SOQL query executed successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error executing SOQL query: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "soql_query", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -880,17 +479,17 @@ class Salesforce:
             "Search for contact or account named John",
         ],
     )
-    async def sosl_search(self, search: str) -> Tuple[bool, str]:
+    async def sosl_search(self, search: str) -> tuple[bool, str]:
         """Execute a SOSL search."""
         try:
             logger.info("salesforce.sosl_search called with search: %s", search)
             response = await self.client.sosl_search(
                 api_version=self.api_version, q=search
             )
-            return self._handle_response(response, "SOSL search executed successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error executing SOSL search: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "sosl_search", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Generic Record CRUD Tools
@@ -927,8 +526,8 @@ class Salesforce:
         ],
     )
     async def get_record(
-        self, sobject: str, record_id: str, fields: Optional[str] = None
-    ) -> Tuple[bool, str]:
+        self, sobject: str, record_id: str, fields: str | None = None
+    ) -> tuple[bool, str]:
         """Retrieve a Salesforce record by ID."""
         try:
             logger.info(
@@ -940,10 +539,14 @@ class Salesforce:
                 record_id=record_id,
                 fields=fields,
             )
-            return self._handle_response(response, f"{sobject} record retrieved successfully", sobject=sobject)
+            return self._handle_response(
+                response,
+                MSG_SUCCESS,
+                sobject=sobject,
+            )
         except Exception as e:
-            logger.error(f"Error getting record: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "get_record", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -978,18 +581,22 @@ class Salesforce:
         ],
     )
     async def create_record(
-        self, sobject: str, data: Dict[str, Any]
-    ) -> Tuple[bool, str]:
+        self, sobject: str, data: dict[str, Any]
+    ) -> tuple[bool, str]:
         """Create a new Salesforce record."""
         try:
             logger.info("salesforce.create_record called: sobject=%s", sobject)
             response = await self.client.sobject_create(
                 api_version=self.api_version, sobject=sobject, data=data
             )
-            return self._handle_response(response, f"{sobject} record created successfully", sobject=sobject)
+            return self._handle_response(
+                response,
+                MSG_SUCCESS,
+                sobject=sobject,
+            )
         except Exception as e:
-            logger.error(f"Error creating record: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_record", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1020,8 +627,8 @@ class Salesforce:
         ],
     )
     async def update_record(
-        self, sobject: str, record_id: str, data: Dict[str, Any]
-    ) -> Tuple[bool, str]:
+        self, sobject: str, record_id: str, data: dict[str, Any]
+    ) -> tuple[bool, str]:
         """Update a Salesforce record."""
         try:
             logger.info(
@@ -1033,10 +640,14 @@ class Salesforce:
                 record_id=record_id,
                 data=data,
             )
-            return self._handle_response(response, f"{sobject} record updated successfully", sobject=sobject)
+            return self._handle_response(
+                response,
+                MSG_SUCCESS,
+                sobject=sobject,
+            )
         except Exception as e:
-            logger.error(f"Error updating record: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "update_record", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Object Metadata
@@ -1074,52 +685,40 @@ class Salesforce:
             "Show me the schema for the Lead object",
         ],
     )
-    async def describe_object(self, sobject: str) -> Tuple[bool, str]:
+    async def describe_object(self, sobject: str) -> tuple[bool, str]:
         """Describe a Salesforce object's metadata."""
         try:
             logger.info("salesforce.describe_object called: sobject=%s", sobject)
             response = await self.client.s_object_describe(
                 sobject_api_name=sobject, version=self.api_version
             )
-            if response.success and response.data:
-                # Trim to most useful fields to avoid huge payloads
+            if response.success:
                 data = response.data
-                if isinstance(data, dict):
-                    trimmed = {
-                        "name": data.get("name"),
-                        "label": data.get("label"),
-                        "labelPlural": data.get("labelPlural"),
-                        "keyPrefix": data.get("keyPrefix"),
-                        "createable": data.get("createable"),
-                        "updateable": data.get("updateable"),
-                        "deletable": data.get("deletable"),
-                        "queryable": data.get("queryable"),
-                        "searchable": data.get("searchable"),
-                        "fields": [
-                            {
-                                "name": f.get("name"),
-                                "label": f.get("label"),
-                                "type": f.get("type"),
-                                "required": not f.get("nillable", True) and f.get("createable", False),
-                                "createable": f.get("createable"),
-                                "updateable": f.get("updateable"),
-                                "picklistValues": [
-                                    {"value": pv.get("value"), "label": pv.get("label")}
-                                    for pv in (f.get("picklistValues") or [])
-                                    if pv.get("active")
-                                ] if f.get("picklistValues") else None,
-                            }
-                            for f in (data.get("fields") or [])
-                        ],
-                    }
-                    return True, json.dumps(
-                        {"message": f"{sobject} described successfully", "data": trimmed},
-                        default=str,
-                    )
-            return self._handle_response(response, f"{sobject} described successfully")
+                # Filter picklist values to only active entries
+                for field in data.get("fields", []):
+                    pv = field.get("picklistValues")
+                    if isinstance(pv, list):
+                        field["picklistValues"] = [
+                            v for v in pv if v.get("active", False)
+                        ]
+                return True, json.dumps(
+                    {
+                        SF_JSON_MESSAGE_KEY: MSG_SUCCESS,
+                        SF_JSON_DATA_KEY: data,
+                    },
+                    default=str,
+                )
+            if response.success and response.data is not None:
+                # Data is not a dict — unexpected shape
+                return False, json.dumps(
+                    {SF_JSON_ERROR_KEY: "Unexpected describe response format"}
+                )
+            return self._handle_response(
+                response, MSG_SUCCESS
+            )
         except Exception as e:
-            logger.error(f"Error describing object: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "describe_object", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Recent Records
@@ -1156,7 +755,7 @@ class Salesforce:
     )
     async def list_recent_records(
         self, sobject: str, limit: int = 10
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """List recent records of a Salesforce object."""
         try:
             logger.info(
@@ -1164,14 +763,16 @@ class Salesforce:
             )
             sobject = self._validate_api_name(sobject)
             limit = int(limit)
-            query = f"SELECT Id, Name, LastModifiedDate FROM {sobject} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_LIST_RECENT_RECORDS.format(sobject=sobject, limit=limit)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, f"Recent {sobject} records retrieved")
+            return self._handle_response(
+                response, MSG_SUCCESS
+            )
         except Exception as e:
-            logger.error(f"Error listing recent records: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "list_recent_records", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Account Tools
@@ -1203,32 +804,32 @@ class Salesforce:
         typical_queries=[
             "Search for accounts named Acme",
             "Find all Technology industry accounts",
-            "List accounts matching 'Global'",
+            "list accounts matching 'Global'",
         ],
     )
     async def search_accounts(
         self,
-        name: Optional[str] = None,
-        industry: Optional[str] = None,
+        name: str | None = None,
+        industry: str | None = None,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce accounts."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if name:
                 conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if industry:
                 conditions.append(f"Industry = '{self._sanitize_soql_value(industry)}'")
             where = self._build_soql_conditions(conditions)
-            query = f"SELECT Id, Name, Industry, Phone, Website, Type, BillingCity, BillingState, BillingCountry FROM Account{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_SEARCH_ACCOUNTS.format(where=where, limit=limit)
             logger.info("salesforce.search_accounts query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Accounts retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching accounts: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_accounts", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1261,40 +862,39 @@ class Salesforce:
     async def create_account(
         self,
         name: str,
-        industry: Optional[str] = None,
-        phone: Optional[str] = None,
-        website: Optional[str] = None,
-        description: Optional[str] = None,
-        billing_city: Optional[str] = None,
-        billing_state: Optional[str] = None,
-        billing_country: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        industry: str | None = None,
+        phone: str | None = None,
+        website: str | None = None,
+        description: str | None = None,
+        billing_city: str | None = None,
+        billing_state: str | None = None,
+        billing_country: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce account."""
         try:
-            data: Dict[str, Any] = {"Name": name}
-            if industry:
-                data["Industry"] = industry
-            if phone:
-                data["Phone"] = phone
-            if website:
-                data["Website"] = website
-            if description:
-                data["Description"] = description
-            if billing_city:
-                data["BillingCity"] = billing_city
-            if billing_state:
-                data["BillingState"] = billing_state
-            if billing_country:
-                data["BillingCountry"] = billing_country
+            account = AccountData(
+                name=name,
+                industry=industry,
+                phone=phone,
+                website=website,
+                description=description,
+                billing_city=billing_city,
+                billing_state=billing_state,
+                billing_country=billing_country,
+            )
 
             logger.info("salesforce.create_account called: name=%s", name)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Account", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_ACCOUNT,
+                data=account.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Account created successfully", sobject="Account")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_ACCOUNT
+            )
         except Exception as e:
-            logger.error(f"Error creating account: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_account", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Contact Tools
@@ -1331,14 +931,14 @@ class Salesforce:
     )
     async def search_contacts(
         self,
-        name: Optional[str] = None,
-        email: Optional[str] = None,
-        account_id: Optional[str] = None,
+        name: str | None = None,
+        email: str | None = None,
+        account_id: str | None = None,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce contacts."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if name:
                 conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if email:
@@ -1346,15 +946,15 @@ class Salesforce:
             if account_id:
                 conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = f"SELECT Id, FirstName, LastName, Name, Email, Phone, Title, Department, Account.Name FROM Contact{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_SEARCH_CONTACTS.format(where=where, limit=limit)
             logger.info("salesforce.search_contacts query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Contacts retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching contacts: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_contacts", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1387,37 +987,37 @@ class Salesforce:
     async def create_contact(
         self,
         last_name: str,
-        first_name: Optional[str] = None,
-        email: Optional[str] = None,
-        phone: Optional[str] = None,
-        title: Optional[str] = None,
-        account_id: Optional[str] = None,
-        department: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        first_name: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        title: str | None = None,
+        account_id: str | None = None,
+        department: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce contact."""
         try:
-            data: Dict[str, Any] = {"LastName": last_name}
-            if first_name:
-                data["FirstName"] = first_name
-            if email:
-                data["Email"] = email
-            if phone:
-                data["Phone"] = phone
-            if title:
-                data["Title"] = title
-            if account_id:
-                data["AccountId"] = account_id
-            if department:
-                data["Department"] = department
+            contact = ContactData(
+                last_name=last_name,
+                first_name=first_name,
+                email=email,
+                phone=phone,
+                title=title,
+                account_id=account_id,
+                department=department,
+            )
 
             logger.info("salesforce.create_contact called: last_name=%s", last_name)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Contact", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_CONTACT,
+                data=contact.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Contact created successfully", sobject="Contact")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_CONTACT
+            )
         except Exception as e:
-            logger.error(f"Error creating contact: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_contact", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Lead Tools
@@ -1454,14 +1054,14 @@ class Salesforce:
     )
     async def search_leads(
         self,
-        name: Optional[str] = None,
-        company: Optional[str] = None,
-        status: Optional[str] = None,
+        name: str | None = None,
+        company: str | None = None,
+        status: str | None = None,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce leads."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if name:
                 conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if company:
@@ -1469,15 +1069,15 @@ class Salesforce:
             if status:
                 conditions.append(f"Status = '{self._sanitize_soql_value(status)}'")
             where = self._build_soql_conditions(conditions)
-            query = f"SELECT Id, FirstName, LastName, Name, Company, Email, Phone, Status, LeadSource, Title FROM Lead{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_SEARCH_LEADS.format(where=where, limit=limit)
             logger.info("salesforce.search_leads query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Leads retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching leads: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_leads", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1511,37 +1111,38 @@ class Salesforce:
         self,
         last_name: str,
         company: str,
-        first_name: Optional[str] = None,
-        email: Optional[str] = None,
-        phone: Optional[str] = None,
-        title: Optional[str] = None,
-        status: Optional[str] = None,
-        industry: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        first_name: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        title: str | None = None,
+        status: str | None = None,
+        industry: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce lead."""
         try:
-            data: Dict[str, Any] = {"LastName": last_name, "Company": company}
-            if first_name:
-                data["FirstName"] = first_name
-            if email:
-                data["Email"] = email
-            if phone:
-                data["Phone"] = phone
-            if title:
-                data["Title"] = title
-            if status:
-                data["Status"] = status
-            if industry:
-                data["Industry"] = industry
+            lead = LeadData(
+                last_name=last_name,
+                company=company,
+                first_name=first_name,
+                email=email,
+                phone=phone,
+                title=title,
+                status=status,
+                industry=industry,
+            )
 
             logger.info("salesforce.create_lead called: last_name=%s, company=%s", last_name, company)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Lead", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_LEAD,
+                data=lead.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Lead created successfully", sobject="Lead")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_LEAD
+            )
         except Exception as e:
-            logger.error(f"Error creating lead: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_lead", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Opportunity Tools
@@ -1578,14 +1179,14 @@ class Salesforce:
     )
     async def search_opportunities(
         self,
-        name: Optional[str] = None,
-        stage: Optional[str] = None,
-        account_id: Optional[str] = None,
+        name: str | None = None,
+        stage: str | None = None,
+        account_id: str | None = None,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce opportunities."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if name:
                 conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if stage:
@@ -1593,15 +1194,15 @@ class Salesforce:
             if account_id:
                 conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = f"SELECT Id, Name, StageName, Amount, CloseDate, Probability, Account.Name, Type FROM Opportunity{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_SEARCH_OPPORTUNITIES.format(where=where, limit=limit)
             logger.info("salesforce.search_opportunities query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Opportunities retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching opportunities: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_opportunities", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1636,35 +1237,37 @@ class Salesforce:
         name: str,
         stage_name: str,
         close_date: str,
-        account_id: Optional[str] = None,
-        amount: Optional[float] = None,
-        description: Optional[str] = None,
-        probability: Optional[float] = None,
-    ) -> Tuple[bool, str]:
+        account_id: str | None = None,
+        amount: float | None = None,
+        description: str | None = None,
+        probability: float | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce opportunity."""
         try:
-            data: Dict[str, Any] = {
-                "Name": name,
-                "StageName": stage_name,
-                "CloseDate": close_date,
-            }
-            if account_id:
-                data["AccountId"] = account_id
-            if amount is not None:
-                data["Amount"] = amount
-            if description:
-                data["Description"] = description
-            if probability is not None:
-                data["Probability"] = probability
+            opportunity = OpportunityData(
+                name=name,
+                stage_name=stage_name,
+                close_date=close_date,
+                account_id=account_id,
+                amount=amount,
+                description=description,
+                probability=probability,
+            )
 
             logger.info("salesforce.create_opportunity called: name=%s", name)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Opportunity", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_OPPORTUNITY,
+                data=opportunity.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Opportunity created successfully", sobject="Opportunity")
+            return self._handle_response(
+                response,
+                MSG_SUCCESS,
+                sobject=SF_SOBJECT_OPPORTUNITY,
+            )
         except Exception as e:
-            logger.error(f"Error creating opportunity: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_opportunity", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Case Tools
@@ -1701,15 +1304,15 @@ class Salesforce:
     )
     async def search_cases(
         self,
-        subject: Optional[str] = None,
-        status: Optional[str] = None,
-        priority: Optional[str] = None,
-        account_id: Optional[str] = None,
+        subject: str | None = None,
+        status: str | None = None,
+        priority: str | None = None,
+        account_id: str | None = None,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce cases."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if subject:
                 conditions.append(f"Subject LIKE '%{self._sanitize_soql_value(subject)}%'")
             if status:
@@ -1719,15 +1322,15 @@ class Salesforce:
             if account_id:
                 conditions.append(f"AccountId = '{self._sanitize_soql_value(account_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = f"SELECT Id, CaseNumber, Subject, Status, Priority, Origin, Description, Account.Name, Contact.Name FROM Case{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_SEARCH_CASES.format(where=where, limit=limit)
             logger.info("salesforce.search_cases query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Cases retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching cases: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_cases", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1761,37 +1364,37 @@ class Salesforce:
     async def create_case(
         self,
         subject: str,
-        status: Optional[str] = None,
-        priority: Optional[str] = None,
-        origin: Optional[str] = None,
-        description: Optional[str] = None,
-        account_id: Optional[str] = None,
-        contact_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        status: str | None = None,
+        priority: str | None = None,
+        origin: str | None = None,
+        description: str | None = None,
+        account_id: str | None = None,
+        contact_id: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce case."""
         try:
-            data: Dict[str, Any] = {"Subject": subject}
-            if status:
-                data["Status"] = status
-            if priority:
-                data["Priority"] = priority
-            if origin:
-                data["Origin"] = origin
-            if description:
-                data["Description"] = description
-            if account_id:
-                data["AccountId"] = account_id
-            if contact_id:
-                data["ContactId"] = contact_id
+            case = CaseData(
+                subject=subject,
+                status=status,
+                priority=priority,
+                origin=origin,
+                description=description,
+                account_id=account_id,
+                contact_id=contact_id,
+            )
 
             logger.info("salesforce.create_case called: subject=%s", subject)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Case", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_CASE,
+                data=case.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Case created successfully", sobject="Case")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_CASE
+            )
         except Exception as e:
-            logger.error(f"Error creating case: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_case", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Product Tools
@@ -1829,15 +1432,15 @@ class Salesforce:
     )
     async def search_products(
         self,
-        name: Optional[str] = None,
-        product_code: Optional[str] = None,
-        family: Optional[str] = None,
+        name: str | None = None,
+        product_code: str | None = None,
+        family: str | None = None,
         active_only: bool = True,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce products."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if name:
                 conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if product_code:
@@ -1847,15 +1450,15 @@ class Salesforce:
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
-            query = f"SELECT Id, Name, ProductCode, Description, Family, IsActive, QuantityUnitOfMeasure FROM Product2{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
+            query = SOQL_SEARCH_PRODUCTS.format(where=where, limit=limit)
             logger.info("salesforce.search_products query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Products retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching products: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_products", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1889,32 +1492,35 @@ class Salesforce:
     async def create_product(
         self,
         name: str,
-        product_code: Optional[str] = None,
-        description: Optional[str] = None,
-        family: Optional[str] = None,
+        product_code: str | None = None,
+        description: str | None = None,
+        family: str | None = None,
         is_active: bool = True,
-        quantity_unit_of_measure: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        quantity_unit_of_measure: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce product."""
         try:
-            data: Dict[str, Any] = {"Name": name, "IsActive": is_active}
-            if product_code:
-                data["ProductCode"] = product_code
-            if description:
-                data["Description"] = description
-            if family:
-                data["Family"] = family
-            if quantity_unit_of_measure:
-                data["QuantityUnitOfMeasure"] = quantity_unit_of_measure
+            product = ProductData(
+                name=name,
+                product_code=product_code,
+                description=description,
+                family=family,
+                is_active=is_active,
+                quantity_unit_of_measure=quantity_unit_of_measure,
+            )
 
             logger.info("salesforce.create_product called: name=%s", name)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Product2", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_PRODUCT2,
+                data=product.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Product created successfully", sobject="Product2")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_PRODUCT2
+            )
         except Exception as e:
-            logger.error(f"Error creating product: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_product", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -1947,30 +1553,27 @@ class Salesforce:
     )
     async def list_pricebooks(
         self,
-        name: Optional[str] = None,
+        name: str | None = None,
         active_only: bool = True,
         limit: int = 20,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """List Salesforce price books."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if name:
                 conditions.append(f"Name LIKE '%{self._sanitize_soql_value(name)}%'")
             if active_only:
                 conditions.append("IsActive = true")
             where = self._build_soql_conditions(conditions)
-            query = (
-                f"SELECT Id, Name, Description, IsActive, IsStandard "
-                f"FROM Pricebook2{where} ORDER BY IsStandard DESC, Name ASC LIMIT {limit}"
-            )
+            query = SOQL_LIST_PRICEBOOKS.format(where=where, limit=limit)
             logger.info("salesforce.list_pricebooks query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Price books retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error listing price books: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "list_pricebooks", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -2007,19 +1610,17 @@ class Salesforce:
     async def add_product_to_opportunity(
         self,
         opportunity_id: str,
-        pricebook_entry_id: Optional[str] = None,
-        product_id: Optional[str] = None,
-        pricebook_id: Optional[str] = None,
+        pricebook_entry_id: str | None = None,
+        product_id: str | None = None,
+        pricebook_id: str | None = None,
         quantity: float = 1,
-        unit_price: Optional[float] = None,
-        description: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        unit_price: float | None = None,
+        description: str | None = None,
+    ) -> tuple[bool, str]:
         """Add a product line item to a Salesforce opportunity."""
         try:
             if not pricebook_entry_id and not product_id:
-                return False, json.dumps({
-                    "error": "Either pricebook_entry_id or product_id must be provided",
-                })
+                return False, json.dumps({SF_JSON_ERROR_KEY: ERR_NEED_PBE_OR_PRODUCT})
 
             resolved_unit_price = unit_price
 
@@ -2027,28 +1628,26 @@ class Salesforce:
             if not pricebook_entry_id:
                 effective_pricebook_id = pricebook_id
                 if not effective_pricebook_id:
-                    opp_query = (
-                        f"SELECT Pricebook2Id FROM Opportunity WHERE Id = '{self._sanitize_soql_value(opportunity_id)}' LIMIT 1"
+                    opp_query = SOQL_OPPORTUNITY_PRICEBOOK2_BY_ID.format(
+                        opportunity_id=self._sanitize_soql_value(opportunity_id),
                     )
                     opp_resp = await self.client.soql_query(
                         api_version=self.api_version, q=opp_query
                     )
                     try:
                         opp_data = opp_resp.data if hasattr(opp_resp, "data") else opp_resp
-                        records = (opp_data or {}).get("records", []) if isinstance(opp_data, dict) else []
+                        records = (opp_data or {}).get(SF_KEY_RECORDS, [])
                         if records:
-                            effective_pricebook_id = records[0].get("Pricebook2Id")
-                    except Exception:
+                            effective_pricebook_id = records[0].get(SF_FIELD_PRICEBOOK2_ID)
+                    except Exception as e:
+                        logger.warning(ERR_LOG, "add_product_to_opportunity opp pricebook lookup", e)
                         effective_pricebook_id = None
                     if not effective_pricebook_id:
-                        return False, json.dumps({
-                            "error": "Opportunity has no Pricebook2Id set; provide pricebook_id or set the opportunity's pricebook first",
-                        })
+                        return False, json.dumps({SF_JSON_ERROR_KEY: ERR_OPP_NO_PRICEBOOK})
 
-                pbe_query = (
-                    f"SELECT Id, UnitPrice FROM PricebookEntry "
-                    f"WHERE Product2Id = '{self._sanitize_soql_value(product_id)}' AND Pricebook2Id = '{self._sanitize_soql_value(effective_pricebook_id)}' "
-                    f"AND IsActive = true LIMIT 1"
+                pbe_query = SOQL_PRICEBOOK_ENTRY_BY_PRODUCT_AND_BOOK.format(
+                    product_id=self._sanitize_soql_value(product_id),
+                    pricebook_id=self._sanitize_soql_value(effective_pricebook_id),
                 )
                 logger.info("salesforce.add_product_to_opportunity pbe lookup: %s", pbe_query)
                 pbe_resp = await self.client.soql_query(
@@ -2056,40 +1655,41 @@ class Salesforce:
                 )
                 try:
                     pbe_data = pbe_resp.data if hasattr(pbe_resp, "data") else pbe_resp
-                    pbe_records = (pbe_data or {}).get("records", []) if isinstance(pbe_data, dict) else []
-                except Exception:
+                    pbe_records = (pbe_data or {}).get(SF_KEY_RECORDS, [])
+                except Exception as e:
+                    logger.warning(ERR_LOG, "add_product_to_opportunity pricebook entry lookup", e)
                     pbe_records = []
                 if not pbe_records:
-                    return False, json.dumps({
-                        "error": "No active PricebookEntry found for the given product and pricebook",
-                    })
-                pricebook_entry_id = pbe_records[0].get("Id")
+                    return False, json.dumps({SF_JSON_ERROR_KEY: ERR_NO_ACTIVE_PBE})
+                pricebook_entry_id = pbe_records[0].get(SF_KEY_ID)
                 if resolved_unit_price is None:
-                    resolved_unit_price = pbe_records[0].get("UnitPrice")
+                    resolved_unit_price = pbe_records[0].get(SF_FIELD_UNIT_PRICE)
 
-            data: Dict[str, Any] = {
-                "OpportunityId": opportunity_id,
-                "PricebookEntryId": pricebook_entry_id,
-                "Quantity": quantity,
-            }
-            if resolved_unit_price is not None:
-                data["UnitPrice"] = resolved_unit_price
-            if description:
-                data["Description"] = description
+            line_item = OpportunityLineItemData(
+                opportunity_id=opportunity_id,
+                pricebook_entry_id=pricebook_entry_id,
+                quantity=quantity,
+                unit_price=resolved_unit_price,
+                description=description,
+            )
 
             logger.info(
                 "salesforce.add_product_to_opportunity called: opp=%s pbe=%s qty=%s",
                 opportunity_id, pricebook_entry_id, quantity,
             )
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="OpportunityLineItem", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_OPPORTUNITY_LINE_ITEM,
+                data=line_item.model_dump(by_alias=True, exclude_none=True),
             )
             return self._handle_response(
-                response, "Product added to opportunity successfully", sobject="OpportunityLineItem"
+                response,
+                MSG_SUCCESS,
+                sobject=SF_SOBJECT_OPPORTUNITY_LINE_ITEM,
             )
         except Exception as e:
-            logger.error(f"Error adding product to opportunity: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "add_product_to_opportunity", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Task Tools
@@ -2128,17 +1728,17 @@ class Salesforce:
     )
     async def search_tasks(
         self,
-        subject: Optional[str] = None,
-        status: Optional[str] = None,
-        priority: Optional[str] = None,
-        owner_id: Optional[str] = None,
-        what_id: Optional[str] = None,
-        who_id: Optional[str] = None,
+        subject: str | None = None,
+        status: str | None = None,
+        priority: str | None = None,
+        owner_id: str | None = None,
+        what_id: str | None = None,
+        who_id: str | None = None,
         limit: int = 10,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search for Salesforce tasks."""
         try:
-            conditions: List[str] = []
+            conditions: list[str] = []
             if subject:
                 conditions.append(f"Subject LIKE '%{self._sanitize_soql_value(subject)}%'")
             if status:
@@ -2152,19 +1752,15 @@ class Salesforce:
             if who_id:
                 conditions.append(f"WhoId = '{self._sanitize_soql_value(who_id)}'")
             where = self._build_soql_conditions(conditions)
-            query = (
-                f"SELECT Id, Subject, Status, Priority, ActivityDate, Description, "
-                f"OwnerId, Owner.Name, WhatId, What.Name, WhoId, Who.Name "
-                f"FROM Task{where} ORDER BY LastModifiedDate DESC LIMIT {limit}"
-            )
+            query = SOQL_SEARCH_TASKS.format(where=where, limit=limit)
             logger.info("salesforce.search_tasks query: %s", query)
             response = await self.client.soql_query(
                 api_version=self.api_version, q=query
             )
-            return self._handle_response(response, "Tasks retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error searching tasks: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "search_tasks", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -2200,43 +1796,39 @@ class Salesforce:
     async def create_task(
         self,
         subject: str,
-        status: Optional[str] = None,
-        priority: Optional[str] = None,
-        activity_date: Optional[str] = None,
-        description: Optional[str] = None,
-        owner_id: Optional[str] = None,
-        what_id: Optional[str] = None,
-        who_id: Optional[str] = None,
-        type: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+        status: str | None = None,
+        priority: str | None = None,
+        activity_date: str | None = None,
+        description: str | None = None,
+        owner_id: str | None = None,
+        what_id: str | None = None,
+        who_id: str | None = None,
+    ) -> tuple[bool, str]:
         """Create a new Salesforce task."""
         try:
-            data: Dict[str, Any] = {"Subject": subject}
-            if status:
-                data["Status"] = status
-            if priority:
-                data["Priority"] = priority
-            if activity_date:
-                data["ActivityDate"] = activity_date
-            if description:
-                data["Description"] = description
-            if owner_id:
-                data["OwnerId"] = owner_id
-            if what_id:
-                data["WhatId"] = what_id
-            if who_id:
-                data["WhoId"] = who_id
-            if type:
-                data["Type"] = type
+            task = TaskData(
+                subject=subject,
+                status=status,
+                priority=priority,
+                activity_date=activity_date,
+                description=description,
+                owner_id=owner_id,
+                what_id=what_id,
+                who_id=who_id,
+            )
 
             logger.info("salesforce.create_task called: subject=%s", subject)
             response = await self.client.sobject_create(
-                api_version=self.api_version, sobject="Task", data=data
+                api_version=self.api_version,
+                sobject=SF_SOBJECT_TASK,
+                data=task.model_dump(by_alias=True, exclude_none=True),
             )
-            return self._handle_response(response, "Task created successfully", sobject="Task")
+            return self._handle_response(
+                response, MSG_SUCCESS, sobject=SF_SOBJECT_TASK
+            )
         except Exception as e:
-            logger.error(f"Error creating task: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "create_task", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # Chatter
@@ -2274,17 +1866,17 @@ class Salesforce:
             "Summarize the discussion on this case's feed",
         ],
     )
-    async def get_record_chatter(self, record_id: str) -> Tuple[bool, str]:
+    async def get_record_chatter(self, record_id: str) -> tuple[bool, str]:
         """Fetch the Chatter feed for a Salesforce record."""
         try:
             logger.info("salesforce.get_record_chatter called: record_id=%s", record_id)
             response = await self.client.record_feed_elements(
                 record_group_id=record_id, version=self.api_version
             )
-            return self._handle_response(response, "Chatter feed retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error getting record chatter: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "get_record_chatter", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -2318,7 +1910,7 @@ class Salesforce:
     )
     async def post_chatter_comment(
         self, feed_element_id: str, text: str, is_rich_text: bool = False
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Post a comment on a Chatter feed item."""
         try:
             logger.info(
@@ -2335,10 +1927,10 @@ class Salesforce:
                 text=text,
                 message_segments=segments,
             )
-            return self._handle_response(response, "Chatter comment posted successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error posting chatter comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "post_chatter_comment", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
         app_name="salesforce",
@@ -2372,7 +1964,7 @@ class Salesforce:
     )
     async def post_chatter_to_record(
         self, record_id: str, text: str, is_rich_text: bool = False
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a new Chatter post on a Salesforce record."""
         try:
             logger.info(
@@ -2385,15 +1977,15 @@ class Salesforce:
             )
             response = await self.client.feed_elements_post_and_search(
                 version=self.api_version,
-                feedelementtype="FeedItem",
+                feedelementtype=SF_CHATTER_FEED_ELEMENT_TYPE,
                 subjectid=record_id,
                 text=text,
                 message_segments=segments,
             )
-            return self._handle_response(response, "Chatter post created successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error posting chatter to record: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "post_chatter_to_record", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     # ------------------------------------------------------------------
     # User Info
@@ -2427,12 +2019,12 @@ class Salesforce:
             "What is my Salesforce user ID?",
         ],
     )
-    async def get_current_user(self) -> Tuple[bool, str]:
+    async def get_current_user(self) -> tuple[bool, str]:
         """Get the current authenticated user's info."""
         try:
             logger.info("salesforce.get_current_user called")
             response = await self.client.get_user_info()
-            return self._handle_response(response, "User info retrieved successfully")
+            return self._handle_response(response, MSG_SUCCESS)
         except Exception as e:
-            logger.error(f"Error getting user info: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(ERR_LOG, "get_current_user", e)
+            return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
