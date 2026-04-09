@@ -1,0 +1,713 @@
+## ---------------------------------------------------------------------------
+## Users API – Response Schemas
+## ---------------------------------------------------------------------------
+## Single file containing all response schemas for /api/v1/users routes.
+## Mirrors the Zod schemas in user.schemas.ts.
+##
+## Usage:
+##   schemas = load_yaml_schemas("response-validation/schemas/user_management/user-response-schemas.yaml")
+##   assert_response_matches_schema(body, schemas["GetAllUsersListItem"])
+## ---------------------------------------------------------------------------
+
+# Reusable anchor – address sub-object
+_address_fields: &address_fields
+  addressLine1:
+    type: string
+    required: false
+  city:
+    type: string
+    required: false
+  state:
+    type: string
+    required: false
+  postCode:
+    type: string
+    required: false
+  country:
+    type: string
+    required: false
+
+# Reusable anchor – base fields shared by list items
+_user_list_base: &user_list_base
+  _id:
+    type: string
+    required: true
+    format: objectid
+  orgId:
+    type: string
+    required: true
+    format: objectid
+  slug:
+    type: string
+    required: true
+  hasLoggedIn:
+    type: boolean
+    required: true
+  createdAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  updatedAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  fullName:
+    type: string
+    required: false
+  email:
+    type: string
+    required: false
+    format: email
+  firstName:
+    type: string
+    required: false
+  lastName:
+    type: string
+    required: false
+  middleName:
+    type: string
+    required: false
+  mobile:
+    type: string
+    required: false
+  designation:
+    type: string
+    required: false
+  address:
+    type: object
+    required: false
+    properties:
+      <<: *address_fields
+  deletedBy:
+    type: string
+    required: false
+
+# Reusable anchor – lean user document core (for PATCH / PUT responses)
+_patch_document_base: &patch_document_base
+  _id:
+    type: string
+    required: true
+    format: objectid
+  orgId:
+    type: string
+    required: true
+    format: objectid
+  fullName:
+    type: string
+    required: true
+  email:
+    type: string
+    required: true
+    format: email
+  hasLoggedIn:
+    type: boolean
+    required: true
+  isDeleted:
+    type: boolean
+    required: true
+  createdAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  updatedAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  slug:
+    type: string
+    required: true
+  __v:
+    type: integer
+    required: true
+
+# Profile fields used by PATCH /email and PUT /
+_email_put_profile: &email_put_profile
+  firstName:
+    type: string
+    required: false
+  lastName:
+    type: string
+    required: false
+  designation:
+    type: string
+    required: false
+  middleName:
+    type: string
+    required: false
+  mobile:
+    type: string
+    required: false
+  dataCollectionConsent:
+    type: boolean
+    required: false
+  address:
+    type: object
+    required: false
+    properties:
+      <<: *address_fields
+
+schemas:
+
+  # ==================================================================
+  # GET /api/v1/users  (non-blocked)
+  # ==================================================================
+  - name: GetAllUsersResponse
+    description: "GET /api/v1/users — getAllUsers (non-blocked)"
+    path: /api/v1/users
+    method: GET
+    type: array
+    items:
+      fields:
+        <<: *user_list_base
+        isDeleted:
+          type: boolean
+          required: true
+        __v:
+          type: integer
+          required: true
+
+  # ==================================================================
+  # GET /api/v1/users?blocked=true
+  # ==================================================================
+  - name: GetAllUsersBlockedResponse
+    description: "GET /api/v1/users?blocked=true — getAllUsers (blocked)"
+    path: /api/v1/users
+    method: GET
+    type: array
+    items:
+      fields:
+        <<: *user_list_base
+        email:
+          type: string
+          required: true
+          format: email
+
+  # ==================================================================
+  # GET /api/v1/users/fetch/with-groups
+  # ==================================================================
+  - name: GetAllUsersWithGroupsResponse
+    description: "GET /api/v1/users/fetch/with-groups — getAllUsersWithGroups"
+    path: /api/v1/users/fetch/with-groups
+    method: GET
+    type: array
+    items:
+      fields:
+        _id:
+          type: string
+          required: true
+          format: objectid
+        orgId:
+          type: string
+          required: true
+          format: objectid
+        fullName:
+          type: string
+          required: false
+        hasLoggedIn:
+          type: boolean
+          required: true
+        groups:
+          type: array
+          required: true
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                required: true
+              type:
+                type: string
+                required: true
+        userId:
+          type: string
+          required: false
+
+  # ==================================================================
+  # GET /api/v1/users/:id/email
+  # ==================================================================
+  - name: GetEmailByIdResponse
+    description: "GET /api/v1/users/:id/email — getUserEmailByUserId"
+    path: /api/v1/users/:id/email
+    method: GET
+    fields:
+      email:
+        type: string
+        required: true
+        format: email
+
+  # ==================================================================
+  # GET /api/v1/users/:id
+  # ==================================================================
+  - name: GetUserByIdResponse
+    description: "GET /api/v1/users/:id — getUserById"
+    path: /api/v1/users/:id
+    method: GET
+    fields:
+      _id:
+        type: string
+        required: true
+      orgId:
+        type: string
+        required: true
+      email:
+        type: string
+        required: false
+        format: email
+      fullName:
+        type: string
+        required: false
+      hasLoggedIn:
+        type: boolean
+        required: true
+      slug:
+        type: string
+        required: true
+      isDeleted:
+        type: boolean
+        required: true
+      createdAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      updatedAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      __v:
+        type: integer
+        required: true
+      
+
+  # ==================================================================
+  # PUT /api/v1/users/:id/unblock
+  # ==================================================================
+  - name: UnblockResponse
+    description: "PUT /api/v1/users/:id/unblock — unblockUser"
+    path: /api/v1/users/:id/unblock
+    method: PUT
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/users
+  # ==================================================================
+  - name: CreateResponse
+    description: "POST /api/v1/users — createUser"
+    path: /api/v1/users
+    method: POST
+    fields:
+      _id:
+        type: string
+        required: true
+      orgId:
+        type: string
+        required: true
+      email:
+        type: string
+        required: true
+        format: email
+      fullName:
+        type: string
+        required: true
+      hasLoggedIn:
+        type: boolean
+        required: true
+      slug:
+        type: string
+        required: true
+      isDeleted:
+        type: boolean
+        required: true
+      createdAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      updatedAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      __v:
+        type: integer
+        required: true
+
+  # ==================================================================
+  # PATCH /api/v1/users/:id/fullname
+  # ==================================================================
+  - name: UpdateFullNameResponse
+    description: "PATCH /api/v1/users/:id/fullname — updateFullName"
+    path: /api/v1/users/:id/fullname
+    method: PATCH
+    fields:
+      <<: *patch_document_base
+      firstName:
+        type: string
+        required: false
+      lastName:
+        type: string
+        required: false
+
+  # ==================================================================
+  # PATCH /api/v1/users/:id/firstName
+  # ==================================================================
+  - name: UpdateFirstNameResponse
+    description: "PATCH /api/v1/users/:id/firstName — updateFirstName"
+    path: /api/v1/users/:id/firstName
+    method: PATCH
+    fields:
+      <<: *patch_document_base
+      firstName:
+        type: string
+        required: true
+      lastName:
+        type: string
+        required: false
+
+  # ==================================================================
+  # PATCH /api/v1/users/:id/lastName
+  # ==================================================================
+  - name: UpdateLastNameResponse
+    description: "PATCH /api/v1/users/:id/lastName — updateLastName"
+    path: /api/v1/users/:id/lastName
+    method: PATCH
+    fields:
+      <<: *patch_document_base
+      firstName:
+        type: string
+        required: false
+      lastName:
+        type: string
+        required: true
+
+  # ==================================================================
+  # PATCH /api/v1/users/:id/designation
+  # ==================================================================
+  - name: UpdateDesignationResponse
+    description: "PATCH /api/v1/users/:id/designation — updateDesignation"
+    path: /api/v1/users/:id/designation
+    method: PATCH
+    fields:
+      <<: *patch_document_base
+      designation:
+        type: string
+        required: true
+
+  # ==================================================================
+  # PATCH /api/v1/users/:id/email
+  # ==================================================================
+  - name: UpdateEmailResponse
+    description: "PATCH /api/v1/users/:id/email — updateEmail"
+    path: /api/v1/users/:id/email
+    method: PATCH
+    fields:
+      _id:
+        type: string
+        required: true
+      orgId:
+        type: string
+        required: true
+      fullName:
+        type: string
+        required: false
+      email:
+        type: string
+        required: true
+        format: email
+      hasLoggedIn:
+        type: boolean
+        required: true
+      isDeleted:
+        type: boolean
+        required: true
+      createdAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      updatedAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      slug:
+        type: string
+        required: true
+      __v:
+        type: integer
+        required: true
+      <<: *email_put_profile
+
+  # ==================================================================
+  # PUT /api/v1/users/:id
+  # ==================================================================
+  - name: UpdatePutResponse
+    description: "PUT /api/v1/users/:id — updateUser"
+    path: /api/v1/users/:id
+    method: PUT
+    fields:
+      _id:
+        type: string
+        required: true
+      orgId:
+        type: string
+        required: true
+      fullName:
+        type: string
+        required: false
+      email:
+        type: string
+        required: true
+        format: email
+      hasLoggedIn:
+        type: boolean
+        required: true
+      isDeleted:
+        type: boolean
+        required: true
+      createdAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      updatedAt:
+        required: true
+        oneOf:
+          - type: string
+            format: datetime
+          - type: string
+            format: date
+      slug:
+        type: string
+        required: true
+      __v:
+        type: integer
+        required: true
+      <<: *email_put_profile
+      meta:
+        type: object
+        required: true
+        properties:
+          emailChangeMailStatus:
+            type: string
+            required: true
+            enum:
+              - notNeeded
+              - failed
+              - sent
+
+  # ==================================================================
+  # DELETE /api/v1/users/:id
+  # ==================================================================
+  - name: DeleteResponse
+    description: "DELETE /api/v1/users/:id — deleteUser"
+    path: /api/v1/users/:id
+    method: DELETE
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/users/:id/adminCheck
+  # ==================================================================
+  - name: AdminCheckResponse
+    description: "GET /api/v1/users/:id/adminCheck — admin check"
+    path: /api/v1/users/:id/adminCheck
+    method: GET
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/users/:id/resend-invite
+  # ==================================================================
+  - name: InviteSentResponse
+    description: "POST /api/v1/users/:id/resend-invite — resendInvite"
+    path: /api/v1/users/:id/resend-invite
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/users/bulk/invite
+  # ==================================================================
+  - name: BulkInviteSuccessResponse
+    description: "POST /api/v1/users/bulk/invite — addManyUsers (success/warning)"
+    path: /api/v1/users/bulk/invite
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  - name: BulkInviteErrorResponse
+    description: "POST /api/v1/users/bulk/invite — addManyUsers (all already active)"
+    path: /api/v1/users/bulk/invite
+    method: POST
+    fields:
+      errorMessage:
+        type: string
+        required: true
+
+  # ==================================================================
+  # DELETE /api/v1/users/dp
+  # ==================================================================
+  - name: RemoveDisplayPictureResponse
+    description: "DELETE /api/v1/users/dp — removeUserDisplayPicture"
+    path: /api/v1/users/dp
+    method: DELETE
+    fields:
+      _id:
+        type: string
+        required: true
+      userId:
+        type: string
+        required: true
+      orgId:
+        type: string
+        required: true
+      pic:
+        type: "null"
+        required: true
+      mimeType:
+        type: "null"
+        required: true
+      __v:
+        type: integer
+        required: true
+      picUrl:
+        required: false
+        oneOf:
+          - type: string
+          - type: "null"
+
+  # ==================================================================
+  # GET /api/v1/users/dp (error — no picture)
+  # ==================================================================
+  - name: DisplayPictureErrorResponse
+    description: "GET /api/v1/users/dp — getUserDisplayPicture (no picture found)"
+    path: /api/v1/users/dp
+    method: GET
+    fields:
+      errorMessage:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/users/health
+  # ==================================================================
+  - name: HealthResponse
+    description: "GET /api/v1/users/health — health check"
+    path: /api/v1/users/health
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - healthy
+      timestamp:
+        type: string
+        required: true
+        format: datetime
+
+  # ==================================================================
+  # GET /api/v1/users/graph/list
+  # ==================================================================
+  - name: GraphListResponse
+    description: "GET /api/v1/users/graph/list — listUsers"
+    path: /api/v1/users/graph/list
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+      users:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            id:
+              type: string
+              required: true
+            userId:
+              type: string
+              required: true
+            name:
+              type: string
+              required: true
+            email:
+              type: string
+              required: true
+              format: email
+            isActive:
+              type: boolean
+              required: true
+            createdAtTimestamp:
+              type: number
+              required: true
+            updatedAtTimestamp:
+              type: number
+              required: true
+      pagination:
+        type: object
+        required: true
+        properties:
+          page:
+            type: integer
+            required: true
+          limit:
+            type: integer
+            required: true
+          total:
+            type: integer
+            required: true
+          pages:
+            type: integer
+            required: true
+          hasNext:
+            type: boolean
+            required: true
+          hasPrev:
+            type: boolean
+            required: true

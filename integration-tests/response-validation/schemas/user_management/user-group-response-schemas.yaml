@@ -1,0 +1,179 @@
+## ---------------------------------------------------------------------------
+## User Groups API – Response Schemas
+## ---------------------------------------------------------------------------
+## Single file containing all response schemas for /api/v1/userGroups routes.
+## Mirrors the Zod schemas in userGroup.schemas.ts.
+##
+## Usage:
+##   schemas = load_yaml_schemas("response-validation/schemas/user_management/user-group-response-schemas.yaml")
+##   assert_response_matches_schema(body, schemas["UserGroupDocumentResponse"])
+## ---------------------------------------------------------------------------
+
+# Reusable anchor for the user group document fields shared by
+# CreateResponseSchema, DocumentResponseSchema, and GetAllResponseSchema items.
+_user_group_document_fields: &user_group_document_fields
+  name:
+    type: string
+    required: true
+  type:
+    type: string
+    required: true
+    enum:
+      - admin
+      - standard
+      - everyone
+      - custom
+  orgId:
+    type: string
+    required: true
+    format: objectid
+  users:
+    type: array
+    required: true
+    items:
+      type: string
+      format: objectid
+  isDeleted:
+    type: boolean
+    required: true
+  deletedBy:
+    type: string
+    required: false
+    format: objectid
+  _id:
+    type: string
+    required: true
+    format: objectid
+  createdAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  updatedAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  slug:
+    type: string
+    required: true
+  __v:
+    type: integer
+    required: true
+
+schemas:
+
+  - name: UserGroupCreateResponse
+    description: "POST /api/v1/userGroups — createUserGroup (201)"
+    path: /api/v1/userGroups
+    method: POST
+    fields:
+      <<: *user_group_document_fields
+
+  - name: UserGroupDocumentResponse
+    description: "GET/PUT/DELETE /api/v1/userGroups/:groupId — single group document"
+    path: /api/v1/userGroups/:groupId
+    method: GET
+    fields:
+      <<: *user_group_document_fields
+
+  - name: UserGroupGetAllResponse
+    description: "GET /api/v1/userGroups — array of group documents"
+    path: /api/v1/userGroups
+    method: GET
+    type: array
+    items:
+      fields:
+        <<: *user_group_document_fields
+
+  - name: UserGroupGetUsersInGroupResponse
+    description: "GET /api/v1/userGroups/:groupId/users — user IDs in a group"
+    path: /api/v1/userGroups/:groupId/users
+    method: GET
+    fields:
+      users:
+        type: array
+        required: true
+        items:
+          type: string
+          format: objectid
+
+  - name: UserGroupGetGroupsForUserResponse
+    description: "GET /api/v1/userGroups/users/:userId — groups a user belongs to"
+    path: /api/v1/userGroups/users/:userId
+    method: GET
+    type: array
+    items:
+      fields:
+        _id:
+          type: string
+          required: true
+          format: objectid
+        name:
+          type: string
+          required: true
+        type:
+          type: string
+          required: true
+          enum:
+            - admin
+            - standard
+            - everyone
+            - custom
+
+  - name: UserGroupAddUsersResponse
+    description: "POST /api/v1/userGroups/add-users — add users to groups"
+    path: /api/v1/userGroups/add-users
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  - name: UserGroupRemoveUsersResponse
+    description: "POST /api/v1/userGroups/remove-users — remove users from groups"
+    path: /api/v1/userGroups/remove-users
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  - name: UserGroupGetStatisticsResponse
+    description: "GET /api/v1/userGroups/stats/list — aggregate statistics by group name"
+    path: /api/v1/userGroups/stats/list
+    method: GET
+    type: array
+    items:
+      fields:
+        _id:
+          type: string
+          required: true
+        count:
+          type: integer
+          required: true
+        totalUsers:
+          type: integer
+          required: true
+        avgUsers:
+          type: number
+          required: true
+
+  - name: UserGroupHealthResponse
+    description: "GET /api/v1/userGroups/health — health check"
+    path: /api/v1/userGroups/health
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - healthy
+      timestamp:
+        type: string
+        required: true
+        format: datetime
