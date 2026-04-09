@@ -3,17 +3,17 @@ import { expect } from 'chai';
 import {
   AddUsersToGroupsResponseSchema,
   AddUsersToGroupsValidationSchema,
-  CreateUserGroupResponseSchema,
-  GetAllUserGroupsResponseSchema,
-  GetGroupStatisticsResponseSchema,
+  CreateResponseSchema,
+  DocumentResponseSchema,
+  GetAllResponseSchema,
   GetGroupsForUserResponseSchema,
+  GetStatisticsResponseSchema,
   GetUsersInGroupResponseSchema,
   RemoveUsersFromGroupsResponseSchema,
   RemoveUsersFromGroupsValidationSchema,
-  UserGroupDocumentResponseSchema,
-} from '../../../../src/modules/user_management/schemas/userGroup.schemas';
+} from '../../../../src/modules/user_management/validation/userGroup.schemas';
 
-describe('CreateUserGroupResponseSchema (Zod)', () => {
+describe('CreateResponseSchema (Zod)', () => {
   const valid = {
     name: 'Test grp',
     type: 'custom',
@@ -28,12 +28,12 @@ describe('CreateUserGroupResponseSchema (Zod)', () => {
   };
 
   it('should accept POST /user-groups success body', () => {
-    const result = CreateUserGroupResponseSchema.safeParse(valid);
+    const result = CreateResponseSchema.safeParse(valid);
     expect(result.success).to.be.true;
   });
 
   it('should accept users as id strings', () => {
-    const result = CreateUserGroupResponseSchema.safeParse({
+    const result = CreateResponseSchema.safeParse({
       ...valid,
       users: ['507f1f77bcf86cd799439011'],
     });
@@ -41,7 +41,7 @@ describe('CreateUserGroupResponseSchema (Zod)', () => {
   });
 
   it('should passthrough extra fields', () => {
-    const result = CreateUserGroupResponseSchema.safeParse({
+    const result = CreateResponseSchema.safeParse({
       ...valid,
       deletedBy: null,
     });
@@ -49,7 +49,7 @@ describe('CreateUserGroupResponseSchema (Zod)', () => {
   });
 
   it('should reject invalid type enum', () => {
-    const result = CreateUserGroupResponseSchema.safeParse({
+    const result = CreateResponseSchema.safeParse({
       ...valid,
       type: 'invalid',
     });
@@ -58,12 +58,12 @@ describe('CreateUserGroupResponseSchema (Zod)', () => {
 
   it('should reject missing slug', () => {
     const { slug, ...rest } = valid;
-    const result = CreateUserGroupResponseSchema.safeParse(rest);
+    const result = CreateResponseSchema.safeParse(rest);
     expect(result.success).to.be.false;
   });
 });
 
-describe('UserGroupDocumentResponseSchema (Zod)', () => {
+describe('DocumentResponseSchema (Zod)', () => {
   it('should match single-group GET/PUT/DELETE shape (alias of create schema)', () => {
     const doc = {
       name: 'admin',
@@ -77,12 +77,12 @@ describe('UserGroupDocumentResponseSchema (Zod)', () => {
       slug: 'usergroup-1',
       __v: 0,
     };
-    expect(UserGroupDocumentResponseSchema.safeParse(doc).success).to.be.true;
-    expect(CreateUserGroupResponseSchema.safeParse(doc).success).to.be.true;
+    expect(DocumentResponseSchema.safeParse(doc).success).to.be.true;
+    expect(CreateResponseSchema.safeParse(doc).success).to.be.true;
   });
 });
 
-describe('GetAllUserGroupsResponseSchema (Zod)', () => {
+describe('GetAllResponseSchema (Zod)', () => {
   const item = {
     _id: '69cd0daf863a6899015af274',
     name: 'admin',
@@ -97,17 +97,17 @@ describe('GetAllUserGroupsResponseSchema (Zod)', () => {
   };
 
   it('should accept GET /user-groups array body', () => {
-    const result = GetAllUserGroupsResponseSchema.safeParse([item]);
+    const result = GetAllResponseSchema.safeParse([item]);
     expect(result.success).to.be.true;
   });
 
   it('should accept empty array', () => {
-    const result = GetAllUserGroupsResponseSchema.safeParse([]);
+    const result = GetAllResponseSchema.safeParse([]);
     expect(result.success).to.be.true;
   });
 
   it('should reject when one element is invalid', () => {
-    const result = GetAllUserGroupsResponseSchema.safeParse([item, { _id: 'bad' }]);
+    const result = GetAllResponseSchema.safeParse([item, { _id: 'bad' }]);
     expect(result.success).to.be.false;
   });
 });
@@ -217,7 +217,7 @@ describe('GetUsersInGroupResponseSchema / GetGroupsForUserResponseSchema (Zod)',
   });
 });
 
-describe('GetGroupStatisticsResponseSchema (Zod)', () => {
+describe('GetStatisticsResponseSchema (Zod)', () => {
   const sample = [
     {
       _id: 'everyone',
@@ -246,16 +246,16 @@ describe('GetGroupStatisticsResponseSchema (Zod)', () => {
   ];
 
   it('should accept GET /stats/list body', () => {
-    expect(GetGroupStatisticsResponseSchema.safeParse(sample).success).to.be.true;
+    expect(GetStatisticsResponseSchema.safeParse(sample).success).to.be.true;
   });
 
   it('should accept empty array', () => {
-    expect(GetGroupStatisticsResponseSchema.safeParse([]).success).to.be.true;
+    expect(GetStatisticsResponseSchema.safeParse([]).success).to.be.true;
   });
 
   it('should reject row with wrong types', () => {
     expect(
-      GetGroupStatisticsResponseSchema.safeParse([
+      GetStatisticsResponseSchema.safeParse([
         { _id: 'x', count: '1', totalUsers: 1, avgUsers: 1 },
       ]).success,
     ).to.be.false;

@@ -40,15 +40,15 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ORG_CREATED_ACTIVITY } from '../constants/constants';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import {
-  CheckOrgExistenceResponseSchema,
-  DeleteOrganizationResponseSchema,
+  CheckExistenceResponseSchema,
+  DeleteResponseSchema,
   GetOnboardingStatusResponseSchema,
-  OrgDocumentResponseSchema,
-  RemoveOrgLogoResponseSchema,
+  DocumentResponseSchema,
+  RemoveLogoResponseSchema,
   UpdateOnboardingStatusResponseSchema,
-  UpdateOrgLogoResponseSchema,
-  UpdateOrganizationDetailsResponseSchema,
-} from '../schemas/org.schemas';
+  UpdateLogoResponseSchema,
+  UpdateDetailsResponseSchema,
+} from '../validation/org.schemas';
 
 const ORG_PERMANENT_ADDRESS_KEYS = [
   'addressLine1',
@@ -200,7 +200,7 @@ export class OrgController {
 
     sendValidatedJson(
       res,
-      CheckOrgExistenceResponseSchema,
+      CheckExistenceResponseSchema,
       { exists: count !== 0 },
       HTTP_STATUS.OK,
     );
@@ -379,7 +379,7 @@ export class OrgController {
       await this.eventService.stop();
       sendValidatedJson(
         res,
-        OrgDocumentResponseSchema,
+        DocumentResponseSchema,
         org.toJSON(),
         HTTP_STATUS.OK,
       );
@@ -409,7 +409,7 @@ export class OrgController {
       }
       sendValidatedJson(
         res,
-        OrgDocumentResponseSchema,
+        DocumentResponseSchema,
         org.toJSON(),
         HTTP_STATUS.OK,
       );
@@ -490,7 +490,7 @@ export class OrgController {
 
       sendValidatedJson(
         res,
-        UpdateOrganizationDetailsResponseSchema,
+        UpdateDetailsResponseSchema,
         {
           message: 'Organization updated successfully',
           data: updatedOrg.toJSON(),
@@ -534,7 +534,7 @@ export class OrgController {
 
       sendValidatedJson(
         res,
-        DeleteOrganizationResponseSchema,
+        DeleteResponseSchema,
         {
           message: 'Organization marked as deleted successfully',
           data: org.toJSON(),
@@ -603,7 +603,7 @@ export class OrgController {
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
       sendValidatedJson(
         res,
-        UpdateOrgLogoResponseSchema,
+        UpdateLogoResponseSchema,
         {
           message: 'Logo updated successfully',
           mimeType,
@@ -665,7 +665,7 @@ export class OrgController {
 
       sendValidatedJson(
         res,
-        RemoveOrgLogoResponseSchema,
+        RemoveLogoResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );

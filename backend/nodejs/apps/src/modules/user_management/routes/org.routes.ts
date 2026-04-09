@@ -13,13 +13,13 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
-  OrgCreationValidationSchema,
+  CreationValidationSchema,
   OnboardingStatusUpdateValidationSchema,
-  OrgUpdateValidationSchema,
-  OrgHealthResponseSchema,
-  OrgLogoPutValidationSchema,
-  OrgLogoReadDeleteValidationSchema,
-} from '../schemas/org.schemas';
+  UpdateValidationSchema,
+  HealthResponseSchema,
+  LogoPutValidationSchema,
+  LogoReadDeleteValidationSchema,
+} from '../validation/org.schemas';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 
@@ -43,7 +43,7 @@ export function createOrgRouter(container: Container) {
 
   router.post(
     '/',
-    ValidationMiddleware.validate(OrgCreationValidationSchema),
+    ValidationMiddleware.validate(CreationValidationSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const orgController = container.get<OrgController>('OrgController');
@@ -75,7 +75,7 @@ export function createOrgRouter(container: Container) {
     requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
-    ValidationMiddleware.validate(OrgUpdateValidationSchema),
+    ValidationMiddleware.validate(UpdateValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -132,7 +132,7 @@ export function createOrgRouter(container: Container) {
     }).getMiddleware,
     metricsMiddleware(container),
     userAdminCheck,
-    ValidationMiddleware.validate(OrgLogoPutValidationSchema),
+    ValidationMiddleware.validate(LogoPutValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -152,7 +152,7 @@ export function createOrgRouter(container: Container) {
     requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
-    ValidationMiddleware.validate(OrgLogoReadDeleteValidationSchema),
+    ValidationMiddleware.validate(LogoReadDeleteValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -171,7 +171,7 @@ export function createOrgRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.ORG_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(OrgLogoReadDeleteValidationSchema),
+    ValidationMiddleware.validate(LogoReadDeleteValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -228,7 +228,7 @@ export function createOrgRouter(container: Container) {
   router.get('/health', (_req: Request, res: Response) => {
     sendValidatedJson(
       res,
-      OrgHealthResponseSchema,
+      HealthResponseSchema,
       {
         status: 'healthy',
         timestamp: new Date().toISOString(),

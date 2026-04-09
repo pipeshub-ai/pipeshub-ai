@@ -9,10 +9,10 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   AddUsersToGroupsValidationSchema,
-  groupValidationSchema,
+  GroupValidationSchema,
+  IdValidationSchema,
   RemoveUsersFromGroupsValidationSchema,
-  UserGroupIdValidationSchema,
-} from '../schemas/userGroup.schemas';
+} from '../validation/userGroup.schemas';
 
 export function createUserGroupRouter(container: Container) {
   const router = Router();
@@ -23,7 +23,7 @@ export function createUserGroupRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
-    ValidationMiddleware.validate(groupValidationSchema),
+    ValidationMiddleware.validate(GroupValidationSchema),
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -58,7 +58,7 @@ export function createUserGroupRouter(container: Container) {
     '/:groupId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -80,7 +80,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -102,7 +102,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -167,7 +167,7 @@ export function createUserGroupRouter(container: Container) {
     '/:groupId/users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

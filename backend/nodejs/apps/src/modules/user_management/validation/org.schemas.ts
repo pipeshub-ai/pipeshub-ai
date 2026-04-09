@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const OrgUpdatePermanentAddressBody = z.object({
+const UpdatePermanentAddressBody = z.object({
   addressLine1: z.string().optional(),
   city: z.string().optional(),
   state: z.string().optional(),
@@ -8,7 +8,7 @@ const OrgUpdatePermanentAddressBody = z.object({
   postCode: z.string().optional(),
 });
 
-export const OrgCreationBody = z.object({
+export const CreationBody = z.object({
   accountType: z.enum(['business']),
   shortName: z.string().optional(),
   contactEmail: z.string().email('Invalid email format'),
@@ -16,7 +16,7 @@ export const OrgCreationBody = z.object({
   adminFullName: z.string().min(1, 'Admin full name required'),
   password: z.string().min(8, 'Minimum 8 characters password required'),
   sendEmail: z.boolean().optional(),
-  permanentAddress: OrgUpdatePermanentAddressBody.optional(),
+  permanentAddress: UpdatePermanentAddressBody.optional(),
 });
 
 const OnboardingStatusUpdateBody = z.object({
@@ -30,33 +30,33 @@ export const OnboardingStatusUpdateValidationSchema = z.object({
   headers: z.object({}),
 });
 
-export const OrgCreationValidationSchema = z.object({
-  body: OrgCreationBody,
+export const CreationValidationSchema = z.object({
+  body: CreationBody,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
 });
 
 // fields are optional to allow partial updates
-export const OrgUpdateBody = z
+export const UpdateBody = z
   .object({
     registeredName: z.string().optional(),
     shortName: z.string().optional(),
     contactEmail: z.string().email('Invalid email format').optional(),
-    permanentAddress: OrgUpdatePermanentAddressBody.optional(),
+    permanentAddress: UpdatePermanentAddressBody.optional(),
     dataCollectionConsent: z.boolean().optional(),
   })
 
-export const OrgUpdateValidationSchema = z.object({
-  body: OrgUpdateBody,
+export const UpdateValidationSchema = z.object({
+  body: UpdateBody,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
 });
 
 /** Same shape as request `permanentAddress`, plus subdocument `_id` from Mongo. */
-const OrgUpdateResponsePermanentAddress =
-  OrgUpdatePermanentAddressBody.extend({
+const UpdateResponsePermanentAddress =
+  UpdatePermanentAddressBody.extend({
     _id: z.coerce.string().optional(),
   });
 
@@ -64,7 +64,7 @@ const OrgUpdateResponsePermanentAddress =
  * Serialized org document (GET /org, POST /org create success body, and
  * `data` in PUT/DELETE org responses).
  */
-export const OrgDocumentResponseSchema = z
+export const DocumentResponseSchema = z
   .object({
     _id: z.coerce.string(),
     registeredName: z.string(),
@@ -72,7 +72,7 @@ export const OrgDocumentResponseSchema = z
     domain: z.string(),
     contactEmail: z.string().email(),
     accountType: z.enum(['business']),
-    permanentAddress: OrgUpdateResponsePermanentAddress.optional(),
+    permanentAddress: UpdateResponsePermanentAddress.optional(),
     onBoardingStatus: z.enum(['configured', 'notConfigured', 'skipped']),
     isDeleted: z.boolean(),
     createdAt: z.union([z.string(), z.date()]),
@@ -82,20 +82,20 @@ export const OrgDocumentResponseSchema = z
   })
 
 /** Validates JSON for GET /org/exists (checkOrgExistence). */
-export const CheckOrgExistenceResponseSchema = z.object({
+export const CheckExistenceResponseSchema = z.object({
   exists: z.boolean(),
 });
 
 /** Validates JSON for PUT /org (update organization details). */
-export const UpdateOrganizationDetailsResponseSchema = z.object({
+export const UpdateDetailsResponseSchema = z.object({
   message: z.string().min(1),
-  data: OrgDocumentResponseSchema,
+  data: DocumentResponseSchema,
 });
 
 /** Validates JSON for DELETE /org (soft delete organization). */
-export const DeleteOrganizationResponseSchema = z.object({
+export const DeleteResponseSchema = z.object({
   message: z.string().min(1),
-  data: OrgDocumentResponseSchema,
+  data: DocumentResponseSchema,
 });
 
 /** Validates JSON for GET /org/onboarding-status. */
@@ -110,13 +110,13 @@ export const UpdateOnboardingStatusResponseSchema = z.object({
 });
 
 /** Validates JSON for GET /org/health. */
-export const OrgHealthResponseSchema = z.object({
+export const HealthResponseSchema = z.object({
   status: z.literal('healthy'),
   timestamp: z.string().datetime(),
 });
 
 /** MIME types allowed for org logo upload (matches PUT /org/logo + multer fileFilter). */
-export const OrgLogoUploadMimeType = z.enum([
+export const LogoUploadMimeType = z.enum([
   'image/png',
   'image/jpeg',
   'image/jpg',
@@ -129,12 +129,12 @@ export const OrgLogoUploadMimeType = z.enum([
  * Request body after buffer upload middleware (PUT /org/logo).
  * Extra `fileBuffer` fields from the processor are allowed via passthrough.
  */
-export const OrgLogoPutBodySchema = z
+export const LogoPutBodySchema = z
   .object({
     fileBuffer: z
       .object({
         buffer: z.instanceof(Buffer),
-        mimetype: OrgLogoUploadMimeType,
+        mimetype: LogoUploadMimeType,
         originalname: z.string().optional(),
         size: z.number().int().nonnegative().optional(),
         lastModified: z.number().optional(),
@@ -144,15 +144,15 @@ export const OrgLogoPutBodySchema = z
   })
   .passthrough();
 
-export const OrgLogoPutValidationSchema = z.object({
-  body: OrgLogoPutBodySchema,
+export const LogoPutValidationSchema = z.object({
+  body: LogoPutBodySchema,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
 });
 
 /** GET/DELETE /org/logo — no meaningful body/query/params. */
-export const OrgLogoReadDeleteValidationSchema = z.object({
+export const LogoReadDeleteValidationSchema = z.object({
   body: z.object({}),
   query: z.object({}),
   params: z.object({}),
@@ -160,7 +160,7 @@ export const OrgLogoReadDeleteValidationSchema = z.object({
 });
 
 /** Validates JSON for PUT /org/logo (after successful save). */
-export const UpdateOrgLogoResponseSchema = z.object({
+export const UpdateLogoResponseSchema = z.object({
   message: z.string().min(1),
   mimeType: z.enum(['image/jpeg', 'image/svg+xml']),
 });
@@ -169,7 +169,7 @@ export const UpdateOrgLogoResponseSchema = z.object({
  * Validates JSON for DELETE /org/logo (updated org-logo document; logo cleared).
  * GET /org/logo success is raw bytes or 204 — not JSON.
  */
-export const RemoveOrgLogoResponseSchema = z
+export const RemoveLogoResponseSchema = z
   .object({
     logo: z.null(),
     mimeType: z.null(),

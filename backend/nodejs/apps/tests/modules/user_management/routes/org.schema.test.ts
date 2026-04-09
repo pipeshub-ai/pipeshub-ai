@@ -2,25 +2,25 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import mongoose from 'mongoose'
 import {
-  OrgCreationBody,
-  OrgDocumentResponseSchema,
-  OrgUpdateBody,
-  OrgUpdateValidationSchema,
-  DeleteOrganizationResponseSchema,
-  UpdateOrganizationDetailsResponseSchema,
-  CheckOrgExistenceResponseSchema,
+  CreationBody,
+  DocumentResponseSchema,
+  UpdateBody,
+  UpdateValidationSchema,
+  DeleteResponseSchema,
+  UpdateDetailsResponseSchema,
+  CheckExistenceResponseSchema,
   GetOnboardingStatusResponseSchema,
   UpdateOnboardingStatusResponseSchema,
-  OrgHealthResponseSchema,
-  UpdateOrgLogoResponseSchema,
-  RemoveOrgLogoResponseSchema,
-  OrgLogoPutValidationSchema,
-  OrgLogoReadDeleteValidationSchema,
-} from '../../../../src/modules/user_management/schemas/org.schemas'
+  HealthResponseSchema,
+  UpdateLogoResponseSchema,
+  RemoveLogoResponseSchema,
+  LogoPutValidationSchema,
+  LogoReadDeleteValidationSchema,
+} from '../../../../src/modules/user_management/validation/org.schemas'
 import { createMockOrgUpdateJson } from '../../../helpers/mock-org-updated-document'
 
-describe('OrgCreationBody Zod Schema', () => {
-  const validOrgCreationBody = {
+describe('CreationBody Zod Schema', () => {
+  const validCreationBody = {
     accountType: 'business' as const,
     contactEmail: 'admin@example.com',
     adminFullName: 'Admin User',
@@ -30,29 +30,29 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('valid inputs', () => {
     it('should accept valid business account body', () => {
-      const result = OrgCreationBody.safeParse(validOrgCreationBody)
+      const result = CreationBody.safeParse(validCreationBody)
       expect(result.success).to.be.true
     })
 
     it('should accept optional shortName', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         shortName: 'acme',
       })
       expect(result.success).to.be.true
     })
 
     it('should accept optional sendEmail', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         sendEmail: true,
       })
       expect(result.success).to.be.true
     })
 
     it('should accept optional permanentAddress', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         permanentAddress: {
           addressLine1: '123 Main St',
           city: 'Springfield',
@@ -65,15 +65,15 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should accept permanentAddress with partial fields', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         permanentAddress: { city: 'Springfield' },
       })
       expect(result.success).to.be.true
     })
 
     it('should reject individual accountType', () => {
-      const result = OrgCreationBody.safeParse({
+      const result = CreationBody.safeParse({
         accountType: 'individual',
         contactEmail: 'test@example.com',
         adminFullName: 'Test User',
@@ -86,8 +86,8 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('accountType validation', () => {
     it('should reject missing accountType', () => {
-      const { accountType, ...body } = validOrgCreationBody
-      const result = OrgCreationBody.safeParse(body)
+      const { accountType, ...body } = validCreationBody
+      const result = CreationBody.safeParse(body)
       expect(result.success).to.be.false
       if (!result.success) {
         const fieldError = result.error.issues.find(
@@ -98,8 +98,8 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject invalid accountType value', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         accountType: 'enterprise',
       })
       expect(result.success).to.be.false
@@ -112,8 +112,8 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject numeric accountType', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         accountType: 123,
       })
       expect(result.success).to.be.false
@@ -122,8 +122,8 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('contactEmail validation', () => {
     it('should reject missing contactEmail', () => {
-      const { contactEmail, ...body } = validOrgCreationBody
-      const result = OrgCreationBody.safeParse(body)
+      const { contactEmail, ...body } = validCreationBody
+      const result = CreationBody.safeParse(body)
       expect(result.success).to.be.false
       if (!result.success) {
         const fieldError = result.error.issues.find(
@@ -134,8 +134,8 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject invalid email format without @', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         contactEmail: 'not-an-email',
       })
       expect(result.success).to.be.false
@@ -149,24 +149,24 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject invalid email format without domain', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         contactEmail: 'user@',
       })
       expect(result.success).to.be.false
     })
 
     it('should reject empty string email', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         contactEmail: '',
       })
       expect(result.success).to.be.false
     })
 
     it('should reject numeric contactEmail', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         contactEmail: 12345,
       })
       expect(result.success).to.be.false
@@ -175,8 +175,8 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('password validation', () => {
     it('should reject missing password', () => {
-      const { password, ...body } = validOrgCreationBody
-      const result = OrgCreationBody.safeParse(body)
+      const { password, ...body } = validCreationBody
+      const result = CreationBody.safeParse(body)
       expect(result.success).to.be.false
       if (!result.success) {
         const fieldError = result.error.issues.find(
@@ -187,8 +187,8 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject password shorter than 8 characters', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         password: 'Ab1!xyz',
       })
       expect(result.success).to.be.false
@@ -204,24 +204,24 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject empty string password', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         password: '',
       })
       expect(result.success).to.be.false
     })
 
     it('should accept password with exactly 8 characters', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         password: '12345678',
       })
       expect(result.success).to.be.true
     })
 
     it('should reject numeric password', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         password: 12345678,
       })
       expect(result.success).to.be.false
@@ -230,8 +230,8 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('adminFullName validation', () => {
     it('should reject missing adminFullName', () => {
-      const { adminFullName, ...body } = validOrgCreationBody
-      const result = OrgCreationBody.safeParse(body)
+      const { adminFullName, ...body } = validCreationBody
+      const result = CreationBody.safeParse(body)
       expect(result.success).to.be.false
       if (!result.success) {
         const fieldError = result.error.issues.find(
@@ -242,8 +242,8 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject empty string adminFullName', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         adminFullName: '',
       })
       expect(result.success).to.be.false
@@ -257,8 +257,8 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should accept single character adminFullName', () => {
-      const result = OrgCreationBody.safeParse({
-        ...validOrgCreationBody,
+      const result = CreationBody.safeParse({
+        ...validCreationBody,
         adminFullName: 'A',
       })
       expect(result.success).to.be.true
@@ -267,7 +267,7 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('registeredName conditional validation', () => {
     it('should require registeredName when accountType is business', () => {
-      const result = OrgCreationBody.safeParse({
+      const result = CreationBody.safeParse({
         accountType: 'business',
         contactEmail: 'admin@example.com',
         adminFullName: 'Admin User',
@@ -287,7 +287,7 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should accept registeredName for business accounts', () => {
-      const result = OrgCreationBody.safeParse({
+      const result = CreationBody.safeParse({
         accountType: 'business',
         contactEmail: 'admin@example.com',
         adminFullName: 'Admin User',
@@ -298,7 +298,7 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject empty string registeredName for business accounts', () => {
-      const result = OrgCreationBody.safeParse({
+      const result = CreationBody.safeParse({
         accountType: 'business',
         contactEmail: 'admin@example.com',
         adminFullName: 'Admin User',
@@ -311,7 +311,7 @@ describe('OrgCreationBody Zod Schema', () => {
 
   describe('multiple missing fields', () => {
     it('should report errors for all missing required fields', () => {
-      const result = OrgCreationBody.safeParse({})
+      const result = CreationBody.safeParse({})
       expect(result.success).to.be.false
       if (!result.success) {
         expect(result.error.issues.length).to.be.greaterThan(1)
@@ -319,13 +319,13 @@ describe('OrgCreationBody Zod Schema', () => {
     })
 
     it('should reject completely empty body', () => {
-      const result = OrgCreationBody.safeParse({})
+      const result = CreationBody.safeParse({})
       expect(result.success).to.be.false
     })
   })
 })
 
-describe('OrgUpdateBody Zod Schema', () => {
+describe('UpdateBody Zod Schema', () => {
   const validUpdateBody = {
     registeredName: 'Example Company Ltd',
     shortName: 'EX',
@@ -342,24 +342,24 @@ describe('OrgUpdateBody Zod Schema', () => {
 
   describe('valid inputs', () => {
     it('should accept a full valid org update body', () => {
-      const result = OrgUpdateBody.safeParse(validUpdateBody)
+      const result = UpdateBody.safeParse(validUpdateBody)
       expect(result.success).to.be.true
     })
 
     it('should accept an empty body (partial update)', () => {
-      const result = OrgUpdateBody.safeParse({})
+      const result = UpdateBody.safeParse({})
       expect(result.success).to.be.true
     })
 
     it('should accept only contactEmail', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         contactEmail: 'admin@example.com',
       })
       expect(result.success).to.be.true
     })
 
     it('should accept only registeredName and shortName', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         registeredName: 'Acme',
         shortName: 'AC',
       })
@@ -367,7 +367,7 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should accept empty strings for registeredName and shortName', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         registeredName: '',
         shortName: '',
       })
@@ -375,7 +375,7 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should accept dataCollectionConsent false', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         ...validUpdateBody,
         dataCollectionConsent: false,
       })
@@ -383,14 +383,14 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should accept permanentAddress with only some fields set', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         permanentAddress: { city: 'Berlin', country: 'DE' },
       })
       expect(result.success).to.be.true
     })
 
     it('should accept permanentAddress with all string fields empty', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         permanentAddress: {
           addressLine1: '',
           city: '',
@@ -405,7 +405,7 @@ describe('OrgUpdateBody Zod Schema', () => {
 
   describe('contactEmail validation', () => {
     it('should reject invalid contactEmail when provided', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         ...validUpdateBody,
         contactEmail: 'not-an-email',
       })
@@ -419,14 +419,14 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should accept a valid plus-address email', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         contactEmail: 'user+tag@sub.example.co.uk',
       })
       expect(result.success).to.be.true
     })
 
     it('should reject numeric contactEmail', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         contactEmail: 123 as unknown as string,
       })
       expect(result.success).to.be.false
@@ -435,7 +435,7 @@ describe('OrgUpdateBody Zod Schema', () => {
 
   describe('dataCollectionConsent validation', () => {
     it('should reject non-boolean dataCollectionConsent', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         ...validUpdateBody,
         dataCollectionConsent: 'yes',
       })
@@ -443,7 +443,7 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should reject numeric dataCollectionConsent', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         dataCollectionConsent: 1,
       })
       expect(result.success).to.be.false
@@ -452,7 +452,7 @@ describe('OrgUpdateBody Zod Schema', () => {
 
   describe('permanentAddress validation', () => {
     it('should reject permanentAddress when it is not an object', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         ...validUpdateBody,
         permanentAddress: '123 Main St',
       })
@@ -460,14 +460,14 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should reject when a permanentAddress field is not a string', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         permanentAddress: { city: 12345 },
       })
       expect(result.success).to.be.false
     })
 
     it('should reject null for permanentAddress', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         permanentAddress: null,
       })
       expect(result.success).to.be.false
@@ -476,19 +476,19 @@ describe('OrgUpdateBody Zod Schema', () => {
 
   describe('string field types', () => {
     it('should reject registeredName when not a string', () => {
-      const result = OrgUpdateBody.safeParse({ registeredName: 123 })
+      const result = UpdateBody.safeParse({ registeredName: 123 })
       expect(result.success).to.be.false
     })
 
     it('should reject shortName when not a string', () => {
-      const result = OrgUpdateBody.safeParse({ shortName: ['XX'] })
+      const result = UpdateBody.safeParse({ shortName: ['XX'] })
       expect(result.success).to.be.false
     })
   })
 
   describe('unknown keys', () => {
     it('should strip unknown keys from the body (strict known fields only)', () => {
-      const result = OrgUpdateBody.safeParse({
+      const result = UpdateBody.safeParse({
         ...validUpdateBody,
         futureField: 'stripped',
       })
@@ -501,9 +501,9 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
   })
 
-  describe('OrgUpdateValidationSchema (middleware shape)', () => {
+  describe('UpdateValidationSchema (middleware shape)', () => {
     it('should parse a request-shaped object with body, query, params, headers', async () => {
-      const result = await OrgUpdateValidationSchema.parseAsync({
+      const result = await UpdateValidationSchema.parseAsync({
         body: validUpdateBody,
         query: {},
         params: {},
@@ -516,7 +516,7 @@ describe('OrgUpdateBody Zod Schema', () => {
     })
 
     it('should accept empty body in validation schema', async () => {
-      const result = await OrgUpdateValidationSchema.parseAsync({
+      const result = await UpdateValidationSchema.parseAsync({
         body: {},
         query: {},
         params: {},
@@ -527,7 +527,7 @@ describe('OrgUpdateBody Zod Schema', () => {
 
     it('should reject invalid body email in validation schema', async () => {
       try {
-        await OrgUpdateValidationSchema.parseAsync({
+        await UpdateValidationSchema.parseAsync({
           body: { contactEmail: 'bad' },
           query: {},
           params: {},
@@ -541,7 +541,7 @@ describe('OrgUpdateBody Zod Schema', () => {
 
     it('should reject extra keys on query', async () => {
       try {
-        await OrgUpdateValidationSchema.parseAsync({
+        await UpdateValidationSchema.parseAsync({
           body: {},
           query: { unexpected: 'x' },
           params: {},
@@ -555,7 +555,7 @@ describe('OrgUpdateBody Zod Schema', () => {
 
     it('should reject extra keys on params', async () => {
       try {
-        await OrgUpdateValidationSchema.parseAsync({
+        await UpdateValidationSchema.parseAsync({
           body: {},
           query: {},
           params: { id: 'x' },
@@ -569,9 +569,9 @@ describe('OrgUpdateBody Zod Schema', () => {
   })
 })
 
-describe('UpdateOrganizationDetailsResponseSchema', () => {
+describe('UpdateDetailsResponseSchema', () => {
   it('should accept a typical success payload with nested permanentAddress', () => {
-    const result = UpdateOrganizationDetailsResponseSchema.safeParse({
+    const result = UpdateDetailsResponseSchema.safeParse({
       message: 'Organization updated successfully',
       data: createMockOrgUpdateJson({
         permanentAddress: {
@@ -588,7 +588,7 @@ describe('UpdateOrganizationDetailsResponseSchema', () => {
   })
 
   it('should accept payload with extra data fields (passthrough)', () => {
-    const result = UpdateOrganizationDetailsResponseSchema.safeParse({
+    const result = UpdateDetailsResponseSchema.safeParse({
       message: 'Organization updated successfully',
       data: createMockOrgUpdateJson({ phoneNumber: '+15551234567' }),
     })
@@ -596,7 +596,7 @@ describe('UpdateOrganizationDetailsResponseSchema', () => {
   })
 
   it('should reject empty message', () => {
-    const result = UpdateOrganizationDetailsResponseSchema.safeParse({
+    const result = UpdateDetailsResponseSchema.safeParse({
       message: '',
       data: createMockOrgUpdateJson(),
     })
@@ -604,7 +604,7 @@ describe('UpdateOrganizationDetailsResponseSchema', () => {
   })
 
   it('should reject data missing required org fields', () => {
-    const result = UpdateOrganizationDetailsResponseSchema.safeParse({
+    const result = UpdateDetailsResponseSchema.safeParse({
       message: 'Organization updated successfully',
       data: { _id: '507f1f77bcf86cd799439012' },
     })
@@ -612,9 +612,9 @@ describe('UpdateOrganizationDetailsResponseSchema', () => {
   })
 })
 
-describe('DeleteOrganizationResponseSchema', () => {
+describe('DeleteResponseSchema', () => {
   it('should accept soft-delete success payload with isDeleted true', () => {
-    const result = DeleteOrganizationResponseSchema.safeParse({
+    const result = DeleteResponseSchema.safeParse({
       message: 'Organization marked as deleted successfully',
       data: createMockOrgUpdateJson({
         isDeleted: true,
@@ -632,7 +632,7 @@ describe('DeleteOrganizationResponseSchema', () => {
   })
 
   it('should reject empty message', () => {
-    const result = DeleteOrganizationResponseSchema.safeParse({
+    const result = DeleteResponseSchema.safeParse({
       message: '',
       data: createMockOrgUpdateJson({ isDeleted: true }),
     })
@@ -640,9 +640,9 @@ describe('DeleteOrganizationResponseSchema', () => {
   })
 })
 
-describe('OrgDocumentResponseSchema', () => {
+describe('DocumentResponseSchema', () => {
   it('should coerce Mongoose ObjectId on _id', () => {
-    const result = OrgDocumentResponseSchema.safeParse({
+    const result = DocumentResponseSchema.safeParse({
       _id: new mongoose.Types.ObjectId(),
       registeredName: '',
       domain: 'example.com',
@@ -662,7 +662,7 @@ describe('OrgDocumentResponseSchema', () => {
   })
 
   it('should accept GET/POST org body with empty shortName and nested address _id', () => {
-    const result = OrgDocumentResponseSchema.safeParse(
+    const result = DocumentResponseSchema.safeParse(
       createMockOrgUpdateJson({
         shortName: '',
         onBoardingStatus: 'notConfigured',
@@ -680,18 +680,18 @@ describe('OrgDocumentResponseSchema', () => {
   })
 })
 
-describe('CheckOrgExistenceResponseSchema', () => {
+describe('CheckExistenceResponseSchema', () => {
   it('should accept exists true or false', () => {
     expect(
-      CheckOrgExistenceResponseSchema.safeParse({ exists: true }).success,
+      CheckExistenceResponseSchema.safeParse({ exists: true }).success,
     ).to.be.true
     expect(
-      CheckOrgExistenceResponseSchema.safeParse({ exists: false }).success,
+      CheckExistenceResponseSchema.safeParse({ exists: false }).success,
     ).to.be.true
   })
 
   it('should reject non-boolean exists', () => {
-    const result = CheckOrgExistenceResponseSchema.safeParse({
+    const result = CheckExistenceResponseSchema.safeParse({
       exists: 'yes',
     })
     expect(result.success).to.be.false
@@ -732,9 +732,9 @@ describe('UpdateOnboardingStatusResponseSchema', () => {
   })
 })
 
-describe('OrgHealthResponseSchema', () => {
+describe('HealthResponseSchema', () => {
   it('should accept health payload', () => {
-    const result = OrgHealthResponseSchema.safeParse({
+    const result = HealthResponseSchema.safeParse({
       status: 'healthy',
       timestamp: '2026-04-01T12:00:00.000Z',
     })
@@ -742,7 +742,7 @@ describe('OrgHealthResponseSchema', () => {
   })
 
   it('should reject non-healthy status', () => {
-    const result = OrgHealthResponseSchema.safeParse({
+    const result = HealthResponseSchema.safeParse({
       status: 'degraded',
       timestamp: '2026-04-01T12:00:00.000Z',
     })
@@ -750,16 +750,16 @@ describe('OrgHealthResponseSchema', () => {
   })
 })
 
-describe('UpdateOrgLogoResponseSchema', () => {
+describe('UpdateLogoResponseSchema', () => {
   it('should accept jpeg and svg mime responses', () => {
     expect(
-      UpdateOrgLogoResponseSchema.safeParse({
+      UpdateLogoResponseSchema.safeParse({
         message: 'Logo updated successfully',
         mimeType: 'image/jpeg',
       }).success,
     ).to.be.true
     expect(
-      UpdateOrgLogoResponseSchema.safeParse({
+      UpdateLogoResponseSchema.safeParse({
         message: 'Logo updated successfully',
         mimeType: 'image/svg+xml',
       }).success,
@@ -767,7 +767,7 @@ describe('UpdateOrgLogoResponseSchema', () => {
   })
 
   it('should reject png in response (controller normalizes to jpeg/svg)', () => {
-    const result = UpdateOrgLogoResponseSchema.safeParse({
+    const result = UpdateLogoResponseSchema.safeParse({
       message: 'Logo updated successfully',
       mimeType: 'image/png',
     })
@@ -775,7 +775,7 @@ describe('UpdateOrgLogoResponseSchema', () => {
   })
 
   it('should reject empty message', () => {
-    const result = UpdateOrgLogoResponseSchema.safeParse({
+    const result = UpdateLogoResponseSchema.safeParse({
       message: '',
       mimeType: 'image/jpeg',
     })
@@ -783,9 +783,9 @@ describe('UpdateOrgLogoResponseSchema', () => {
   })
 })
 
-describe('RemoveOrgLogoResponseSchema', () => {
+describe('RemoveLogoResponseSchema', () => {
   it('should accept cleared logo document (string ids)', () => {
-    const result = RemoveOrgLogoResponseSchema.safeParse({
+    const result = RemoveLogoResponseSchema.safeParse({
       _id: '507f1f77bcf86cd799439011',
       orgId: '507f1f77bcf86cd799439012',
       logo: null,
@@ -797,7 +797,7 @@ describe('RemoveOrgLogoResponseSchema', () => {
 
   it('should accept Mongoose ObjectId instances from toJSON()', () => {
     const oid = new mongoose.Types.ObjectId()
-    const result = RemoveOrgLogoResponseSchema.safeParse({
+    const result = RemoveLogoResponseSchema.safeParse({
       _id: oid,
       orgId: oid,
       logo: null,
@@ -812,7 +812,7 @@ describe('RemoveOrgLogoResponseSchema', () => {
   })
 
   it('should reject when logo not null', () => {
-    const result = RemoveOrgLogoResponseSchema.safeParse({
+    const result = RemoveLogoResponseSchema.safeParse({
       logo: 'data',
       mimeType: null,
     })
@@ -820,7 +820,7 @@ describe('RemoveOrgLogoResponseSchema', () => {
   })
 })
 
-describe('OrgLogoPutValidationSchema', () => {
+describe('LogoPutValidationSchema', () => {
   it('should accept processor-shaped body', async () => {
     const data = {
       body: {
@@ -837,7 +837,7 @@ describe('OrgLogoPutValidationSchema', () => {
       params: {},
       headers: {},
     }
-    const result = await OrgLogoPutValidationSchema.parseAsync(data)
+    const result = await LogoPutValidationSchema.parseAsync(data)
     expect(result.body.fileBuffer.mimetype).to.equal('image/png')
   })
 
@@ -853,14 +853,14 @@ describe('OrgLogoPutValidationSchema', () => {
       params: {},
       headers: {},
     }
-    const result = OrgLogoPutValidationSchema.safeParse(data)
+    const result = LogoPutValidationSchema.safeParse(data)
     expect(result.success).to.be.false
   })
 })
 
-describe('OrgLogoReadDeleteValidationSchema', () => {
+describe('LogoReadDeleteValidationSchema', () => {
   it('should accept empty request parts', async () => {
-    const result = await OrgLogoReadDeleteValidationSchema.parseAsync({
+    const result = await LogoReadDeleteValidationSchema.parseAsync({
       body: {},
       query: {},
       params: {},

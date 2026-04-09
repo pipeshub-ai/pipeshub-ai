@@ -3,7 +3,7 @@ import sinon from 'sinon';
 import { Org } from '../../src/modules/user_management/schema/org.schema';
 
 /**
- * Plain org JSON matching `OrgDocumentResponseSchema` and org `data` in
+ * Plain org JSON matching `DocumentResponseSchema` and org `data` in
  * update/delete success responses; use with Mongoose-like `toJSON()` in tests.
  */
 export function createMockOrgUpdateJson(
@@ -59,7 +59,7 @@ export function createMockOrgDocumentForSoftDelete(
 }
 
 /**
- * Stubs `Org.prototype.toJSON` so `sendValidatedJson(OrgDocumentResponseSchema, …)`
+ * Stubs `Org.prototype.toJSON` so `sendValidatedJson(DocumentResponseSchema, …)`
  * receives a full wire-shaped org when tests stub `save()` (pre-save hooks and
  * timestamps may not run). Call from `createOrg` tests; `sinon.restore()` clears it.
  */

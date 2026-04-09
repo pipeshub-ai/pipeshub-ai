@@ -30,24 +30,25 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { sendValidatedJson } from '../../../utils/response-validator';
-import { UserIdValidationSchema,
-  createUserValidationSchema, 
-  updateUserFullNameValidationSchema, 
-  updateUserFirstNameValidationSchema, 
-  updateUserLastNameValidationSchema, 
-  updateUserDesignationValidationSchema, 
-  updateUserEmailValidationSchema, 
-  updateUserValidationSchema, 
-  emailIdValidationSchema,
-  UpdateUserDisplayPictureValidationSchema,
+import {
+  IdValidationSchema,
+  CreationValidationSchema,
+  UpdateFullNameValidationSchema,
+  UpdateFirstNameValidationSchema,
+  UpdateLastNameValidationSchema,
+  UpdateDesignationValidationSchema,
+  UpdateEmailValidationSchema,
+  UpdateValidationSchema,
+  EmailIdValidationSchema,
+  UpdateDisplayPictureValidationSchema,
   GetAllUsersValidationSchema,
-  GetUserEmailByUserIdValidationSchema,
-  UserAdminCheckResponseSchema,
-  UsersHealthResponseSchema,
-  InternalAdminUsersResponseSchema,
-  InternalLookupUserResponseSchema,
+  GetEmailByIdValidationSchema,
+  AdminCheckResponseSchema,
+  HealthResponseSchema,
+  InternalAdminResponseSchema,
+  InternalLookupResponseSchema,
   BulkInviteValidationSchema,
-} from '../schemas/user.schemas';
+} from '../validation/user.schemas';
 
 export function createUserRouter(container: Container) {
   const router = Router();
@@ -92,7 +93,7 @@ export function createUserRouter(container: Container) {
     '/:id/email',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(GetUserEmailByUserIdValidationSchema),
+    ValidationMiddleware.validate(GetEmailByIdValidationSchema),
     metricsMiddleware(container),
     userAdminCheck,
     userExists,
@@ -114,7 +115,7 @@ export function createUserRouter(container: Container) {
     '/:id/unblock',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     userAdminCheck,
 
     async (req: Request, res: Response, next: NextFunction) => {
@@ -147,7 +148,7 @@ export function createUserRouter(container: Container) {
       strictFileUpload: true,
     }).getMiddleware,
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UpdateUserDisplayPictureValidationSchema),
+    ValidationMiddleware.validate(UpdateDisplayPictureValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -207,7 +208,7 @@ export function createUserRouter(container: Container) {
       try {
         sendValidatedJson(
           res,
-          UsersHealthResponseSchema,
+          HealthResponseSchema,
           {
             status: 'healthy',
             timestamp: new Date().toISOString(),
@@ -224,7 +225,7 @@ export function createUserRouter(container: Container) {
     '/:id',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     metricsMiddleware(container),
     userExists,
     async (
@@ -245,7 +246,7 @@ export function createUserRouter(container: Container) {
     '/email/exists',
     metricsMiddleware(container),
     authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
-    ValidationMiddleware.validate(emailIdValidationSchema),
+    ValidationMiddleware.validate(EmailIdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -303,7 +304,7 @@ export function createUserRouter(container: Container) {
 
         sendValidatedJson(
           res,
-          InternalAdminUsersResponseSchema,
+          InternalAdminResponseSchema,
           { adminUserIds },
           HTTP_STATUS.OK,
         );
@@ -317,7 +318,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/internal/:id',
     authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     metricsMiddleware(container),
     async (
       req: AuthenticatedServiceRequest,
@@ -342,7 +343,7 @@ export function createUserRouter(container: Container) {
 
           sendValidatedJson(
             res,
-            InternalLookupUserResponseSchema,
+            InternalLookupResponseSchema,
             user,
             HTTP_STATUS.OK,
           );
@@ -360,7 +361,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(createUserValidationSchema),
+    ValidationMiddleware.validate(CreationValidationSchema),
     userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
@@ -381,7 +382,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserFullNameValidationSchema),
+    ValidationMiddleware.validate(UpdateFullNameValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -403,7 +404,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserFirstNameValidationSchema),
+    ValidationMiddleware.validate(UpdateFirstNameValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -425,7 +426,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserLastNameValidationSchema),
+    ValidationMiddleware.validate(UpdateLastNameValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -447,7 +448,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserDesignationValidationSchema),
+    ValidationMiddleware.validate(UpdateDesignationValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -469,7 +470,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserEmailValidationSchema),
+    ValidationMiddleware.validate(UpdateEmailValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -491,7 +492,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserValidationSchema),
+    ValidationMiddleware.validate(UpdateValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -513,7 +514,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_DELETE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     userAdminCheck,
     userExists,
     async (
@@ -535,7 +536,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     userAdminCheck,
     async (
       _req: AuthenticatedUserRequest,
@@ -545,7 +546,7 @@ export function createUserRouter(container: Container) {
       try {
         sendValidatedJson(
           res,
-          UserAdminCheckResponseSchema,
+          AdminCheckResponseSchema,
           { message: 'User has admin access' },
           HTTP_STATUS.OK,
         );
@@ -584,7 +585,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     smtpConfigCheck(config.cmBackend),
     userAdminCheck,
     accountTypeCheck,

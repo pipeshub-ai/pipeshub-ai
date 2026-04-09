@@ -8,7 +8,7 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
-/** Valid GET /users/graph/list body from connector (GraphListUsersResponseSchema). */
+/** Valid GET /users/graph/list body from connector (GraphListResponseSchema). */
 function graphListUsersConnectorPayload(overrides: Record<string, unknown> = {}) {
   return {
     status: 'success',

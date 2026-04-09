@@ -17,14 +17,14 @@ export const GetAllUsersValidationSchema = z.object({
   headers: z.object({}),
 });
 
-export const UserIdUrlParams = z.object({
+export const IdUrlParams = z.object({
     id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
   });
   
-export const UserIdValidationSchema = z.object({
+export const IdValidationSchema = z.object({
 body: z.object({}),
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
 
@@ -50,14 +50,14 @@ export const BulkInviteValidationSchema = z.object({
 });
 
 /** GET /users/:id/email */
-export const GetUserEmailByUserIdValidationSchema = z.object({
+export const GetEmailByIdValidationSchema = z.object({
   body: z.object({}),
   query: z.object({}),
-  params: UserIdUrlParams,
+  params: IdUrlParams,
   headers: z.object({}),
 });
 
-export const createUserBody = z.object({
+export const CreationBody = z.object({
 fullName: z.string().min(1, 'Full name is required'),
 email: z.string().email('Invalid email'),
 mobile: z
@@ -69,7 +69,7 @@ mobile: z
 designation: z.string().optional(),
 });
 
-export const updateUserBody = z.object({
+export const UpdateBody = z.object({
 fullName: z.string().optional(),
 email: z.string().email('Invalid email').optional(),
 mobile: z
@@ -95,8 +95,8 @@ dataCollectionConsent: z.boolean().optional(),
 hasLoggedIn: z.boolean().optional(),
 }).strict(); // Use strict mode to reject unknown fields
 
-export const createUserValidationSchema = z.object({
-body: createUserBody,
+export const CreationValidationSchema = z.object({
+body: CreationBody,
 query: z.object({}),
 params: z.object({}),
 headers: z.object({}),
@@ -118,22 +118,22 @@ export const updateEmailBody = z.object({
 email: z.string().email('Valid email is required'),
 });
 
-export const updateUserFullNameValidationSchema = z.object({
+export const UpdateFullNameValidationSchema = z.object({
 body: updateFullNameBody,
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
-export const updateUserFirstNameValidationSchema = z.object({
+export const UpdateFirstNameValidationSchema = z.object({
 body: updateFirstNameBody,
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
-export const updateUserLastNameValidationSchema = z.object({
+export const UpdateLastNameValidationSchema = z.object({
 body: updateLastNameBody,
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
 
@@ -141,27 +141,27 @@ export const updateDesignationBody = z.object({
 designation: z.string().min(1, 'designation is required'),
 });
 
-export const updateUserDesignationValidationSchema = z.object({
+export const UpdateDesignationValidationSchema = z.object({
 body: updateDesignationBody,
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
 
-export const updateUserEmailValidationSchema = z.object({
+export const UpdateEmailValidationSchema = z.object({
 body: updateEmailBody,
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
 
-export const updateUserValidationSchema = z.object({
-body: updateUserBody,
+export const UpdateValidationSchema = z.object({
+body: UpdateBody,
 query: z.object({}),
-params: UserIdUrlParams,
+params: IdUrlParams,
 headers: z.object({}),
 });
-export const emailIdValidationSchema = z.object({
+export const EmailIdValidationSchema = z.object({
 body: updateEmailBody,
 query: z.object({}),
 params: z.object({}),
@@ -184,7 +184,7 @@ const displayPictureFileBufferSchema = z.object({
 });
 
 /** PUT /users/dp — after buffer upload middleware populates `body.fileBuffer` */
-export const UpdateUserDisplayPictureValidationSchema = z.object({
+export const UpdateDisplayPictureValidationSchema = z.object({
   body: z.object({
     fileBuffer: displayPictureFileBufferSchema,
   }),
@@ -265,7 +265,7 @@ export const GetAllUsersWithGroupsResponseSchema = z.array(
 );
 
 /** GET /users/:id/email — `{ email }` from `.select('email')` */
-export const GetUserEmailByUserIdResponseSchema = z.object({
+export const GetEmailByIdResponseSchema = z.object({
   email: z.string().email(),
 });
 
@@ -295,19 +295,19 @@ export const GetUserByIdResponseSchema = z
 /**
  * GET /users/internal/:id — lean user (scoped USER_LOOKUP). Email always present on success.
  */
-export const InternalLookupUserResponseSchema = GetUserByIdResponseSchema.extend({
+export const InternalLookupResponseSchema = GetUserByIdResponseSchema.extend({
   email: z.string().email(),
 });
 
 /** GET /users/email/exists — matching non-deleted users for the given email (full lean documents). */
 export const CheckUserExistsByEmailResponseSchema = z.array(
-  InternalLookupUserResponseSchema,
+  InternalLookupResponseSchema,
 );
 
 /**
  * POST /users — created user (201). Same wire shape as GET /users/:id with email always present.
  */
-export const CreateUserResponseSchema = z.object({
+export const CreateResponseSchema = z.object({
   _id: leanObjectIdString,
   orgId: leanObjectIdString,
   email: z.string().email(),
@@ -320,7 +320,7 @@ export const CreateUserResponseSchema = z.object({
   __v: z.number(),
 });
 
-const PatchUserDocumentBaseSchema = z.object({
+const PatchDocumentBaseSchema = z.object({
   _id: leanObjectIdString,
   orgId: leanObjectIdString,
   fullName: z.string(),
@@ -334,7 +334,7 @@ const PatchUserDocumentBaseSchema = z.object({
 });
 
 /** Core lean user fields for PATCH /email and PUT / — all required on success responses */
-const PatchUserEmailPutCoreSchema = z.object({
+const PatchEmailPutCoreSchema = z.object({
   _id: leanObjectIdString,
   orgId: leanObjectIdString,
   fullName: z.string().min(1).optional(),
@@ -348,25 +348,25 @@ const PatchUserEmailPutCoreSchema = z.object({
 });
 
 /** PATCH /users/:id/fullname — lean user; first/last may be absent */
-export const UpdateUserFullNameResponseSchema = PatchUserDocumentBaseSchema.extend({
+export const UpdateFullNameResponseSchema = PatchDocumentBaseSchema.extend({
   firstName: z.string().optional(),
   lastName: z.string().optional(),
 });
 
 /** PATCH /users/:id/firstName */
-export const UpdateUserFirstNameResponseSchema = PatchUserDocumentBaseSchema.extend({
+export const UpdateFirstNameResponseSchema = PatchDocumentBaseSchema.extend({
   firstName: z.string().min(1),
   lastName: z.string().optional(),
 });
 
 /** PATCH /users/:id/lastName */
-export const UpdateUserLastNameResponseSchema = PatchUserDocumentBaseSchema.extend({
+export const UpdateLastNameResponseSchema = PatchDocumentBaseSchema.extend({
   firstName: z.string().optional(),
   lastName: z.string().min(1),
 });
 
 /** PATCH /users/:id/designation — lean user + designation */
-export const UpdateUserDesignationResponseSchema = PatchUserDocumentBaseSchema.extend({
+export const UpdateDesignationResponseSchema = PatchDocumentBaseSchema.extend({
   designation: z.string().min(1),
 });
 
@@ -391,11 +391,11 @@ const emailPutProfileFields = {
 };
 
 /** PATCH /users/:id/email — full lean user document */
-export const UpdateUserEmailResponseSchema =
-  PatchUserEmailPutCoreSchema.extend(emailPutProfileFields);
+export const UpdateEmailResponseSchema =
+  PatchEmailPutCoreSchema.extend(emailPutProfileFields);
 
 /** PUT /users/:id — lean user + email-change meta */
-export const UpdateUserPutResponseSchema = PatchUserEmailPutCoreSchema.extend({
+export const UpdatePutResponseSchema = PatchEmailPutCoreSchema.extend({
   ...emailPutProfileFields,
   meta: z.object({
     emailChangeMailStatus: z.enum(['notNeeded', 'failed', 'sent']),
@@ -403,28 +403,28 @@ export const UpdateUserPutResponseSchema = PatchUserEmailPutCoreSchema.extend({
 });
 
 /** `{ message }` body shared by several user routes (delete, unblock, admin check, invite sent). */
-export const UserMessageResponseSchema = z.object({
+export const MessageResponseSchema = z.object({
   message: z.string().min(1),
 });
 
 /** DELETE /users/:id */
-export const DeleteUserResponseSchema = UserMessageResponseSchema;
+export const DeleteResponseSchema = MessageResponseSchema;
 
 /** PUT /users/:id/unblock */
-export const UnblockUserResponseSchema = UserMessageResponseSchema;
+export const UnblockResponseSchema = MessageResponseSchema;
 
 /**
  * GET /users/dp — JSON when no picture.
  * DELETE /users/dp — JSON when document not found.
  */
-export const UserDisplayPictureErrorResponseSchema = z.object({
+export const DisplayPictureErrorResponseSchema = z.object({
   errorMessage: z.string().min(1),
 });
 
 /**
  * DELETE /users/dp — 200 JSON body after clearing stored picture (`pic` / `mimeType` null).
  */
-export const RemoveUserDisplayPictureResponseSchema = z.object({
+export const RemoveDisplayPictureResponseSchema = z.object({
   _id: leanObjectIdString,
   userId: leanObjectIdString,
   orgId: leanObjectIdString,
@@ -435,18 +435,18 @@ export const RemoveUserDisplayPictureResponseSchema = z.object({
 });
 
 /** GET /users/health */
-export const UsersHealthResponseSchema = z.object({
+export const HealthResponseSchema = z.object({
   status: z.literal('healthy'),
   timestamp: z.string().datetime(),
 });
 
 /** GET /users/internal/admin-users — `{ adminUserIds }` (Mongo ObjectId hex strings) */
-export const InternalAdminUsersResponseSchema = z.object({
+export const InternalAdminResponseSchema = z.object({
   adminUserIds: z.array(objectIdHex24),
 });
 
 /** GET /users/graph/list — connector `entity/user/list` payload */
-const GraphListUserItemSchema = z.object({
+const GraphListItemSchema = z.object({
   id: z.string().min(1),
   userId: z.string().min(1),
   name: z.string(),
@@ -465,18 +465,18 @@ const GraphListPaginationSchema = z.object({
   hasPrev: z.boolean(),
 });
 
-export const GraphListUsersResponseSchema = z.object({
+export const GraphListResponseSchema = z.object({
   status: z.enum(['success']),
   message: z.string().min(1),
-  users: z.array(GraphListUserItemSchema),
+  users: z.array(GraphListItemSchema),
   pagination: GraphListPaginationSchema,
 });
 
 /** GET /users/:id/adminCheck — user is admin for org */
-export const UserAdminCheckResponseSchema = UserMessageResponseSchema;
+export const AdminCheckResponseSchema = MessageResponseSchema;
 
 /** POST /users/:id/resend-invite — success */
-export const InviteSentResponseSchema = UserMessageResponseSchema;
+export const InviteSentResponseSchema = MessageResponseSchema;
 
 /**
  * POST /users/bulk/invite — 200 responses:

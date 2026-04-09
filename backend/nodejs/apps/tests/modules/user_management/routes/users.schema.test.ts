@@ -6,30 +6,30 @@ import {
   GetAllUsersBlockedListItemSchema,
   GetAllUsersBlockedResponseSchema,
   GetAllUsersWithGroupsResponseSchema,
-  CreateUserResponseSchema,
-  DeleteUserResponseSchema,
-  UserDisplayPictureErrorResponseSchema,
-  RemoveUserDisplayPictureResponseSchema,
-  UserAdminCheckResponseSchema,
-  UsersHealthResponseSchema,
-  InternalAdminUsersResponseSchema,
+  CreateResponseSchema,
+  DeleteResponseSchema,
+  DisplayPictureErrorResponseSchema,
+  RemoveDisplayPictureResponseSchema,
+  AdminCheckResponseSchema,
+  HealthResponseSchema,
+  InternalAdminResponseSchema,
   GetUserByIdResponseSchema,
-  InternalLookupUserResponseSchema,
+  InternalLookupResponseSchema,
   CheckUserExistsByEmailResponseSchema,
-  UpdateUserEmailResponseSchema,
-  UpdateUserPutResponseSchema,
-  UpdateUserFirstNameResponseSchema,
-  UpdateUserFullNameResponseSchema,
-  UpdateUserLastNameResponseSchema,
-  UpdateUserDesignationResponseSchema,
-  GetUserEmailByUserIdResponseSchema,
-  GetUserEmailByUserIdValidationSchema,
+  UpdateEmailResponseSchema,
+  UpdatePutResponseSchema,
+  UpdateFirstNameResponseSchema,
+  UpdateFullNameResponseSchema,
+  UpdateLastNameResponseSchema,
+  UpdateDesignationResponseSchema,
+  GetEmailByIdResponseSchema,
+  GetEmailByIdValidationSchema,
   BulkInviteBodySchema,
   BulkInviteValidationSchema,
   InviteSentResponseSchema,
   BulkInviteResponseSchema,
-  GraphListUsersResponseSchema,
-} from '../../../../src/modules/user_management/schemas/user.schemas';
+  GraphListResponseSchema,
+} from '../../../../src/modules/user_management/validation/user.schemas';
 
 describe('GetAllUsers response schemas (Zod)', () => {
   const validListItem = {
@@ -298,7 +298,7 @@ describe('GET /users/:id response schema (Zod)', () => {
     });
   });
 
-  describe('InternalLookupUserResponseSchema (GET /users/internal/:id)', () => {
+  describe('InternalLookupResponseSchema (GET /users/internal/:id)', () => {
     const internalUser = {
       _id: '69cfb0b9b4ebec89103cae94',
       orgId: '69cfb0b9b4ebec89103cae92',
@@ -313,12 +313,12 @@ describe('GET /users/:id response schema (Zod)', () => {
     };
 
     it('should accept internal lookup user payload', () => {
-      expect(InternalLookupUserResponseSchema.safeParse(internalUser).success).to.be.true;
+      expect(InternalLookupResponseSchema.safeParse(internalUser).success).to.be.true;
     });
 
     it('should reject when email is omitted', () => {
       const { email: _e, ...rest } = internalUser;
-      expect(InternalLookupUserResponseSchema.safeParse(rest).success).to.be.false;
+      expect(InternalLookupResponseSchema.safeParse(rest).success).to.be.false;
     });
   });
 
@@ -352,7 +352,7 @@ describe('GET /users/:id response schema (Zod)', () => {
 });
 
 describe('POST /users response schema (Zod)', () => {
-  describe('CreateUserResponseSchema', () => {
+  describe('CreateResponseSchema', () => {
     const createdUser = {
       orgId: '69cfb0b9b4ebec89103cae92',
       fullName: 'John Doe',
@@ -367,24 +367,24 @@ describe('POST /users response schema (Zod)', () => {
     };
 
     it('should accept the created-user payload shape', () => {
-      const result = CreateUserResponseSchema.safeParse(createdUser);
+      const result = CreateResponseSchema.safeParse(createdUser);
       expect(result.success).to.be.true;
     });
 
     it('should reject when fullName is missing', () => {
       const { fullName: _f, ...noName } = createdUser;
-      const result = CreateUserResponseSchema.safeParse(noName);
+      const result = CreateResponseSchema.safeParse(noName);
       expect(result.success).to.be.false;
     });
 
     it('should reject when email is missing', () => {
       const { email: _e, ...rest } = createdUser;
-      const result = CreateUserResponseSchema.safeParse(rest);
+      const result = CreateResponseSchema.safeParse(rest);
       expect(result.success).to.be.false;
     });
 
     it('should reject invalid email', () => {
-      const result = CreateUserResponseSchema.safeParse({
+      const result = CreateResponseSchema.safeParse({
         ...createdUser,
         email: 'not-an-email',
       });
@@ -407,47 +407,47 @@ describe('PATCH /users/:id name-field response schemas (Zod)', () => {
     __v: 0,
   };
 
-  it('UpdateUserFullNameResponseSchema accepts PATCH fullname body', () => {
-    expect(UpdateUserFullNameResponseSchema.safeParse(base).success).to.be.true;
+  it('UpdateFullNameResponseSchema accepts PATCH fullname body', () => {
+    expect(UpdateFullNameResponseSchema.safeParse(base).success).to.be.true;
   });
 
-  it('UpdateUserFirstNameResponseSchema accepts PATCH firstName body', () => {
+  it('UpdateFirstNameResponseSchema accepts PATCH firstName body', () => {
     const row = {
       ...base,
       updatedAt: '2026-04-03T19:18:32.765Z',
       firstName: 'John',
     };
-    expect(UpdateUserFirstNameResponseSchema.safeParse(row).success).to.be.true;
+    expect(UpdateFirstNameResponseSchema.safeParse(row).success).to.be.true;
   });
 
-  it('UpdateUserLastNameResponseSchema accepts PATCH lastName body', () => {
+  it('UpdateLastNameResponseSchema accepts PATCH lastName body', () => {
     const row = {
       ...base,
       updatedAt: '2026-04-03T19:18:59.816Z',
       lastName: 'Doe',
     };
-    expect(UpdateUserLastNameResponseSchema.safeParse(row).success).to.be.true;
+    expect(UpdateLastNameResponseSchema.safeParse(row).success).to.be.true;
   });
 
-  it('UpdateUserFirstNameResponseSchema rejects without firstName', () => {
-    expect(UpdateUserFirstNameResponseSchema.safeParse(base).success).to.be.false;
+  it('UpdateFirstNameResponseSchema rejects without firstName', () => {
+    expect(UpdateFirstNameResponseSchema.safeParse(base).success).to.be.false;
   });
 
-  it('UpdateUserLastNameResponseSchema rejects without lastName', () => {
-    expect(UpdateUserLastNameResponseSchema.safeParse(base).success).to.be.false;
+  it('UpdateLastNameResponseSchema rejects without lastName', () => {
+    expect(UpdateLastNameResponseSchema.safeParse(base).success).to.be.false;
   });
 
-  it('UpdateUserDesignationResponseSchema accepts PATCH designation response', () => {
+  it('UpdateDesignationResponseSchema accepts PATCH designation response', () => {
     const row = {
       ...base,
       email: 'jason@example.com',
       designation: 'ceo',
     };
-    expect(UpdateUserDesignationResponseSchema.safeParse(row).success).to.be.true;
+    expect(UpdateDesignationResponseSchema.safeParse(row).success).to.be.true;
   });
 
-  it('UpdateUserDesignationResponseSchema rejects without designation', () => {
-    expect(UpdateUserDesignationResponseSchema.safeParse(base).success).to.be.false;
+  it('UpdateDesignationResponseSchema rejects without designation', () => {
+    expect(UpdateDesignationResponseSchema.safeParse(base).success).to.be.false;
   });
 });
 
@@ -468,17 +468,17 @@ describe('PATCH/PUT/DELETE user response schemas (Zod)', () => {
     designation: 'Engineer',
   };
 
-  it('UpdateUserEmailResponseSchema accepts PATCH email response', () => {
-    expect(UpdateUserEmailResponseSchema.safeParse(patchEmailExample).success).to.be
+  it('UpdateEmailResponseSchema accepts PATCH email response', () => {
+    expect(UpdateEmailResponseSchema.safeParse(patchEmailExample).success).to.be
       .true;
   });
 
-  it('UpdateUserEmailResponseSchema accepts without designation', () => {
+  it('UpdateEmailResponseSchema accepts without designation', () => {
     const { designation: _d, ...noDesignation } = patchEmailExample;
-    expect(UpdateUserEmailResponseSchema.safeParse(noDesignation).success).to.be.true;
+    expect(UpdateEmailResponseSchema.safeParse(noDesignation).success).to.be.true;
   });
 
-  it('UpdateUserEmailResponseSchema accepts core only (no first/last/designation)', () => {
+  it('UpdateEmailResponseSchema accepts core only (no first/last/designation)', () => {
     const minimal = {
       _id: '69d00f68262b53565bba38f7',
       orgId: '69cfb0b9b4ebec89103cae92',
@@ -491,20 +491,20 @@ describe('PATCH/PUT/DELETE user response schemas (Zod)', () => {
       slug: 'user-4',
       __v: 0,
     };
-    expect(UpdateUserEmailResponseSchema.safeParse(minimal).success).to.be.true;
+    expect(UpdateEmailResponseSchema.safeParse(minimal).success).to.be.true;
   });
 
-  it('UpdateUserPutResponseSchema accepts PUT user + meta', () => {
+  it('UpdatePutResponseSchema accepts PUT user + meta', () => {
     const putExample = {
       ...patchEmailExample,
       hasLoggedIn: true,
       updatedAt: '2026-04-03T19:34:48.518Z',
       meta: { emailChangeMailStatus: 'notNeeded' as const },
     };
-    expect(UpdateUserPutResponseSchema.safeParse(putExample).success).to.be.true;
+    expect(UpdatePutResponseSchema.safeParse(putExample).success).to.be.true;
   });
 
-  it('UpdateUserPutResponseSchema accepts core + meta without profile fields', () => {
+  it('UpdatePutResponseSchema accepts core + meta without profile fields', () => {
     const minimal = {
       _id: '69d00f68262b53565bba38f7',
       orgId: '69cfb0b9b4ebec89103cae92',
@@ -518,52 +518,52 @@ describe('PATCH/PUT/DELETE user response schemas (Zod)', () => {
       __v: 0,
       meta: { emailChangeMailStatus: 'notNeeded' as const },
     };
-    expect(UpdateUserPutResponseSchema.safeParse(minimal).success).to.be.true;
+    expect(UpdatePutResponseSchema.safeParse(minimal).success).to.be.true;
   });
 
-  it('DeleteUserResponseSchema accepts delete message', () => {
+  it('DeleteResponseSchema accepts delete message', () => {
     expect(
-      DeleteUserResponseSchema.safeParse({
+      DeleteResponseSchema.safeParse({
         message: 'User deleted successfully',
       }).success,
     ).to.be.true;
   });
 
-  it('UserAdminCheckResponseSchema accepts admin check message', () => {
+  it('AdminCheckResponseSchema accepts admin check message', () => {
     expect(
-      UserAdminCheckResponseSchema.safeParse({
+      AdminCheckResponseSchema.safeParse({
         message: 'User has admin access',
       }).success,
     ).to.be.true;
   });
 
-  it('DeleteUserResponseSchema rejects empty message', () => {
-    expect(DeleteUserResponseSchema.safeParse({ message: '' }).success).to.be.false;
+  it('DeleteResponseSchema rejects empty message', () => {
+    expect(DeleteResponseSchema.safeParse({ message: '' }).success).to.be.false;
   });
 
-  it('UserAdminCheckResponseSchema rejects empty message', () => {
-    expect(UserAdminCheckResponseSchema.safeParse({ message: '' }).success).to.be
+  it('AdminCheckResponseSchema rejects empty message', () => {
+    expect(AdminCheckResponseSchema.safeParse({ message: '' }).success).to.be
       .false;
   });
 });
 
 describe('User display picture JSON response schemas (GET/DELETE /users/dp)', () => {
-  it('UserDisplayPictureErrorResponseSchema accepts error payload', () => {
+  it('DisplayPictureErrorResponseSchema accepts error payload', () => {
     expect(
-      UserDisplayPictureErrorResponseSchema.safeParse({
+      DisplayPictureErrorResponseSchema.safeParse({
         errorMessage: 'User pic not found',
       }).success,
     ).to.be.true;
   });
 
-  it('UserDisplayPictureErrorResponseSchema rejects empty errorMessage', () => {
-    expect(UserDisplayPictureErrorResponseSchema.safeParse({ errorMessage: '' }).success).to.be
+  it('DisplayPictureErrorResponseSchema rejects empty errorMessage', () => {
+    expect(DisplayPictureErrorResponseSchema.safeParse({ errorMessage: '' }).success).to.be
       .false;
   });
 
-  it('RemoveUserDisplayPictureResponseSchema accepts cleared document', () => {
+  it('RemoveDisplayPictureResponseSchema accepts cleared document', () => {
     expect(
-      RemoveUserDisplayPictureResponseSchema.safeParse({
+      RemoveDisplayPictureResponseSchema.safeParse({
         _id: '507f1f77bcf86cd799439011',
         userId: '507f1f77bcf86cd799439011',
         orgId: '507f1f77bcf86cd799439012',
@@ -574,9 +574,9 @@ describe('User display picture JSON response schemas (GET/DELETE /users/dp)', ()
     ).to.be.true;
   });
 
-  it('RemoveUserDisplayPictureResponseSchema rejects non-null pic', () => {
+  it('RemoveDisplayPictureResponseSchema rejects non-null pic', () => {
     expect(
-      RemoveUserDisplayPictureResponseSchema.safeParse({
+      RemoveDisplayPictureResponseSchema.safeParse({
         _id: '507f1f77bcf86cd799439011',
         userId: '507f1f77bcf86cd799439011',
         orgId: '507f1f77bcf86cd799439012',
@@ -588,9 +588,9 @@ describe('User display picture JSON response schemas (GET/DELETE /users/dp)', ()
   });
 });
 
-describe('UsersHealthResponseSchema', () => {
+describe('HealthResponseSchema', () => {
   it('should accept health payload', () => {
-    const result = UsersHealthResponseSchema.safeParse({
+    const result = HealthResponseSchema.safeParse({
       status: 'healthy',
       timestamp: '2026-04-01T12:00:00.000Z',
     });
@@ -598,7 +598,7 @@ describe('UsersHealthResponseSchema', () => {
   });
 
   it('should reject non-healthy status', () => {
-    const result = UsersHealthResponseSchema.safeParse({
+    const result = HealthResponseSchema.safeParse({
       status: 'degraded',
       timestamp: '2026-04-01T12:00:00.000Z',
     });
@@ -606,9 +606,9 @@ describe('UsersHealthResponseSchema', () => {
   });
 });
 
-describe('InternalAdminUsersResponseSchema (GET /users/internal/admin-users)', () => {
+describe('InternalAdminResponseSchema (GET /users/internal/admin-users)', () => {
   it('should accept admin user id list', () => {
-    const result = InternalAdminUsersResponseSchema.safeParse({
+    const result = InternalAdminResponseSchema.safeParse({
       adminUserIds: [
         '69cfb0b9b4ebec89103cae94',
         '69d0b62aa9ae4aae8766f756',
@@ -619,17 +619,17 @@ describe('InternalAdminUsersResponseSchema (GET /users/internal/admin-users)', (
   });
 
   it('should accept empty adminUserIds', () => {
-    expect(InternalAdminUsersResponseSchema.safeParse({ adminUserIds: [] }).success).to.be
+    expect(InternalAdminResponseSchema.safeParse({ adminUserIds: [] }).success).to.be
       .true;
   });
 
   it('should reject when adminUserIds is missing', () => {
-    expect(InternalAdminUsersResponseSchema.safeParse({}).success).to.be.false;
+    expect(InternalAdminResponseSchema.safeParse({}).success).to.be.false;
   });
 
   it('should reject empty string id', () => {
     expect(
-      InternalAdminUsersResponseSchema.safeParse({
+      InternalAdminResponseSchema.safeParse({
         adminUserIds: ['69cfb0b9b4ebec89103cae94', ''],
       }).success,
     ).to.be.false;
@@ -637,14 +637,14 @@ describe('InternalAdminUsersResponseSchema (GET /users/internal/admin-users)', (
 
   it('should reject id that is not 24 hex chars', () => {
     expect(
-      InternalAdminUsersResponseSchema.safeParse({
+      InternalAdminResponseSchema.safeParse({
         adminUserIds: ['69cfb0b9b4ebec89103cae94', 'short'],
       }).success,
     ).to.be.false;
   });
 });
 
-describe('GraphListUsersResponseSchema (GET /users/graph/list)', () => {
+describe('GraphListResponseSchema (GET /users/graph/list)', () => {
   const validPayload = {
     status: 'success' as const,
     message: 'Users fetched successfully',
@@ -670,18 +670,18 @@ describe('GraphListUsersResponseSchema (GET /users/graph/list)', () => {
   };
 
   it('should accept full connector payload', () => {
-    expect(GraphListUsersResponseSchema.safeParse(validPayload).success).to.be.true;
+    expect(GraphListResponseSchema.safeParse(validPayload).success).to.be.true;
   });
 
   it('should reject empty message', () => {
     expect(
-      GraphListUsersResponseSchema.safeParse({ ...validPayload, message: '' }).success,
+      GraphListResponseSchema.safeParse({ ...validPayload, message: '' }).success,
     ).to.be.false;
   });
 
   it('should reject wrong status', () => {
     expect(
-      GraphListUsersResponseSchema.safeParse({
+      GraphListResponseSchema.safeParse({
         ...validPayload,
         status: 'error',
       }).success,
@@ -689,7 +689,7 @@ describe('GraphListUsersResponseSchema (GET /users/graph/list)', () => {
   });
 
   it('should strip unknown keys on user items (default object behavior)', () => {
-    const result = GraphListUsersResponseSchema.safeParse({
+    const result = GraphListResponseSchema.safeParse({
       ...validPayload,
       users: [
         {
@@ -780,9 +780,9 @@ describe('POST /users/bulk/invite and invite response schemas (Zod)', () => {
 });
 
 describe('GET /users/:id/email schemas (Zod)', () => {
-  describe('GetUserEmailByUserIdValidationSchema', () => {
+  describe('GetEmailByIdValidationSchema', () => {
     it('should accept a valid MongoDB id param', () => {
-      const result = GetUserEmailByUserIdValidationSchema.safeParse({
+      const result = GetEmailByIdValidationSchema.safeParse({
         body: {},
         query: {},
         params: { id: '69cfb0b9b4ebec89103cae94' },
@@ -792,7 +792,7 @@ describe('GET /users/:id/email schemas (Zod)', () => {
     });
 
     it('should reject an invalid id param', () => {
-      const result = GetUserEmailByUserIdValidationSchema.safeParse({
+      const result = GetEmailByIdValidationSchema.safeParse({
         body: {},
         query: {},
         params: { id: 'not-an-objectid' },
@@ -802,23 +802,23 @@ describe('GET /users/:id/email schemas (Zod)', () => {
     });
   });
 
-  describe('GetUserEmailByUserIdResponseSchema', () => {
+  describe('GetEmailByIdResponseSchema', () => {
     it('should accept a valid email payload', () => {
-      const result = GetUserEmailByUserIdResponseSchema.safeParse({
+      const result = GetEmailByIdResponseSchema.safeParse({
         email: 'user@example.com',
       });
       expect(result.success).to.be.true;
     });
 
     it('should reject an invalid email', () => {
-      const result = GetUserEmailByUserIdResponseSchema.safeParse({
+      const result = GetEmailByIdResponseSchema.safeParse({
         email: 'not-an-email',
       });
       expect(result.success).to.be.false;
     });
 
     it('should reject missing email', () => {
-      const result = GetUserEmailByUserIdResponseSchema.safeParse({});
+      const result = GetEmailByIdResponseSchema.safeParse({});
       expect(result.success).to.be.false;
     });
   });

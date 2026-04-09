@@ -1,18 +1,18 @@
 import { z } from "zod";
 
-export const UserGroupIdUrlParams = z.object({
+export const IdUrlParams = z.object({
     groupId: z.string().min(1, "Group ID is required")
       .regex(/^[0-9a-fA-F]{24}$/, "Invalid group ID format")
   });
   
-export const UserGroupIdValidationSchema = z.object({
+export const IdValidationSchema = z.object({
   body: z.object({}),
   query: z.object({}),
-  params: UserGroupIdUrlParams,
+  params: IdUrlParams,
   headers: z.object({}),
 });
 
-export const groupValidationSchema = z.object({
+export const GroupValidationSchema = z.object({
   body: z.object({
       type: z.string().min(1, 'type is required'),
       name: z.string().min(1, 'name is required'),
@@ -27,7 +27,7 @@ const userGroupTypeEnum = z.enum(['admin', 'standard', 'everyone', 'custom']);
 /**
  * Serialized user group document for POST create (201).
  */
-export const CreateUserGroupResponseSchema = z
+export const CreateResponseSchema = z
   .object({
     name: z.string(),
     type: userGroupTypeEnum,
@@ -43,12 +43,10 @@ export const CreateUserGroupResponseSchema = z
   })
 
 /** GET /user-groups — array of group documents (same shape as create response per item). */
-export const GetAllUserGroupsResponseSchema = z.array(
-  CreateUserGroupResponseSchema,
-);
+export const GetAllResponseSchema = z.array(CreateResponseSchema);
 
 /** GET/PUT/DELETE /user-groups/:groupId — single group document (same shape as create). */
-export const UserGroupDocumentResponseSchema = CreateUserGroupResponseSchema;
+export const DocumentResponseSchema = CreateResponseSchema;
 
 export const mongoObjectIdString = z
   .string()
@@ -103,7 +101,7 @@ export const RemoveUsersFromGroupsResponseSchema = z.object({
 });
 
 /** GET /user-groups/stats/list — aggregate by group name. */
-const groupStatisticsRowSchema = z
+const StatisticsRowSchema = z
   .object({
     _id: z.string(),
     count: z.number(),
@@ -111,4 +109,4 @@ const groupStatisticsRowSchema = z
     avgUsers: z.number(),
   })
 
-export const GetGroupStatisticsResponseSchema = z.array(groupStatisticsRowSchema);
+export const GetStatisticsResponseSchema = z.array(StatisticsRowSchema);

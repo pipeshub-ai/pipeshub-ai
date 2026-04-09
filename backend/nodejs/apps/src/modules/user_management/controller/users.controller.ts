@@ -41,27 +41,27 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import {
-  CreateUserResponseSchema,
-  DeleteUserResponseSchema,
-  UnblockUserResponseSchema,
+  CreateResponseSchema,
+  DeleteResponseSchema,
+  UnblockResponseSchema,
   GetAllUsersBlockedResponseSchema,
   GetAllUsersResponseSchema,
   GetAllUsersWithGroupsResponseSchema,
   GetUserByIdResponseSchema,
   CheckUserExistsByEmailResponseSchema,
-  GetUserEmailByUserIdResponseSchema,
-  UpdateUserEmailResponseSchema,
-  UpdateUserFirstNameResponseSchema,
-  UpdateUserFullNameResponseSchema,
-  UpdateUserLastNameResponseSchema,
-  UpdateUserDesignationResponseSchema,
-  UpdateUserPutResponseSchema,
+  GetEmailByIdResponseSchema,
+  UpdateEmailResponseSchema,
+  UpdateFirstNameResponseSchema,
+  UpdateFullNameResponseSchema,
+  UpdateLastNameResponseSchema,
+  UpdateDesignationResponseSchema,
+  UpdatePutResponseSchema,
   BulkInviteResponseSchema,
   InviteSentResponseSchema,
-  GraphListUsersResponseSchema,
-  UserDisplayPictureErrorResponseSchema,
-  RemoveUserDisplayPictureResponseSchema,
-} from '../schemas/user.schemas';
+  GraphListResponseSchema,
+  DisplayPictureErrorResponseSchema,
+  RemoveDisplayPictureResponseSchema,
+} from '../validation/user.schemas';
 
 @injectable()
 export class UserController {
@@ -286,7 +286,7 @@ export class UserController {
 
       sendValidatedJson(
         res,
-        UnblockUserResponseSchema,
+        UnblockResponseSchema,
         { message: 'User unblocked successfully' },
         HTTP_STATUS.OK,
       );
@@ -321,7 +321,7 @@ export class UserController {
 
       sendValidatedJson(
         res,
-        GetUserEmailByUserIdResponseSchema,
+        GetEmailByIdResponseSchema,
         { email: user.email },
         HTTP_STATUS.OK,
       );
@@ -392,7 +392,7 @@ export class UserController {
       const payload = newUser.toJSON() as unknown;
       sendValidatedJson(
         res,
-        CreateUserResponseSchema,
+        CreateResponseSchema,
         payload,
         HTTP_STATUS.CREATED,
       );
@@ -734,7 +734,7 @@ export class UserController {
       } as unknown;
       sendValidatedJson(
         res,
-        UpdateUserPutResponseSchema,
+        UpdatePutResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );
@@ -786,7 +786,7 @@ export class UserController {
       const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
-        UpdateUserFullNameResponseSchema,
+        UpdateFullNameResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );
@@ -839,7 +839,7 @@ export class UserController {
       const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
-        UpdateUserFirstNameResponseSchema,
+        UpdateFirstNameResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );
@@ -892,7 +892,7 @@ export class UserController {
       const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
-        UpdateUserLastNameResponseSchema,
+        UpdateLastNameResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );
@@ -945,7 +945,7 @@ export class UserController {
       const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
-        UpdateUserDesignationResponseSchema,
+        UpdateDesignationResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );
@@ -998,7 +998,7 @@ export class UserController {
       const payload = user.toJSON() as unknown;
       sendValidatedJson(
         res,
-        UpdateUserEmailResponseSchema,
+        UpdateEmailResponseSchema,
         payload,
         HTTP_STATUS.OK,
       );
@@ -1078,7 +1078,7 @@ export class UserController {
 
       sendValidatedJson(
         res,
-        DeleteUserResponseSchema,
+        DeleteResponseSchema,
         { message: 'User deleted successfully' },
         HTTP_STATUS.OK,
       );
@@ -1153,7 +1153,7 @@ export class UserController {
       if (!userDp || !userDp.pic) {
         sendValidatedJson(
           res,
-          UserDisplayPictureErrorResponseSchema,
+          DisplayPictureErrorResponseSchema,
           { errorMessage: 'User pic not found' },
           HTTP_STATUS.OK,
         );
@@ -1188,7 +1188,7 @@ export class UserController {
       if (!userDp) {
         sendValidatedJson(
           res,
-          UserDisplayPictureErrorResponseSchema,
+          DisplayPictureErrorResponseSchema,
           { errorMessage: 'User display picture not found' },
           HTTP_STATUS.OK,
         );
@@ -1203,7 +1203,7 @@ export class UserController {
       const removedPayload = userDp.toJSON() as unknown;
       sendValidatedJson(
         res,
-        RemoveUserDisplayPictureResponseSchema,
+        RemoveDisplayPictureResponseSchema,
         removedPayload,
         HTTP_STATUS.OK,
       );
@@ -1678,7 +1678,7 @@ export class UserController {
       const users = aiResponse.data;
       sendValidatedJson(
         res,
-        GraphListUsersResponseSchema,
+        GraphListResponseSchema,
         users,
         HTTP_STATUS.OK,
       );

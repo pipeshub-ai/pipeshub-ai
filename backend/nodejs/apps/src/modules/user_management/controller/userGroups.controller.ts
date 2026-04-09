@@ -11,14 +11,14 @@ import { groupTypes, UserGroups } from '../schema/userGroup.schema';
 import { sendValidatedJson } from '../../../utils/response-validator';
 import {
   AddUsersToGroupsResponseSchema,
-  CreateUserGroupResponseSchema,
-  GetAllUserGroupsResponseSchema,
-  GetGroupStatisticsResponseSchema,
+  CreateResponseSchema,
+  DocumentResponseSchema,
+  GetAllResponseSchema,
   GetGroupsForUserResponseSchema,
+  GetStatisticsResponseSchema,
   GetUsersInGroupResponseSchema,
   RemoveUsersFromGroupsResponseSchema,
-  UserGroupDocumentResponseSchema,
-} from '../schemas/userGroup.schemas';
+} from '../validation/userGroup.schemas';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 
 @injectable()
@@ -65,7 +65,7 @@ export class UserGroupController {
 
     sendValidatedJson(
       res,
-      CreateUserGroupResponseSchema,
+      CreateResponseSchema,
       group.toJSON(),
       HTTP_STATUS.CREATED,
     );
@@ -86,7 +86,7 @@ export class UserGroupController {
 
     sendValidatedJson(
       res,
-      GetAllUserGroupsResponseSchema,
+      GetAllResponseSchema,
       groups,
       HTTP_STATUS.OK,
     );
@@ -112,7 +112,7 @@ export class UserGroupController {
 
     sendValidatedJson(
       res,
-      UserGroupDocumentResponseSchema,
+      DocumentResponseSchema,
       userGroup,
       HTTP_STATUS.OK,
     );
@@ -150,7 +150,7 @@ export class UserGroupController {
 
     sendValidatedJson(
       res,
-      UserGroupDocumentResponseSchema,
+      DocumentResponseSchema,
       group.toJSON(),
       HTTP_STATUS.OK,
     );
@@ -185,7 +185,7 @@ export class UserGroupController {
 
     sendValidatedJson(
       res,
-      UserGroupDocumentResponseSchema,
+      DocumentResponseSchema,
       group.toJSON(),
       HTTP_STATUS.OK,
     );
@@ -329,7 +329,7 @@ export class UserGroupController {
 
     sendValidatedJson(
       res,
-      GetGroupStatisticsResponseSchema,
+      GetStatisticsResponseSchema,
       stats,
       HTTP_STATUS.OK,
     );
