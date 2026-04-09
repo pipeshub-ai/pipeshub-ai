@@ -31,6 +31,12 @@ import {
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
 import { Org } from '../../user_management/schema/org.schema';
+import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
+import {
+  SamlSignInCallbackValidationSchema,
+  SamlSignInValidationSchema,
+  SamlUpdateAppConfigValidationSchema,
+} from '../validation/saml-validation';
 
 export const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
@@ -68,6 +74,7 @@ export function createSamlRouter(container: Container) {
 
   router.get(
     '/signIn',
+    ValidationMiddleware.validate(SamlSignInValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await samlController.signInViaSAML(req, res, next);
@@ -85,6 +92,7 @@ export function createSamlRouter(container: Container) {
 
   router.post(
     "/signIn/callback",
+    ValidationMiddleware.validate(SamlSignInCallbackValidationSchema),
     passport.authenticate("saml", { failureRedirect: "/" }),
     async (req: AuthSessionRequest, res: Response, next: NextFunction): Promise<void> => {
       try {
@@ -190,6 +198,7 @@ export function createSamlRouter(container: Container) {
   router.post(
     '/updateAppConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    ValidationMiddleware.validate(SamlUpdateAppConfigValidationSchema),
     async (
       _req: AuthenticatedServiceRequest,
       res: Response,

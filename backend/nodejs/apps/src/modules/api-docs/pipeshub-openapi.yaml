@@ -6663,7 +6663,7 @@ paths:
         The user's browser should be redirected to this URL.
         <br><br>
         <b>Prerequisites:</b><br>
-        - Organization must have SAML SSO configured via <code>/saml/updateAppConfig</code><br>
+        - Organization must have SAML SSO configured<br>
         - User must belong to an organization with SAML enabled
       operationId: signInViaSAML
       security: []
@@ -6770,47 +6770,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
-
-  /saml/updateAppConfig:
-    post:
-      tags:
-        - SAML
-      summary: Reload SAML application configuration (Internal)
-      description: |
-        Internal endpoint to reload SAML configuration from the configuration manager.
-        This is called by other services when SAML settings are updated.<br><br>
-        <b>Purpose:</b><br>
-        When SAML configuration is updated in the Configuration Manager, this endpoint
-        is called to reload the settings into the authentication service without restart.<br><br>
-        <b>Effects:</b><br>
-        <ul>
-        <li>Reloads AppConfig from configuration files</li>
-        <li>Rebinds authentication controllers with new config</li>
-        <li>Updates SAML passport strategy settings</li>
-        </ul>
-        <b>Note:</b> This is an internal service-to-service endpoint.
-      operationId: updateSamlAppConfig
-      security:
-        - scopedToken: []
-      responses:
-        '200':
-          description: Configuration reloaded successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-        '400':
-          description: Invalid SAML response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
 
   /users:
     get:

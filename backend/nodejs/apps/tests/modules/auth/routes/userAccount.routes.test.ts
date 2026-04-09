@@ -298,6 +298,18 @@ describe('createUserAccountRouter', () => {
       // scopedTokenValidator + handler
       expect(checkRoute.route.stack.length).to.be.greaterThanOrEqual(2);
     });
+
+    it('should have validation middleware on oauth/exchange route', () => {
+      const router = createUserAccountRouter(container);
+      const routes = router.stack.filter((layer: any) => layer.route);
+
+      const oauthExchangeRoute = routes.find(
+        (layer: any) => layer.route.path === '/oauth/exchange' && layer.route.methods.post,
+      );
+      expect(oauthExchangeRoute).to.not.be.undefined;
+      // validation + handler
+      expect(oauthExchangeRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+    });
   });
 
   describe('route handler invocations', () => {
