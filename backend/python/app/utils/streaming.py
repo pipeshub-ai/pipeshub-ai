@@ -72,9 +72,6 @@ TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 
-
-
-
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
 ) -> str:
@@ -141,12 +138,10 @@ def _get_schema_for_parsing(is_agent: bool = False) -> type[AgentAnswerWithMetad
         return AgentAnswerWithMetadataJSON
     return AnswerWithMetadataJSON
 
-
 def get_parser(schema: type[BaseModel] = AnswerWithMetadataJSON) -> tuple[PydanticOutputParser, str]:
     parser = PydanticOutputParser(pydantic_object=schema)
     format_instructions = parser.get_format_instructions()
     return parser, format_instructions
-
 
 async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
@@ -744,7 +739,6 @@ async def execute_tool_calls(
             len(tool_msgs),
         )
         messages.extend(tool_msgs)
-
         hops += 1
 
 
@@ -1743,7 +1737,11 @@ async def call_aiter_llm_stream(
 
                         current_raw = state.answer_buf[:char_end]
                 
-
+                        incomplete_match = incomplete_cite_re.search(current_raw)
+                        if incomplete_match:
+                            state.words_in_chunk = target_words_per_chunk - 1
+                            break
+                        
                         state.emit_upto = char_end
                         state.words_in_chunk = 0
 

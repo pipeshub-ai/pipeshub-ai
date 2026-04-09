@@ -1502,14 +1502,19 @@ function rewriteInlineRecordCitationsForSlack(
       continue;
     }
 
-    const citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    if (!citationWebUrl || !citationWebUrl.includes("#:~:text=")) {
+    let citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    const recordType = citation.citationData.metadata.recordType;
+    if (recordType === "FILE") {
+      citationWebUrl = (process.env.FRONTEND_PUBLIC_URL || "http://localhost:3000") + "/record/" + citation.citationData.metadata.recordId;
+    }
+    if (!citationWebUrl) {
       continue;
     }
 
     citationNumberToFragmentWebUrl.set(citationNumber, citationWebUrl);
   }
   let citationCount = 1;
+  let webUrlToCitationNumber = new Map<string, number>();
   
   return answerBody.replace(
     INLINE_RECORD_CITATION_LINK_PATTERN,
@@ -1519,9 +1524,17 @@ function rewriteInlineRecordCitationsForSlack(
         return "";
       }
       const citationWebUrl = citationNumberToFragmentWebUrl.get(citationNumber);
-      let res = citationWebUrl ? `[<${citationWebUrl}|${citationCount}>]` : "";
-      if (res) {
-        citationCount++;
+      let res = "";
+      if (citationWebUrl) {
+        let citationNumber = citationCount;
+        if (webUrlToCitationNumber.has(citationWebUrl)) {
+          citationNumber = webUrlToCitationNumber.get(citationWebUrl)!;
+        }
+        else {
+          webUrlToCitationNumber.set(citationWebUrl, citationCount);
+          citationCount++;
+        }
+        res = `[${citationNumber}](${citationWebUrl})`;
       }
       return res;
     },
@@ -1655,6 +1668,12 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
     res.status(200).send();
   }
 });
+
+export function removeContinuousDuplicateMarkdownLinks(text: string): string {
+  const linkPattern = /(\[[^\]]+\]\([^)]+\))(?:\s*\1)+/g;
+
+  return text.replace(linkPattern, "$1" + " ");
+}
 
 
 async function processSlackMessage(
@@ -2208,10 +2227,11 @@ async function processSlackMessage(
 
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
-    const answerBody = rewriteInlineRecordCitationsForSlack(
+    let answerBody = rewriteInlineRecordCitationsForSlack(
       botResponse.content || "",
       botResponse.citations,
     );
+    answerBody = removeContinuousDuplicateMarkdownLinks(answerBody);
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
