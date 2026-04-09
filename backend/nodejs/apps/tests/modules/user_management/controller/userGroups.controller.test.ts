@@ -5,7 +5,6 @@ import mongoose from 'mongoose';
 import { UserGroupController } from '../../../../src/modules/user_management/controller/userGroups.controller';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
-
 describe('UserGroupController', () => {
   let controller: UserGroupController;
   let req: any;
@@ -34,20 +33,6 @@ describe('UserGroupController', () => {
     sinon.restore();
   });
 
-  describe('getAllUsers', () => {
-    it('should return all non-deleted users in the org', async () => {
-      const mockUsers = [
-        { _id: 'u1', fullName: 'User One', orgId },
-        { _id: 'u2', fullName: 'User Two', orgId },
-      ];
-
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
-
-      await controller.getAllUsers(req, res);
-
-      expect(res.json.calledWith(mockUsers)).to.be.true;
-    });
-  });
 
   describe('createUserGroup', () => {
     it('should create a user group successfully', async () => {
@@ -55,12 +40,22 @@ describe('UserGroupController', () => {
 
       sinon.stub(UserGroups, 'findOne').resolves(null);
 
-      const mockSavedGroup = {
-        _id: 'g1',
+      const mockSavedGroupPlain = {
+        _id: '69cd17ffbea35d8fcaed7701',
         name: 'Engineering',
-        type: 'custom',
+        type: 'custom' as const,
         orgId,
-        users: [],
+        users: [] as string[],
+        isDeleted: false,
+        createdAt: '2026-04-01T13:05:03.062Z',
+        updatedAt: '2026-04-01T13:05:03.062Z',
+        slug: 'usergroup-1',
+        __v: 0,
+      };
+
+      const mockSavedGroup = {
+        ...mockSavedGroupPlain,
+        toJSON: () => mockSavedGroupPlain,
       };
 
       sinon.stub(UserGroups.prototype, 'save').resolves(mockSavedGroup);
@@ -68,6 +63,29 @@ describe('UserGroupController', () => {
       await controller.createUserGroup(req, res);
 
       expect(res.status.calledWith(201)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal(mockSavedGroupPlain);
+    });
+
+    it('should log and continue when saved document fails response schema', async () => {
+      req.body = { name: 'Bad', type: 'custom' };
+
+      sinon.stub(UserGroups, 'findOne').resolves(null);
+
+      const badPlain = {
+        _id: '69cd17ffbea35d8fcaed7701',
+        name: 'Bad',
+        type: 'custom',
+        orgId,
+        users: [],
+      };
+      sinon.stub(UserGroups.prototype, 'save').resolves({
+        ...badPlain,
+        toJSON: () => badPlain,
+      } as any);
+
+      await controller.createUserGroup(req, res);
+      expect(res.json.called).to.be.true;
     });
 
     it('should throw BadRequestError when name is missing', async () => {
@@ -144,8 +162,34 @@ describe('UserGroupController', () => {
   describe('getAllUserGroups', () => {
     it('should return all non-deleted groups for the org', async () => {
       const mockGroups = [
-        { _id: 'g1', name: 'admin', type: 'admin' },
-        { _id: 'g2', name: 'everyone', type: 'everyone' },
+        {
+          _id: '69cd0daf863a6899015af274',
+          name: 'admin',
+          type: 'admin',
+          orgId,
+          users: ['69cd0daf863a6899015af272'],
+          isDeleted: false,
+          createdAt: '2026-04-01T12:21:03.665Z',
+          updatedAt: '2026-04-01T12:21:03.665Z',
+          slug: 'usergroup-1',
+          __v: 0,
+        },
+        {
+          _id: '69cd0daf863a6899015af275',
+          name: 'everyone',
+          type: 'everyone',
+          orgId,
+          users: [
+            '69cd0daf863a6899015af272',
+            '69cd0e4a863a6899015af331',
+            '69cd0ee6a9a42375da641267',
+          ],
+          isDeleted: false,
+          createdAt: '2026-04-01T12:21:03.676Z',
+          updatedAt: '2026-04-01T12:26:14.444Z',
+          slug: 'usergroup-2',
+          __v: 0,
+        },
       ];
 
       sinon.stub(UserGroups, 'find').returns({
@@ -157,14 +201,39 @@ describe('UserGroupController', () => {
       await controller.getAllUserGroups(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockGroups)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal(mockGroups);
+    });
+
+    it('should log and continue when list fails response schema', async () => {
+      const badGroups = [{ _id: 'x', name: 'incomplete' }];
+
+      sinon.stub(UserGroups, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(badGroups),
+        }),
+      } as any);
+
+      await controller.getAllUserGroups(req, res);
+      expect(res.json.called).to.be.true;
     });
   });
 
   describe('getUserGroupById', () => {
     it('should return a group by id', async () => {
-      req.params.groupId = 'g1';
-      const mockGroup = { _id: 'g1', name: 'admin', type: 'admin', orgId };
+      req.params.groupId = '69cd0daf863a6899015af274';
+      const mockGroup = {
+        _id: '69cd0daf863a6899015af274',
+        name: 'admin',
+        type: 'admin',
+        orgId,
+        users: ['69cd0daf863a6899015af272'],
+        isDeleted: false,
+        createdAt: '2026-04-01T12:21:03.665Z',
+        updatedAt: '2026-04-01T12:21:03.665Z',
+        slug: 'usergroup-1',
+        __v: 0,
+      };
 
       sinon.stub(UserGroups, 'findOne').returns({
         lean: sinon.stub().returns({
@@ -174,7 +243,22 @@ describe('UserGroupController', () => {
 
       await controller.getUserGroupById(req, res);
 
-      expect(res.json.calledWith(mockGroup)).to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal(mockGroup);
+    });
+
+    it('should log and continue when group document fails response schema', async () => {
+      req.params.groupId = '69cd0daf863a6899015af274';
+
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({ _id: 'x', name: 'bad' }),
+        }),
+      } as any);
+
+      await controller.getUserGroupById(req, res);
+      expect(res.json.called).to.be.true;
     });
 
     it('should throw NotFoundError when group not found', async () => {
@@ -197,16 +281,35 @@ describe('UserGroupController', () => {
 
   describe('updateGroup', () => {
     it('should update group name', async () => {
-      req.params.id = 'g1';
+      req.params.id = '507f1f77bcf86cd799439011';
       req.body = { name: 'New Name' };
 
       const mockGroup = {
-        _id: 'g1',
+        _id: '507f1f77bcf86cd799439011',
         name: 'Old Name',
         type: 'custom',
         orgId,
+        users: [],
         isDeleted: false,
+        createdAt: '2026-04-01T12:21:03.665Z',
+        updatedAt: '2026-04-01T12:21:03.665Z',
+        slug: 'usergroup-custom',
+        __v: 0,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+            users: this.users,
+            isDeleted: this.isDeleted,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            slug: this.slug,
+            __v: this.__v,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').resolves(mockGroup as any);
@@ -216,6 +319,44 @@ describe('UserGroupController', () => {
       expect(mockGroup.name).to.equal('New Name');
       expect(mockGroup.save.calledOnce).to.be.true;
       expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        _id: '507f1f77bcf86cd799439011',
+        name: 'New Name',
+        type: 'custom',
+        orgId,
+        users: [],
+        isDeleted: false,
+        createdAt: '2026-04-01T12:21:03.665Z',
+        updatedAt: '2026-04-01T12:21:03.665Z',
+        slug: 'usergroup-custom',
+        __v: 0,
+      });
+    });
+
+    it('should log and continue when updated document fails response schema', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { name: 'New Name' };
+
+      const mockGroup = {
+        _id: '507f1f77bcf86cd799439011',
+        name: 'Old Name',
+        type: 'custom',
+        orgId,
+        save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+          };
+        },
+      };
+
+      sinon.stub(UserGroups, 'findOne').resolves(mockGroup as any);
+
+      await controller.updateGroup(req, res);
+      expect(res.json.called).to.be.true;
     });
 
     it('should throw BadRequestError when name is missing', async () => {
@@ -281,13 +422,35 @@ describe('UserGroupController', () => {
 
   describe('deleteGroup', () => {
     it('should delete a custom group', async () => {
-      req.params.groupId = 'g1';
+      req.params.groupId = '507f1f77bcf86cd799439011';
 
       const mockGroup = {
-        _id: 'g1',
+        _id: '507f1f77bcf86cd799439011',
+        name: 'Custom',
         type: 'custom',
+        orgId,
+        users: [],
         isDeleted: false,
+        createdAt: '2026-04-01T12:21:03.665Z',
+        updatedAt: '2026-04-01T12:21:03.665Z',
+        slug: 'usergroup-custom',
+        __v: 0,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+            users: this.users,
+            isDeleted: this.isDeleted,
+            deletedBy: this.deletedBy,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            slug: this.slug,
+            __v: this.__v,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').returns({
@@ -299,6 +462,19 @@ describe('UserGroupController', () => {
       expect(mockGroup.isDeleted).to.be.true;
       expect(mockGroup.save.calledOnce).to.be.true;
       expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        _id: '507f1f77bcf86cd799439011',
+        name: 'Custom',
+        type: 'custom',
+        orgId,
+        users: [],
+        isDeleted: true,
+        createdAt: '2026-04-01T12:21:03.665Z',
+        updatedAt: '2026-04-01T12:21:03.665Z',
+        slug: 'usergroup-custom',
+        __v: 0,
+        deletedBy: req.user.userId,
+      });
     });
 
     it('should throw NotFoundError when group not found', async () => {
@@ -335,14 +511,36 @@ describe('UserGroupController', () => {
     });
 
     it('should set deletedBy to current user', async () => {
-      req.params.groupId = 'g1';
+      req.params.groupId = '507f1f77bcf86cd799439011';
 
       const mockGroup = {
-        _id: 'g1',
+        _id: '507f1f77bcf86cd799439011',
+        name: 'Custom',
         type: 'custom',
+        orgId,
+        users: [],
         isDeleted: false,
         deletedBy: undefined as string | undefined,
+        createdAt: '2026-04-01T12:21:03.665Z',
+        updatedAt: '2026-04-01T12:21:03.665Z',
+        slug: 'usergroup-custom',
+        __v: 0,
         save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            name: this.name,
+            type: this.type,
+            orgId: this.orgId,
+            users: this.users,
+            isDeleted: this.isDeleted,
+            deletedBy: this.deletedBy,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            slug: this.slug,
+            __v: this.__v,
+          };
+        },
       };
 
       sinon.stub(UserGroups, 'findOne').returns({
@@ -353,13 +551,43 @@ describe('UserGroupController', () => {
 
       expect(mockGroup.deletedBy).to.equal(req.user.userId);
     });
+
+    it('should log and continue when deleted document fails response schema', async () => {
+      req.params.groupId = '507f1f77bcf86cd799439011';
+
+      const mockGroup = {
+        _id: '507f1f77bcf86cd799439011',
+        type: 'custom',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+        toJSON(this: typeof mockGroup) {
+          return {
+            _id: this._id,
+            type: this.type,
+            isDeleted: this.isDeleted,
+          };
+        },
+      };
+
+      sinon.stub(UserGroups, 'findOne').returns({
+        exec: sinon.stub().resolves(mockGroup),
+      } as any);
+
+      await controller.deleteGroup(req, res);
+      expect(res.json.called).to.be.true;
+    });
   });
 
   describe('addUsersToGroups', () => {
+    const uid1 = '69cd0daf863a6899015af272';
+    const uid2 = '69cd0e4a863a6899015af331';
+    const gid1 = '69cd17ffbea35d8fcaed7701';
+    const gid2 = '507f1f77bcf86cd799439012';
+
     it('should add users to groups', async () => {
       req.body = {
-        userIds: ['u1', 'u2'],
-        groupIds: ['g1', 'g2'],
+        userIds: [uid1, uid2],
+        groupIds: [gid1, gid2],
       };
 
       sinon.stub(UserGroups, 'updateMany').resolves({
@@ -373,7 +601,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw BadRequestError when userIds is empty', async () => {
-      req.body = { userIds: [], groupIds: ['g1'] };
+      req.body = { userIds: [], groupIds: [gid1] };
 
       try {
         await controller.addUsersToGroups(req, res);
@@ -384,7 +612,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw BadRequestError when groupIds is empty', async () => {
-      req.body = { userIds: ['u1'], groupIds: [] };
+      req.body = { userIds: [uid1], groupIds: [] };
 
       try {
         await controller.addUsersToGroups(req, res);
@@ -395,7 +623,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw BadRequestError when userIds is missing', async () => {
-      req.body = { groupIds: ['g1'] };
+      req.body = { groupIds: [gid1] };
 
       try {
         await controller.addUsersToGroups(req, res);
@@ -407,8 +635,8 @@ describe('UserGroupController', () => {
 
     it('should throw BadRequestError when no groups were modified', async () => {
       req.body = {
-        userIds: ['u1'],
-        groupIds: ['nonexistent'],
+        userIds: [uid1],
+        groupIds: ['507f1f77bcf86cd799439099'],
       };
 
       sinon.stub(UserGroups, 'updateMany').resolves({
@@ -425,10 +653,13 @@ describe('UserGroupController', () => {
   });
 
   describe('removeUsersFromGroups', () => {
+    const uid1 = '69cd0e4a863a6899015af331';
+    const gid1 = '69cd17ffbea35d8fcaed7701';
+
     it('should remove users from groups', async () => {
       req.body = {
-        userIds: ['u1'],
-        groupIds: ['g1'],
+        userIds: [uid1],
+        groupIds: [gid1],
       };
 
       sinon.stub(UserGroups, 'updateMany').resolves({
@@ -442,7 +673,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw BadRequestError when userIds is empty', async () => {
-      req.body = { userIds: [], groupIds: ['g1'] };
+      req.body = { userIds: [], groupIds: [gid1] };
 
       try {
         await controller.removeUsersFromGroups(req, res);
@@ -453,7 +684,7 @@ describe('UserGroupController', () => {
     });
 
     it('should throw BadRequestError when groupIds is empty', async () => {
-      req.body = { userIds: ['u1'], groupIds: [] };
+      req.body = { userIds: [uid1], groupIds: [] };
 
       try {
         await controller.removeUsersFromGroups(req, res);
@@ -464,7 +695,10 @@ describe('UserGroupController', () => {
     });
 
     it('should throw BadRequestError when no groups were modified', async () => {
-      req.body = { userIds: ['u1'], groupIds: ['g1'] };
+      req.body = {
+        userIds: [uid1],
+        groupIds: ['507f1f77bcf86cd799439099'],
+      };
 
       sinon.stub(UserGroups, 'updateMany').resolves({
         modifiedCount: 0,
@@ -480,22 +714,26 @@ describe('UserGroupController', () => {
   });
 
   describe('getUsersInGroup', () => {
+    const gid = '507f1f77bcf86cd799439011';
+    const uid1 = '69cd0daf863a6899015af272';
+    const uid2 = '69cd0e4a863a6899015af331';
+
     it('should return users in a group', async () => {
-      req.params.groupId = 'g1';
+      req.params.groupId = gid;
 
       sinon.stub(UserGroups, 'findOne').resolves({
-        _id: 'g1',
-        users: ['u1', 'u2'],
+        _id: gid,
+        users: [uid1, uid2],
       } as any);
 
       await controller.getUsersInGroup(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith({ users: ['u1', 'u2'] })).to.be.true;
+      expect(res.json.calledWith({ users: [uid1, uid2] })).to.be.true;
     });
 
     it('should throw NotFoundError when group not found', async () => {
-      req.params.groupId = 'nonexistent';
+      req.params.groupId = '507f1f77bcf86cd799439099';
 
       sinon.stub(UserGroups, 'findOne').resolves(null);
 
@@ -510,21 +748,34 @@ describe('UserGroupController', () => {
 
   describe('getGroupsForUser', () => {
     it('should return groups for a user', async () => {
-      req.params.userId = 'u1';
+      req.params.userId = '69cd0daf863a6899015af272';
 
       const mockGroups = [
-        { name: 'admin', type: 'admin' },
-        { name: 'everyone', type: 'everyone' },
+        {
+          _id: '69cd0daf863a6899015af274',
+          name: 'admin',
+          type: 'admin',
+        },
+        {
+          _id: '69cd0daf863a6899015af275',
+          name: 'everyone',
+          type: 'everyone',
+        },
       ];
 
       sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves(mockGroups),
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves(mockGroups),
+          }),
+        }),
       } as any);
 
       await controller.getGroupsForUser(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockGroups)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal(mockGroups);
     });
   });
 
@@ -540,7 +791,8 @@ describe('UserGroupController', () => {
       await controller.getGroupStatistics(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockStats)).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal(mockStats);
     });
   });
 });

@@ -38,6 +38,56 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { PrometheusService } from '../../../libs/services/prometheus/prometheus.service';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ORG_CREATED_ACTIVITY } from '../constants/constants';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import {
+  CheckExistenceResponseSchema,
+  DeleteResponseSchema,
+  GetOnboardingStatusResponseSchema,
+  DocumentResponseSchema,
+  RemoveLogoResponseSchema,
+  UpdateOnboardingStatusResponseSchema,
+  UpdateLogoResponseSchema,
+  UpdateDetailsResponseSchema,
+} from '../validation/org.schemas';
+
+const ORG_PERMANENT_ADDRESS_KEYS = [
+  'addressLine1',
+  'city',
+  'state',
+  'postCode',
+  'country',
+] as const;
+
+type OrgPermanentAddressPatch = Partial<
+  Record<(typeof ORG_PERMANENT_ADDRESS_KEYS)[number], string>
+>;
+
+/** Merges partial `permanentAddress` from the request onto the stored subdocument. */
+function mergeOrgPermanentAddress(
+  existingRaw: unknown,
+  incoming: OrgPermanentAddressPatch | undefined,
+): OrgPermanentAddressPatch | undefined {
+  if (incoming === undefined) {
+    return undefined;
+  }
+  const existing =
+    existingRaw && typeof existingRaw === 'object'
+      ? (existingRaw as Record<string, unknown>)
+      : {};
+  const merged: Record<string, string> = {};
+  for (const key of ORG_PERMANENT_ADDRESS_KEYS) {
+    const v = existing[key];
+    if (v !== undefined && v !== null) {
+      merged[key] = String(v);
+    }
+  }
+  for (const key of ORG_PERMANENT_ADDRESS_KEYS) {
+    if (incoming[key] !== undefined) {
+      merged[key] = incoming[key] as string;
+    }
+  }
+  return merged;
+}
 
 @injectable()
 export class OrgController {
@@ -148,7 +198,12 @@ export class OrgController {
   async checkOrgExistence(res: Response): Promise<void> {
     const count = await Org.countDocuments();
 
-    res.status(200).json({ exists: count != 0 });
+    sendValidatedJson(
+      res,
+      CheckExistenceResponseSchema,
+      { exists: count !== 0 },
+      HTTP_STATUS.OK,
+    );
   }
 
   async createOrg(req: ContainerRequest, res: Response): Promise<void> {
@@ -322,7 +377,12 @@ export class OrgController {
       await this.eventService.publishEvent(event);
 
       await this.eventService.stop();
-      res.status(200).json(org);
+      sendValidatedJson(
+        res,
+        DocumentResponseSchema,
+        org.toJSON(),
+        HTTP_STATUS.OK,
+      );
     } catch (error) {
       throw new InternalServerError(
         error instanceof Error ? error.message : 'Error retrieving users',
@@ -347,7 +407,12 @@ export class OrgController {
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
-      res.status(200).json(org);
+      sendValidatedJson(
+        res,
+        DocumentResponseSchema,
+        org.toJSON(),
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -364,7 +429,7 @@ export class OrgController {
         contactEmail?: string;
         registeredName?: string;
         shortName?: string;
-        permanentAddress?: string;
+        permanentAddress?: OrgPermanentAddressPatch;
       };
 
     try {
@@ -376,23 +441,39 @@ export class OrgController {
         throw new NotFoundError('Organisation not found');
       }
 
-      // Update only the fields that are provided in the request body
+      // Update only fields present in the body; nested address is merged with existing.
       const updateData: Partial<{
         contactEmail: string;
         registeredName: string;
         shortName: string;
-        permanentAddress: string;
+        permanentAddress: OrgPermanentAddressPatch;
       }> = {};
 
-      if (contactEmail) updateData.contactEmail = contactEmail;
-      if (registeredName) updateData.registeredName = registeredName;
-      if (shortName) updateData.shortName = shortName;
-      if (permanentAddress) updateData.permanentAddress = permanentAddress;
+      if (contactEmail !== undefined) {
+        updateData.contactEmail = contactEmail;
+      }
+      if (registeredName !== undefined) {
+        updateData.registeredName = registeredName;
+      }
+      if (shortName !== undefined) {
+        updateData.shortName = shortName;
+      }
+      const mergedAddress = mergeOrgPermanentAddress(
+        org.permanentAddress,
+        permanentAddress,
+      );
+      if (mergedAddress !== undefined) {
+        updateData.permanentAddress = mergedAddress;
+      }
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
         new: true,
       });
+
+      if (!updatedOrg) {
+        throw new NotFoundError('Organisation not found');
+      }
 
       await this.eventService.start();
       let event: Event = {
@@ -407,10 +488,15 @@ export class OrgController {
 
       await this.eventService.stop();
 
-      res.status(200).json({
-        message: 'Organization updated successfully',
-        data: updatedOrg,
-      });
+      sendValidatedJson(
+        res,
+        UpdateDetailsResponseSchema,
+        {
+          message: 'Organization updated successfully',
+          data: updatedOrg.toJSON(),
+        },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -446,10 +532,15 @@ export class OrgController {
 
       await this.eventService.stop();
 
-      res.status(200).json({
-        message: 'Organization marked as deleted successfully',
-        data: org,
-      });
+      sendValidatedJson(
+        res,
+        DeleteResponseSchema,
+        {
+          message: 'Organization marked as deleted successfully',
+          data: org.toJSON(),
+        },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -510,10 +601,15 @@ export class OrgController {
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
-      res.status(201).json({
-        message: 'Logo updated successfully',
-        mimeType: mimeType,
-      });
+      sendValidatedJson(
+        res,
+        UpdateLogoResponseSchema,
+        {
+          message: 'Logo updated successfully',
+          mimeType,
+        },
+        HTTP_STATUS.CREATED,
+      );
       return;
     } catch (error) {
       next(error);
@@ -526,6 +622,7 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     try {
+      // Success: 200 with raw image bytes or 204 with no body — not JSON; no sendValidatedJson.
       const orgId = req.user?.orgId;
 
       const orgLogo = await OrgLogos.findOne({ orgId }).lean().exec();
@@ -564,7 +661,14 @@ export class OrgController {
 
       await orgLogo.save();
 
-      res.status(200).send(orgLogo);
+      const payload = orgLogo.toJSON();
+
+      sendValidatedJson(
+        res,
+        RemoveLogoResponseSchema,
+        payload,
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -587,9 +691,14 @@ export class OrgController {
         throw new NotFoundError('Organisation not found');
       }
 
-      res.status(200).json({
-        status: org.onBoardingStatus || 'notConfigured',
-      });
+      sendValidatedJson(
+        res,
+        GetOnboardingStatusResponseSchema,
+        {
+          status: org.onBoardingStatus || 'notConfigured',
+        },
+        HTTP_STATUS.OK,
+      );
       return;
     } catch (error) {
       next(error);
@@ -622,10 +731,15 @@ export class OrgController {
       org.onBoardingStatus = status;
       await org.save();
 
-      res.status(200).json({
-        message: 'Onboarding status updated successfully',
-        status: org.onBoardingStatus,
-      });
+      sendValidatedJson(
+        res,
+        UpdateOnboardingStatusResponseSchema,
+        {
+          message: 'Onboarding status updated successfully',
+          status: org.onBoardingStatus,
+        },
+        HTTP_STATUS.OK,
+      );
 
       return;
     } catch (error) {

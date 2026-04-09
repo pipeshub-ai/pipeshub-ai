@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -29,139 +28,27 @@ import { EntitiesEventProducer } from '../services/entity_events.service';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-
-const UserIdUrlParams = z.object({
-  id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
-});
-
-const UserIdValidationSchema = z.object({
-  body: z.object({}),
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const MultipleUserBody = z.object({
-  userIds: z
-    .array(z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId'))
-    .min(1, 'At least one userId is required'),
-});
-const MultipleUserValidationSchema = z.object({
-  body: MultipleUserBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
-
-const createUserBody = z.object({
-  fullName: z.string().min(1, 'Full name is required'),
-  email: z.string().email('Invalid email'),
-  mobile: z
-    .string()
-    .optional()
-    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
-      message: 'Invalid mobile number',
-    }),
-  designation: z.string().optional(),
-});
-
-const updateUserBody = z.object({
-  fullName: z.string().optional(),
-  email: z.string().email('Invalid email').optional(),
-  mobile: z
-    .string()
-    .optional()
-    .refine((val) => !val || /^\+?[0-9]{10,15}$/.test(val), {
-      message: 'Invalid mobile number',
-    }),
-  designation: z.string().optional(),
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
-  middleName: z.string().optional(),
-  address: z
-    .object({
-      addressLine1: z.string().optional(),
-      city: z.string().optional(),
-      state: z.string().optional(),
-      postCode: z.string().optional(),
-      country: z.string().optional(),
-    })
-    .optional(),
-  dataCollectionConsent: z.boolean().optional(),
-  hasLoggedIn: z.boolean().optional(),
-}).strict(); // Use strict mode to reject unknown fields
-
-const createUserValidationSchema = z.object({
-  body: createUserBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
-
-const updateFullNameBody = z.object({
-  fullName: z.string().min(1, 'fullName must have at least one character'),
-});
-
-const updateFirstNameBody = z.object({
-  firstName: z.string().min(1, 'firstName is required'),
-});
-
-const updateLastNameBody = z.object({
-  lastName: z.string().min(1, 'lastName is required'),
-});
-
-const updateEmailBody = z.object({
-  email: z.string().email('Valid email is required'),
-});
-
-const updateUserFullNameValidationSchema = z.object({
-  body: updateFullNameBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const updateUserFirstNameValidationSchema = z.object({
-  body: updateFirstNameBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const updateUserLastNameValidationSchema = z.object({
-  body: updateLastNameBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-
-const updateDesignationBody = z.object({
-  designation: z.string().min(1, 'designation is required'),
-});
-
-const updateUserDesignationValidationSchema = z.object({
-  body: updateDesignationBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-
-const updateUserEmailValidationSchema = z.object({
-  body: updateEmailBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-
-const updateUserValidationSchema = z.object({
-  body: updateUserBody,
-  query: z.object({}),
-  params: UserIdUrlParams,
-  headers: z.object({}),
-});
-const emailIdValidationSchema = z.object({
-  body: updateEmailBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
+import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import {
+  IdValidationSchema,
+  CreationValidationSchema,
+  UpdateFullNameValidationSchema,
+  UpdateFirstNameValidationSchema,
+  UpdateLastNameValidationSchema,
+  UpdateDesignationValidationSchema,
+  UpdateEmailValidationSchema,
+  UpdateValidationSchema,
+  EmailIdValidationSchema,
+  UpdateDisplayPictureValidationSchema,
+  GetAllUsersValidationSchema,
+  GetEmailByIdValidationSchema,
+  AdminCheckResponseSchema,
+  HealthResponseSchema,
+  InternalAdminResponseSchema,
+  InternalLookupResponseSchema,
+  BulkInviteValidationSchema,
+} from '../validation/user.schemas';
 
 export function createUserRouter(container: Container) {
   const router = Router();
@@ -176,6 +63,7 @@ export function createUserRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
+    ValidationMiddleware.validate(GetAllUsersValidationSchema),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -205,7 +93,7 @@ export function createUserRouter(container: Container) {
     '/:id/email',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(GetEmailByIdValidationSchema),
     metricsMiddleware(container),
     userAdminCheck,
     userExists,
@@ -227,6 +115,7 @@ export function createUserRouter(container: Container) {
     '/:id/unblock',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
+    ValidationMiddleware.validate(IdValidationSchema),
     userAdminCheck,
 
     async (req: Request, res: Response, next: NextFunction) => {
@@ -239,11 +128,104 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  router.put(
+    '/dp',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    ...FileProcessorFactory.createBufferUploadProcessor({
+      fieldName: 'file',
+      allowedMimeTypes: [
+        'image/png',
+        'image/jpeg',
+        'image/jpg',
+        'image/webp',
+        'image/gif',
+      ],
+      maxFilesAllowed: 1,
+      isMultipleFilesAllowed: false,
+      processingType: FileProcessingType.BUFFER,
+      maxFileSize: 1024 * 1024,
+      strictFileUpload: true,
+    }).getMiddleware,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(UpdateDisplayPictureValidationSchema),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.updateUserDisplayPicture(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/dp',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    metricsMiddleware(container),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.removeUserDisplayPicture(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/dp',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
+    metricsMiddleware(container),
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.getUserDisplayPicture(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Health check endpoint
+  router.get(
+    '/health',
+    (_req: Request, res: Response, next: NextFunction) => {
+      try {
+        sendValidatedJson(
+          res,
+          HealthResponseSchema,
+          {
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+          },
+          HTTP_STATUS.OK,
+        );
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.get(
     '/:id',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     metricsMiddleware(container),
     userExists,
     async (
@@ -259,31 +241,12 @@ export function createUserRouter(container: Container) {
       }
     },
   );
-  router.post(
-    '/by-ids',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    ValidationMiddleware.validate(MultipleUserValidationSchema),
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUsersByIds(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
 
   router.get(
     '/email/exists',
     metricsMiddleware(container),
     authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
-    ValidationMiddleware.validate(emailIdValidationSchema),
+    ValidationMiddleware.validate(EmailIdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -339,7 +302,12 @@ export function createUserRouter(container: Container) {
           ),
         ];
 
-        res.status(200).json({ adminUserIds });
+        sendValidatedJson(
+          res,
+          InternalAdminResponseSchema,
+          { adminUserIds },
+          HTTP_STATUS.OK,
+        );
         return;
       } catch (error) {
         next(error);
@@ -350,7 +318,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/internal/:id',
     authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     metricsMiddleware(container),
     async (
       req: AuthenticatedServiceRequest,
@@ -373,7 +341,12 @@ export function createUserRouter(container: Container) {
             throw new NotFoundError('User not found');
           }
 
-          res.json(user);
+          sendValidatedJson(
+            res,
+            InternalLookupResponseSchema,
+            user,
+            HTTP_STATUS.OK,
+          );
         } catch (error) {
           next(error);
         }
@@ -388,7 +361,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(createUserValidationSchema),
+    ValidationMiddleware.validate(CreationValidationSchema),
     userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
@@ -409,7 +382,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserFullNameValidationSchema),
+    ValidationMiddleware.validate(UpdateFullNameValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -431,7 +404,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserFirstNameValidationSchema),
+    ValidationMiddleware.validate(UpdateFirstNameValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -453,7 +426,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserLastNameValidationSchema),
+    ValidationMiddleware.validate(UpdateLastNameValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -470,84 +443,12 @@ export function createUserRouter(container: Container) {
     },
   );
 
-  router.put(
-    '/dp',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_WRITE),
-    ...FileProcessorFactory.createBufferUploadProcessor({
-      fieldName: 'file',
-      allowedMimeTypes: [
-        'image/png',
-        'image/jpeg',
-        'image/jpg',
-        'image/webp',
-        'image/gif',
-      ],
-      maxFilesAllowed: 1,
-      isMultipleFilesAllowed: false,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024,
-      strictFileUpload: true,
-    }).getMiddleware,
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.updateUserDisplayPicture(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.delete(
-    '/dp',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_WRITE),
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.removeUserDisplayPicture(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/dp',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    metricsMiddleware(container),
-    async (
-      req: AuthenticatedUserRequest,
-      res: Response,
-      next: NextFunction,
-    ) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUserDisplayPicture(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
   router.patch(
     '/:id/designation',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserDesignationValidationSchema),
+    ValidationMiddleware.validate(UpdateDesignationValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -569,7 +470,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserEmailValidationSchema),
+    ValidationMiddleware.validate(UpdateEmailValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -591,7 +492,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserValidationSchema),
+    ValidationMiddleware.validate(UpdateValidationSchema),
     userAdminOrSelfCheck,
     userExists,
     async (
@@ -613,7 +514,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_DELETE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     userAdminCheck,
     userExists,
     async (
@@ -635,7 +536,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     userAdminCheck,
     async (
       _req: AuthenticatedUserRequest,
@@ -643,8 +544,12 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        res.status(200).json({ message: 'User has admin access' });
-        return;
+        sendValidatedJson(
+          res,
+          AdminCheckResponseSchema,
+          { message: 'User has admin access' },
+          HTTP_STATUS.OK,
+        );
       } catch (error) {
         next(error);
       }
@@ -656,6 +561,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(BulkInviteValidationSchema),
     smtpConfigCheck(config.cmBackend),
     userAdminCheck,
     accountTypeCheck,
@@ -673,12 +579,13 @@ export function createUserRouter(container: Container) {
       }
     },
   );
+
   router.post(
     '/:id/resend-invite',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
-    ValidationMiddleware.validate(UserIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     smtpConfigCheck(config.cmBackend),
     userAdminCheck,
     accountTypeCheck,
@@ -696,14 +603,6 @@ export function createUserRouter(container: Container) {
       }
     },
   );
-
-  // Health check endpoint
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
-  });
 
   router.post(
     '/updateAppConfig',
@@ -770,21 +669,6 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.listUsers(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/teams/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.USER_READ),
-    metricsMiddleware(container),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getUserTeams(req, res, next);
       } catch (error) {
         next(error);
       }

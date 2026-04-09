@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -8,28 +7,12 @@ import { UserGroupController } from '../controller/userGroups.controller';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-
-const UserGroupIdUrlParams = z.object({
-  groupId: z.string().min(1, "Group ID is required")
-    .regex(/^[0-9a-fA-F]{24}$/, "Invalid group ID format")
-});
-
-const UserGroupIdValidationSchema = z.object({
-  body: z.object({}),
-  query: z.object({}),
-  params: UserGroupIdUrlParams,
-  headers: z.object({}),
-});
-
-const groupValidationSchema = z.object({
-  body: z.object({
-    type: z.string().min(1, 'type is required'),
-    name: z.string().min(1, 'name is required'),
-  }),
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
+import {
+  AddUsersToGroupsValidationSchema,
+  GroupValidationSchema,
+  IdValidationSchema,
+  RemoveUsersFromGroupsValidationSchema,
+} from '../validation/userGroup.schemas';
 
 export function createUserGroupRouter(container: Container) {
   const router = Router();
@@ -40,7 +23,7 @@ export function createUserGroupRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
-    ValidationMiddleware.validate(groupValidationSchema),
+    ValidationMiddleware.validate(GroupValidationSchema),
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -75,7 +58,7 @@ export function createUserGroupRouter(container: Container) {
     '/:groupId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -97,7 +80,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -119,7 +102,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -140,6 +123,7 @@ export function createUserGroupRouter(container: Container) {
     '/add-users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
+    ValidationMiddleware.validate(AddUsersToGroupsValidationSchema),
     userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
@@ -161,6 +145,7 @@ export function createUserGroupRouter(container: Container) {
     '/remove-users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
+    ValidationMiddleware.validate(RemoveUsersFromGroupsValidationSchema),
     userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
@@ -182,7 +167,7 @@ export function createUserGroupRouter(container: Container) {
     '/:groupId/users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_READ),
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(IdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

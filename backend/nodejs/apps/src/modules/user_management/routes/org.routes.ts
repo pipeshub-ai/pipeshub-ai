@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -13,54 +12,16 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-
-export const OrgCreationBody = z
-  .object({
-    accountType: z.enum(['individual', 'business']),
-    shortName: z.string().optional(),
-    contactEmail: z.string().email('Invalid email format'),
-    registeredName: z.string().optional(), // Will be enforced conditionally
-    adminFullName: z.string().min(1, 'Admin full name required'),
-    password: z.string().min(8, 'Minimum 8 characters password required'),
-    sendEmail: z.boolean().optional(),
-    permanentAddress: z
-      .object({
-        addressLine1: z.string().optional(),
-        city: z.string().optional(),
-        state: z.string().optional(),
-        country: z.string().optional(),
-        postCode: z.string().optional(),
-      })
-      .optional(),
-  })
-  .refine(
-    (data) => {
-      // If accountType is 'business', registeredName must be present
-      return data.accountType === 'business' ? !!data.registeredName : true;
-    },
-    {
-      message: 'Registered Name is required for business accounts',
-      path: ['registeredName'], // This ensures the error is associated with registeredName
-    },
-  );
-
-const OnboardingStatusUpdateBody = z.object({
-  status: z.enum(['configured', 'notConfigured', 'skipped']),
-});
-
-const OnboardingStatusUpdateValidationSchema = z.object({
-  body: OnboardingStatusUpdateBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
-
-const OrgCreationValidationSchema = z.object({
-  body: OrgCreationBody,
-  query: z.object({}),
-  params: z.object({}),
-  headers: z.object({}),
-});
+import {
+  CreationValidationSchema,
+  OnboardingStatusUpdateValidationSchema,
+  UpdateValidationSchema,
+  HealthResponseSchema,
+  LogoPutValidationSchema,
+  LogoReadDeleteValidationSchema,
+} from '../validation/org.schemas';
+import { sendValidatedJson } from '../../../utils/response-validator';
+import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 
 export function createOrgRouter(container: Container) {
   const router = Router();
@@ -82,7 +43,7 @@ export function createOrgRouter(container: Container) {
 
   router.post(
     '/',
-    ValidationMiddleware.validate(OrgCreationValidationSchema),
+    ValidationMiddleware.validate(CreationValidationSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const orgController = container.get<OrgController>('OrgController');
@@ -114,6 +75,7 @@ export function createOrgRouter(container: Container) {
     requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
+    ValidationMiddleware.validate(UpdateValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -170,6 +132,7 @@ export function createOrgRouter(container: Container) {
     }).getMiddleware,
     metricsMiddleware(container),
     userAdminCheck,
+    ValidationMiddleware.validate(LogoPutValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -189,6 +152,7 @@ export function createOrgRouter(container: Container) {
     requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
+    ValidationMiddleware.validate(LogoReadDeleteValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -207,6 +171,7 @@ export function createOrgRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.ORG_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(LogoReadDeleteValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -261,10 +226,15 @@ export function createOrgRouter(container: Container) {
 
   // Health check endpoint
   router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
+    sendValidatedJson(
+      res,
+      HealthResponseSchema,
+      {
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+      },
+      HTTP_STATUS.OK,
+    );
   });
 
   return router;
