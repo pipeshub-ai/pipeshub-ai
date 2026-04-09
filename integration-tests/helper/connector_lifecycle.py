@@ -109,6 +109,8 @@ def constructor(
     connector_type: str,
     connector_config: dict,
     create_fn: str = "create_bucket",
+    scope: str = "personal",
+    auth_type: str | None = None,
 ) -> Dict[str, Any]:
     """Ensure storage exists, upload data, create connector, wait for full sync."""
     resource_name = RESOURCE_NAME
@@ -144,8 +146,9 @@ def constructor(
     instance = pipeshub_client.create_connector(
         connector_type=connector_type,
         instance_name=connector_name,
-        scope="personal",
+        scope=scope,
         config=connector_config,
+        auth_type=auth_type,
     )
     assert instance.connector_id, "Connector must have a valid ID"
     connector_id = instance.connector_id

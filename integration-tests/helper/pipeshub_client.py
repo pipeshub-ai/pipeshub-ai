@@ -98,8 +98,6 @@ class PipeshubClient:
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
         }
-        if is_admin:
-            headers["X-Is-Admin"] = "true"
         return headers
 
     def _url(self, path: str) -> str:
@@ -116,6 +114,16 @@ class PipeshubClient:
                 else (resp.url or "")
             )
             msg = f"HTTP {resp.status_code} {loc}"
+            
+            # Try to add response body details for debugging
+            try:
+                error_data = resp.json()
+                if error_data:
+                    msg += f" - {error_data}"
+            except Exception:
+                if resp.text:
+                    msg += f" - {resp.text[:200]}"
+            
             if resp.status_code == 401:
                 raise PipeshubAuthError(msg)
             raise PipeshubClientError(msg)
@@ -135,6 +143,7 @@ class PipeshubClient:
         scope: str = "personal",
         config: Optional[Dict[str, Any]] = None,
         is_admin: bool = True,
+        auth_type: str | None = None,
     ) -> ConnectorInstance:
         """Create a connector instance via /api/v1/connectors/."""
         payload: Dict[str, Any] = {
@@ -144,6 +153,8 @@ class PipeshubClient:
         }
         if config:
             payload["config"] = config
+        if auth_type:
+            payload["authType"] = auth_type
 
         resp = requests.post(
             self._url("/api/v1/connectors/"),
