@@ -3,12 +3,21 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { AuthServiceContainer } from '../../../../src/modules/auth/container/authService.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
 describe('AuthServiceContainer - coverage', () => {
   let originalInstance: any
 
   beforeEach(() => {
     originalInstance = (AuthServiceContainer as any).instance
+    sinon.stub(messageBrokerFactory, 'resolveMessageBrokerConfig').returns({
+      type: 'kafka', kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+    } as any)
+    sinon.stub(messageBrokerFactory, 'createMessageProducer').returns({
+      connect: sinon.stub().resolves(), disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true), publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(), healthCheck: sinon.stub().resolves(true),
+    } as any)
   })
 
   afterEach(() => {
@@ -138,13 +147,13 @@ describe('AuthServiceContainer - coverage', () => {
       expect(mockKvStore.disconnect.calledOnce).to.be.true
     })
 
-    it('should stop EntitiesEventProducer when connected', async () => {
-      const mockEntityEvents = { isConnected: sinon.stub().returns(true), stop: sinon.stub().resolves() }
+    it('should disconnect MessageProducer when connected', async () => {
+      const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
 
       const mockContainer = {
-        isBound: sinon.stub().callsFake((key: string) => key === 'EntitiesEventProducer'),
+        isBound: sinon.stub().callsFake((key: string) => key === 'MessageProducer'),
         get: sinon.stub().callsFake((key: string) => {
-          if (key === 'EntitiesEventProducer') return mockEntityEvents
+          if (key === 'MessageProducer') return mockMessageProducer
           return null
         }),
       }
@@ -152,7 +161,7 @@ describe('AuthServiceContainer - coverage', () => {
       ;(AuthServiceContainer as any).instance = mockContainer
       await AuthServiceContainer.dispose()
 
-      expect(mockEntityEvents.stop.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
     })
   })
 })

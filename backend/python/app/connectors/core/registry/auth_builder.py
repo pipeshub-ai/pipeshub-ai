@@ -216,6 +216,7 @@ class AuthType:
     CONNECTION_STRING = "CONNECTION_STRING"
     OAUTH_ADMIN_CONSENT = "OAUTH_ADMIN_CONSENT"
     CUSTOM = "CUSTOM"
+    NONE = "NONE"
 
 
 class AuthBuilder:

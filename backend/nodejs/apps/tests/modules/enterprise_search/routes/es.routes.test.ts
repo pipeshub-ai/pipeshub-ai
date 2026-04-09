@@ -405,6 +405,18 @@ describe('Enterprise Search Routes', () => {
     expect(route).to.exist
   })
 
+  it('should use keyValueStoreService when KeyValueStoreService is bound in container', () => {
+    const mockKvs = { watchKey: sinon.stub(), get: sinon.stub(), set: sinon.stub() }
+    container.bind('KeyValueStoreService').toConstantValue(mockKvs as any)
+
+    // createAgentConversationalRouter checks container.isBound('KeyValueStoreService')
+    // and calls container.get when bound — covers line 498 of es.routes.ts
+    const router = createAgentConversationalRouter(container)
+    expect(router).to.exist
+    const routes = router.stack.filter((layer: any) => layer.route)
+    expect(routes.length).to.be.greaterThan(0)
+  })
+
   it('should register total expected route count', () => {
     const convRouter = createConversationalRouter(container)
     const searchRouter = createSemanticSearchRouter(container)

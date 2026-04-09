@@ -2,10 +2,11 @@ import asyncio
 import json
 import ssl
 from logging import Logger
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Optional
 
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
+from app.services.messaging.config import MessageHandler, StreamMessage
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 
@@ -22,17 +23,17 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         self.consumer: Optional[AIOKafkaConsumer] = None
         self.running = False
         self.kafka_config = kafka_config
-        self.processed_messages: Dict[str, List[int]] = {}
+        self.processed_messages: dict[str, list[int]] = {}
         self.consume_task = None
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self.message_handler = None
-        self.active_tasks: Set[asyncio.Task] = set()
+        self.active_tasks: set[asyncio.Task] = set()
         self.max_concurrent_tasks = MAX_CONCURRENT_TASKS
 
     @staticmethod
-    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
+    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
         """Convert KafkaConsumerConfig dataclass to dictionary format for aiokafka consumer"""
-        config: Dict[str, Any] = {
+        config: dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
@@ -91,7 +92,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     # implementing abstract methods from IMessagingConsumer
     async def start(
         self,
-        message_handler: Callable[[Dict[str, Any]], Awaitable[bool]]
+        message_handler: MessageHandler,
     ) -> None:
         """Start consuming messages with the provided handler"""
         try:
@@ -110,12 +111,9 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             raise
 
     # implementing abstract methods from IMessagingConsumer
-    async def stop(self, message_handler: Optional[Callable[[Dict[str, Any]], Awaitable[bool]]] = None) -> None:
+    async def stop(self, message_handler: Optional[MessageHandler] = None) -> None:
         """Stop consuming messages"""
         self.running = False
-        # run the message handler
-        if self.message_handler:
-            await self.message_handler(None) # type: ignore
 
         if self.consume_task:
             self.consume_task.cancel()
@@ -186,7 +184,8 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             # Call the provided message handler
             if self.message_handler and parsed_message:
                 try:
-                    return await self.message_handler(parsed_message)
+                    stream_message = StreamMessage(**parsed_message)
+                    return await self.message_handler(stream_message)
                 except Exception as e:
                     self.logger.error(
                         f"Error in message handler for {message_id}: {str(e)}",

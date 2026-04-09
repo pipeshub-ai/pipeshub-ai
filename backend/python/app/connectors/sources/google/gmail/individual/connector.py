@@ -167,7 +167,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> None:
         super().__init__(
             GmailIndividualApp(connector_id),
@@ -175,7 +177,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by
         )
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -697,6 +701,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             seen_drive_file_ids = set()  # Track to avoid duplicates
 
             for part in parts_list:
+                if not isinstance(part, dict):
+                    continue
                 body = part.get('body', {})
                 part_id = part.get('partId', 'unknown')
                 mime_type = part.get('mimeType', '')
@@ -2790,7 +2796,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> BaseConnector:
         """Create a new instance of the Google Gmail connector."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -2805,5 +2813,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by
         )

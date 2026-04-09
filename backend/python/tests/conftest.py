@@ -19,7 +19,6 @@ def pytest_unconfigure(config):
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
         os._exit(getattr(config, "_exitcode", 0))
 
-
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the
 # test environment.  This runs at *import time* — before any test module or

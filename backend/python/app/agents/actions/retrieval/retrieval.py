@@ -191,7 +191,11 @@ class Retrieval:
                 filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
 
             # === SEARCH ===
-            logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
+            is_service_account = bool(self.state.get("is_service_account", False))
+            logger_instance.debug(
+                f"Executing retrieval with limit: {adjusted_limit} "
+                f"(service_account={is_service_account})"
+            )
             results = await retrieval_service.search_with_filters(
                 queries=[search_query],
                 org_id=org_id,
@@ -199,6 +203,7 @@ class Retrieval:
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
                 graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
 
             if results is None:

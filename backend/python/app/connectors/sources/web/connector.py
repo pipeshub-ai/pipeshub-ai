@@ -4,8 +4,8 @@ import hashlib
 import random
 import re
 import uuid
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
 from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -13,11 +13,6 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
-from bs4 import BeautifulSoup, Tag
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from PIL import Image
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
@@ -65,6 +60,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from bs4 import BeautifulSoup, Tag
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+from PIL import Image
 
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
@@ -322,10 +321,12 @@ class WebConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> None:
         super().__init__(
-            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id
+            WebApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
         self.connector_name = Connectors.WEB
         self.connector_id = connector_id
@@ -350,6 +351,10 @@ class WebConnector(BaseConnector):
         # Batch processing
         self.batch_size: int = 50
 
+        # Scope and creator (loaded from DB during init)
+        self.created_by: Optional[str] = None
+        self.creator_email: Optional[str] = None
+
         # Filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -369,6 +374,9 @@ class WebConnector(BaseConnector):
             self.restrict_to_start_path = config_values["restrict_to_start_path"]
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
+
+            # Load creator email if needed (for personal scope permission creation)
+            await self._load_creator_email()
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -410,6 +418,50 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
+
+    def _create_web_permissions(self, url: str) -> list[Permission]:
+        """Create permissions for a web page based on connector scope."""
+        try:
+            permissions = []
+
+            if self.scope == ConnectorScope.TEAM.value:
+                permissions.append(
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id
+                    )
+                )
+            else:
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
+
+                if not permissions:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
+                    )
+
+            return permissions
+        except Exception as e:
+            self.logger.warning(f"Error creating permissions for {url}: {e}")
+            return [
+                Permission(
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
+                    external_id=self.data_entities_processor.org_id
+                )
+            ]
 
     async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
         """
@@ -600,16 +652,25 @@ class WebConnector(BaseConnector):
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Create READ permissions for all app_users
-            permissions = [
-                Permission(
-                    email=app_user.email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                )
-                for app_user in app_users
-                if app_user.email
-            ]
+            # Create READ permissions: TEAM scope uses org; PERSONAL uses app_users
+            if not app_users and self.scope == ConnectorScope.TEAM.value:
+                permissions = [
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id,
+                    )
+                ]
+            else:
+                permissions = [
+                    Permission(
+                        email=app_user.email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER,
+                    )
+                    for app_user in app_users
+                    if app_user.email
+                ]
 
             # Create/update record group with permissions
             await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
@@ -686,11 +747,31 @@ class WebConnector(BaseConnector):
 
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
-            # Step 1: fetch and sync all active users
-            self.logger.info("Syncing users...")
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                app_users = []
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                        app_users = []
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
+                    app_users = []
 
             # Step 2: create record group with permissions
             await self.create_record_group(app_users)
@@ -838,13 +919,7 @@ class WebConnector(BaseConnector):
                     indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                    )
-                ]
+                permissions = self._create_web_permissions(ancestor_url)
 
                 placeholder_records.append((file_record, permissions))
                 self.logger.info(
@@ -1231,14 +1306,7 @@ class WebConnector(BaseConnector):
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 
-            # Create permissions (org-level access for web pages)
-            permissions = [
-                Permission(
-                    external_id=self.data_entities_processor.org_id,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                )
-            ]
+            permissions = self._create_web_permissions(url)
 
             record_update = RecordUpdate(
                 record=file_record,
@@ -1397,13 +1465,7 @@ class WebConnector(BaseConnector):
             reason=f"Failed to process URL, status code: {status_code}",
         )
 
-        permissions = [
-            Permission(
-                external_id=self.data_entities_processor.org_id,
-                type=PermissionType.READ,
-                entity_type=EntityType.ORG,
-            )
-        ]
+        permissions = self._create_web_permissions(url)
 
         return placeholder_record, permissions
 
@@ -1845,13 +1907,7 @@ class WebConnector(BaseConnector):
                     indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                    )
-                ]
+                permissions = self._create_web_permissions(segment_url)
 
                 batch_parent_records.append((file_record, permissions))
                 self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")
@@ -1879,7 +1935,9 @@ class WebConnector(BaseConnector):
     async def create_connector(
         cls, logger: Logger, data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str
     ) -> BaseConnector:
         """Factory method to create a WebConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1887,7 +1945,7 @@ class WebConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return WebConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger, data_entities_processor, data_store_provider, config_service, connector_id, scope, created_by
         )
 
     async def cleanup(self) -> None:

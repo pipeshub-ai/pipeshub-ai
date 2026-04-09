@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { MongoService } from '../../../src/libs/services/mongo.service';
 import { ConnectionError } from '../../../src/libs/errors/database.errors';
 import { BadRequestError, InternalServerError } from '../../../src/libs/errors/http.errors';
+import { envGuard } from '../../helpers/env-guard';
 
 describe('MongoService', () => {
   let service: MongoService;
@@ -94,8 +95,11 @@ describe('MongoService', () => {
   });
 
   describe('cleanDatabase', () => {
+    const env = envGuard();
+    beforeEach(() => env.snapshot());
+    afterEach(() => env.restore());
+
     it('should throw BadRequestError if not test environment', async () => {
-      const origEnv = process.env.NODE_ENV;
       process.env.NODE_ENV = 'production';
       try {
         await service.cleanDatabase();
@@ -103,7 +107,6 @@ describe('MongoService', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
       }
-      process.env.NODE_ENV = origEnv;
     });
 
     it('should throw ConnectionError if no connection', async () => {

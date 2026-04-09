@@ -204,6 +204,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-1",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -229,6 +231,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-2",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is expected_connector
@@ -252,6 +256,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-3",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -275,6 +281,8 @@ class TestCreateConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-4",
+            scope="personal",
+            created_by="user-123",
             custom_param="value123",
         )
 
@@ -309,6 +317,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-5",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is mock_connector
@@ -333,6 +343,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-6",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -356,6 +368,8 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-7",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
@@ -373,6 +387,155 @@ class TestInitializeConnector:
             data_store_provider=data_store,
             config_service=config_service,
             connector_id="conn-8",
+            scope="personal",
+            created_by="user-123",
         )
 
         assert result is None
+
+
+# ===========================================================================
+# create_and_start_sync
+# ===========================================================================
+
+
+class TestCreateAndStartSync:
+    """Tests for ConnectorFactory.create_and_start_sync (lines 230-242)."""
+
+    @pytest.mark.asyncio
+    async def test_connector_none_returns_none(self):
+        """If initialize_connector returns None, returns None."""
+        logger = MagicMock()
+        data_store = MagicMock()
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value=None)
+
+        result = await ConnectorFactory.create_and_start_sync(
+            name="totally_unknown_sync",
+            logger=logger,
+            data_store_provider=data_store,
+            config_service=config_service,
+            connector_id="conn-10",
+            scope="personal",
+            created_by="test-user-id",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.core.factory.connector_factory.sync_task_manager")
+    async def test_start_sync_success(self, mock_stm):
+        """Connector is created, initialized, and sync started."""
+        logger = MagicMock()
+        data_store = MagicMock()
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"sync": {"selectedStrategy": "FULL_SYNC"}})
+
+        mock_connector = AsyncMock()
+        mock_connector.init.return_value = True
+        mock_connector.run_sync = MagicMock(return_value=AsyncMock()())
+
+        mock_cls = MagicMock()
+        mock_cls.create_connector = AsyncMock(return_value=mock_connector)
+        ConnectorFactory.register_connector("test_sync_start", mock_cls)
+
+        mock_stm.start_sync = AsyncMock()
+
+        result = await ConnectorFactory.create_and_start_sync(
+            name="test_sync_start",
+            logger=logger,
+            data_store_provider=data_store,
+            config_service=config_service,
+            connector_id="conn-11",
+            scope="personal",
+            created_by="test-user-id",
+        )
+        assert result is mock_connector
+        mock_stm.start_sync.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.core.factory.connector_factory.sync_task_manager")
+    async def test_manual_strategy_skips_sync(self, mock_stm):
+        """Manual sync strategy skips start_sync call."""
+        logger = MagicMock()
+        data_store = MagicMock()
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"sync": {"selectedStrategy": "MANUAL"}})
+
+        mock_connector = AsyncMock()
+        mock_connector.init.return_value = True
+
+        mock_cls = MagicMock()
+        mock_cls.create_connector = AsyncMock(return_value=mock_connector)
+        ConnectorFactory.register_connector("test_manual_sync", mock_cls)
+
+        mock_stm.start_sync = AsyncMock()
+
+        result = await ConnectorFactory.create_and_start_sync(
+            name="test_manual_sync",
+            logger=logger,
+            data_store_provider=data_store,
+            config_service=config_service,
+            connector_id="conn-12",
+            scope="personal",
+            created_by="test-user-id",
+        )
+        assert result is mock_connector
+        mock_stm.start_sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.core.factory.connector_factory.sync_task_manager")
+    async def test_sync_exception_returns_none(self, mock_stm):
+        """If start_sync raises, returns None."""
+        logger = MagicMock()
+        data_store = MagicMock()
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"sync": {"selectedStrategy": "FULL_SYNC"}})
+
+        mock_connector = AsyncMock()
+        mock_connector.init.return_value = True
+
+        mock_cls = MagicMock()
+        mock_cls.create_connector = AsyncMock(return_value=mock_connector)
+        ConnectorFactory.register_connector("test_sync_fail", mock_cls)
+
+        mock_stm.start_sync = AsyncMock(side_effect=RuntimeError("sync error"))
+
+        result = await ConnectorFactory.create_and_start_sync(
+            name="test_sync_fail",
+            logger=logger,
+            data_store_provider=data_store,
+            config_service=config_service,
+            connector_id="conn-13",
+            scope="personal",
+            created_by="test-user-id",
+        )
+        assert result is None
+        logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_config_none_defaults_safely(self):
+        """If get_config returns None, sync strategy is None and sync proceeds."""
+        logger = MagicMock()
+        data_store = MagicMock()
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=None)
+
+        mock_connector = AsyncMock()
+        mock_connector.init.return_value = True
+
+        mock_cls = MagicMock()
+        mock_cls.create_connector = AsyncMock(return_value=mock_connector)
+        ConnectorFactory.register_connector("test_config_none", mock_cls)
+
+        with patch("app.connectors.core.factory.connector_factory.sync_task_manager") as mock_stm:
+            mock_stm.start_sync = AsyncMock()
+            result = await ConnectorFactory.create_and_start_sync(
+                name="test_config_none",
+                logger=logger,
+                data_store_provider=data_store,
+                config_service=config_service,
+                connector_id="conn-14",
+                scope="personal",
+                created_by="test-user-id",
+            )
+        assert result is mock_connector

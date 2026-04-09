@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.core.constants import (
+    AuthFieldKeys,
+    ConnectorRequestKeys,
+    OAuthConfigKeys,
+)
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.oauth_config import get_oauth_config
@@ -212,7 +217,10 @@ class TokenRefreshService:
         Modifies oauth_flow_config in-place.
         """
         # Check if enrichment is needed
-        if "tokenAccessType" in oauth_flow_config and "additionalParams" in oauth_flow_config:
+        if (
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE in oauth_flow_config
+            and OAuthConfigKeys.ADDITIONAL_PARAMS in oauth_flow_config
+        ):
             return
 
         try:
@@ -226,11 +234,17 @@ class TokenRefreshService:
                 return
 
             # Add missing optional fields from registry
-            if "tokenAccessType" not in oauth_flow_config and registry_oauth_config.token_access_type:
-                oauth_flow_config["tokenAccessType"] = registry_oauth_config.token_access_type
+            if (
+                OAuthConfigKeys.TOKEN_ACCESS_TYPE not in oauth_flow_config
+                and registry_oauth_config.token_access_type
+            ):
+                oauth_flow_config[OAuthConfigKeys.TOKEN_ACCESS_TYPE] = (registry_oauth_config.token_access_type)
 
-            if "additionalParams" not in oauth_flow_config and registry_oauth_config.additional_params:
-                oauth_flow_config["additionalParams"] = registry_oauth_config.additional_params
+            if (
+                OAuthConfigKeys.ADDITIONAL_PARAMS not in oauth_flow_config
+                and registry_oauth_config.additional_params
+            ):
+                oauth_flow_config[OAuthConfigKeys.ADDITIONAL_PARAMS] = (registry_oauth_config.additional_params)
 
             self.logger.debug(f"Enriched OAuth config from registry for {connector_type}")
 
@@ -252,7 +266,7 @@ class TokenRefreshService:
         Returns:
             List of scope strings
         """
-        scopes_data = shared_oauth_config.get("scopes", {})
+        scopes_data = shared_oauth_config.get(OAuthConfigKeys.SCOPES, {})
 
         if not isinstance(scopes_data, dict):
             return scopes_data if isinstance(scopes_data, list) else []
@@ -279,12 +293,12 @@ class TokenRefreshService:
         Returns:
             Tuple of (client_id, client_secret), both may be None
         """
-        oauth_config_data = shared_oauth_config.get("config", {})
+        oauth_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG, {})
         if not oauth_config_data:
             return None, None
 
-        client_id = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
-        client_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
+        client_id = oauth_config_data.get(AuthFieldKeys.CLIENT_ID) or oauth_config_data.get(AuthFieldKeys.CLIENT_ID_ALT)
+        client_secret = oauth_config_data.get(AuthFieldKeys.CLIENT_SECRET) or oauth_config_data.get(AuthFieldKeys.CLIENT_SECRET_ALT)
 
         return client_id, client_secret
 
@@ -300,23 +314,27 @@ class TokenRefreshService:
         Returns:
             OAuth flow config dict with all necessary fields
         """
+        # Prefer user-provided URLs from config (e.g. ServiceNow instance URLs); fall back to top-level
+        config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
         oauth_flow_config = {
-            "authorizeUrl": shared_oauth_config.get("authorizeUrl", ""),
-            "tokenUrl": shared_oauth_config.get("tokenUrl", ""),
-            "redirectUri": shared_oauth_config.get("redirectUri", ""),
+            AuthFieldKeys.AUTHORIZE_URL: config_data.get(AuthFieldKeys.AUTHORIZE_URL)
+            or shared_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, ""),
+            AuthFieldKeys.TOKEN_URL: config_data.get(AuthFieldKeys.TOKEN_URL)
+            or shared_oauth_config.get(AuthFieldKeys.TOKEN_URL, ""),
+            AuthFieldKeys.REDIRECT_URI: shared_oauth_config.get(AuthFieldKeys.REDIRECT_URI, ""),
         }
 
         # Add optional infrastructure fields if present
-        if "tokenAccessType" in shared_oauth_config:
-            oauth_flow_config["tokenAccessType"] = shared_oauth_config["tokenAccessType"]
-        if "additionalParams" in shared_oauth_config:
-            oauth_flow_config["additionalParams"] = shared_oauth_config["additionalParams"]
+        if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
+            oauth_flow_config[OAuthConfigKeys.TOKEN_ACCESS_TYPE] = shared_oauth_config[OAuthConfigKeys.TOKEN_ACCESS_TYPE]
+        if OAuthConfigKeys.ADDITIONAL_PARAMS in shared_oauth_config:
+            oauth_flow_config[OAuthConfigKeys.ADDITIONAL_PARAMS] = shared_oauth_config[OAuthConfigKeys.ADDITIONAL_PARAMS]
 
         # Enrich from registry if fields are missing
         self._enrich_from_registry(oauth_flow_config, connector_type)
 
         # Extract and add scopes
-        oauth_flow_config["scopes"] = self._extract_scopes(shared_oauth_config, connector_scope)
+        oauth_flow_config[OAuthConfigKeys.SCOPES] = self._extract_scopes(shared_oauth_config, connector_scope)
 
         return oauth_flow_config
 
@@ -336,14 +354,14 @@ class TokenRefreshService:
             Enriched OAuth flow config
         """
         # Fill in missing fields from auth config
-        if not base_config.get("authorizeUrl"):
-            base_config["authorizeUrl"] = auth_config.get("authorizeUrl", "")
-        if not base_config.get("tokenUrl"):
-            base_config["tokenUrl"] = auth_config.get("tokenUrl", "")
-        if not base_config.get("redirectUri"):
-            base_config["redirectUri"] = auth_config.get("redirectUri", "")
-        if not base_config.get("scopes"):
-            base_config["scopes"] = auth_config.get("scopes", [])
+        if not base_config.get(AuthFieldKeys.AUTHORIZE_URL):
+            base_config[AuthFieldKeys.AUTHORIZE_URL] = auth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+        if not base_config.get(AuthFieldKeys.TOKEN_URL):
+            base_config[AuthFieldKeys.TOKEN_URL] = auth_config.get(AuthFieldKeys.TOKEN_URL, "")
+        if not base_config.get(AuthFieldKeys.REDIRECT_URI):
+            base_config[AuthFieldKeys.REDIRECT_URI] = auth_config.get(AuthFieldKeys.REDIRECT_URI, "")
+        if not base_config.get(OAuthConfigKeys.SCOPES):
+            base_config[OAuthConfigKeys.SCOPES] = auth_config.get(OAuthConfigKeys.SCOPES, [])
 
         return base_config
 
@@ -368,8 +386,8 @@ class TokenRefreshService:
         Raises:
             ValueError: If credentials cannot be found in any source
         """
-        oauth_config_id = auth_config.get("oauthConfigId")
-        connector_scope = auth_config.get("connectorScope", "team")
+        oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+        connector_scope = auth_config.get(ConnectorRequestKeys.CONNECTOR_SCOPE, "team")
 
         # Try to use shared OAuth config first
         if oauth_config_id:
@@ -387,16 +405,16 @@ class TokenRefreshService:
                 client_id, client_secret = self._extract_credentials_from_oauth_config(shared_oauth_config)
 
                 if client_id and client_secret:
-                    oauth_flow_config["clientId"] = client_id
-                    oauth_flow_config["clientSecret"] = client_secret
+                    oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
+                    oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
                     self.logger.info(f"Using shared OAuth config for connector {connector_id}")
                     return oauth_flow_config
 
                 self.logger.warning("OAuth config found but missing credentials, falling back to auth config")
 
         # Fallback to auth config
-        client_id = auth_config.get("clientId")
-        client_secret = auth_config.get("clientSecret")
+        client_id = auth_config.get(AuthFieldKeys.CLIENT_ID)
+        client_secret = auth_config.get(AuthFieldKeys.CLIENT_SECRET)
 
         if not client_id or not client_secret:
             raise ValueError(
@@ -411,8 +429,8 @@ class TokenRefreshService:
             auth_config,
             {}  # Start with empty config
         )
-        oauth_flow_config["clientId"] = client_id
-        oauth_flow_config["clientSecret"] = client_secret
+        oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
+        oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
 
         return oauth_flow_config
 

@@ -2,11 +2,8 @@
 source = app
 branch = True
 omit =
-    # Auto-generated REST API wrappers (30+ external services, 60k+ lines)
     app/sources/external/*
-    # Neo4j provider (future backend, not in use)
     app/services/graph_db/neo4j/*
-    # Migration scripts (require live DB with specific state)
     app/migrations/*
 
 [report]
@@ -14,6 +11,7 @@ exclude_lines =
     pragma: no cover
     def __repr__
     if __name__ == .__main__
+    if TYPE_CHECKING
     raise NotImplementedError
     pass
     @abstractmethod

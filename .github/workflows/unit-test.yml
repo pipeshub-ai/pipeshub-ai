@@ -18,15 +18,28 @@ on:
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
 
+  workflow_call:
+    inputs:
+      python-coverage-threshold:
+        description: 'Minimum Python coverage percentage'
+        type: number
+        default: 92
+      generate-coverage-reports:
+        description: 'Generate and upload coverage report artifacts'
+        type: boolean
+        default: false
+
 permissions:
   contents: read
 
 jobs:
   nodejs-unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node-version: [20]
 
     steps:
@@ -48,13 +61,47 @@ jobs:
       - name: Run unit tests with coverage
         run: |
           cd backend/nodejs/apps
-          npm run test:ci
+          npx cross-env TS_NODE_PROJECT=tsconfig.test.json c8 --check-coverage --lines 90 --functions 90 --branches 80 --statements 90 --reporter=text --reporter=lcov mocha --parallel --jobs 4
+
+      - name: Generate Node.js coverage reports
+        if: ${{ always() && inputs.generate-coverage-reports == true }}
+        run: |
+          cd backend/nodejs/apps
+          npx cross-env TS_NODE_PROJECT=tsconfig.test.json c8 report --reporter=html --reporter=json-summary
+
+      - name: Zip coverage folder (Linux)
+        if: ${{ always() && inputs.generate-coverage-reports == true && runner.os == 'Linux' }}
+        working-directory: backend/nodejs/apps
+        run: |
+          if [ -d "coverage" ]; then
+            zip -r coverage-report.zip coverage/
+          fi
+
+      - name: Zip coverage folder (Windows)
+        if: ${{ always() && inputs.generate-coverage-reports == true && runner.os == 'Windows' }}
+        working-directory: backend/nodejs/apps
+        shell: pwsh
+        run: |
+          if (Test-Path coverage) {
+            Compress-Archive -Path coverage -DestinationPath coverage-report.zip
+          }
+
+      - name: Upload Node.js coverage artifact
+        if: ${{ always() && inputs.generate-coverage-reports == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-coverage-report-${{ matrix.os }}
+          path: backend/nodejs/apps/coverage-report.zip
+          retention-days: 7
+          if-no-files-found: ignore
 
   python-unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ['3.12']
 
     steps:
@@ -66,10 +113,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
+
+      - name: Install MariaDB Connector/C (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install mariadb-connector-c -y
 
       - name: Install uv
         run: pip install uv
@@ -84,4 +138,37 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=70
+          coverage report --fail-under=${{ inputs.python-coverage-threshold || 92 }}
+
+      - name: Generate coverage reports
+        if: ${{ always() && inputs.generate-coverage-reports == true }}
+        run: |
+          cd backend/python
+          coverage json -o coverage/coverage-summary.json
+          coverage html -d coverage/htmlcov
+
+      - name: Zip Python coverage folder (Linux)
+        if: ${{ always() && inputs.generate-coverage-reports == true && runner.os == 'Linux' }}
+        working-directory: backend/python
+        run: |
+          if [ -d "coverage" ]; then
+            zip -r python-coverage-report.zip coverage/
+          fi
+
+      - name: Zip Python coverage folder (Windows)
+        if: ${{ always() && inputs.generate-coverage-reports == true && runner.os == 'Windows' }}
+        working-directory: backend/python
+        shell: pwsh
+        run: |
+          if (Test-Path coverage) {
+            Compress-Archive -Path coverage -DestinationPath python-coverage-report.zip
+          }
+
+      - name: Upload Python coverage artifact
+        if: ${{ always() && inputs.generate-coverage-reports == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-report-${{ matrix.os }}-${{ matrix.python-version }}
+          path: backend/python/python-coverage-report.zip
+          retention-days: 7
+          if-no-files-found: ignore

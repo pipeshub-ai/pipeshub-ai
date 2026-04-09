@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: deployment/docker-compose/Dockerfile.dev
+      dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
       shm_size: 4gb
@@ -64,6 +64,10 @@ services:
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
@@ -109,8 +113,8 @@ services:
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
-      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-4}
-      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-4}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
@@ -128,16 +132,8 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-      # Vite frontend dev server
-      - DOCKER_DEV=true
-      - VITE_BACKEND_URL=http://localhost:3000
-      
-      # Frontend memory optimization - limit Node.js heap to 2GB
-      - NODE_OPTIONS=--max-old-space-size=2048
     depends_on:
       qdrant:
-        condition: service_healthy
-      kafka-1:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -149,15 +145,6 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
-      # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
-      - ./scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
-      - ../../backend/python/app:/app/python/app
-      # Mount entire source directories — picks up all config file additions automatically
-      - ../../backend/nodejs/apps:/app/backend
-      - ../../frontend:/app/frontend
-      # Anonymous volumes protect container node_modules from being overwritten by host
-      - /app/backend/node_modules
-      - /app/frontend/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -235,6 +222,7 @@ services:
       start_period: 30s
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -249,6 +237,7 @@ services:
       retries: 5
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:

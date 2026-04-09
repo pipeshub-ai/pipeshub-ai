@@ -1,7 +1,6 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
-import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
+import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
 
 export interface Event {
@@ -37,30 +36,32 @@ export interface BaseSyncEvent {
 }
 
 @injectable()
-export class SyncEventProducer extends BaseKafkaProducerConnection {
+export class SyncEventProducer {
   private readonly syncTopic = 'sync-events';
 
   constructor(
-    @inject('KafkaConfig') config: KafkaConfig,
-    @inject('Logger') logger: Logger,
-  ) {
-    super(config, logger);
-  }
+    @inject('MessageProducer') private readonly producer: IMessageProducer,
+    @inject('Logger') private readonly logger: Logger,
+  ) {}
 
   async start(): Promise<void> {
-    if (!this.isConnected) {
-      await this.connect();
+    if (!this.producer.isConnected()) {
+      await this.producer.connect();
     }
   }
 
   async stop(): Promise<void> {
-    if (this.isConnected()) {
-      await this.disconnect();
+    if (this.producer.isConnected()) {
+      await this.producer.disconnect();
     }
   }
 
+  isConnected(): boolean {
+    return this.producer.isConnected();
+  }
+
   async publishEvent(event: Event): Promise<void> {
-    const message: KafkaMessage<string> = {
+    const message: StreamMessage<string> = {
       key: event.eventType,
       value: JSON.stringify(event),
       headers: {
@@ -70,7 +71,7 @@ export class SyncEventProducer extends BaseKafkaProducerConnection {
     };
 
     try {
-      await this.publish(this.syncTopic, message);
+      await this.producer.publish(this.syncTopic, message);
       this.logger.info(`Published event: ${event.eventType} to topic ${this.syncTopic}`);
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);

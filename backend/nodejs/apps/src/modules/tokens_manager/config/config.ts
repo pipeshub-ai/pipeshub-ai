@@ -1,3 +1,4 @@
+import { RedisConfig } from '../../../libs/types/messaging.types';
 import { ConfigService } from '../services/cm.service';
 
 export interface AppConfig {
@@ -28,14 +29,7 @@ export interface AppConfig {
       password: string;
     };
   };
-  redis: {
-    host: string;
-    port: number;
-    username?: string;
-    password?: string;
-    tls?: boolean;
-    db?: number;
-  };
+  redis: RedisConfig;
   mongo: {
     uri: string;
     db: string;

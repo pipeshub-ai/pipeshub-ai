@@ -248,9 +248,20 @@ class DropboxConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
 
-        super().__init__(DropboxApp(connector_id), logger, data_entities_processor, data_store_provider, config_service, connector_id)
+        super().__init__(
+            DropboxApp(connector_id),
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
+        )
 
         self.connector_name = Connectors.DROPBOX
         self.connector_id = connector_id
@@ -1995,14 +2006,23 @@ class DropboxConnector(BaseConnector):
         self.logger.debug(f"Event details type: {type(details_obj)}")
         self.logger.debug(f"Event details: {details_obj}")
 
+        old_name: Optional[str] = None
+        new_name_from_details: Optional[str] = None
+
         # Try different ways to access the GroupRenameDetails
         if hasattr(details_obj, 'get_group_rename_details'):
             group_rename_details = details_obj.get_group_rename_details()
             old_name = group_rename_details.previous_value
-            new_name = group_rename_details.new_value
-            self.logger.debug("Used get_group_rename_details() method: old_name=%s, new_name=%s", old_name, new_name)
+            new_name_from_details = group_rename_details.new_value
+            self.logger.debug(
+                "Used get_group_rename_details() method: old_name=%s, new_name=%s",
+                old_name,
+                new_name_from_details,
+            )
 
-        if not group_id or not new_group_name:
+        new_name = new_name_from_details or new_group_name
+
+        if not group_id or not new_name:
             self.logger.warning(
                 f"Could not extract required info from group_rename event. "
                 f"group_id={group_id}, new_name={new_name}"
@@ -3114,12 +3134,24 @@ class DropboxConnector(BaseConnector):
 
     @classmethod
     async def create_connector(
-        cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str
+        cls,
+        logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
         return DropboxConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )

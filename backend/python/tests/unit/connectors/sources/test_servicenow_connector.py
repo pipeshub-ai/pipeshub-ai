@@ -11,12 +11,38 @@ from app.connectors.sources.servicenow.servicenow.connector import (
     ORGANIZATIONAL_ENTITIES,
     ServiceNowConnector,
 )
-from app.models.entities import AppUser, AppUserGroup, RecordType
+from app.models.entities import AppUser, AppUserGroup, FileRecord, RecordType, WebpageRecord
+from app.sources.external.servicenow.models import (
+    ServiceNowAPIError,
+    SysUserGroup,
+    SysUserGroupMembership,
+    SysUserRole,
+    SysUserRoleAssignment,
+    TableAPIRecord,
+    TableAPIResponse,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _table_api_response(records: list) -> TableAPIResponse:
+    """Match ServiceNowDataSource.get_now_table_tableName return type."""
+    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
+
+
+def _sys_user_row(**fields: object) -> dict:
+    """sys_user rows must include org reference keys so TableAPIRecord exposes .company, etc."""
+    base = {
+        "company": None,
+        "department": None,
+        "location": None,
+        "cost_center": None,
+    }
+    base.update(fields)
+    return base
+
 
 def _make_mock_tx_store(existing_record=None, app_users=None):
     tx = AsyncMock()
@@ -41,14 +67,6 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
     return provider
 
 
-def _make_api_response(success=True, data=None, error=None):
-    resp = MagicMock()
-    resp.success = success
-    resp.data = data
-    resp.error = error
-    return resp
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -59,8 +77,10 @@ def mock_logger():
 
 @pytest.fixture()
 def mock_data_entities_processor():
-    proc = MagicMock()
-    proc.org_id = "org-sn-1"
+    class _Proc:
+        org_id = "org-sn-1"
+
+    proc = _Proc()
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
@@ -99,6 +119,8 @@ def servicenow_connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="sn-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return connector
 
@@ -163,13 +185,13 @@ class TestServiceNowConnectorInit:
                 "clientId": "sn-client-id",
                 "clientSecret": "sn-client-secret",
                 "instanceUrl": "https://dev12345.service-now.com",
-                "redirectUri": "http://localhost/callback",
-            }
+            },
+            "redirectUri": "http://localhost/callback",
         }
         mock_client_cls.return_value = MagicMock()
         mock_ds_instance = MagicMock()
         mock_ds_instance.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(success=True, data={"result": []})
+            return_value=_table_api_response([])
         )
         mock_ds_cls.return_value = mock_ds_instance
 
@@ -228,7 +250,7 @@ class TestServiceNowConnectorInit:
         mock_client_cls.return_value = MagicMock()
         mock_ds_instance = MagicMock()
         mock_ds_instance.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(success=False, error="Unauthorized")
+            side_effect=ServiceNowAPIError(401, "Unauthorized", None)
         )
         mock_ds_cls.return_value = mock_ds_instance
         assert await servicenow_connector.init() is False
@@ -291,7 +313,7 @@ class TestConnectionAndAccess:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([{"sys_id": "1"}])
             )
             mock_ds.return_value = mock_datasource
             assert await servicenow_connector.test_connection_and_access() is True
@@ -300,7 +322,7 @@ class TestConnectionAndAccess:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=False, error="Unauthorized")
+                side_effect=ServiceNowAPIError(401, "Unauthorized", None)
             )
             mock_ds.return_value = mock_datasource
             assert await servicenow_connector.test_connection_and_access() is False
@@ -372,9 +394,9 @@ class TestFetchArticleContent:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "art-1", "text": "<p>Content</p>", "number": "KB001"}]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "art-1", "text": "<p>Content</p>", "number": "KB001"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_article_content("art-1")
@@ -384,7 +406,7 @@ class TestFetchArticleContent:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             with pytest.raises(HTTPException) as exc_info:
@@ -395,9 +417,9 @@ class TestFetchArticleContent:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "art-1", "text": "", "number": "KB001"}]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "art-1", "text": "", "number": "KB001"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_article_content("art-1")
@@ -407,7 +429,7 @@ class TestFetchArticleContent:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=False, error="Server error")
+                side_effect=ServiceNowAPIError(404, "Server error", None)
             )
             mock_ds.return_value = mock_datasource
             with pytest.raises(HTTPException) as exc_info:
@@ -492,9 +514,7 @@ class TestGetAdminUsers:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"user": "sys-admin-1"}]
-                })
+                return_value=_table_api_response([{"user": "sys-admin-1"}])
             )
             mock_ds.return_value = mock_datasource
 
@@ -516,7 +536,7 @@ class TestGetAdminUsers:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=False, error="Not found")
+                side_effect=ServiceNowAPIError(404, "Not found", None)
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._get_admin_users()
@@ -526,9 +546,7 @@ class TestGetAdminUsers:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"user": {"value": "sys-admin-1"}}]
-                })
+                return_value=_table_api_response([{"user": "sys-admin-1"}])
             )
             mock_ds.return_value = mock_datasource
 
@@ -561,12 +579,10 @@ class TestFetchAllGroups:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "g1", "name": "Group 1"},
-                        {"sys_id": "g2", "name": "Group 2"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "g1", "name": "Group 1"},
+                    {"sys_id": "g2", "name": "Group 2"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_groups()
@@ -576,7 +592,7 @@ class TestFetchAllGroups:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_groups()
@@ -586,7 +602,7 @@ class TestFetchAllGroups:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=False, error="Error")
+                side_effect=ServiceNowAPIError(500, "Error", None)
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_groups()
@@ -606,11 +622,9 @@ class TestFetchAllMemberships:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "m1", "user": "u1", "group": "g1", "sys_updated_on": "2024-01-01"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "m1", "user": "u1", "group": "g1", "sys_updated_on": "2024-01-01"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_memberships()
@@ -626,7 +640,7 @@ class TestFetchAllMemberships:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_memberships()
@@ -640,12 +654,12 @@ class TestFetchAllMemberships:
 class TestFlattenAndCreateUserGroups:
     async def test_simple_flatten(self, servicenow_connector):
         groups = [
-            {"sys_id": "g1", "name": "Group 1"},
-            {"sys_id": "g2", "name": "Group 2", "parent": {"value": "g1"}},
+            SysUserGroup(sys_id="g1", name="Group 1"),
+            SysUserGroup(sys_id="g2", name="Group 2", parent="g1"),
         ]
         memberships = [
-            {"user": {"value": "u1"}, "group": {"value": "g1"}},
-            {"user": {"value": "u2"}, "group": {"value": "g2"}},
+            SysUserGroupMembership(sys_id="m1", user="u1", group="g1"),
+            SysUserGroupMembership(sys_id="m2", user="u2", group="g2"),
         ]
 
         mock_user1 = MagicMock(spec=AppUser)
@@ -675,8 +689,8 @@ class TestFlattenAndCreateUserGroups:
 
     async def test_string_references(self, servicenow_connector):
         """Test with string references instead of dict references."""
-        groups = [{"sys_id": "g1", "name": "Group 1"}]
-        memberships = [{"user": "u1", "group": "g1"}]
+        groups = [SysUserGroup(sys_id="g1", name="Group 1")]
+        memberships = [SysUserGroupMembership(sys_id="m1", user="u1", group="g1")]
 
         tx = _make_mock_tx_store(app_users=[])
 
@@ -705,9 +719,7 @@ class TestFetchRoles:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "r1", "name": "admin"}]
-                })
+                return_value=_table_api_response([{"sys_id": "r1", "name": "admin"}])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_roles()
@@ -721,25 +733,23 @@ class TestFetchRoles:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "ra1", "user": "u1", "role": "r1", "sys_updated_on": "2024-01-01"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "ra1", "user": "u1", "role": "r1", "sys_updated_on": "2024-01-01"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_role_assignments()
             assert len(result) == 1
-            # Verify role is renamed to group
-            assert "group" in result[0]
+            assert result[0].role == "r1"
+            assert result[0].user == "u1"
 
     async def test_fetches_role_hierarchy(self, servicenow_connector):
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "h1", "contains": "r1", "role": "r2"}]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "h1", "contains": "r1", "role": "r2"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_role_hierarchy()
@@ -760,16 +770,17 @@ class TestSyncUsers:
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock) as mock_transform:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {
-                            "sys_id": "u1", "user_name": "user1",
-                            "email": "user1@example.com", "first_name": "User",
-                            "last_name": "One", "active": "true",
-                            "sys_updated_on": "2024-01-01",
-                        }
-                    ]
-                })
+                return_value=_table_api_response([
+                    _sys_user_row(
+                        sys_id="u1",
+                        user_name="user1",
+                        email="user1@example.com",
+                        first_name="User",
+                        last_name="One",
+                        active="true",
+                        sys_updated_on="2024-01-01",
+                    ),
+                ])
             )
             mock_ds.return_value = mock_datasource
 
@@ -787,11 +798,9 @@ class TestSyncUsers:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "u1", "email": "", "sys_updated_on": "2024-01-01"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "u1", "email": "", "sys_updated_on": "2024-01-01"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_users()
@@ -894,8 +903,15 @@ class TestSyncRoles:
             servicenow_connector.data_entities_processor.on_new_user_groups.assert_not_called()
 
     async def test_adds_role_prefix(self, servicenow_connector):
-        assignments = [{"user": "u1", "group": "r1", "sys_updated_on": "2024-01-01"}]
-        roles = [{"sys_id": "r1", "name": "admin"}]
+        assignments = [
+            SysUserRoleAssignment(
+                sys_id="ra1",
+                user="u1",
+                role="r1",
+                sys_updated_on="2024-01-01",
+            ),
+        ]
+        roles = [SysUserRole(sys_id="r1", name="admin")]
         hierarchy = []
         mock_group = MagicMock(spec=AppUserGroup)
         mock_group.name = "admin"
@@ -955,11 +971,9 @@ class TestSyncSingleOrganizationalEntity:
              patch.object(servicenow_connector, "_transform_to_organizational_group", return_value=MagicMock()):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "c1", "name": "Company 1", "sys_updated_on": "2024-01-01"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "c1", "name": "Company 1", "sys_updated_on": "2024-01-01"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             config = ORGANIZATIONAL_ENTITIES["company"]
@@ -975,7 +989,7 @@ class TestSyncSingleOrganizationalEntity:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             config = ORGANIZATIONAL_ENTITIES["department"]
@@ -1004,8 +1018,8 @@ class TestSyncSingleOrganizationalEntity:
              patch.object(servicenow_connector, "_transform_to_organizational_group", return_value=MagicMock()):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(side_effect=[
-                _make_api_response(success=True, data={"result": page1_data}),
-                _make_api_response(success=True, data={"result": page2_data}),
+                _table_api_response(page1_data),
+                _table_api_response(page2_data),
             ])
             mock_ds.return_value = mock_datasource
             config = ORGANIZATIONAL_ENTITIES["location"]
@@ -1045,9 +1059,9 @@ class TestSyncKnowledgeBases:
                           return_value=[]):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "kb1", "title": "KB 1", "owner": "o1", "sys_updated_on": "2024-01-01"}]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "kb1", "title": "KB 1", "owner": "o1", "sys_updated_on": "2024-01-01"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_knowledge_bases([])
@@ -1083,13 +1097,13 @@ class TestSyncKnowledgeBases:
                           return_value=[]):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "kb1", "title": "KB 1", "sys_updated_on": "2024-01-01"}]
-                })
+                return_value=_table_api_response([
+                    {"sys_id": "kb1", "title": "KB 1", "owner": None, "sys_updated_on": "2024-01-01"},
+                ])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_knowledge_bases([admin_user])
-            tx.batch_upsert_record_group_permissions.assert_called()
+            servicenow_connector.data_entities_processor.on_new_record_groups.assert_called()
 
     async def test_empty_kbs(self, servicenow_connector):
         servicenow_connector.kb_sync_point = AsyncMock()
@@ -1099,7 +1113,7 @@ class TestSyncKnowledgeBases:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_knowledge_bases([])
@@ -1115,15 +1129,22 @@ class TestSyncUsersDeep:
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
 
-        page1 = [{"sys_id": f"u{i}", "email": f"user{i}@example.com", "sys_updated_on": "2024-01-01"} for i in range(100)]
-        page2 = [{"sys_id": "u100", "email": "user100@example.com", "sys_updated_on": "2024-01-02"}]
+        page1 = [
+            _sys_user_row(
+                sys_id=f"u{i}",
+                email=f"user{i}@example.com",
+                sys_updated_on="2024-01-01",
+            )
+            for i in range(100)
+        ]
+        page2 = [_sys_user_row(sys_id="u100", email="user100@example.com", sys_updated_on="2024-01-02")]
 
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock, return_value=MagicMock(spec=AppUser)):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(side_effect=[
-                _make_api_response(success=True, data={"result": page1}),
-                _make_api_response(success=True, data={"result": page2}),
+                _table_api_response(page1),
+                _table_api_response(page2),
             ])
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_users()
@@ -1140,9 +1161,13 @@ class TestSyncUsersDeep:
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock, return_value=MagicMock(spec=AppUser)):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"sys_id": "u1", "email": "user@example.com", "sys_updated_on": "2024-06-01"}]
-                })
+                return_value=_table_api_response([
+                    _sys_user_row(
+                        sys_id="u1",
+                        email="user@example.com",
+                        sys_updated_on="2024-06-01",
+                    ),
+                ])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_users()
@@ -1163,9 +1188,12 @@ class TestSyncUsersDeep:
         servicenow_connector.data_store_provider.transaction = _tx
 
         user_data = {
-            "sys_id": "u1", "email": "user@example.com",
-            "company": "comp1", "department": {"value": "dept1"},
-            "location": "", "cost_center": None,
+            "sys_id": "u1",
+            "email": "user@example.com",
+            "company": "comp1",
+            "department": "dept1",
+            "location": "",
+            "cost_center": None,
             "sys_updated_on": "2024-01-01",
         }
 
@@ -1173,7 +1201,7 @@ class TestSyncUsersDeep:
              patch.object(servicenow_connector, "_transform_to_app_user", new_callable=AsyncMock, return_value=MagicMock(spec=AppUser)):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": [user_data]})
+                return_value=_table_api_response([user_data])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_users()
@@ -1195,13 +1223,15 @@ class TestSyncCategories:
              patch.object(servicenow_connector, "_transform_to_category_record_group", return_value=MagicMock()):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "cat1", "label": "Category 1",
-                         "parent_table": None, "parent_id": None,
-                         "sys_updated_on": "2024-01-01"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {
+                        "sys_id": "cat1",
+                        "label": "Category 1",
+                        "parent_table": None,
+                        "parent_id": None,
+                        "sys_updated_on": "2024-01-01",
+                    },
+                ])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_categories()
@@ -1216,7 +1246,7 @@ class TestSyncCategories:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_categories()
@@ -1227,21 +1257,24 @@ class TestSyncCategories:
         servicenow_connector.category_sync_point.update_sync_point = AsyncMock()
 
         mock_rg = MagicMock()
+        mock_rg.parent_external_group_id = "cat1"
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_category_record_group", return_value=mock_rg):
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [
-                        {"sys_id": "cat2", "label": "Subcategory",
-                         "parent_table": "kb_category", "parent_id": {"value": "cat1"},
-                         "sys_updated_on": "2024-01-01"},
-                    ]
-                })
+                return_value=_table_api_response([
+                    {
+                        "sys_id": "cat2",
+                        "label": "Subcategory",
+                        "parent_table": "kb_category",
+                        "parent_id": "cat1",
+                        "sys_updated_on": "2024-01-01",
+                    },
+                ])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_categories()
-            assert mock_rg.parent_record_group_id == "cat1"
+            assert mock_rg.parent_external_group_id == "cat1"
 
 
 # ===========================================================================
@@ -1256,8 +1289,8 @@ class TestFetchAllGroupsDeep:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(side_effect=[
-                _make_api_response(success=True, data={"result": page1}),
-                _make_api_response(success=True, data={"result": page2}),
+                _table_api_response(page1),
+                _table_api_response(page2),
             ])
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_groups()
@@ -1286,8 +1319,8 @@ class TestFetchAllMembershipsDeep:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(side_effect=[
-                _make_api_response(success=True, data={"result": page1}),
-                _make_api_response(success=True, data={"result": page2}),
+                _table_api_response(page1),
+                _table_api_response(page2),
             ])
             mock_ds.return_value = mock_datasource
             result = await servicenow_connector._fetch_all_memberships()
@@ -1314,9 +1347,7 @@ class TestGetAdminUsersDeep:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"user": "string-sys-id"}]
-                })
+                return_value=_table_api_response([{"user": "string-sys-id"}])
             )
             mock_ds.return_value = mock_datasource
 
@@ -1337,9 +1368,7 @@ class TestGetAdminUsersDeep:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={
-                    "result": [{"user": ""}]
-                })
+                return_value=_table_api_response([{"user": ""}])
             )
             mock_ds.return_value = mock_datasource
 
@@ -1369,7 +1398,7 @@ class TestSyncUsersErrors:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=False, error="Unauthorized")
+                side_effect=ServiceNowAPIError(401, "Unauthorized", None)
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_users()
@@ -1399,7 +1428,7 @@ class TestSyncKnowledgeBasesDeep:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=True, data={"result": []})
+                return_value=_table_api_response([])
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_knowledge_bases([])
@@ -1412,7 +1441,7 @@ class TestSyncKnowledgeBasesDeep:
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds:
             mock_datasource = AsyncMock()
             mock_datasource.get_now_table_tableName = AsyncMock(
-                return_value=_make_api_response(success=False, error="Server error")
+                side_effect=ServiceNowAPIError(500, "Server error", None)
             )
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_knowledge_bases([])
@@ -1424,3 +1453,441 @@ class TestSyncKnowledgeBasesDeep:
         )
         with pytest.raises(Exception, match="kb error"):
             await servicenow_connector._sync_knowledge_bases([])
+
+# =============================================================================
+# Merged from test_servicenow_connector_coverage.py
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _make_mock_tx_store(existing_record=None, app_users=None):
+    tx = AsyncMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
+    tx.get_user_by_source_id = AsyncMock(return_value=None)
+    tx.get_app_users = AsyncMock(return_value=app_users or [])
+    tx.get_user_groups = AsyncMock(return_value=[])
+    tx.create_user_group_membership = AsyncMock()
+    return tx
+
+
+def _make_mock_data_store_provider(existing_record=None, app_users=None):
+    tx = _make_mock_tx_store(existing_record, app_users)
+    provider = MagicMock()
+
+    @asynccontextmanager
+    async def _transaction():
+        yield tx
+
+    provider.transaction = _transaction
+    provider._tx_store = tx
+    return provider
+
+
+@pytest.fixture()
+def mock_logger_cov():
+    return logging.getLogger("test.servicenow_cov")
+
+
+@pytest.fixture()
+def mock_config_service_cov():
+    svc = AsyncMock()
+    svc.get_config = AsyncMock(return_value={
+        "auth": {"oauthConfigId": "oauth-1"},
+        "credentials": {
+            "access_token": "test-token",
+            "refresh_token": "test-refresh",
+        },
+    })
+    return svc
+
+
+@pytest.fixture()
+def connector(
+    mock_logger_cov,
+    mock_data_entities_processor,
+    mock_data_store_provider,
+    mock_config_service_cov,
+):
+    with patch("app.connectors.sources.servicenow.servicenow.connector.ServicenowApp"):
+        c = ServiceNowConnector(
+            logger=mock_logger_cov,
+            data_entities_processor=mock_data_entities_processor,
+            data_store_provider=mock_data_store_provider,
+            config_service=mock_config_service_cov,
+            connector_id="sn-cov-1",
+            scope="personal",
+            created_by="test-user-id",
+        )
+    return c
+
+
+# ===========================================================================
+# Organizational entities config
+# ===========================================================================
+class TestOrganizationalEntitiesCoverage:
+    def test_has_all_entity_types(self):
+        assert "company" in ORGANIZATIONAL_ENTITIES
+        assert "department" in ORGANIZATIONAL_ENTITIES
+        assert "location" in ORGANIZATIONAL_ENTITIES
+        assert "cost_center" in ORGANIZATIONAL_ENTITIES
+
+    def test_entity_has_required_fields(self):
+        for entity_type, config in ORGANIZATIONAL_ENTITIES.items():
+            assert "table" in config
+            assert "fields" in config
+            assert "prefix" in config
+            assert "sync_point_key" in config
+
+
+# ===========================================================================
+# Initialization
+# ===========================================================================
+class TestServiceNowInit:
+    @pytest.mark.asyncio
+    async def test_init_no_config(self, connector):
+        connector.config_service.get_config = AsyncMock(return_value=None)
+        assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    async def test_init_no_oauth_config_id(self, connector):
+        connector.config_service.get_config = AsyncMock(return_value={
+            "auth": {},
+        })
+        assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_init_no_oauth_config_found(self, mock_fetch, connector):
+        mock_fetch.return_value = None
+        assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_init_incomplete_config(self, mock_fetch, connector):
+        mock_fetch.return_value = {
+            "config": {
+                "clientId": "cid",
+                # Missing clientSecret, instanceUrl, redirectUri
+            }
+        }
+        assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_init_no_access_token(self, mock_fetch, connector):
+        mock_fetch.return_value = {
+            "config": {
+                "clientId": "cid",
+                "clientSecret": "cs",
+                "instanceUrl": "https://instance.service-now.com",
+            },
+            "redirectUri": "http://localhost/callback",
+        }
+        connector.config_service.get_config = AsyncMock(return_value={
+            "auth": {"oauthConfigId": "oauth-1"},
+            "credentials": {},
+        })
+        assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_init_connection_test_fails(self, mock_fetch, connector):
+        mock_fetch.return_value = {
+            "config": {
+                "clientId": "cid",
+                "clientSecret": "cs",
+                "instanceUrl": "https://instance.service-now.com",
+            },
+            "redirectUri": "http://localhost/callback",
+        }
+        connector.test_connection_and_access = AsyncMock(return_value=False)
+        assert await connector.init() is False
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_init_exception(self, mock_fetch, connector):
+        mock_fetch.side_effect = Exception("network error")
+        assert await connector.init() is False
+
+
+# ===========================================================================
+# _get_fresh_datasource
+# ===========================================================================
+class TestGetFreshDatasourceCoverage:
+    @pytest.mark.asyncio
+    async def test_no_client_raises(self, connector):
+        connector.servicenow_client = None
+        with pytest.raises(Exception, match="not initialized"):
+            await connector._get_fresh_datasource()
+
+    @pytest.mark.asyncio
+    async def test_no_config_raises(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector.config_service.get_config = AsyncMock(return_value=None)
+        with pytest.raises(Exception, match="not found"):
+            await connector._get_fresh_datasource()
+
+    @pytest.mark.asyncio
+    async def test_no_token_raises(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector.config_service.get_config = AsyncMock(return_value={
+            "credentials": {}
+        })
+        with pytest.raises(Exception, match="No access token"):
+            await connector._get_fresh_datasource()
+
+    @pytest.mark.asyncio
+    async def test_updates_token_when_changed(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector.servicenow_client.access_token = "old-token"
+        connector.config_service.get_config = AsyncMock(return_value={
+            "credentials": {"access_token": "new-token"}
+        })
+        with patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource"):
+            ds = await connector._get_fresh_datasource()
+        assert connector.servicenow_client.access_token == "new-token"
+
+
+# ===========================================================================
+# test_connection_and_access
+# ===========================================================================
+class TestServiceNowTestConnection:
+    @pytest.mark.asyncio
+    async def test_success(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            return_value=_table_api_response([{"sys_id": "1"}])
+        )
+        connector._get_fresh_datasource.return_value = mock_ds
+        assert await connector.test_connection_and_access() is True
+
+    @pytest.mark.asyncio
+    async def test_failure(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            side_effect=ServiceNowAPIError(401, "Unauthorized", None)
+        )
+        connector._get_fresh_datasource.return_value = mock_ds
+        assert await connector.test_connection_and_access() is False
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector._get_fresh_datasource = AsyncMock(side_effect=Exception("boom"))
+        assert await connector.test_connection_and_access() is False
+
+
+# ===========================================================================
+# stream_record
+# ===========================================================================
+class TestServiceNowStreamRecord:
+    @pytest.mark.asyncio
+    async def test_stream_webpage_record(self, connector):
+        connector._fetch_article_content = AsyncMock(return_value="<h1>Test</h1>")
+        record = MagicMock()
+        record.record_type = RecordType.WEBPAGE
+        record.record_name = "Test Article"
+        record.external_record_id = "sys-123"
+        record.mime_type = "text/html"
+        record.id = "r-1"
+        response = await connector.stream_record(record)
+        assert response.media_type == "text/html"
+
+    @pytest.mark.asyncio
+    async def test_stream_file_record(self, connector):
+        connector._fetch_attachment_content = AsyncMock(return_value=b"file-bytes")
+        record = MagicMock()
+        record.record_type = RecordType.FILE
+        record.record_name = "attachment.pdf"
+        record.external_record_id = "att-123"
+        record.mime_type = "application/pdf"
+        record.id = "r-2"
+        response = await connector.stream_record(record)
+        assert response is not None
+
+    @pytest.mark.asyncio
+    async def test_stream_unsupported_type(self, connector):
+        record = MagicMock()
+        record.record_type = "UNKNOWN"
+        record.record_name = "bad"
+        record.external_record_id = "bad-1"
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.stream_record(record)
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_stream_exception(self, connector):
+        connector._fetch_article_content = AsyncMock(side_effect=RuntimeError("db"))
+        record = MagicMock()
+        record.record_type = RecordType.WEBPAGE
+        record.record_name = "Test"
+        record.external_record_id = "sys-1"
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
+
+
+# ===========================================================================
+# _fetch_article_content
+# ===========================================================================
+class TestFetchArticleContentCoverage:
+    @pytest.mark.asyncio
+    async def test_success(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            return_value=_table_api_response([
+                {"sys_id": "sys-1", "text": "<p>Hello</p>", "short_description": "Test"},
+            ])
+        )
+        connector._get_fresh_datasource.return_value = mock_ds
+        content = await connector._fetch_article_content("sys-1")
+        assert "<p>Hello</p>" in content
+
+    @pytest.mark.asyncio
+    async def test_empty_content(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            return_value=_table_api_response([{"sys_id": "sys-1", "text": ""}])
+        )
+        connector._get_fresh_datasource.return_value = mock_ds
+        content = await connector._fetch_article_content("sys-1")
+        assert "No content" in content
+
+    @pytest.mark.asyncio
+    async def test_no_result(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            return_value=_table_api_response([])
+        )
+        connector._get_fresh_datasource.return_value = mock_ds
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_article_content("sys-missing")
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_api_failure(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.get_now_table_tableName = AsyncMock(
+            side_effect=ServiceNowAPIError(404, "Not found", None)
+        )
+        connector._get_fresh_datasource.return_value = mock_ds
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_article_content("sys-1")
+        assert exc_info.value.status_code == 404
+
+
+# ===========================================================================
+# _fetch_attachment_content
+# ===========================================================================
+class TestFetchAttachmentContentCoverage:
+    @pytest.mark.asyncio
+    async def test_success(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.download_attachment = AsyncMock(return_value=b"file-content")
+        connector._get_fresh_datasource.return_value = mock_ds
+        content = await connector._fetch_attachment_content("att-1")
+        assert content == b"file-content"
+
+    @pytest.mark.asyncio
+    async def test_empty_content(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.download_attachment = AsyncMock(return_value=None)
+        connector._get_fresh_datasource.return_value = mock_ds
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_attachment_content("att-missing")
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        mock_ds = AsyncMock()
+        mock_ds.download_attachment = AsyncMock(side_effect=RuntimeError("net"))
+        connector._get_fresh_datasource.return_value = mock_ds
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._fetch_attachment_content("att-1")
+        assert exc_info.value.status_code == 500
+
+
+# ===========================================================================
+# Other methods
+# ===========================================================================
+class TestServiceNowMisc:
+    def test_get_signed_url_returns_none(self, connector):
+        record = MagicMock()
+        assert connector.get_signed_url(record) is None
+
+    @pytest.mark.asyncio
+    async def test_handle_webhook_returns_true(self, connector):
+        result = await connector.handle_webhook_notification("org-1", {"type": "test"})
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_cleanup(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector.servicenow_datasource = MagicMock()
+        await connector.cleanup()
+        assert connector.servicenow_client is None
+        assert connector.servicenow_datasource is None
+
+    @pytest.mark.asyncio
+    async def test_reindex_records(self, connector):
+        await connector.reindex_records([])  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_get_filter_options_raises(self, connector):
+        with pytest.raises(NotImplementedError):
+            await connector.get_filter_options("key")
+
+    @pytest.mark.asyncio
+    async def test_run_incremental_sync_delegates(self, connector):
+        connector.run_sync = AsyncMock()
+        await connector.run_incremental_sync()
+        connector.run_sync.assert_awaited_once()
+
+
+# ===========================================================================
+# run_sync
+# ===========================================================================
+class TestServiceNowRunSync:
+    @pytest.mark.asyncio
+    async def test_no_client_raises(self, connector):
+        connector.servicenow_client = None
+        with pytest.raises(Exception, match="not initialized"):
+            await connector.run_sync()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_orchestration(self, connector):
+        connector.servicenow_client = MagicMock()
+        connector._sync_users_and_groups = AsyncMock()
+        connector._get_admin_users = AsyncMock(return_value=[])
+        connector._sync_knowledge_bases = AsyncMock()
+        connector._sync_categories = AsyncMock()
+        connector._sync_articles = AsyncMock()
+        await connector.run_sync()
+        connector._sync_users_and_groups.assert_awaited_once()
+        connector._sync_knowledge_bases.assert_awaited_once()
+        connector._sync_categories.assert_awaited_once()
+        connector._sync_articles.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_with_admin_users(self, connector):
+        connector.servicenow_client = MagicMock()
+        admin_user = MagicMock()
+        connector._sync_users_and_groups = AsyncMock()
+        connector._get_admin_users = AsyncMock(return_value=[admin_user])
+        connector._sync_knowledge_bases = AsyncMock()
+        connector._sync_categories = AsyncMock()
+        connector._sync_articles = AsyncMock()
+        await connector.run_sync()
+        connector._sync_knowledge_bases.assert_awaited_once()

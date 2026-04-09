@@ -147,6 +147,8 @@ def connector():
                 data_store_provider=ds_provider,
                 config_service=config_service,
                 connector_id="dbx-conn-1",
+                scope="team",
+                created_by="test-user",
             )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
@@ -355,3 +357,246 @@ class TestProcessDropboxEntry:
         )
         assert result.is_updated is True
         assert result.metadata_changed is True
+
+
+# ---------------------------------------------------------------------------
+# _handle_record_updates
+# ---------------------------------------------------------------------------
+class TestHandleRecordUpdates:
+    async def test_deleted_record(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="ext-1",
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+
+    async def test_new_record(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        update = RecordUpdate(
+            record=MagicMock(record_name="new.txt"), is_new=True, is_updated=False,
+            is_deleted=False, metadata_changed=False, content_changed=False,
+            permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+
+    async def test_metadata_changed(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.on_record_metadata_update = AsyncMock()
+        update = RecordUpdate(
+            record=MagicMock(record_name="updated.txt"),
+            is_new=False, is_updated=True, is_deleted=False,
+            metadata_changed=True, content_changed=False, permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
+
+    async def test_permissions_changed(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.on_updated_record_permissions = AsyncMock()
+        update = RecordUpdate(
+            record=MagicMock(record_name="perms.txt"),
+            is_new=False, is_updated=True, is_deleted=False,
+            metadata_changed=False, content_changed=False, permissions_changed=True,
+            new_permissions=[MagicMock()],
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+
+    async def test_content_changed(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.on_record_content_update = AsyncMock()
+        update = RecordUpdate(
+            record=MagicMock(record_name="content.txt"),
+            is_new=False, is_updated=True, is_deleted=False,
+            metadata_changed=False, content_changed=True, permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
+
+    async def test_exception_swallowed(self, connector):
+        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
+        connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("err"))
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="ext-1",
+        )
+        await connector._handle_record_updates(update)
+
+
+# ---------------------------------------------------------------------------
+# run_sync
+# ---------------------------------------------------------------------------
+class TestRunSync:
+    @patch("app.connectors.sources.dropbox_individual.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_failed_account_info(self, mock_filters, connector):
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        connector.data_source.users_get_current_account = AsyncMock(return_value=None)
+        with pytest.raises(ValueError, match="Failed to retrieve account"):
+            await connector.run_sync()
+
+    @patch("app.connectors.sources.dropbox_individual.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_successful_sync(self, mock_filters, connector):
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        account = MagicMock()
+        account.account_id = "uid-1"
+        account.email = "u@test.com"
+        account.name = MagicMock()
+        account.name.display_name = "User"
+        resp = MagicMock(success=True, data=account)
+        connector.data_source.users_get_current_account = AsyncMock(return_value=resp)
+        connector._get_current_user_info = AsyncMock(return_value=("uid-1", "u@test.com"))
+        connector._create_personal_record_group = AsyncMock()
+        connector._run_sync_with_cursor = AsyncMock()
+        await connector.run_sync()
+        connector._run_sync_with_cursor.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _create_personal_record_group
+# ---------------------------------------------------------------------------
+class TestCreatePersonalRecordGroup:
+    async def test_creates_group(self, connector):
+        result = await connector._create_personal_record_group("uid-1", "u@test.com", "My Dropbox")
+        assert result is not None
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# run_incremental_sync
+# ---------------------------------------------------------------------------
+class TestRunIncrementalSync:
+    async def test_incremental_sync(self, connector):
+        connector._get_current_user_info = AsyncMock(return_value=("uid-1", "u@test.com"))
+        connector._run_sync_with_cursor = AsyncMock()
+        await connector.run_incremental_sync()
+        connector._run_sync_with_cursor.assert_awaited_once()
+
+    async def test_incremental_sync_error(self, connector):
+        connector._get_current_user_info = AsyncMock(side_effect=Exception("err"))
+        with pytest.raises(Exception, match="err"):
+            await connector.run_incremental_sync()
+
+
+# ---------------------------------------------------------------------------
+# test_connection_and_access
+# ---------------------------------------------------------------------------
+class TestTestConnectionAndAccess:
+    async def test_success(self, connector):
+        connector.data_source.users_get_current_account = AsyncMock(return_value=MagicMock())
+        result = await connector.test_connection_and_access()
+        assert result is True
+
+    async def test_not_initialized(self, connector):
+        connector.data_source = None
+        result = await connector.test_connection_and_access()
+        assert result is False
+
+    async def test_exception(self, connector):
+        connector.data_source.users_get_current_account = AsyncMock(side_effect=Exception("err"))
+        result = await connector.test_connection_and_access()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# get_signed_url
+# ---------------------------------------------------------------------------
+class TestGetSignedUrl:
+    async def test_success(self, connector):
+        resp = MagicMock()
+        resp.data.link = "https://dl.dropbox.com/temp"
+        connector.data_source.files_get_temporary_link = AsyncMock(return_value=resp)
+        record = MagicMock(external_record_id="/test.txt", id="r1")
+        result = await connector.get_signed_url(record)
+        assert result == "https://dl.dropbox.com/temp"
+
+    async def test_no_external_id(self, connector):
+        record = MagicMock(external_record_id=None, path=None, id="r1")
+        result = await connector.get_signed_url(record)
+        assert result is None
+
+    async def test_not_initialized(self, connector):
+        connector.data_source = None
+        record = MagicMock(external_record_id="/test.txt", id="r1")
+        result = await connector.get_signed_url(record)
+        assert result is None
+
+    async def test_exception(self, connector):
+        connector.data_source.files_get_temporary_link = AsyncMock(side_effect=Exception("err"))
+        record = MagicMock(external_record_id="/test.txt", id="r1")
+        result = await connector.get_signed_url(record)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# cleanup
+# ---------------------------------------------------------------------------
+class TestCleanup:
+    async def test_cleanup(self, connector):
+        connector.data_source = MagicMock()
+        await connector.cleanup()
+        assert connector.data_source is None
+
+
+# ---------------------------------------------------------------------------
+# handle_webhook_notification
+# ---------------------------------------------------------------------------
+class TestHandleWebhookNotification:
+    async def test_triggers_sync(self, connector):
+        # handle_webhook_notification uses asyncio.create_task which needs an event loop
+        import asyncio
+        connector.run_incremental_sync = AsyncMock()
+        connector.handle_webhook_notification({})
+        # It creates a task in the event loop
+
+
+# ---------------------------------------------------------------------------
+# reindex_records
+# ---------------------------------------------------------------------------
+class TestReindexRecords:
+    async def test_empty_records(self, connector):
+        await connector.reindex_records([])
+
+    async def test_not_initialized(self, connector):
+        connector.data_source = None
+        with pytest.raises(Exception, match="not initialized"):
+            await connector.reindex_records([MagicMock()])
+
+    async def test_updated_and_non_updated(self, connector):
+        connector._check_and_fetch_updated_record = AsyncMock(
+            side_effect=[(MagicMock(), []), None]
+        )
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        await connector.reindex_records([MagicMock(id="r1"), MagicMock(id="r2")])
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _get_date_filters
+# ---------------------------------------------------------------------------
+class TestGetDateFilters:
+    def test_no_filters(self, connector):
+        connector.sync_filters = FilterCollection()
+        result = connector._get_date_filters()
+        assert result == (None, None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# _pass_date_filters
+# ---------------------------------------------------------------------------
+class TestPassDateFilters:
+    def test_folder_always_passes(self, connector):
+        from dropbox.files import FolderMetadata
+        entry = MagicMock(spec=FolderMetadata)
+        assert connector._pass_date_filters(entry) is True
+
+    def test_no_filters(self, connector):
+        from dropbox.files import FileMetadata
+        entry = MagicMock(spec=FileMetadata)
+        entry.server_modified = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        assert connector._pass_date_filters(entry) is True

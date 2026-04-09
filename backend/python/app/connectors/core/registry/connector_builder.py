@@ -1,8 +1,10 @@
+from collections.abc import Callable
 from copy import deepcopy
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any
 
 from app.config.constants.arangodb import ExtensionTypes
+from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     OAuthConfig,
@@ -136,7 +138,7 @@ class ConnectorConfigBuilder:
         })
         return self
 
-    def with_supported_auth_types(self, auth_types: Union[str, List[str]]) -> 'ConnectorConfigBuilder':
+    def with_supported_auth_types(self, auth_types: str | list[str]) -> 'ConnectorConfigBuilder':
         """Set supported authentication types - user will select one during connector creation"""
         if isinstance(auth_types, str):
             self.config["auth"]["supportedAuthTypes"] = [auth_types]
@@ -180,7 +182,7 @@ class ConnectorConfigBuilder:
     def with_oauth_config(
         self,
         oauth_config: OAuthConfig,
-        auth_type: Optional[str] = None,
+        auth_type: str | None = None,
         auto_add_common_fields: bool = True
     ) -> 'ConnectorConfigBuilder':
         """
@@ -230,13 +232,13 @@ class ConnectorConfigBuilder:
 
         return self
 
-    def with_sync_strategies(self, strategies: List[SyncStrategy], selected: SyncStrategy = SyncStrategy.MANUAL) -> 'ConnectorConfigBuilder':
+    def with_sync_strategies(self, strategies: list[SyncStrategy], selected: SyncStrategy = SyncStrategy.MANUAL) -> 'ConnectorConfigBuilder':
         """Configure sync strategies"""
         self.config["sync"]["supportedStrategies"] = [strategy.value for strategy in strategies]
         self.config["sync"]["selectedStrategy"] = selected.value
         return self
 
-    def with_webhook_config(self, supported: bool = True, events: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
+    def with_webhook_config(self, supported: bool = True, events: list[str] | None = None) -> 'ConnectorConfigBuilder':
         """Configure webhook support"""
         self.config["sync"]["webhookConfig"]["supported"] = supported
         if events:
@@ -296,7 +298,7 @@ class ConnectorConfigBuilder:
 
         return self
 
-    def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: Union[str, bool, int, float]) -> 'ConnectorConfigBuilder':
+    def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: str | bool | int | float) -> 'ConnectorConfigBuilder':
         """Add conditional display logic for auth fields"""
         self.config["auth"]["conditionalDisplay"][field_name] = {
             "showWhen": {
@@ -307,7 +309,7 @@ class ConnectorConfigBuilder:
         }
         return self
 
-    def build(self) -> Dict[str, Any]:
+    def build(self) -> dict[str, Any]:
         """Build and return the final configuration"""
         result = deepcopy(self.config)
         self._reset()
@@ -320,25 +322,25 @@ class ConnectorBuilder:
     def __init__(self, name: str) -> None:
         self.name = name
         self.app_group = ""
-        self.supported_auth_types: List[str] = ["OAUTH"]  # Supported auth types (user selects one during creation)
+        self.supported_auth_types: list[str] = ["OAUTH"]  # Supported auth types (user selects one during creation)
         self.app_description = ""
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
-        self.connector_scopes: List[ConnectorScope] = []
-        self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
-        self.connector_info: Optional[str] = None
+        self.connector_scopes: list[ConnectorScope] = []
+        self._oauth_configs: dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
+        self.connector_info: str | None = None
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
         self.app_group = app_group
         return self
 
-    def with_scopes(self, scopes: List[ConnectorScope]) -> 'ConnectorBuilder':
+    def with_scopes(self, scopes: list[ConnectorScope]) -> 'ConnectorBuilder':
         """Set the connector scopes"""
         self.connector_scopes = scopes
         return self
 
-    def with_auth(self, auth_builders: List[AuthBuilder]) -> 'ConnectorBuilder':
+    def with_auth(self, auth_builders: list[AuthBuilder]) -> 'ConnectorBuilder':
         """
         Configure authentication types using AuthBuilder pattern (preferred method).
 
@@ -378,7 +380,7 @@ class ConnectorBuilder:
 
         return self
 
-    def with_supported_auth_types(self, auth_types: Union[str, List[str]]) -> 'ConnectorBuilder':
+    def with_supported_auth_types(self, auth_types: str | list[str]) -> 'ConnectorBuilder':
         """
         Set the supported authentication types - user will select one during connector creation.
 
@@ -406,7 +408,7 @@ class ConnectorBuilder:
         self.app_description = description
         return self
 
-    def with_categories(self, categories: List[str]) -> 'ConnectorBuilder':
+    def with_categories(self, categories: list[str]) -> 'ConnectorBuilder':
         """Set the app categories"""
         self.app_categories = categories
         return self
@@ -422,7 +424,7 @@ class ConnectorBuilder:
         return self
 
 
-    def build_decorator(self) -> Callable[[Type], Type]:
+    def build_decorator(self) -> Callable[[type], type]:
         """Build the final connector decorator"""
         from app.connectors.core.registry.connector_registry import Connector
 
@@ -490,7 +492,7 @@ class ConnectorBuilder:
             connector_info=self.connector_info
         )
 
-    def _validate_required_auth_fields(self, config: Dict[str, Any]) -> None:
+    def _validate_required_auth_fields(self, config: dict[str, Any]) -> None:
         """
         Validate that required auth fields are properly defined.
 
@@ -518,7 +520,7 @@ class ConnectorBuilder:
                                 f"Required field at index {i} is missing a 'name'"
                             )
 
-    def _validate_oauth_requirements(self, config: Dict[str, Any], auth_type: str = "OAUTH") -> None:
+    def _validate_oauth_requirements(self, config: dict[str, Any], auth_type: str = "OAUTH") -> None:
         """Ensure required OAuth infrastructure is provided for OAuth connectors.
 
         Required OAuth infrastructure:
@@ -591,7 +593,7 @@ class CommonFields:
     def client_id(provider: str = "OAuth Provider") -> AuthField:
         """Standard OAuth client ID field"""
         return AuthField(
-            name="clientId",
+            name=AuthFieldKeys.CLIENT_ID,
             display_name="Client ID",
             placeholder="Enter your Client ID",
             description=f"The OAuth2 client ID from {provider}"
@@ -601,7 +603,7 @@ class CommonFields:
     def client_secret(provider: str = "OAuth Provider") -> AuthField:
         """Standard OAuth client secret field"""
         return AuthField(
-            name="clientSecret",
+            name=AuthFieldKeys.CLIENT_SECRET,
             display_name="Client Secret",
             placeholder="Enter your Client Secret",
             description=f"The OAuth2 client secret from {provider}",
@@ -610,7 +612,17 @@ class CommonFields:
         )
 
     @staticmethod
-    def api_token(token_name: str = "API Token", placeholder: str = "", field_name: Optional[str] = None, required: bool = True) -> AuthField:
+    def tenant_id(provider: str = "Azure AD") -> AuthField:
+        """Standard tenant ID field for Microsoft/Azure OAuth"""
+        return AuthField(
+            name=AuthFieldKeys.TENANT_ID,
+            display_name="Tenant ID",
+            placeholder="Enter your Tenant ID",
+            description=f"The directory (tenant) ID from {provider}. Found in Azure Portal > Azure Active Directory > Overview"
+        )
+
+    @staticmethod
+    def api_token(token_name: str = "API Token", placeholder: str = "", field_name: str | None = None, required: bool = True) -> AuthField:
         """Standard API token field
 
         Args:
@@ -682,9 +694,9 @@ class CommonFields:
 
     @staticmethod
     def file_extension_filter(
-        description: Optional[str] = None,
+        description: str | None = None,
         display_name: str = "File Extensions",
-        options_endpoint: Optional[str] = None,
+        options_endpoint: str | None = None,
     ) -> FilterField:
         """
         Standard file extension filter (static multiselect).
@@ -707,7 +719,7 @@ class CommonFields:
         )
 
     @staticmethod
-    def folders_filter(options_endpoint: Optional[str] = None) -> FilterField:
+    def folders_filter(options_endpoint: str | None = None) -> FilterField:
         """Standard folders filter"""
         return FilterField(
             name="folders",
@@ -718,7 +730,7 @@ class CommonFields:
         )
 
     @staticmethod
-    def channels_filter(options_endpoint: Optional[str] = None) -> FilterField:
+    def channels_filter(options_endpoint: str | None = None) -> FilterField:
         """Standard channels filter"""
         return FilterField(
             name="channels",
@@ -729,7 +741,7 @@ class CommonFields:
         )
 
     @staticmethod
-    def modified_date_filter(description: Optional[str] = None) -> FilterField:
+    def modified_date_filter(description: str | None = None) -> FilterField:
         """Standard modified date filter with operator selection"""
         return FilterField(
             name="modified",
@@ -740,7 +752,7 @@ class CommonFields:
         )
 
     @staticmethod
-    def created_date_filter(description: Optional[str] = None) -> FilterField:
+    def created_date_filter(description: str | None = None) -> FilterField:
         """Standard created date filter with operator selection"""
         return FilterField(
             name="created",

@@ -38,6 +38,7 @@ class Connectors(Enum):
     ONEDRIVE = "ONEDRIVE"
     SHAREPOINT_ONLINE = "SHAREPOINT ONLINE"
     OUTLOOK = "OUTLOOK"
+    OUTLOOK_INDIVIDUAL = "OUTLOOK PERSONAL"
     OUTLOOK_CALENDAR = "OUTLOOK CALENDAR"
     MICROSOFT_TEAMS = "MICROSOFT TEAMS"
 
@@ -56,6 +57,7 @@ class Connectors(Enum):
     BOOKSTACK = "BOOKSTACK"
     GITHUB = "GITHUB"
     SERVICENOW = "SERVICENOW"
+    SALESFORCE = "SALESFORCE"
     S3 = "S3"
     MINIO = "MINIO"
     GCS = "GCS"
@@ -63,6 +65,7 @@ class Connectors(Enum):
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
     ZAMMAD = "ZAMMAD"
+    ZOOM = "ZOOM"
 
     UNKNOWN = "UNKNOWN"
 
@@ -77,6 +80,7 @@ class AppGroups(Enum):
     DROPBOX = "Dropbox"
     BOX = "Box"
     SERVICENOW = "Servicenow"
+    SALESFORCE = "Salesforce"
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
@@ -87,6 +91,7 @@ class AppGroups(Enum):
     AZURE = "Azure"
     LINEAR = "Linear"
     ZAMMAD = "Zammad"
+    ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
     RSS = "RSS"
 
@@ -136,6 +141,9 @@ class CollectionNames(Enum):
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
     PULLREQUESTS = "prs"
+    MEETINGS = "meetings"
+    PRODUCTS = "products"
+    DEALS = "deals"
 
     # Users and groups
     PEOPLE = "people"
@@ -172,6 +180,14 @@ class CollectionNames(Enum):
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
+    PROSPECT = "prospect"              # Org -> Org: prospect/account relationship
+    CUSTOMER = "customer"              # Org -> Org: customer relationship
+    LEAD = "lead"                      # Org -> Person: lead (until converted to contact)
+    CONTACT = "contact"                # Org -> Person: contact relationship
+    DEAL_INFO = "dealInfo"             # Org -> Deal: opportunity/deal relationship
+    DEAL_OF = "dealOf"  # Deal -> Org: deal belongs to organization
+    SOLD_IN = "soldIn"  # Product -> Deal: lineItems [{quantity, unitPrice}, ...] per product–deal
+    MEMBER_OF = "memberOf"  # Person -> Org: membership with Title, Department
 
     BLOCKS = "blocks"
 
@@ -288,11 +304,16 @@ class RecordTypes(Enum):
     DATASOURCE = "DATASOURCE"
     COMMENT = "COMMENT"
     TICKET = "TICKET"
+    PRODUCT = "PRODUCT"
+    DEAL = "DEAL"
     MESSAGE = "MESSAGE"
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
     PULL_REQUEST = "PULL_REQUEST"
+    MEETING = "MEETING"
+    CASE = "CASE"
+    TASK = "TASK"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
@@ -316,6 +337,7 @@ class EntityRelations(Enum):
     REPORTED_BY = "REPORTED_BY"
     CREATED_BY = "CREATED_BY"
     LEAD_BY = "LEAD_BY"
+    RELATED_TO_PERSON = "RELATED_TO_PERSON"
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
@@ -349,12 +371,17 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_BLOGPOST": CollectionNames.WEBPAGES.value,
     "TICKET": CollectionNames.TICKETS.value,
+    "CASE": CollectionNames.TICKETS.value,
+    "TASK": CollectionNames.TICKETS.value,
     "COMMENT": CollectionNames.COMMENTS.value,
     "INLINE_COMMENT": CollectionNames.COMMENTS.value,
     "LINK": CollectionNames.LINKS.value,
     "PROJECT": CollectionNames.PROJECTS.value,
+    "PRODUCT": CollectionNames.PRODUCTS.value,
+    "DEAL": CollectionNames.DEALS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
-    "PULL_REQUEST":CollectionNames.PULLREQUESTS.value
+    "PULL_REQUEST": CollectionNames.PULLREQUESTS.value,
+    "MEETING": CollectionNames.MEETINGS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

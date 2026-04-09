@@ -25,25 +25,25 @@ describe('UserManagerContainer - coverage', () => {
       // Should not throw
     })
 
-    it('should disconnect KeyValueStoreService and EntitiesEventProducer', async () => {
+    it('should disconnect KeyValueStoreService and MessageProducer', async () => {
       const mockKvStore = {
         isConnected: sinon.stub().returns(true),
         disconnect: sinon.stub().resolves(),
       }
-      const mockEventService = {
+      const mockMessageProducer = {
         isConnected: sinon.stub().returns(true),
-        stop: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
       }
 
       const container = new Container()
       container.bind<any>('KeyValueStoreService').toConstantValue(mockKvStore)
-      container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
+      container.bind<any>('MessageProducer').toConstantValue(mockMessageProducer)
 
       ;(UserManagerContainer as any).instance = container
 
       await UserManagerContainer.dispose()
       expect(mockKvStore.disconnect.calledOnce).to.be.true
-      expect(mockEventService.stop.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect((UserManagerContainer as any).instance).to.be.null
     })
 
@@ -52,20 +52,20 @@ describe('UserManagerContainer - coverage', () => {
         isConnected: sinon.stub().returns(false),
         disconnect: sinon.stub().resolves(),
       }
-      const mockEventService = {
+      const mockMessageProducer = {
         isConnected: sinon.stub().returns(false),
-        stop: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
       }
 
       const container = new Container()
       container.bind<any>('KeyValueStoreService').toConstantValue(mockKvStore)
-      container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
+      container.bind<any>('MessageProducer').toConstantValue(mockMessageProducer)
 
       ;(UserManagerContainer as any).instance = container
 
       await UserManagerContainer.dispose()
       expect(mockKvStore.disconnect.called).to.be.false
-      expect(mockEventService.stop.called).to.be.false
+      expect(mockMessageProducer.disconnect.called).to.be.false
     })
 
     it('should handle dispose when services are not bound', async () => {

@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: deployment/docker-compose/Dockerfile.dev
+      dockerfile: Dockerfile
       args:
         - BUILDKIT_INLINE_CACHE=1
       shm_size: 4gb
@@ -43,7 +43,6 @@ services:
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
 
       # Public endpoints
-      - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
       - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
 
       # Internal service URLs
@@ -64,7 +63,10 @@ services:
       - ARANGO_DB_NAME=es
       - ARANGO_USERNAME=root
       - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
-      # Ensure we use the same password as configured for the ArangoDB service
+
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -104,15 +106,15 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
-      
+
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
-      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-4}
-      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-4}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
@@ -132,16 +134,8 @@ services:
 
       - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
 
-      # Vite frontend dev server
-      - DOCKER_DEV=true
-      - VITE_BACKEND_URL=http://localhost:3000
-      
-      # Frontend memory optimization - limit Node.js heap to 2GB
-      - NODE_OPTIONS=--max-old-space-size=2048
     depends_on:
       qdrant:
-        condition: service_healthy
-      kafka-1:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -155,15 +149,6 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
-      # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
-      - ./scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
-      - ../../backend/python/app:/app/python/app
-      # Mount entire source directories — picks up all config file additions automatically
-      - ../../backend/nodejs/apps:/app/backend
-      - ../../frontend:/app/frontend
-      # Anonymous volumes protect container node_modules from being overwritten by host
-      - /app/backend/node_modules
-      - /app/frontend/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -248,6 +233,7 @@ services:
       retries: 5
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -262,6 +248,7 @@ services:
       retries: 5
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
@@ -298,11 +285,10 @@ services:
       - "6334:6334"
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
-      # Performance optimizations
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334
       - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0  # Use all available CPUs
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0
       - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
       - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
       - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256

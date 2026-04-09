@@ -62,6 +62,9 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   // Stats refetch runs in same tick as connector poll when we call this ref
   const statsRefreshCallbackRef = useRef<(() => void) | null>(null);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Latest sync enabled flag — updated each render for interval / visibility callbacks */
+  const isConnectorActiveRef = useRef(false);
+  isConnectorActiveRef.current = !!connector?.isActive;
 
   // Track fetch state to prevent duplicate calls and whether data has loaded at least once
   const fetchInProgressRef = useRef(false);
@@ -268,15 +271,19 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     setTimeout(() => setSuccess(false), 4000);
   }, [connector, fetchConnectorData]);
 
-  // Start or restart the 10s polling interval (e.g. after manual refresh so we don't fire again immediately)
+  // Start or restart the 10s polling interval (only while sync is enabled — see effect below)
   const startPollingInterval = useCallback(() => {
     if (pollingIntervalRef.current) {
       clearInterval(pollingIntervalRef.current);
       pollingIntervalRef.current = null;
     }
-    if (!connectorId) return;
+    if (!connectorId || !isConnectorActiveRef.current) return;
     pollingIntervalRef.current = setInterval(() => {
-      if (hasConnectorDataRef.current && !document.hidden) {
+      if (
+        hasConnectorDataRef.current &&
+        !document.hidden &&
+        isConnectorActiveRef.current
+      ) {
         statsRefreshCallbackRef.current?.();
         fetchConnectorData(true);
       }
@@ -522,8 +529,15 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     fetchConnectorData();
   }, [fetchConnectorData]);
 
-  // Auto-poll every 10s once initial data is loaded; skips when tab is hidden. Timer resets on manual refresh.
+  // Auto-poll every 10s only while connector sync is active; skips when tab is hidden. Timer resets on manual refresh.
   useEffect(() => {
+    if (!connector?.isActive) {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      return undefined;
+    }
     startPollingInterval();
     return () => {
       if (pollingIntervalRef.current) {
@@ -531,12 +545,16 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
         pollingIntervalRef.current = null;
       }
     };
-  }, [startPollingInterval]);
+  }, [connector?.isActive, startPollingInterval]);
 
-  // When the tab becomes visible again, trigger an immediate refresh (connector + stats)
+  // When the tab becomes visible again, trigger an immediate refresh (connector + stats) if sync is active
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden && hasConnectorDataRef.current) {
+      if (
+        !document.hidden &&
+        hasConnectorDataRef.current &&
+        isConnectorActiveRef.current
+      ) {
         statsRefreshCallbackRef.current?.();
         fetchConnectorData(true);
       }

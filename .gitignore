@@ -200,3 +200,8 @@ backend/python/requirements.txt
 # TypeScript build cache files
 *.tsbuildinfo
 backend/python/r.txt
+backend/python/uv.lock
+.claude/skills/unit-test/SKILL.md
+
+# others
+tasks

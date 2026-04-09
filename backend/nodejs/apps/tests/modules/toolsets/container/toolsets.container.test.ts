@@ -30,30 +30,30 @@ describe('toolsets/container/toolsets.container', () => {
     })
 
     it('should disconnect services and set instance to null', async () => {
-      const mockEntityEventsService = {
+      const mockMessageProducer = {
         isConnected: sinon.stub().returns(true),
         disconnect: sinon.stub().resolves(),
       }
       const mockContainer = {
-        isBound: sinon.stub().callsFake((key: string) => key === 'EntitiesEventProducer'),
-        get: sinon.stub().returns(mockEntityEventsService),
+        isBound: sinon.stub().callsFake((key: string) => key === 'MessageProducer'),
+        get: sinon.stub().returns(mockMessageProducer),
       };
       (ToolsetsContainer as any).instance = mockContainer
 
       await ToolsetsContainer.dispose()
 
-      expect(mockEntityEventsService.disconnect.calledOnce).to.be.true
+      expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect((ToolsetsContainer as any).instance).to.be.null
     })
 
     it('should handle errors during disconnect gracefully', async () => {
-      const mockEntityEventsService = {
+      const mockMessageProducer = {
         isConnected: sinon.stub().returns(true),
         disconnect: sinon.stub().rejects(new Error('disconnect failed')),
       }
       const mockContainer = {
-        isBound: sinon.stub().callsFake((key: string) => key === 'EntitiesEventProducer'),
-        get: sinon.stub().returns(mockEntityEventsService),
+        isBound: sinon.stub().callsFake((key: string) => key === 'MessageProducer'),
+        get: sinon.stub().returns(mockMessageProducer),
       };
       (ToolsetsContainer as any).instance = mockContainer
 

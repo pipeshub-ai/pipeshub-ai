@@ -15,6 +15,9 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   connectorRegistry,
   toolsets,
   refreshToolsets,
+  loadMoreToolsets,
+  toolsetsHasMore,
+  toolsetsLoadingMore,
   isBusiness,
   activeToolsetTypes = [],
   nodes,
@@ -31,6 +34,9 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   onNodeDelete,
   onError,
   isReadOnly = false,
+  isServiceAccount = false,
+  agentKey,
+  onManageAgentToolsetCredentials,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -61,8 +67,14 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
         connectorRegistry={connectorRegistry}
         toolsets={toolsets}
         refreshToolsets={refreshToolsets}
+        loadMoreToolsets={loadMoreToolsets}
+        toolsetsHasMore={toolsetsHasMore}
+        toolsetsLoadingMore={toolsetsLoadingMore}
         isBusiness={isBusiness}
         activeToolsetTypes={activeToolsetTypes}
+        isServiceAccount={isServiceAccount}
+        agentKey={agentKey}
+        onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
       />
     </Box>
 

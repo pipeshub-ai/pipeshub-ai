@@ -280,7 +280,9 @@ class ConfluenceConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         """Initialize the Confluence connector."""
         super().__init__(
@@ -289,7 +291,9 @@ class ConfluenceConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         # Client instances
@@ -1832,7 +1836,7 @@ class ConfluenceConnector(BaseConnector):
                 weburl=web_url,
                 author_source_id=author,
                 resolution_status=resolution_status,
-                inline_original_selection=inline_original_selection,
+                comment_selection=inline_original_selection,
                 is_dependent_node=True,  # Comments are dependent nodes
                 parent_node_id=parent_node_id,  # Internal record ID of parent page
             )
@@ -3771,7 +3775,9 @@ class ConfluenceConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "ConfluenceConnector":
         """Factory method to create a Confluence connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -3787,5 +3793,7 @@ class ConfluenceConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

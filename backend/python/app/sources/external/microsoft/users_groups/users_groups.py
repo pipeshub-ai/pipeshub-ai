@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
+from kiota_abstractions.headers_collection import HeadersCollection  # type: ignore
 from msgraph.generated.groups.groups_request_builder import (  # type: ignore
     GroupsRequestBuilder,
 )
@@ -48,6 +49,7 @@ class UsersGroupsResponse:
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
 
 class UsersGroupsDataSource:
     """
@@ -1858,7 +1860,8 @@ class UsersGroupsDataSource:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters()
 
                 if select:
-                    query_params.select = select if isinstance(select, list) else [select]
+                    # Kiota/msgraph-sdk: select is list[str]; serialization emits one $select=a,b,c (not repeated keys).
+                    query_params.select = list(select) if isinstance(select, list) else [select]
                 if expand:
                     query_params.expand = expand if isinstance(expand, list) else [expand]
                 if filter:
@@ -1871,17 +1874,22 @@ class UsersGroupsDataSource:
                     query_params.top = top
                 if skip is not None:
                     query_params.skip = skip
+                # Directory advanced queries: $search and many $filter forms need $count=true + ConsistencyLevel.
+                if search or filter:
+                    query_params.count = True
 
                 config = UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration()
                 config.query_parameters = query_params
-
+                # Kiota RequestConfiguration.headers must be HeadersCollection; assigning a dict breaks configure().
+                hcol = HeadersCollection()
                 if headers:
-                    config.headers = headers
-
-                if search:
-                    if not config.headers:
-                        config.headers = {}
-                    config.headers['ConsistencyLevel'] = 'eventual'
+                    for hk, hv in headers.items():
+                        if hv is not None:
+                            hcol.try_add(hk, str(hv))
+                if search or filter:
+                    if not hcol.try_get("consistencylevel"):
+                        hcol.try_add("ConsistencyLevel", "eventual")
+                config.headers = hcol
 
                 response = await self.client.users.get(request_configuration=config)
 
@@ -7828,7 +7836,8 @@ class UsersGroupsDataSource:
                 query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters()
 
                 if select:
-                    query_params.select = select if isinstance(select, list) else [select]
+                    # Kiota/msgraph-sdk: select is list[str]; serialization emits one $select=a,b,c (not repeated keys).
+                    query_params.select = list(select) if isinstance(select, list) else [select]
                 if expand:
                     query_params.expand = expand if isinstance(expand, list) else [expand]
                 if filter:
@@ -7841,17 +7850,21 @@ class UsersGroupsDataSource:
                     query_params.top = top
                 if skip is not None:
                     query_params.skip = skip
+                if search or filter:
+                    query_params.count = True
 
                 config = GroupsRequestBuilder.GroupsRequestBuilderGetRequestConfiguration()
                 config.query_parameters = query_params
-
+                # Kiota RequestConfiguration.headers must be HeadersCollection; assigning a dict breaks configure().
+                hcol = HeadersCollection()
                 if headers:
-                    config.headers = headers
-
-                if search:
-                    if not config.headers:
-                        config.headers = {}
-                    config.headers['ConsistencyLevel'] = 'eventual'
+                    for hk, hv in headers.items():
+                        if hv is not None:
+                            hcol.try_add(hk, str(hv))
+                if search or filter:
+                    if not hcol.try_get("consistencylevel"):
+                        hcol.try_add("ConsistencyLevel", "eventual")
+                config.headers = hcol
 
                 response = await self.client.groups.get(request_configuration=config)
 
@@ -10185,7 +10198,8 @@ class UsersGroupsDataSource:
                 query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters()
 
                 if select:
-                    query_params.select = select if isinstance(select, list) else [select]
+                    # Kiota/msgraph-sdk: select is list[str]; serialization emits one $select=a,b,c (not repeated keys).
+                    query_params.select = list(select) if isinstance(select, list) else [select]
                 if expand:
                     query_params.expand = expand if isinstance(expand, list) else [expand]
                 if filter:

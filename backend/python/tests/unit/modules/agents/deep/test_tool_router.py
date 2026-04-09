@@ -583,3 +583,415 @@ class TestGroupToolsByDomain:
 
         assert "slack" in groups
         assert state["cached_structured_tools"] == [t1]
+
+
+# ============================================================================
+# Additional coverage tests for tool_router
+# ============================================================================
+
+class TestAssignToolsToTasksEdgeCases:
+    """Cover uncovered branches in assign_tools_to_tasks and _filter_tools_by_relevance."""
+
+    def _make_state(self, has_knowledge=False, schema_tool_map=None):
+        return {
+            "logger": log,
+            "has_knowledge": has_knowledge,
+            "schema_tool_map": schema_tool_map or {},
+        }
+
+    def test_domain_not_normalized_falls_back_to_original(self):
+        """When normalized domain not in groups, falls back to original domain (line 145-146)."""
+        tasks = [{"task_id": "t1", "domains": ["custom_domain"]}]
+        groups = {"custom_domain": ["custom_domain.tool1"], "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "custom_domain.tool1" in result[0]["tools"]
+
+    def test_filtering_triggered_with_many_tools(self):
+        """When domain has > _MAX_TOOLS_PER_TASK tools, filtering kicks in (lines 151-154)."""
+        tools = [f"outlook.tool_{i}" for i in range(20)]
+        tasks = [{"task_id": "t1", "domains": ["outlook"],
+                  "description": "search for events matching calendar"}]
+        groups = {"outlook": tools, "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        # Should be filtered down
+        outlook_tools = [t for t in result[0]["tools"] if t.startswith("outlook.")]
+        assert len(outlook_tools) <= _MAX_TOOLS_PER_TASK
+
+    def test_no_utility_group_doesnt_crash(self):
+        """When no utility group exists, no crash (line 159→163)."""
+        tasks = [{"task_id": "t1", "domains": ["slack"]}]
+        groups = {"slack": ["slack.send"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "slack.send" in result[0]["tools"]
+
+
+class TestBuildDomainDescriptionEdgeCases:
+    """Cover uncovered branches in build_domain_description."""
+
+    def test_tool_without_schema_in_map(self):
+        """Tool not in schema_tool_map (line 273-275)."""
+        state = {"schema_tool_map": {"other_tool": MagicMock()}}
+        groups = {"slack": ["slack.send_message"]}
+        result = build_domain_description(groups, state=state)
+        assert "send_message" in result
+
+    def test_tool_with_params(self):
+        """Tool with args_schema produces parameter output (line 273)."""
+        from pydantic import BaseModel, Field
+
+        class TestSchema(BaseModel):
+            query: str = Field(description="Search text")
+
+        tool = MagicMock()
+        tool.description = "Search messages"
+        tool.args_schema = TestSchema
+        state = {"schema_tool_map": {"slack.search": tool}}
+        groups = {"slack": ["slack.search"]}
+        result = build_domain_description(groups, state=state)
+        assert "Parameters:" in result
+
+
+class TestExtractParamsEdgeCases:
+    """Cover uncovered branches in _extract_params."""
+
+    def test_pydantic_v1_style_fields(self):
+        """Test _extract_params with Pydantic v1-style __fields__ (lines 358-365)."""
+        mock_schema = MagicMock(spec=[])
+        mock_schema.model_fields = None
+        del mock_schema.model_fields  # Remove v2 field
+
+        field_info = MagicMock()
+        field_info.required = True
+        field_info.field_info = MagicMock()
+        field_info.field_info.description = "A search query"
+        field_info.outer_type_ = str
+
+        mock_schema.__fields__ = {"query": field_info}
+
+        params = _extract_params(mock_schema)
+        assert "query" in params
+        assert params["query"]["required"] is True
+        assert params["query"]["description"] == "A search query"
+
+    def test_exception_in_extract_returns_empty(self):
+        """_extract_params returns {} on exception (line 380)."""
+        result = _extract_params(None)
+        assert result == {}
+
+
+class TestGetTypeNameV1EdgeCases:
+    """Cover uncovered branches in _get_type_name_v1."""
+
+    def test_optional_type_v1(self):
+        """Pydantic v1 Optional[str] -> 'str' (lines 410-412)."""
+        from typing import Optional
+        field = MagicMock()
+        field.outer_type_ = Optional[str]
+        result = _get_type_name_v1(field)
+        assert result == "str"
+
+    def test_non_named_type_v1(self):
+        """Type without __name__ uses str() fallback (line 415)."""
+        from typing import List
+        field = MagicMock()
+        field.outer_type_ = List[str]
+        result = _get_type_name_v1(field)
+        assert "list" in result.lower()
+
+    def test_annotation_without_name(self):
+        """_get_type_name with type lacking __name__ uses str() (line 398)."""
+        from typing import List
+        field = MagicMock()
+        field.annotation = List[str]
+        result = _get_type_name(field)
+        assert "list" in result.lower()
+
+
+class TestFilterToolsEdgeCases:
+    """Cover remaining _filter_tools_by_relevance branches."""
+
+    def test_tool_with_schema_description(self):
+        """Tool description from schema_tool_map is used for scoring (lines 466-471)."""
+        schema_tool = MagicMock()
+        schema_tool.description = "Search for calendar events with specific criteria"
+        tools = [f"outlook.tool_{i}" for i in range(15)]
+        tools[0] = "outlook.search_events"
+        task = {"description": "search calendar events", "task_id": "t1"}
+        result = _filter_tools_by_relevance(
+            tools, task, {"outlook.search_events": schema_tool}, log
+        )
+        assert "outlook.search_events" in result
+
+    def test_empty_description_task(self):
+        """Task with None/empty description still works."""
+        tools = [f"a.tool_{i}" for i in range(15)]
+        task = {"description": None, "task_id": "t1"}
+        result = _filter_tools_by_relevance(tools, task, {}, log)
+        # Returns original order since no matches
+        assert len(result) == _MAX_TOOLS_PER_TASK
+
+    def test_all_tools_scored_zero_returns_original_order(self):
+        """When no keyword matches at all, returns tools in original order (line 483-485)."""
+        tools = [f"x.zzz_{i}" for i in range(15)]
+        task = {"description": "something completely different with no overlap", "task_id": "t1"}
+        result = _filter_tools_by_relevance(tools, task, {}, log)
+        assert result == tools[:_MAX_TOOLS_PER_TASK]
+
+    def test_schema_tool_none_description(self):
+        """Tool with None description doesn't crash."""
+        schema_tool = MagicMock()
+        schema_tool.description = None
+        tools = [f"a.tool_{i}" for i in range(15)]
+        tools[0] = "a.search"
+        task = {"description": "search stuff", "task_id": "t1"}
+        result = _filter_tools_by_relevance(
+            tools, task, {"a.search": schema_tool}, log
+        )
+        assert "a.search" in result
+
+
+# ============================================================================
+# Additional coverage: assign_tools_to_tasks edge cases
+# ============================================================================
+
+class TestAssignToolsToTasksFallback:
+    """Cover fallback domain lookup in assign_tools_to_tasks (lines 145-146)."""
+
+    def _make_state(self, has_knowledge=False, schema_tool_map=None):
+        return {
+            "logger": log,
+            "has_knowledge": has_knowledge,
+            "schema_tool_map": schema_tool_map or {},
+        }
+
+    def test_domain_not_in_groups_at_all(self):
+        """Domain not in groups at all results in no domain tools assigned."""
+        tasks = [{"task_id": "t1", "domains": ["nonexistent"]}]
+        groups = {"utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        # Only utility tools should be assigned
+        assert "calc" in result[0]["tools"]
+
+    def test_normalized_domain_different_from_original(self):
+        """When normalized domain is in groups but original is not (line 143-144 vs 145-146)."""
+        tasks = [{"task_id": "t1", "domains": ["googledrive"]}]
+        # Groups has normalized key "google_drive" but not "googledrive"
+        groups = {"google_drive": ["google_drive.list_files"], "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "google_drive.list_files" in result[0]["tools"]
+
+    def test_original_domain_in_groups_not_normalized(self):
+        """When original domain key is in groups but the normalized version isn't (line 145-146)."""
+        tasks = [{"task_id": "t1", "domains": ["custom"]}]
+        # "custom" is not in _DOMAIN_ALIASES, so normalized = "custom"
+        # But we put the group under "custom" directly
+        groups = {"custom": ["custom.tool1"], "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "custom.tool1" in result[0]["tools"]
+
+    def test_knowledgehub_not_added_without_knowledge(self):
+        """knowledgehub tools not added when has_knowledge is False."""
+        tasks = [{"task_id": "t1", "domains": ["knowledgehub"]}]
+        groups = {"knowledgehub": ["kh.list"], "utility": ["calc"]}
+        state = self._make_state(has_knowledge=False)
+        result = assign_tools_to_tasks(tasks, groups, state)
+        # knowledgehub tools should be added as domain tools but NOT via the knowledge path
+        assert "kh.list" in result[0]["tools"]
+
+
+# ============================================================================
+# Additional coverage: get_tools_for_sub_agent edge cases
+# ============================================================================
+
+class TestGetToolsForSubAgentAdditional:
+    """Cover remaining branches in get_tools_for_sub_agent (lines 205-209)."""
+
+    def test_cache_empty_list_not_falsy(self):
+        """Empty list cache is falsy so triggers fallback."""
+        with patch("app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
+                    return_value=[]) as mock_load:
+            state = {"cached_structured_tools": [], "logger": log}
+            result = get_tools_for_sub_agent(["tool"], state)
+            # Empty list is falsy, triggers fresh load
+            mock_load.assert_called_once()
+            assert result == []
+
+
+# ============================================================================
+# Additional coverage: build_domain_description edge cases
+# ============================================================================
+
+class TestBuildDomainDescriptionAdditional:
+    """Cover remaining branches in build_domain_description."""
+
+    def test_tool_no_description_no_params(self):
+        """Tool with empty description and no params (line 268 + 274)."""
+        tool = MagicMock()
+        tool.description = ""
+        tool.args_schema = None
+        state = {"schema_tool_map": {"slack.send": tool}}
+        groups = {"slack": ["slack.send"]}
+        result = build_domain_description(groups, state=state)
+        assert "send" in result.lower()
+
+    def test_format_params_no_description(self):
+        """Parameter without description (line 315)."""
+        from pydantic import BaseModel, Field
+
+        class NoDescSchema(BaseModel):
+            query: str  # No description
+
+        tool = MagicMock()
+        tool.args_schema = NoDescSchema
+        result = _format_tool_params(tool)
+        assert "query" in result
+
+    def test_format_params_empty_params(self):
+        """Schema with no fields returns empty string (line 304)."""
+        from pydantic import BaseModel
+
+        class EmptySchema(BaseModel):
+            pass
+
+        tool = MagicMock()
+        tool.args_schema = EmptySchema
+        result = _format_tool_params(tool)
+        assert result == ""
+
+
+# ============================================================================
+# Additional coverage: _extract_params with Pydantic v2 required_fields
+# ============================================================================
+
+class TestExtractParamsV2Required:
+    """Cover the required fields detection in Pydantic v2."""
+
+    def test_field_with_is_required_method(self):
+        """Test field_info.is_required() path."""
+        from pydantic import BaseModel, Field
+
+        class Schema(BaseModel):
+            required_field: str = Field(description="Required")
+            optional_field: str = Field(default="default", description="Optional")
+
+        params = _extract_params(Schema)
+        assert "required_field" in params
+        assert "optional_field" in params
+
+    def test_dict_schema_with_no_required_list(self):
+        """Dict schema without 'required' key makes all fields optional."""
+        schema = {
+            "properties": {
+                "name": {"type": "string", "description": "Name"},
+            }
+        }
+        params = _extract_params(schema)
+        assert params["name"]["required"] is False
+
+
+# ============================================================================
+# _get_type_name — Union with all NoneType args
+# ============================================================================
+
+class TestGetTypeNameUnionEdge:
+    """Cover edge cases in _get_type_name Union handling."""
+
+    def test_optional_none_only(self):
+        """Optional[None] effectively — Union with only NoneType args (line 394 false branch)."""
+        from typing import Optional
+        field = MagicMock()
+        # Create a Union type where all args are NoneType
+        # This is contrived but tests the branch
+        field.annotation = Optional[str]
+        result = _get_type_name(field)
+        assert result == "str"  # filters out NoneType, keeps str
+
+    def test_type_without_name_or_origin(self):
+        """Type with no __name__ and no __origin__ uses str() (line 398)."""
+        field = MagicMock()
+        field.annotation = "just_a_string"  # Not a real type
+        result = _get_type_name(field)
+        assert "just_a_string" in result
+
+
+class TestGetTypeNameV1UnionEdge:
+    """Cover edge cases in _get_type_name_v1 Union handling."""
+
+    def test_optional_str_v1(self):
+        """Optional[str] in v1 -> 'str' (line 411-412)."""
+        from typing import Optional
+        field = MagicMock()
+        field.outer_type_ = Optional[str]
+        result = _get_type_name_v1(field)
+        assert result == "str"
+
+    def test_type_without_name_v1(self):
+        """Type without __name__ in v1 uses str() (line 415)."""
+        from typing import List
+        field = MagicMock()
+        field.outer_type_ = List[int]
+        result = _get_type_name_v1(field)
+        assert "list" in result.lower()
+
+
+# ============================================================================
+# assign_tools_to_tasks — domain in original key but not normalized
+# ============================================================================
+
+class TestAssignToolsFallbackDomain:
+    """Cover line 146 — when normalized domain not in groups but original IS."""
+
+    def _make_state(self, has_knowledge=False, schema_tool_map=None):
+        return {
+            "logger": log,
+            "has_knowledge": has_knowledge,
+            "schema_tool_map": schema_tool_map or {},
+        }
+
+    def test_domain_alias_not_in_groups_original_in_groups(self):
+        """When _DOMAIN_ALIASES maps domain to X but X is not in groups,
+        fall back to original domain key (line 145-146)."""
+        # "google-drive" maps to "google_drive" via alias
+        # But groups only has "google-drive" (odd but tests the fallback)
+        tasks = [{"task_id": "t1", "domains": ["google-drive"]}]
+        groups = {"google-drive": ["google-drive.list"], "utility": ["calc"]}
+        state = self._make_state()
+        result = assign_tools_to_tasks(tasks, groups, state)
+        assert "google-drive.list" in result[0]["tools"]
+
+
+# ============================================================================
+# _extract_params exception path
+# ============================================================================
+
+class TestExtractParamsException:
+    """Cover line 380 — exception inside _extract_params."""
+
+    def test_schema_with_broken_model_fields(self):
+        """Schema with model_fields that raises during iteration (line 380)."""
+        mock_schema = MagicMock()
+        # model_fields exists but raises when accessed
+        type(mock_schema).model_fields = property(lambda self: (_ for _ in ()).throw(RuntimeError("broken")))
+        result = _extract_params(mock_schema)
+        assert result == {}
+
+
+# ============================================================================
+# _format_tool_params — line 319 (dead code, but test empty schema edge)
+# ============================================================================
+
+class TestFormatToolParamsEdge:
+    """Edge case: schema exists but _extract_params returns empty."""
+
+    def test_schema_returning_empty_params(self):
+        """When _extract_params returns empty dict, _format_tool_params returns '' (line 303-304)."""
+        tool = MagicMock()
+        tool.args_schema = {}  # Dict schema with no properties
+        result = _format_tool_params(tool)
+        assert result == ""

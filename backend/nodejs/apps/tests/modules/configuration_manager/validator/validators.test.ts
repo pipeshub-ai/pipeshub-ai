@@ -5,6 +5,8 @@ import {
   baseStorageSchema,
   s3ConfigSchema,
   azureBlobConfigSchema,
+  llmProvider,
+  addProviderRequestSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('configuration_manager/validator/validators', () => {
@@ -99,6 +101,79 @@ describe('configuration_manager/validator/validators', () => {
         accountKey: 'mykey',
       }
       const result = azureBlobConfigSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('llmProvider', () => {
+    it('should accept minimax as a valid LLM provider', () => {
+      const result = llmProvider.safeParse('minimax')
+      expect(result.success).to.be.true
+    })
+
+    it('should accept openAI as a valid LLM provider', () => {
+      const result = llmProvider.safeParse('openAI')
+      expect(result.success).to.be.true
+    })
+
+    it('should reject unknown provider', () => {
+      const result = llmProvider.safeParse('unknownProvider')
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('addProviderRequestSchema - minimax', () => {
+    it('should accept valid MiniMax LLM provider config', () => {
+      const data = {
+        body: {
+          modelType: 'llm',
+          provider: 'minimax',
+          configuration: {
+            model: 'MiniMax-M2.7',
+            apiKey: 'test-minimax-key',
+          },
+          isMultimodal: true,
+          isReasoning: false,
+          isDefault: false,
+        },
+      }
+      const result = addProviderRequestSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should accept MiniMax with multiple models', () => {
+      const data = {
+        body: {
+          modelType: 'llm',
+          provider: 'minimax',
+          configuration: {
+            model: 'MiniMax-M2.7, MiniMax-M2.7-highspeed',
+            apiKey: 'test-minimax-key',
+          },
+          isMultimodal: true,
+          isReasoning: false,
+          isDefault: false,
+        },
+      }
+      const result = addProviderRequestSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject MiniMax with invalid modelType', () => {
+      const data = {
+        body: {
+          modelType: 'invalid',
+          provider: 'minimax',
+          configuration: {
+            model: 'MiniMax-M2.7',
+            apiKey: 'test-key',
+          },
+          isMultimodal: false,
+          isReasoning: false,
+          isDefault: false,
+        },
+      }
+      const result = addProviderRequestSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

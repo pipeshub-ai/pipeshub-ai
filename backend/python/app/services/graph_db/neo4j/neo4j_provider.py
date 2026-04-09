@@ -44,9 +44,13 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    DealRecord,
     FileRecord,
     LinkRecord,
     MailRecord,
+    MeetingRecord,
+    Person,
+    ProductRecord,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -1690,13 +1694,13 @@ class Neo4jProvider(IGraphDBProvider):
                 # Find collection name from label (reverse lookup)
                 from_collection = ""
                 to_collection = ""
-                for coll, lbl_enum in COLLECTION_TO_LABEL.items():
-                    if lbl_enum.value in from_labels:
+                for coll, lbl in COLLECTION_TO_LABEL.items():
+                    if lbl in from_labels:
                         from_collection = coll
                         break
 
-                for coll, lbl_enum in COLLECTION_TO_LABEL.items():
-                    if lbl_enum.value in to_labels:
+                for coll, lbl in COLLECTION_TO_LABEL.items():
+                    if lbl in to_labels:
                         to_collection = coll
                         break
 
@@ -2040,6 +2044,12 @@ class Neo4jProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -3394,11 +3404,16 @@ class Neo4jProvider(IGraphDBProvider):
             return False
 
     async def get_user_apps(self, user_id: str) -> list:
-        """Get all apps associated with a user"""
+        """Get all apps associated with a user: direct User->App and via User->Team->App."""
         try:
             query = """
-            MATCH (user:User {id: $user_id})-[:USER_APP_RELATION]->(app:App)
-            RETURN app
+            MATCH (user:User {id: $user_id})
+            OPTIONAL MATCH (user)-[:USER_APP_RELATION]->(app1:App)
+            OPTIONAL MATCH (user)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            UNWIND app_list AS app
+            WITH app WHERE app IS NOT NULL
+            RETURN DISTINCT app
             """
             results = await self.client.execute_query(
                 query,
@@ -3840,6 +3855,187 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
 
+    async def get_all_virtual_record_ids_for_knowledge(
+        self,
+        org_id: str,
+        connector_ids: list[str] | None = None,
+        kb_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """
+        Get ALL virtualRecordId -> recordId mappings for the specified connectors/KBs,
+        WITHOUT applying per-user permission filtering.
+
+        Used exclusively for service account agents that act as "super entities" with
+        full access to their configured knowledge sources regardless of who is querying.
+
+        Args:
+            org_id: Organization ID to scope the query
+            connector_ids: List of connector/app IDs to include (non-KB connectors)
+            kb_ids: List of KB RecordGroup IDs to include
+
+        Returns:
+            Dict mapping virtualRecordId -> recordId; empty dict if nothing configured.
+        """
+        start_time = time.time()
+
+        has_connectors = bool(connector_ids)
+        has_kbs = bool(kb_ids)
+
+        if not has_connectors and not has_kbs:
+            self.logger.info(
+                "get_all_virtual_record_ids_for_knowledge: no connectors/KBs configured, returning empty"
+            )
+            return {}
+
+        try:
+            tasks = []
+
+            # For each non-KB connector fetch all completed records (no permission filtering)
+            if has_connectors:
+                for connector_id in connector_ids:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(self._get_all_virtual_ids_for_connector_neo4j(org_id, connector_id))
+
+            # For KBs fetch all completed UPLOAD records belonging to those RecordGroups
+            if has_kbs:
+                tasks.append(self._get_all_kb_virtual_ids_neo4j(org_id, kb_ids))
+
+            if not tasks:
+                return {}
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(
+                        f"get_all_virtual_record_ids_for_knowledge task {i} failed: {result}"
+                    )
+                    continue
+                if result:
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
+
+            elapsed = time.time() - start_time
+            self.logger.info(
+                f"get_all_virtual_record_ids_for_knowledge: found {len(virtual_id_to_record_id)} records "
+                f"(connectors={connector_ids}, kb_ids={kb_ids}) in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(
+                f"get_all_virtual_record_ids_for_knowledge failed: {e}", exc_info=True
+            )
+            return {}
+
+    async def _get_all_virtual_ids_for_connector_neo4j(
+        self,
+        org_id: str,
+        connector_id: str,
+    ) -> dict[str, str]:
+        """
+        Get all virtualRecordId -> recordId for a connector WITHOUT user permission filtering.
+        Returns all completed, non-deleted records for the org in this connector.
+        """
+        try:
+            query = """
+            MATCH (r:Record)
+            WHERE r.connectorId = $connectorId
+              AND r.orgId = $orgId
+              AND r.indexingStatus = $completedStatus
+              AND (r.isDeleted IS NULL OR r.isDeleted = false)
+              AND r.virtualRecordId IS NOT NULL
+              AND r.virtualRecordId <> ''
+              AND r.id IS NOT NULL
+            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
+            """
+            parameters = {
+                "connectorId": connector_id,
+                "orgId": org_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+            }
+
+            query_start = time.time()
+            results = await self.client.execute_query(query, parameters=parameters)
+            elapsed = time.time() - query_start
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if results:
+                for r in results:
+                    vid = r.get("virtualId")
+                    rid = r.get("recordId")
+                    if vid and rid and vid not in virtual_id_to_record_id:
+                        virtual_id_to_record_id[vid] = rid
+
+            self.logger.info(
+                f"Service account connector {connector_id}: "
+                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(
+                f"_get_all_virtual_ids_for_connector_neo4j({connector_id}) failed: {e}",
+                exc_info=True,
+            )
+            return {}
+
+    async def _get_all_kb_virtual_ids_neo4j(
+        self,
+        org_id: str,
+        kb_ids: list[str],
+    ) -> dict[str, str]:
+        """
+        Get all virtualRecordId -> recordId for KB RecordGroups WITHOUT user permission filtering.
+        Returns all completed UPLOAD records that belong to the specified RecordGroups.
+        """
+        try:
+            query = """
+            MATCH (kb:RecordGroup)
+            WHERE kb.id IN $kbIds
+            MATCH (r:Record)-[:BELONGS_TO]->(kb)
+            WHERE r.orgId = $orgId
+              AND r.origin = 'UPLOAD'
+              AND r.indexingStatus = $completedStatus
+              AND (r.isDeleted IS NULL OR r.isDeleted = false)
+              AND r.virtualRecordId IS NOT NULL
+              AND r.virtualRecordId <> ''
+              AND r.id IS NOT NULL
+            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
+            """
+            parameters = {
+                "kbIds": kb_ids,
+                "orgId": org_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+            }
+
+            query_start = time.time()
+            results = await self.client.execute_query(query, parameters=parameters)
+            elapsed = time.time() - query_start
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if results:
+                for r in results:
+                    vid = r.get("virtualId")
+                    rid = r.get("recordId")
+                    if vid and rid and vid not in virtual_id_to_record_id:
+                        virtual_id_to_record_id[vid] = rid
+
+            self.logger.info(
+                f"Service account KBs ({len(kb_ids)} ids): "
+                f"found {len(virtual_id_to_record_id)} records in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(
+                f"_get_all_kb_virtual_ids_neo4j failed: {e}", exc_info=True
+            )
+            return {}
+
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -3881,7 +4077,7 @@ class Neo4jProvider(IGraphDBProvider):
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
-                return []
+                return {}
 
             user_key = user.get('id') or user.get('_key')
             user_apps_ids = await self._get_user_app_ids(user_key)
@@ -4607,6 +4803,237 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
             raise
 
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """
+        Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
+
+        Creates team node with id=all_{org_id} if missing, fetches all active users,
+        and adds PERMISSION edges for users not already in the team.
+        Oldest user (by createdAtTimestamp) gets OWNER; subsequent users get READER.
+
+        Idempotent, runs without transaction, safe to call multiple times.
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_id, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_id,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Get all active users sorted by createdAtTimestamp ascending
+            users = await self.get_users(org_id, active=True)
+            if not users:
+                self.logger.debug(f"No active users found for org {org_id}")
+                return
+
+            users_sorted = sorted(users, key=lambda u: u.get("createdAtTimestamp", 0))
+            self.logger.info(f"📊 Found {len(users_sorted)} active users for org {org_id}")
+
+            # 3. Get current team members to determine if team is empty
+            team_with_users = await self.get_team_with_users(team_id=team_id, user_key=None)
+            existing_member_count = len((team_with_users or {}).get("members", []))
+            owner_assigned = existing_member_count > 0
+
+            self.logger.info(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
+            if team_with_users and team_with_users.get("members"):
+                self.logger.info(
+                    "📊 Existing members: %s",
+                    [
+                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
+                        for m in team_with_users.get("members", [])
+                    ],
+                )
+
+            # 4. Add each user without a PERMISSION edge
+            for user in users_sorted:
+                user_key = user.get("id")
+                if not user_key:
+                    continue
+
+                # Check if edge already exists
+                query = """
+                MATCH (u:Users {id: $user_key})-[r:PERMISSION]->(t:Teams {id: $team_id})
+                RETURN r
+                LIMIT 1
+                """
+                result = await self.client.execute_query(
+                    query,
+                    parameters={"user_key": user_key, "team_id": team_id}
+                )
+                if result:
+                    continue
+
+                role = "OWNER" if not owner_assigned else "READER"
+                self.logger.info(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
+
+                if not owner_assigned:
+                    owner_assigned = True
+                    try:
+                        await self.update_node(
+                            team_id,
+                            CollectionNames.TEAMS.value,
+                            {"createdBy": user_key, "updatedAtTimestamp": ts},
+                        )
+                        self.logger.info(f"✅ Updated team createdBy to {user_key}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+
+                permission_edge = {
+                    "from_id": user_key,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_id,
+                    "to_collection": CollectionNames.TEAMS.value,
+                    "type": "USER",
+                    "role": role,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_create_edges(
+                    [permission_edge], CollectionNames.PERMISSION.value
+                )
+                self.logger.info(f"✅ Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
+            raise
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """
+        Add a specific user to the org's 'All' team with a PERMISSION edge.
+
+        Ensures All team exists, checks if user already has PERMISSION edge,
+        and adds it if missing. First user in team gets OWNER, subsequent get READER.
+
+        Idempotent, safe to call multiple times for same user.
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+            
+            # 1. Create team node only if it doesn't exist
+            existing_team = await self.get_document(team_id, CollectionNames.TEAMS.value)
+            if not existing_team:
+                team_node = {
+                    "id": team_id,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": "system",
+                    "orgId": org_id,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+                await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
+                self.logger.info(f"Created 'All' team for org {org_id}")
+
+            # 2. Check if this user already has a PERMISSION edge
+            check_edge_query = """
+            MATCH (u:Users {id: $user_key})-[r:PERMISSION]->(t:Teams {id: $team_id})
+            RETURN r
+            LIMIT 1
+            """
+            existing_edge = await self.client.execute_query(
+                check_edge_query,
+                parameters={"user_key": user_key, "team_id": team_id}
+            )
+            if existing_edge:
+                self.logger.debug(f"User {user_key} already has PERMISSION edge to All team")
+                return
+
+            # 3. Check if team has any existing members to determine role
+            count_query = """
+            MATCH ()-[r:PERMISSION]->(t:Teams {id: $team_id})
+            RETURN count(r) as count
+            """
+            count_result = await self.client.execute_query(
+                count_query,
+                parameters={"team_id": team_id}
+            )
+
+            member_count = count_result[0].get("count", 0) if count_result else 0
+            role = "OWNER" if member_count == 0 else "READER"
+
+            self.logger.info(f"Assigning role {role} to user {user_key} (existing members: {member_count})")
+
+            # 4. If assigning first OWNER, update team.createdBy
+            if role == "OWNER":
+                try:
+                    await self.update_node(
+                        team_id,
+                        CollectionNames.TEAMS.value,
+                        {"createdBy": user_key, "updatedAtTimestamp": ts},
+                    )
+                    self.logger.info(f"Updated team createdBy to {user_key}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+
+            # 5. Create PERMISSION edge
+            permission_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_id,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [permission_edge], CollectionNames.PERMISSION.value
+            )
+            self.logger.info(f"Added user {user_key} to All team with role {role}")
+
+        except Exception as e:
+            self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
+            raise
+
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates (Teams all_{org_id})-[:USER_APP_RELATION]->(App) if not present.
+
+        Team membership is ensured elsewhere (All team migration, user-added Kafka flow).
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+            query = """
+            MATCH (t:Teams {id: $team_id})
+            MERGE (a:App {id: $connector_id})
+            MERGE (t)-[r:USER_APP_RELATION]->(a)
+            ON CREATE SET r.sourceUserId = $team_id, r.syncState = 'NOT_STARTED', r.lastSyncUpdate = $ts,
+                r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
+            """
+            await self.client.execute_query(
+                query,
+                parameters={
+                    "team_id": team_id,
+                    "connector_id": connector_id,
+                    "ts": ts,
+                },
+                txn_id=transaction
+            )
+            self.logger.debug(f"Ensured team->app edge: Teams {team_id} -> App {connector_id}")
+        except Exception as e:
+            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
+            raise
+
     async def batch_upsert_user_groups(
         self,
         user_groups: list[AppUserGroup],
@@ -5301,9 +5728,9 @@ class Neo4jProvider(IGraphDBProvider):
         query = """
         MATCH (record:Record {connectorId: $connector_id})-[:IS_OF_TYPE]->(typeNode)
         WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
-        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project'])
+        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project', 'Meeting'])
         RETURN {
-          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project']]),
+          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project', 'Meeting']]),
           key: typeNode.id,
           full_id: typeNode.id
         } AS target
@@ -5588,6 +6015,7 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
@@ -11658,12 +12086,20 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def batch_upsert_people(
         self,
-        people: list[dict],
-        collection: str,
+        people: list[Person],
         transaction: str | None = None
-    ) -> bool | None:
-        """Batch upsert people nodes."""
+    ) -> None:
+        """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
+            if not people:
+                return
+
+            collection = CollectionNames.PEOPLE.value
+            people_dicts = [
+                self._arango_to_neo4j_node(person.to_arango_person(), collection)
+                for person in people
+            ]
+
             label = collection_to_label(collection)
             query = f"""
             UNWIND $people AS person
@@ -11673,10 +12109,10 @@ class Neo4jProvider(IGraphDBProvider):
             """
             await self.client.execute_query(
                 query,
-                parameters={"people": people},
+                parameters={"people": people_dicts},
                 txn_id=transaction
             )
-            return True
+            self.logger.debug(f"Upserted {len(people)} people records")
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
             return False
@@ -13165,9 +13601,13 @@ class Neo4jProvider(IGraphDBProvider):
         """Get list of app IDs the user has access to."""
         try:
             query = """
-            MATCH (u:User {id: $user_key})-[:USER_APP_RELATION]->(app:App)
-            WHERE app IS NOT NULL
-            RETURN app.id AS app_id
+            MATCH (u:User {id: $user_key})
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app1:App)
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            UNWIND app_list AS app
+            WITH app WHERE app IS NOT NULL
+            RETURN DISTINCT app.id AS app_id
             """
             results = await self.client.execute_query(
                 query,
@@ -13184,7 +13624,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str,
         org_id: str,
         parent_id: str | None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        parent_type: str | None = None,
     ) -> dict[str, Any]:
         """
         Get user's context-level permissions.
@@ -13218,7 +13659,6 @@ class Neo4jProvider(IGraphDBProvider):
                 )
             else:
                 # Node level - use generic permission checker
-                # Generate permission calls for all node types
                 record_permission_call = self._get_permission_role_cypher(
                     node_type="record",
                     node_var="record",
@@ -13235,60 +13675,48 @@ class Neo4jProvider(IGraphDBProvider):
                     user_var="u"
                 )
 
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
+                context_perm_return = """
+                WITH coalesce(permission_role, 'READER') AS final_role
 
-                // Find the node (could be Record, App, or RecordGroup)
-                OPTIONAL MATCH (record:Record {{id: $parent_id}})
-                OPTIONAL MATCH (app:App {{id: $parent_id}})
-                OPTIONAL MATCH (rg:RecordGroup {{id: $parent_id}})
-
-                WITH u, record, app, rg,
-                     coalesce(record, app, rg) AS node,
-                     record IS NOT NULL AS is_record,
-                     app IS NOT NULL AS is_app,
-                     rg IS NOT NULL AS is_rg
-
-                WHERE node IS NOT NULL
-
-                // Get permission for Records
-                CALL {{
-                    WITH u, record, is_record
-                    WITH u, record
-                    WHERE is_record
-                    {record_permission_call}
-                    RETURN permission_role AS record_perm
-                }}
-
-                // Get permission for RecordGroups
-                CALL {{
-                    WITH u, rg, is_rg
-                    WITH u, rg
-                    WHERE is_rg
-                    {rg_permission_call}
-                    RETURN permission_role AS rg_perm
-                }}
-
-                // Get permission for Apps
-                CALL {{
-                    WITH u, app, is_app
-                    WITH u, app
-                    WHERE is_app
-                    {app_permission_call}
-                    RETURN permission_role AS app_perm
-                }}
-
-                WITH coalesce(record_perm, rg_perm, app_perm, 'READER') AS final_role
-
-                RETURN {{
+                RETURN {
                     role: final_role,
                     canUpload: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canCreateFolders: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canDelete: final_role IN ['OWNER', 'ADMIN'],
                     canManagePermissions: final_role IN ['OWNER', 'ADMIN']
-                }} AS result
+                } AS result
                 """
+
+                graph_type: str | None = None
+                if parent_type:
+                    graph_type = (
+                        "record" if parent_type in ("folder", "record") else parent_type
+                    )
+
+                if graph_type == "record":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (record:Record {{id: $parent_id}})
+                {record_permission_call}
+                {context_perm_return}
+                """
+                elif graph_type == "recordGroup":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (rg:RecordGroup {{id: $parent_id}})
+                {rg_permission_call}
+                {context_perm_return}
+                """
+                elif graph_type == "app":
+                    query = f"""
+                MATCH (u:User {{id: $user_key}})
+                MATCH (app:App {{id: $parent_id}})
+                {app_permission_call}
+                {context_perm_return}
+                """
+                else:
+                    raise ValueError(f"Invalid or unsupported parent_type: {parent_type}")
 
                 results = await self.client.execute_query(
                     query,
@@ -13306,6 +13734,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "canDelete": False,
                 "canManagePermissions": False
             }
+        except ValueError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub context permissions failed: {str(e)}")
             return {
@@ -14394,28 +14824,30 @@ class Neo4jProvider(IGraphDBProvider):
             // Check if user has USER_APP_RELATION to app
             OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
 
+            // Check if user has path User->Team->App (user in team, team has USER_APP_RELATION to app)
+            OPTIONAL MATCH ({user_var})-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[team_app_rel:USER_APP_RELATION]->({node_var})
+
             // Check if user is admin
-            WITH {node_var}, {user_var}, user_app_rel,
+            WITH {node_var}, {user_var}, user_app_rel, team_app_rel,
                 (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
 
             // Get app scope and check if user is creator
             // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
-            WITH {node_var}, {user_var}, user_app_rel, is_admin,
+            WITH {node_var}, {user_var}, user_app_rel, team_app_rel, is_admin,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
 
             // Determine role based on conditions
             RETURN CASE
-                // If no USER_APP_RELATION, no access
-                WHEN user_app_rel IS NULL THEN null
-
+                // No direct user->app and no team->app: no access
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL THEN null
+                // Access via team (All)->app: READER; admin gets EDITOR
+                WHEN user_app_rel IS NULL AND team_app_rel IS NOT NULL THEN (CASE WHEN is_admin THEN 'EDITOR' ELSE 'READER' END)
                 // Admin users: EDITOR for team apps, OWNER for personal apps
                 WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
                 WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
-
                 // Team app creator gets OWNER role
                 WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
-
                 // Default: READER for regular users with USER_APP_RELATION
                 ELSE 'READER'
             END AS permission_role
@@ -15706,19 +16138,21 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
-    async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> dict | None:
+    async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
-        Get an agent by ID with user permissions and linked graph data.
+        Fetch the complete agent document with linked graph data.
+
+        This method does NOT perform any permission check — callers must invoke
+        ``check_agent_permission`` separately before calling this method.
 
         Includes:
-        - Agent document with permissions
+        - Agent document
         - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
         - Linked knowledge with filters (via agentHasKnowledge)
+        - shareWithOrg flag (requires org_id to evaluate the ORG permission edge)
         """
         try:
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
             org_label = collection_to_label(CollectionNames.ORGS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
             agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
@@ -15728,127 +16162,25 @@ class Neo4jProvider(IGraphDBProvider):
             tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
             knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
 
-            # user_id is the user's _key (internal ID), not userId (external ID)
-            # This matches ArangoHTTPProvider behavior where user_id is used directly as user_key
-            user_key = user_id
-            org_key = org_id
-
-            # Get user document by id (which is the _key) to extract userId for team queries
-            user_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})
-            RETURN u
+            # Fetch agent document (no permission filtering)
+            agent_query = f"""
+            MATCH (agent:{agent_label} {{id: $agent_id}})
+            WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN agent
             LIMIT 1
             """
-            user_result = await self.client.execute_query(
-                user_query,
-                parameters={"user_key": user_key},
+            agent_result = await self.client.execute_query(
+                agent_query,
+                parameters={"agent_id": agent_id},
                 txn_id=transaction
             )
 
-            # Get user's teams - need userId (external ID) for team lookup
-            user_team_ids = []
-            if user_result:
-                try:
-                    user_dict = dict(user_result[0]["u"])
-                    user_doc = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
-                    actual_user_id = user_doc.get("userId")
-
-                    if actual_user_id:
-                        # Get user's teams using userId (external ID)
-                        user_teams_query = f"""
-                        MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
-                        WHERE p.type = 'USER'
-                        RETURN t.id AS team_id
-                        """
-                        user_teams_result = await self.client.execute_query(
-                            user_teams_query,
-                            parameters={"user_id": actual_user_id},
-                            txn_id=transaction
-                        )
-                        user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
-                except Exception as e:
-                    self.logger.warning(f"Error getting user teams: {str(e)}")
-                    # Continue without teams - individual permission check will still work
-
-            # Check individual user permissions on the agent
-            individual_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
-            WHERE p.type = 'USER'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type
-            LIMIT 1
-            """
-
-            individual_result = await self.client.execute_query(
-                individual_query,
-                parameters={"user_key": user_key, "agent_id": agent_id},
-                txn_id=transaction
-            )
-
-            agent_data = None
-            user_role = None
-            access_type = None
-
-            if individual_result:
-                agent_data = dict(individual_result[0]["agent"])
-                user_role = individual_result[0]["role"]
-                access_type = "INDIVIDUAL"
-            
-            # Check org permissions (only if no individual access)
-            if not agent_data and org_key:
-                org_query = f"""
-                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
-                WHERE p.type = 'ORG'
-                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-                RETURN agent, p.role AS role, 'ORG' AS access_type
-                LIMIT 1
-                """
-
-                org_result = await self.client.execute_query(
-                    org_query,
-                    parameters={"org_key": org_key, "agent_id": agent_id},
-                    txn_id=transaction
-                )
-
-                if org_result:
-                    agent_data = dict(org_result[0]["agent"])
-                    user_role = org_result[0]["role"]
-                    access_type = "ORG"
-            
-            # Check team permissions (only if no individual or org access)
-            if not agent_data and user_team_ids:
-                team_query = f"""
-                MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
-                WHERE t.id IN $team_ids
-                AND p.type = 'TEAM'
-                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-                RETURN agent, p.role AS role, 'TEAM' AS access_type
-                LIMIT 1
-                """
-
-                team_result = await self.client.execute_query(
-                    team_query,
-                    parameters={"team_ids": user_team_ids, "agent_id": agent_id},
-                    txn_id=transaction
-                )
-
-                if team_result:
-                    agent_data = dict(team_result[0]["agent"])
-                    user_role = team_result[0]["role"]
-                    access_type = "TEAM"
-
-            if not agent_data:
-                self.logger.warning(f"No permissions found for user {user_key} on agent {agent_id}")
+            if not agent_result:
+                self.logger.warning(f"Agent {agent_id} not found or deleted")
                 return None
 
-            # Convert to ArangoDB format
+            agent_data = dict(agent_result[0]["agent"])
             agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
-            agent["access_type"] = access_type
-            agent["user_role"] = user_role
-            agent["can_edit"] = user_role in ["OWNER", "WRITER", "ORGANIZER"]
-            agent["can_delete"] = user_role == "OWNER"
-            agent["can_share"] = user_role in ["OWNER", "ORGANIZER"]
-            agent["can_view"] = True
 
             # Get linked toolsets with their tools
             toolsets_query = f"""
@@ -15875,13 +16207,11 @@ class Neo4jProvider(IGraphDBProvider):
                 tools: tools
             }} AS toolset
             """
-
             toolsets_result = await self.client.execute_query(
                 toolsets_query,
                 parameters={"agent_id": agent_id},
                 txn_id=transaction
             )
-
             agent["toolsets"] = [r["toolset"] for r in toolsets_result] if toolsets_result else []
 
             # Get linked knowledge with filters
@@ -15889,7 +16219,6 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})
             RETURN k.id AS _key, k.connectorId AS connectorId, k.filters AS filters
             """
-
             knowledge_result = await self.client.execute_query(
                 knowledge_query,
                 parameters={"agent_id": agent_id},
@@ -15906,7 +16235,6 @@ class Neo4jProvider(IGraphDBProvider):
                         "filters": k_row["filters"]
                     }
 
-                    # Parse filters to determine if this is a KB or app
                     filters_str = knowledge_item.get("filters", "{}")
                     if isinstance(filters_str, str):
                         try:
@@ -15917,13 +16245,10 @@ class Neo4jProvider(IGraphDBProvider):
                         filters_parsed = filters_str
 
                     knowledge_item["filtersParsed"] = filters_parsed
-
-                    # Check if this is a KB (has recordGroups) or app
                     record_groups = filters_parsed.get("recordGroups", [])
                     is_kb = len(record_groups) > 0
 
                     if is_kb and record_groups:
-                        # For KBs: Get KB name from record group document
                         try:
                             first_kb_id = record_groups[0]
                             kb_doc = await self.get_document(first_kb_id, CollectionNames.RECORD_GROUPS.value, transaction=transaction)
@@ -15942,7 +16267,6 @@ class Neo4jProvider(IGraphDBProvider):
                             knowledge_item["type"] = "UNKNOWN"
                             knowledge_item["displayName"] = knowledge_item["connectorId"]
                     else:
-                        # For apps: Get connector instance name from APPS collection
                         try:
                             app_doc = await self.get_document(knowledge_item["connectorId"], CollectionNames.APPS.value, transaction=transaction)
                             if app_doc:
@@ -15963,26 +16287,158 @@ class Neo4jProvider(IGraphDBProvider):
 
             agent["knowledge"] = knowledge_list
 
-            # Check if the agent is shared with the org (edge-based, not stored in doc)
-            agent["shareWithOrg"] = False
-            if org_key:
+            # shareWithOrg: when org_id is provided match the specific org node;
+            # when org_id is absent check whether any Orgs label node has a
+            # permission edge to this agent (node label check, not type field)
+            if org_id:
                 org_share_query = f"""
-                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
-                WHERE p.type = 'ORG'
+                MATCH (o:{org_label} {{id: $org_id}})-[:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
                 RETURN true AS share_with_org
                 LIMIT 1
                 """
                 org_share_result = await self.client.execute_query(
                     org_share_query,
-                    parameters={"org_key": org_key, "agent_id": agent_id},
+                    parameters={"org_id": org_id, "agent_id": agent_id},
                     txn_id=transaction
                 )
-                agent["shareWithOrg"] = bool(org_share_result)
+            else:
+                org_share_query = f"""
+                MATCH (o:{org_label})-[:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                RETURN true AS share_with_org
+                LIMIT 1
+                """
+                org_share_result = await self.client.execute_query(
+                    org_share_query,
+                    parameters={"agent_id": agent_id},
+                    txn_id=transaction
+                )
+            agent["shareWithOrg"] = bool(org_share_result)
 
             return agent
 
         except Exception as e:
             self.logger.error(f"Failed to get agent: {str(e)}")
+            return None
+
+    async def check_agent_permission(
+        self, agent_id: str, user_id: str, org_id: str
+    ) -> dict | None:
+        """
+        Lightweight permission check that returns the caller's access rights on
+        an agent without fetching toolsets or knowledge.
+
+        Returns None if the agent does not exist, is deleted, or the user has
+        no access via individual, org, or team permission edges.
+        """
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            org_label = collection_to_label(CollectionNames.ORGS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            user_key = user_id
+            org_key = org_id
+
+            # Resolve user and their team memberships
+            user_team_ids: list[str] = []
+            user_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})
+            RETURN u LIMIT 1
+            """
+            user_result = await self.client.execute_query(
+                user_query, parameters={"user_key": user_key}
+            )
+            if user_result:
+                try:
+                    user_dict = dict(user_result[0]["u"])
+                    user_doc = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
+                    actual_user_id = user_doc.get("userId")
+                    if actual_user_id:
+                        teams_query = f"""
+                        MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
+                        WHERE p.type = 'USER'
+                        RETURN t.id AS team_id
+                        """
+                        teams_result = await self.client.execute_query(
+                            teams_query, parameters={"user_id": actual_user_id}
+                        )
+                        user_team_ids = [r["team_id"] for r in teams_result] if teams_result else []
+                except Exception as e:
+                    self.logger.warning(f"Error getting user teams for permission check: {str(e)}")
+
+            # 1. Individual access
+            individual_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(a:{agent_label} {{id: $agent_id}})
+            WHERE p.type = 'USER'
+            AND (a.isDeleted IS NULL OR a.isDeleted = false)
+            RETURN p.role AS role, 'INDIVIDUAL' AS access_type
+            LIMIT 1
+            """
+            ind_result = await self.client.execute_query(
+                individual_query, parameters={"user_key": user_key, "agent_id": agent_id}
+            )
+            if ind_result:
+                role = ind_result[0]["role"]
+                return {
+                    "access_type": "INDIVIDUAL",
+                    "user_role": role,
+                    "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
+                    "can_delete": role == "OWNER",
+                    "can_share": role in ("OWNER", "ORGANIZER"),
+                    "can_view": True,
+                }
+
+            # 2. Org access
+            org_query = f"""
+            MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(a:{agent_label} {{id: $agent_id}})
+            WHERE p.type = 'ORG'
+            AND (a.isDeleted IS NULL OR a.isDeleted = false)
+            RETURN p.role AS role, 'ORG' AS access_type
+            LIMIT 1
+            """
+            org_result = await self.client.execute_query(
+                org_query, parameters={"org_key": org_key, "agent_id": agent_id}
+            )
+            if org_result:
+                role = org_result[0]["role"]
+                return {
+                    "access_type": "ORG",
+                    "user_role": role,
+                    "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
+                    "can_delete": role == "OWNER",
+                    "can_share": role in ("OWNER", "ORGANIZER"),
+                    "can_view": True,
+                }
+
+            # 3. Team access
+            if user_team_ids:
+                team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(a:{agent_label} {{id: $agent_id}})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                AND (a.isDeleted IS NULL OR a.isDeleted = false)
+                RETURN p.role AS role, 'TEAM' AS access_type
+                LIMIT 1
+                """
+                team_result = await self.client.execute_query(
+                    team_query, parameters={"agent_id": agent_id, "team_ids": user_team_ids}
+                )
+                if team_result:
+                    role = team_result[0]["role"]
+                    return {
+                        "access_type": "TEAM",
+                        "user_role": role,
+                        "can_edit": role in ("OWNER", "WRITER", "ORGANIZER"),
+                        "can_delete": role == "OWNER",
+                        "can_share": role in ("OWNER", "ORGANIZER"),
+                        "can_view": True,
+                    }
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to check agent permission: {str(e)}")
             return None
 
     async def get_all_agents(
@@ -16201,14 +16657,14 @@ class Neo4jProvider(IGraphDBProvider):
         Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
         """
         try:
-            # Check if user has permission to update the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            # get_agent(agent_id, org_id, transaction) — do not pass user_id positionally (that was
+            # misread as org_id and broke transaction=). Use check_agent_permission for ACL.
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
 
-            # Check if user can edit the agent
-            if not agent_with_permission.get("can_edit", False):
+            if not perm.get("can_edit", False):
                 self.logger.warning(f"User {user_id} does not have edit permission on agent {agent_id}")
                 return False
 
@@ -16219,7 +16675,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
@@ -16285,14 +16741,12 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"Agent {agent_id} not found")
                 return False
 
-            # Check if user has permission to delete the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
 
-            # Check if user can delete the agent
-            if not agent_with_permission.get("can_delete", False):
+            if not perm.get("can_delete", False):
                 self.logger.warning(f"User {user_id} does not have delete permission on agent {agent_id}")
                 return False
 
@@ -16734,14 +17188,12 @@ class Neo4jProvider(IGraphDBProvider):
     async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> bool | None:
         """Share an agent to users and teams"""
         try:
-            # Check if agent exists and user has permission to share it
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
 
-            # Check if user can share the agent
-            if not agent_with_permission.get("can_share", False):
+            if not perm.get("can_share", False):
                 self.logger.warning(f"User {user_id} does not have share permission on agent {agent_id}")
                 return False
 
@@ -16800,9 +17252,8 @@ class Neo4jProvider(IGraphDBProvider):
     async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> dict | None:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
-            # Check if user has permission to unshare the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None or not agent_with_permission.get("can_share", False):
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm or not perm.get("can_share", False):
                 return {"success": False, "reason": "Insufficient permissions to unshare agent"}
 
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -16872,14 +17323,12 @@ class Neo4jProvider(IGraphDBProvider):
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
-            # Check if the requesting user is the OWNER of the agent
-            agent_with_permission = await self.get_agent(agent_id, owner_user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, owner_user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
 
-            # Only OWNER can update permissions
-            if agent_with_permission.get("user_role") != "OWNER":
+            if perm.get("user_role") != "OWNER":
                 self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
                 return {"success": False, "reason": "Only OWNER can update permissions"}
 
@@ -16962,14 +17411,12 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> list[dict] | None:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
-            # Check if user has access to the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
-            if agent_with_permission is None:
+            perm = await self.check_agent_permission(agent_id, user_id, org_id)
+            if not perm:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return None
 
-            # Only OWNER can view all permissions
-            if agent_with_permission.get("user_role") != "OWNER":
+            if perm.get("user_role") != "OWNER":
                 self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
                 return None
 
@@ -17436,7 +17883,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
-            if app is None:
+            if not app:
                 return None
             user_id = app.get("createdBy")
             if user_id is None:

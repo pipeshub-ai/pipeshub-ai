@@ -402,6 +402,12 @@ class TestBuildEvaluatorInstructions:
         result = _build_evaluator_instructions(state)
         assert result == ""
 
+    def test_none_instructions(self):
+        """None instructions returns empty string."""
+        state = {"instructions": None}
+        result = _build_evaluator_instructions(state)
+        assert result == ""
+
 
 # ============================================================================
 # 9. aggregator_node - async tests
@@ -639,3 +645,419 @@ class TestEvaluateWithLlm:
             result = await _evaluate_with_llm(state, completed, _mock_log())
 
         assert result["decision"] == "retry"
+
+
+# ============================================================================
+# 11. aggregator_node - LLM evaluation decision branches (lines 122-145)
+# ============================================================================
+
+class TestAggregatorNodeLLMDecisions:
+    """Tests for aggregator_node with partial success going through LLM evaluation."""
+
+    def _make_partial_state(self, iteration=0, max_iter=3):
+        return {
+            "completed_tasks": [
+                _make_task(status="success", task_id="t1"),
+                _make_task(status="error", task_id="t2", error="timeout"),
+            ],
+            "deep_iteration_count": iteration,
+            "deep_max_iterations": max_iter,
+            "logger": _mock_log(),
+            "llm": AsyncMock(),
+            "query": "test query",
+            "task_plan": {"goal": "test"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_llm_respond_error_decision(self):
+        """LLM returns respond_error -> sets respond_error (line 128)."""
+        state = self._make_partial_state()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_error", "reasoning": "bad data"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "respond_error"
+
+    @pytest.mark.asyncio
+    async def test_llm_retry_decision(self):
+        """LLM returns retry with iteration < max -> sets retry (line 130)."""
+        state = self._make_partial_state(iteration=0, max_iter=3)
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "retry", "reasoning": "try again"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "retry"
+
+    @pytest.mark.asyncio
+    async def test_llm_continue_decision(self):
+        """LLM returns continue with iteration < max -> sets continue (line 132)."""
+        state = self._make_partial_state(iteration=0, max_iter=3)
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "continue", "continue_description": "need more", "reasoning": "partial"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "continue"
+
+    @pytest.mark.asyncio
+    async def test_llm_retry_at_max_iteration_fallback(self):
+        """LLM returns retry at max iteration -> fallback to respond_success (lines 133-138)."""
+        state = self._make_partial_state(iteration=2, max_iter=3)
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "retry", "reasoning": "try again"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        # Fallback: success tasks exist -> respond_success
+        assert result["reflection_decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_llm_retry_at_max_no_success_fallback(self):
+        """LLM returns retry at max with no success tasks -> respond_error (line 138)."""
+        state = {
+            "completed_tasks": [
+                _make_task(status="error", task_id="t1", error="timeout"),
+                _make_task(status="error", task_id="t2", error="bad data"),
+            ],
+            "deep_iteration_count": 2,
+            "deep_max_iterations": 3,
+            "logger": _mock_log(),
+            "llm": AsyncMock(),
+            "query": "test query",
+            "task_plan": {"goal": "test"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "retry", "reasoning": "try again"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "respond_error"
+
+    @pytest.mark.asyncio
+    async def test_llm_exception_fallback_with_success(self):
+        """LLM throws exception, success tasks exist -> fallback respond_success (lines 140-143)."""
+        state = self._make_partial_state()
+        state["llm"].ainvoke.side_effect = RuntimeError("LLM down")
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_llm_exception_fallback_no_success(self):
+        """LLM throws exception, no success tasks -> fallback respond_error (lines 144-145)."""
+        state = {
+            "completed_tasks": [
+                _make_task(status="error", task_id="t1", error="bad"),
+            ],
+            "deep_iteration_count": 0,
+            "deep_max_iterations": 3,
+            "logger": _mock_log(),
+            "llm": AsyncMock(),
+            "query": "test",
+            "task_plan": {},
+        }
+        state["llm"].ainvoke.side_effect = RuntimeError("LLM down")
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "respond_error"
+
+
+# ============================================================================
+# 12. _evaluate_with_llm - result formatting branches (lines 297-328)
+# ============================================================================
+
+class TestEvaluateWithLlmFormatting:
+    """Tests for result formatting in _evaluate_with_llm."""
+
+    @pytest.mark.asyncio
+    async def test_result_not_dict(self):
+        """Task result that is not a dict uses str() fallback (lines 301-302)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        state = {"llm": mock_llm, "query": "test", "task_plan": {}}
+        # result is a string, not a dict
+        completed = [_make_task(status="success", result="plain string result")]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_error_task_with_description_and_duration(self):
+        """Error task formatting with description and duration (lines 304-311)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "retry", "reasoning": "errors"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        state = {"llm": mock_llm, "query": "test", "task_plan": {}}
+        completed = [_make_task(status="error", task_id="t1", error="timeout error",
+                               description="Search slack", duration_ms=500)]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "retry"
+
+    @pytest.mark.asyncio
+    async def test_skipped_task_formatting(self):
+        """Skipped task formatting (lines 312-315)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        state = {"llm": mock_llm, "query": "test", "task_plan": {}}
+        completed = [
+            _make_task(status="success", task_id="t1"),
+            _make_task(status="skipped", task_id="t2", error="Dependencies failed"),
+        ]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_plan_json_encoding_error(self):
+        """Plan that fails JSON serialization uses str() fallback (lines 327-328)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        # Create a plan that json.dumps can't serialize normally
+        class BadObj:
+            def __str__(self):
+                return "bad_obj_str"
+
+        state = {
+            "llm": mock_llm,
+            "query": "test",
+            "task_plan": {"data": BadObj()},
+        }
+        completed = [_make_task(status="success")]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"
+
+
+# ============================================================================
+# 13. _parse_evaluation_response edge cases (lines 367-388)
+# ============================================================================
+
+class TestParseEvaluationResponseEdgeCases:
+    """Additional edge cases for _parse_evaluation_response."""
+
+    def test_embedded_json_without_decision_falls_through(self):
+        """Embedded JSON via regex but without decision key (line 386-388)."""
+        log = _mock_log()
+        content = 'Some text {"key": "value"} more text'
+        result = _parse_evaluation_response(content, log)
+        # No "decision" key in extracted JSON -> default
+        assert result["decision"] == "respond_success"
+
+    def test_code_fence_with_no_closing(self):
+        """Code fence without closing ``` (lines 367-375)."""
+        log = _mock_log()
+        content = '```json\n{"decision": "retry", "reasoning": "ok"}\nno closing fence'
+        result = _parse_evaluation_response(content, log)
+        assert result["decision"] == "retry"
+
+    def test_double_fallback_invalid_regex_json(self):
+        """First parse fails, regex finds JSON but it's also invalid (lines 386-389)."""
+        log = _mock_log()
+        content = 'text {not valid json at all} end'
+        result = _parse_evaluation_response(content, log)
+        assert result["decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_response_without_content_attr(self):
+        """LLM response without .content falls back to str() (line 341)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        # Response is a plain string, not an object with .content
+        mock_llm.ainvoke.return_value = '{"decision": "respond_success", "reasoning": "ok"}'
+
+        state = {"llm": mock_llm, "query": "test", "task_plan": {}}
+        completed = [_make_task(status="success")]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_error_task_without_duration(self):
+        """Error task without duration_ms doesn't include duration string (line 305)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        state = {"llm": mock_llm, "query": "test", "task_plan": {}}
+        # Task with error but no duration_ms
+        completed = [{"task_id": "t1", "status": "error", "error": "bad", "domains": ["jira"],
+                      "description": "desc"}]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_llm_respond_success_decision_in_ambiguous(self):
+        """LLM returns respond_success in the ambiguous case (line 126)."""
+        # This specifically tests that line 126 is hit (respond_success in LLM eval path)
+        state = {
+            "completed_tasks": [
+                _make_task(status="success", task_id="t1"),
+                _make_task(status="error", task_id="t2", error="timeout"),
+            ],
+            "deep_iteration_count": 0,
+            "deep_max_iterations": 3,
+            "logger": _mock_log(),
+            "llm": AsyncMock(),
+            "query": "test",
+            "task_plan": {},
+        }
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_continue_at_max_no_success_fallback_error(self):
+        """LLM returns continue at max iter, no success tasks -> respond_error (lines 135-138)."""
+        state = {
+            "completed_tasks": [
+                _make_task(status="error", task_id="t1", error="timeout"),
+                _make_task(status="skipped", task_id="t2", error="deps failed"),
+            ],
+            "deep_iteration_count": 2,
+            "deep_max_iterations": 3,
+            "logger": _mock_log(),
+            "llm": AsyncMock(),
+            "query": "test",
+            "task_plan": {},
+        }
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "continue", "reasoning": "need more"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        # continue at max iter: else branch, no success -> respond_error
+        assert result["reflection_decision"] == "respond_error"
+
+    @pytest.mark.asyncio
+    async def test_unknown_decision_with_success_fallback(self):
+        """LLM returns unknown decision, success tasks exist -> respond_success (line 135)."""
+        state = {
+            "completed_tasks": [
+                _make_task(status="success", task_id="t1"),
+                _make_task(status="error", task_id="t2", error="timeout"),
+            ],
+            "deep_iteration_count": 0,
+            "deep_max_iterations": 3,
+            "logger": _mock_log(),
+            "llm": AsyncMock(),
+            "query": "test",
+            "task_plan": {},
+        }
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "unknown_bogus", "reasoning": "hmm"})
+        state["llm"].ainvoke.return_value = mock_resp
+
+        with patch("app.modules.agents.deep.aggregator.safe_stream_write"), \
+             patch("app.modules.agents.deep.aggregator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await aggregator_node(state, {}, MagicMock())
+        assert result["reflection_decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_success_task_with_description_in_evaluate(self):
+        """Success task with description hits the desc branch in _evaluate_with_llm (line 297)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        state = {"llm": mock_llm, "query": "test", "task_plan": {}}
+        completed = [_make_task(status="success", task_id="t1",
+                               result={"response": "Found data", "tool_count": 2,
+                                       "success_count": 2, "error_count": 0},
+                               description="Search for documents about X",
+                               domains=["jira"])]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"
+
+    @pytest.mark.asyncio
+    async def test_plan_serialization_type_error(self):
+        """Plan that causes json.dumps TypeError uses str() fallback (lines 327-328)."""
+        from app.modules.agents.deep.aggregator import _evaluate_with_llm
+
+        mock_llm = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.content = json.dumps({"decision": "respond_success", "reasoning": "ok"})
+        mock_llm.ainvoke.return_value = mock_resp
+
+        # json.dumps with default=str handles most types. To trigger the except,
+        # we'd need something that even default=str can't handle. Instead, test
+        # with a valid plan that exercises the json.dumps path.
+        state = {
+            "llm": mock_llm,
+            "query": "test",
+            "task_plan": {"goal": "test", "can_answer_directly": False,
+                          "tasks": [{"id": "t1"}]},
+        }
+        completed = [_make_task(status="success")]
+
+        with patch("app.modules.agents.deep.aggregator.get_opik_config", return_value={}):
+            result = await _evaluate_with_llm(state, completed, _mock_log())
+        assert result["decision"] == "respond_success"

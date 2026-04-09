@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -34,8 +35,7 @@ def _get_pdf_ocr_detection_worker_count() -> int:
         except ValueError:
             return 1
 
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(4, cpu_count))
+    return 1
 
 PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
 
@@ -142,17 +142,20 @@ class EventProcessor:
             False if no duplicate found (caller should proceed with processing)
         """
         # Calculate MD5 from content
-        md5_checksum = doc.get("md5Checksum")
+        existing_md5_checksum = doc.get("md5Checksum")
         size_in_bytes = doc.get("sizeInBytes")
         record_type = doc.get("recordType")
+        md5_checksum = None
 
-        if md5_checksum is None and content:
+        if content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
             md5_checksum = hashlib.md5(content).hexdigest()
-            doc.update({"md5Checksum": md5_checksum})
-            self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
-            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            if existing_md5_checksum != md5_checksum:
+                doc.update({"md5Checksum": md5_checksum})
+                await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+            self.logger.info("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
         if not md5_checksum:
             return False
@@ -288,8 +291,8 @@ class EventProcessor:
             try:
                 if await self._check_duplicate_by_md5(file_content, doc):
                     self.logger.info("Duplicate record detected, skipping processing")
-                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
             except Exception as e:
                 self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
@@ -458,7 +461,7 @@ class EventProcessor:
                             pdf_binary=file_content,
                             virtual_record_id=virtual_record_id
                         ):
-                            if event.get("event") == "docling_failed":
+                            if event.event == IndexingEvent.DOCLING_FAILED:
                                 docling_failed = True
                             else:
                                 yield event

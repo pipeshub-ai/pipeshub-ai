@@ -328,7 +328,7 @@ def extract_response_body(response) -> Optional[bytes]:
             logger = logging.getLogger(__name__)
             logger.debug(f"Failed to extract text from response: {e}")
 
-    if hasattr(response, 'response') and hasattr(response.response, 'content'):
+    if hasattr(response, 'response'):
         try:
             content = response.response.content
             if content is not None:
@@ -432,6 +432,8 @@ class NextcloudConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             NextcloudApp(connector_id=connector_id),
@@ -439,7 +441,9 @@ class NextcloudConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id=connector_id
+            connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
         )
 
         self.connector_name = Connectors.NEXTCLOUD
@@ -1945,7 +1949,9 @@ class NextcloudConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         """Factory method to create a NextcloudConnector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -1953,5 +1959,11 @@ class NextcloudConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
         return NextcloudConnector(
-            logger, data_entities_processor, data_store_provider, config_service, connector_id
+            logger,
+            data_entities_processor,
+            data_store_provider,
+            config_service,
+            connector_id,
+            scope,
+            created_by,
         )

@@ -177,7 +177,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             GoogleDriveTeamApp(connector_id),
@@ -185,7 +187,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -2839,7 +2843,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive enterprise connector."""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -2854,5 +2860,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
