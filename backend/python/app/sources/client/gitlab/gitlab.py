@@ -73,6 +73,7 @@ class GitLabClientViaToken:
     def get_token(self) -> str:
         return self.token
 
+
 class GitLabConfig(BaseModel):
     token: str = Field(..., description="GitLab private token")
     url: str | None = Field(
@@ -132,16 +133,22 @@ class GitLabClient(IClient):
         Returns:
             GitLabClient instance
         """
-        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
+        config = await cls._get_connector_config(
+            logger, config_service, connector_instance_id
+        )
         if not config:
             raise ValueError("Failed to get GitLab connector configuration")
         auth_config = config.get("auth", {})
         if not auth_config:
             raise ValueError("Auth configuration missing for GitLab connector")
-        credentials_config  = config.get("credentials",{})
-        if not  credentials_config:
-            raise ValueError("Credentials configuration not found in Gitlab connector configuration")
-        auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH default is API_TOKEN
+        credentials_config = config.get("credentials", {})
+        if not credentials_config:
+            raise ValueError(
+                "Credentials configuration not found in Gitlab connector configuration"
+            )
+        auth_type = auth_config.get(
+            "authType", "API_TOKEN"
+        )  # API_TOKEN or OAUTH default is API_TOKEN
 
         if auth_type == "API_TOKEN":
             # NOTE: if used will need to change token request param if API_TOKEN is used
@@ -153,24 +160,34 @@ class GitLabClient(IClient):
             client = GitLabClientViaToken(token, url, timeout)
             client.create_client()
         elif auth_type == "OAUTH":
-            access_token =credentials_config.get("access_token","")
+            access_token = credentials_config.get("access_token", "")
             timeout = auth_config.get("timeout", 30)
             url = auth_config.get("url", "https://gitlab.com")
             if not access_token:
                 raise ValueError("Access token required for OAuth auth type")
-            client = GitLabClientViaToken(access_token,url, timeout)
+            client = GitLabClientViaToken(access_token, url, timeout)
             client.create_client()
         else:
             raise ValueError(f"Invalid auth type: {auth_type}")
         return cls(client)
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: str | None = None) -> dict[str, Any]:
+    async def _get_connector_config(
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+        connector_instance_id: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for GitLab."""
         try:
-            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_instance_id}/config"
+            )
             if not config:
-                raise ValueError(f"Failed to get GitLab connector configuration for instance {connector_instance_id}")
+                raise ValueError(
+                    f"Failed to get GitLab connector configuration for instance {connector_instance_id}"
+                )
             return config
         except Exception as e:
-            raise ValueError(f"Failed to get GitLab connector configuration for instance {connector_instance_id}") from e
+            raise ValueError(
+                f"Failed to get GitLab connector configuration for instance {connector_instance_id}"
+            ) from e

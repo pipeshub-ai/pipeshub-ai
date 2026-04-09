@@ -64,6 +64,7 @@ from app.connectors.sources.salesforce.connector import SalesforceConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
 
+
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
 
@@ -105,19 +106,20 @@ class ConnectorFactory:
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
     _beta_connector_definitions: dict[str, type[BaseConnector]] = {
-        'slack': SlackConnector,
-        'calendar': CalendarConnector,
-        'meet': MeetConnector,
-        'forms': FormsConnector,
-        'slides': SlidesConnector,
-        'docs': DocsConnector,
-        'zendesk': ZendeskConnector,
-        'airtable': AirtableConnector,
+        "slack": SlackConnector,
+        "calendar": CalendarConnector,
+        "meet": MeetConnector,
+        "forms": FormsConnector,
+        "slides": SlidesConnector,
+        "docs": DocsConnector,
+        "zendesk": ZendeskConnector,
+        "airtable": AirtableConnector,
     }
 
-
     @classmethod
-    def register_connector(cls, name: str, connector_class: type[BaseConnector]) -> None:
+    def register_connector(
+        cls, name: str, connector_class: type[BaseConnector]
+    ) -> None:
         """Register a new connector type"""
         cls._connector_registry[name.lower()] = connector_class
 
@@ -160,7 +162,7 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
-        **kwargs
+        **kwargs,
     ) -> BaseConnector | None:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
@@ -176,12 +178,14 @@ class ConnectorFactory:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
-                **kwargs
+                **kwargs,
             )
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
-            logger.error(f"❌ Failed to create {name} {connector_id} connector: {str(e)}")
+            logger.error(
+                f"❌ Failed to create {name} {connector_id} connector: {str(e)}"
+            )
             return None
 
     @classmethod
@@ -194,7 +198,7 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
-        **kwargs
+        **kwargs,
     ) -> BaseConnector | None:
         """Create and initialize a connector"""
         connector = await cls.create_connector(
@@ -205,19 +209,23 @@ class ConnectorFactory:
             connector_id=connector_id,
             scope=scope,
             created_by=created_by,
-            **kwargs
+            **kwargs,
         )
 
         if connector:
             try:
                 success = await connector.init()
                 if not success:
-                    logger.error(f"❌ Failed to initialize {name} {connector_id} connector")
+                    logger.error(
+                        f"❌ Failed to initialize {name} {connector_id} connector"
+                    )
                     return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}")
+                logger.error(
+                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}"
+                )
                 return None
 
         return None
@@ -232,7 +240,7 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
-        **kwargs
+        **kwargs,
     ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
         connector = await cls.initialize_connector(
@@ -243,21 +251,29 @@ class ConnectorFactory:
             connector_id=connector_id,
             scope=scope,
             created_by=created_by,
-            **kwargs
+            **kwargs,
         )
 
-        config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
+        config = await config_service.get_config(
+            f"/services/connectors/{connector_id}/config"
+        )
         sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
         if connector:
             try:
                 if sync_strategy == SyncStrategy.MANUAL.value:
-                    logger.info(f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL")
+                    logger.info(
+                        f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL"
+                    )
                 else:
-                    await sync_task_manager.start_sync(connector_id, connector.run_sync())
+                    await sync_task_manager.start_sync(
+                        connector_id, connector.run_sync()
+                    )
                     logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}")
+                logger.error(
+                    f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}"
+                )
                 return None
 
         return None

@@ -7,6 +7,8 @@ from datetime import datetime
 from app.sources.client.gitlab.gitlab import GitLabResponse
 from collections.abc import AsyncGenerator
 import httpx
+
+
 class GitLabDataSource:
     """
     Strict, typed wrapper over python-gitlab for common GitLab business operations.
@@ -28,13 +30,13 @@ class GitLabDataSource:
 
     def get_user(self) -> GitLabResponse:
         """Fetching GitLab user info."""
-        try:    
-            self._sdk.auth()  
+        try:
+            self._sdk.auth()
             user = self._sdk.user
             return GitLabResponse(success=True, data=user)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
+
     # ---- helpers ----
     def _project(self, project_id: Union[int, str]) -> object:
         # python-gitlab allows numeric ID or full path for project lookup
@@ -147,9 +149,9 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
-        updated_after: datetime|None = None,
-        order_by:str|None = None,
-        sort:str|None = None,
+        updated_after: datetime | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List project issues with filters.  [issues]"""
@@ -164,7 +166,7 @@ class GitLabDataSource:
                 updated_after=updated_after,
                 order_by=order_by,
                 sort=sort,
-                )
+            )
             items = p.issues.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
@@ -245,9 +247,9 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
-        order_by:str|None = None,
-        sort:str|None = None,
-        updated_after:datetime|None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+        updated_after: datetime | None = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
@@ -285,28 +287,32 @@ class GitLabDataSource:
     ) -> GitLabResponse:
         """List merge request notes.  [mrs]"""
         try:
-            p = self._sdk.projects.get(project_id,lazy=True)
-            mr = p.mergerequests.get(id=mr_iid,lazy=True)
+            p = self._sdk.projects.get(project_id, lazy=True)
+            mr = p.mergerequests.get(id=mr_iid, lazy=True)
             notes = mr.notes.list(get_all=get_all)
             return GitLabResponse(success=True, data=notes)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
-    def list_merge_request_changes(self,project_id:Union[int,str],mr_iid:int)->GitLabResponse:
-        """List merge request changes. """
+
+    def list_merge_request_changes(
+        self, project_id: Union[int, str], mr_iid: int
+    ) -> GitLabResponse:
+        """List merge request changes."""
         try:
-            p = self._sdk.projects.get(project_id,lazy=True)
-            mr = p.mergerequests.get(id=mr_iid,lazy=True)
+            p = self._sdk.projects.get(project_id, lazy=True)
+            mr = p.mergerequests.get(id=mr_iid, lazy=True)
             changes = mr.changes(get_all=True)
             return GitLabResponse(success=True, data=changes)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
-    def list_merge_requests_commits(self,project_id:Union[int,str],mr_iid:int)->GitLabResponse:
-        """List commits of a merge request. """
+
+    def list_merge_requests_commits(
+        self, project_id: Union[int, str], mr_iid: int
+    ) -> GitLabResponse:
+        """List commits of a merge request."""
         try:
-            p = self._sdk.projects.get(project_id,lazy=True)
-            mr = p.mergerequests.get(id=mr_iid,lazy=True)
+            p = self._sdk.projects.get(project_id, lazy=True)
+            mr = p.mergerequests.get(id=mr_iid, lazy=True)
             commits = mr.commits(get_all=True)
             return GitLabResponse(success=True, data=commits)
         except Exception as e:
@@ -725,19 +731,19 @@ class GitLabDataSource:
             items = p.members.list(get_all=get_all)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
-            return GitLabResponse(success=False,error=str(e))
-    
+            return GitLabResponse(success=False, error=str(e))
+
     def list_project_members_all(
-        self,project_id:Union[str,int],get_all:bool = True
-    )->GitLabResponse:
+        self, project_id: Union[str, int], get_all: bool = True
+    ) -> GitLabResponse:
         """List project members including inherited ones"""
         try:
             p = self._project(project_id)
-            items = p.members_all.list(get_all =get_all)
-            return GitLabResponse(success=True,data = items)
+            items = p.members_all.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
         except Exception as e:
-            return GitLabResponse(success=False,error=str(e))
-        
+            return GitLabResponse(success=False, error=str(e))
+
     def add_project_member(
         self,
         project_id: Union[int, str],
@@ -783,24 +789,22 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=True)
 
     def list_groups(
-        self, 
-        search: Optional[str] = None, 
-        get_all: bool = True, 
+        self,
+        search: Optional[str] = None,
+        get_all: bool = True,
         owned: Optional[bool] = None,
     ) -> GitLabResponse:
         """List groups."""
         try:
-            params = self._params(search=search,owned=owned)
+            params = self._params(search=search, owned=owned)
             groups = self._sdk.groups.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=groups)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
+
     def list_group_members(
-        self,
-        group_id: Union[int, str],
-        get_all:bool = True
-    )-> GitLabResponse:
+        self, group_id: Union[int, str], get_all: bool = True
+    ) -> GitLabResponse:
         """List group members."""
         try:
             g = self._sdk.groups.get(group_id)
@@ -808,8 +812,10 @@ class GitLabDataSource:
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-        
-    def list_group_members_all(self, group_id: Union[int, str],get_all:bool =True) -> GitLabResponse:
+
+    def list_group_members_all(
+        self, group_id: Union[int, str], get_all: bool = True
+    ) -> GitLabResponse:
         """List all group members including inherited ones."""
         try:
             g = self._sdk.groups.get(group_id)
@@ -817,7 +823,7 @@ class GitLabDataSource:
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
+
     def get_group(self, group_id: Union[int, str]) -> GitLabResponse:
         """Get a group by ID or full path."""
         g = self._sdk.groups.get(group_id)
@@ -882,8 +888,14 @@ class GitLabDataSource:
             return GitLabResponse(success=True, data=notes)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-        
-    def list_repo_tree(self,project_id:Union[int,str],ref:Optional[str] = None,recursive:Optional[bool] = None,get_all:bool = True) -> GitLabResponse:
+
+    def list_repo_tree(
+        self,
+        project_id: Union[int, str],
+        ref: Optional[str] = None,
+        recursive: Optional[bool] = None,
+        get_all: bool = True,
+    ) -> GitLabResponse:
         """List repository tree."""
         try:
             p = self._sdk.projects.get(project_id)
@@ -896,8 +908,10 @@ class GitLabDataSource:
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
-    def get_file_content(self,project_id:Union[int,str],file_path:str,ref:str = "HEAD") -> GitLabResponse:
+
+    def get_file_content(
+        self, project_id: Union[int, str], file_path: str, ref: str = "HEAD"
+    ) -> GitLabResponse:
         """Get code file content."""
         try:
             # p = self._project(project_id)
@@ -910,11 +924,13 @@ class GitLabDataSource:
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-        
-    #-----------------------GraphQL API--------------------------------#
-    async def get_repo_tree_g(self,project_id:str,ref:str|None = "HEAD",after_cursor:str = "")->GitLabResponse:
+
+    # -----------------------GraphQL API--------------------------------#
+    async def get_repo_tree_g(
+        self, project_id: str, ref: str | None = "HEAD", after_cursor: str = ""
+    ) -> GitLabResponse:
         """Get repository tree using GraphQL API."""
-            # take cursors as input and return the tree with pagination
+        # take cursors as input and return the tree with pagination
         try:
             headers = {
                 "Authorization": f"Bearer {self.token}",
@@ -955,12 +971,14 @@ class GitLabDataSource:
                 "afterCursor": after_cursor,
             }
             payload = {
-                "query" : query,
-                "variables" : variables,
+                "query": query,
+                "variables": variables,
             }
             try:
-                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-                    resp = await client.post(url, headers=headers,json=payload)
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=30.0
+                ) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
                     resp.raise_for_status()
                     tree_data = resp.content
                     return GitLabResponse(success=True, data=(tree_data))
@@ -968,8 +986,13 @@ class GitLabDataSource:
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-        
-    async def get_file_tree_g(self,project_id:Union[int,str],ref:Optional[str] = None,after_cursor:str = "")->GitLabResponse:
+
+    async def get_file_tree_g(
+        self,
+        project_id: Union[int, str],
+        ref: Optional[str] = None,
+        after_cursor: str = "",
+    ) -> GitLabResponse:
         """Get file tree using GraphQL API."""
         try:
             headers = {
@@ -1011,24 +1034,24 @@ class GitLabDataSource:
                 "afterCursor": after_cursor,
             }
             payload = {
-                "query" : query,
-                "variables" : variables,
+                "query": query,
+                "variables": variables,
             }
             try:
-                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-                    resp = await client.post(url, headers=headers,json=payload)
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=30.0
+                ) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
                     resp.raise_for_status()
                     tree_data = resp.content
-                    print(f"Fetched files metadata of {project_id} of content length : {len(tree_data)}")
                     return GitLabResponse(success=True, data=(tree_data))
             except Exception as e:
-                print(f"Error fetching files metadata of {project_id}: {e}")
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-    
-    #----------------------Other than SDK calls--------------------------------#
-    
+
+    # ----------------------Other than SDK calls--------------------------------#
+
     async def get_img_bytes(self, image_url: str) -> GitLabResponse[bytes] | None:
         GITLAB_TOKEN = self.token
         # self.logger.info(f"Fetching image from URL: {image_url}")
@@ -1037,23 +1060,30 @@ class GitLabDataSource:
             "Accept": "*/*",
         }
         try:
-            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
                 resp = await client.get(image_url, headers=headers)
                 resp.raise_for_status()
                 img_data = resp.content
                 return GitLabResponse(success=True, data=img_data)
         except httpx.HTTPStatusError as e:
-            return GitLabResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
+            return GitLabResponse(
+                success=False,
+                error=f"HTTP {e.response.status_code} fetching image from {image_url}",
+            )
         except Exception as e:
-            return GitLabResponse(success=False, error=f"Error fetching image from {image_url}: {e}")
-    
-    async def get_attachment_files_content(self,weburl:str) -> AsyncGenerator[bytes,None]:
+            return GitLabResponse(
+                success=False, error=f"Error fetching image from {image_url}: {e}"
+            )
+
+    async def get_attachment_files_content(
+        self, weburl: str
+    ) -> AsyncGenerator[bytes, None]:
         """Getting file content from weburl for attachments in bytes."""
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/octet-stream",
         }
-        async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
             async with client.stream(
                 "GET",
                 weburl,
@@ -1062,5 +1092,3 @@ class GitLabDataSource:
                 response.raise_for_status()
                 async for chunk in response.aiter_bytes(chunk_size=65536):
                     yield chunk
-        
-        
