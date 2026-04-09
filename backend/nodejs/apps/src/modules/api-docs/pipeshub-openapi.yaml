@@ -3327,282 +3327,881 @@ components:
       enum: [team, personal]
       example: "team"
 
-    ConnectorAuthType:
-      type: string
-      description: |
-        Authentication method required by the connector:<br>
-        <ul>
-        <li><code>OAUTH</code> - User OAuth consent flow</li>
-        <li><code>OAUTH_ADMIN_CONSENT</code> - Admin OAuth with org-wide consent</li>
-        <li><code>API_TOKEN</code> - API key or token authentication</li>
-        <li><code>USERNAME_PASSWORD</code> - Username/password credentials</li>
-        <li><code>NONE</code> - No authentication required</li>
-        </ul>
-      enum: [OAUTH, OAUTH_ADMIN_CONSENT, API_TOKEN, USERNAME_PASSWORD, NONE]
+    # -------------------- Shared Primitives --------------------
 
-    ConnectorType:
+    ConnectorPagination:
       type: object
-      description: |
-        A connector type from the registry. Represents an available integration
-        that can be configured as a connector instance.
+      description: Pagination information for connector lists
+      additionalProperties: false
+      required: [page, limit, search, totalCount, totalPages, hasPrev, hasNext, prevPage, nextPage]
       properties:
-        connectorType:
+        page:
+          type: integer
+          description: Current page number
+        limit:
+          type: integer
+          description: Items per page
+        search:
           type: string
-          description: Unique identifier for this connector type
-          example: "google-drive"
+          nullable: true
+          description: Active search term (null if none)
+        totalCount:
+          type: integer
+          description: Total number of items matching the query
+        totalPages:
+          type: integer
+          description: Total number of pages
+        hasPrev:
+          type: boolean
+          description: Whether a previous page exists
+        hasNext:
+          type: boolean
+          description: Whether a next page exists
+        prevPage:
+          type: integer
+          nullable: true
+          description: Previous page number (null if on first page)
+        nextPage:
+          type: integer
+          nullable: true
+          description: Next page number (null if on last page)
+
+    ConnectorScopeCounts:
+      type: object
+      description: Counts of connectors by scope
+      additionalProperties: false
+      required: [personal, team]
+      properties:
+        personal:
+          type: integer
+        team:
+          type: integer
+
+    # -------------------- Config Building Blocks --------------------
+
+    FieldValidation:
+      type: object
+      description: Validation constraints for a config field
+      additionalProperties: false
+      properties:
+        minLength:
+          type: integer
+        maxLength:
+          type: integer
+
+    AuthField:
+      type: object
+      description: A single authentication field definition
+      additionalProperties: false
+      required: [name, displayName, placeholder, description, fieldType, required, usage, defaultValue, validation, isSecret]
+      properties:
+        name:
+          type: string
         displayName:
           type: string
-          description: Human-readable name
-          example: "Google Drive"
+        placeholder:
+          type: string
         description:
           type: string
-          description: What this connector does
-        appGroupId:
+        fieldType:
           type: string
-          description: Application group identifier
+        required:
+          type: boolean
+        usage:
+          type: string
+          description: "Field usage context (default: BOTH)"
+        defaultValue: {}
+        validation:
+          $ref: '#/components/schemas/FieldValidation'
+        isSecret:
+          type: boolean
+
+    OAuthConfigEntry:
+      type: object
+      description: OAuth configuration for a specific auth type
+      additionalProperties: false
+      required: [authorizeUrl, tokenUrl, scopes, redirectUri]
+      properties:
+        authorizeUrl:
+          type: string
+        tokenUrl:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        redirectUri:
+          type: string
+
+    AuthSchemaEntry:
+      type: object
+      description: Schema definition for an auth type
+      additionalProperties: false
+      required: [fields]
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthField'
+        redirectUri:
+          type: string
+          description: Only set when oauth_config redirect_uri is truthy
+        displayRedirectUri:
+          type: boolean
+          description: Only set alongside redirectUri
+
+    ConnectorAuthConfigResponse:
+      type: object
+      description: Authentication configuration schema from the registry/connector
+      additionalProperties: false
+      required: [supportedAuthTypes, schemas, values, customFields, customValues, conditionalDisplay]
+      properties:
+        supportedAuthTypes:
+          type: array
+          items:
+            type: string
+        schemas:
+          type: object
+          description: Auth schemas keyed by auth type
+          additionalProperties:
+            $ref: '#/components/schemas/AuthSchemaEntry'
+        oauthConfigs:
+          type: object
+          description: OAuth configs keyed by auth type (present on registry list, stripped on schema endpoint)
+          additionalProperties:
+            $ref: '#/components/schemas/OAuthConfigEntry'
+        values:
+          type: object
+          additionalProperties: true
+        customFields:
+          type: array
+          items: {}
+        customValues:
+          type: object
+          additionalProperties: true
+        conditionalDisplay:
+          type: object
+          additionalProperties: true
+
+    WebhookConfig:
+      type: object
+      description: Webhook sync configuration
+      additionalProperties: false
+      required: [supported]
+      properties:
+        supported:
+          type: boolean
+        webhookUrl:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        verificationToken:
+          type: string
+        secretKey:
+          type: string
+
+    ScheduledConfig:
+      type: object
+      description: Scheduled sync configuration
+      additionalProperties: false
+      required: [intervalMinutes, cronExpression, timezone, startTime, nextTime, endTime, maxRepetitions, repetitionCount]
+      properties:
+        intervalMinutes:
+          type: number
+          description: "Interval in minutes (default: 60)"
+        cronExpression:
+          type: string
+          description: "Cron expression (default: empty string)"
+        timezone:
+          type: string
+          description: "Timezone (default: UTC)"
+        startTime:
+          type: number
+        nextTime:
+          type: number
+        endTime:
+          type: number
+        maxRepetitions:
+          type: number
+        repetitionCount:
+          type: number
+
+    RealtimeConfig:
+      type: object
+      description: Realtime sync configuration
+      additionalProperties: false
+      required: [supported, connectionType]
+      properties:
+        supported:
+          type: boolean
+        connectionType:
+          type: string
+          description: "Connection type (default: WEBSOCKET)"
+
+    SyncCustomField:
+      type: object
+      description: A custom sync configuration field
+      additionalProperties: false
+      required: [name, displayName, description, fieldType, required, defaultValue, validation, isSecret, nonEditable]
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        fieldType:
+          type: string
+        required:
+          type: boolean
+        defaultValue: {}
+        validation:
+          $ref: '#/components/schemas/FieldValidation'
+        isSecret:
+          type: boolean
+        nonEditable:
+          type: boolean
+        options:
+          type: array
+          items:
+            type: string
+          description: Only present when field has non-empty options
+
+    ConnectorSyncConfigResponse:
+      type: object
+      description: Sync configuration schema from the registry/connector
+      additionalProperties: false
+      required: [supportedStrategies, selectedStrategy, webhookConfig, scheduledConfig, realtimeConfig, customFields, customValues, values]
+      properties:
+        supportedStrategies:
+          type: array
+          items:
+            type: string
+        selectedStrategy:
+          type: string
+          description: "Selected strategy (default: MANUAL)"
+        webhookConfig:
+          $ref: '#/components/schemas/WebhookConfig'
+        scheduledConfig:
+          $ref: '#/components/schemas/ScheduledConfig'
+        realtimeConfig:
+          $ref: '#/components/schemas/RealtimeConfig'
+        customFields:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncCustomField'
+        customValues:
+          type: object
+          additionalProperties: true
+        values:
+          type: object
+          additionalProperties: true
+
+    ConnectorFilterOption:
+      description: A connector filter option - either an object with id/label or a plain string
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [id, label]
+          properties:
+            id:
+              type: string
+            label:
+              type: string
+        - type: string
+
+    FilterField:
+      type: object
+      description: A filter field definition
+      additionalProperties: false
+      required: [name, displayName, description, filterType, category, required, defaultValue, defaultOperator, operators, optionSourceType]
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        filterType:
+          type: string
+        category:
+          type: string
+          description: "Filter category (default: sync)"
+        required:
+          type: boolean
+        defaultValue:
+          nullable: true
+        defaultOperator:
+          type: string
+          nullable: true
+        operators:
+          type: array
+          items:
+            type: string
+        optionSourceType:
+          type: string
+          description: "Option source type (default: MANUAL)"
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorFilterOption'
+          description: Only present when options is truthy
+
+    FilterCategory:
+      type: object
+      description: Filter category with schema and optional values
+      additionalProperties: false
+      required: [schema]
+      properties:
+        schema:
+          type: object
+          additionalProperties: false
+          required: [fields]
+          properties:
+            fields:
+              type: array
+              items:
+                $ref: '#/components/schemas/FilterField'
+        values:
+          type: object
+          additionalProperties: true
+
+    ConnectorFiltersConfigResponse:
+      type: object
+      description: Filter configuration schema from the registry/connector
+      additionalProperties: false
+      properties:
+        sync:
+          $ref: '#/components/schemas/FilterCategory'
+        indexing:
+          $ref: '#/components/schemas/FilterCategory'
+
+    DocumentationLink:
+      type: object
+      description: A documentation link for a connector
+      additionalProperties: false
+      required: [title, url]
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        type:
+          type: string
+
+    ConnectorConfigSchema:
+      type: object
+      description: Full configuration schema for a connector type (auth, sync, filters, capabilities)
+      additionalProperties: false
+      required: [iconPath, supportsRealtime, supportsSync, supportsAgent, documentationLinks, hideConnector, auth, sync, filters]
+      properties:
+        iconPath:
+          type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        documentationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentationLink'
+        hideConnector:
+          type: boolean
+        auth:
+          $ref: '#/components/schemas/ConnectorAuthConfigResponse'
+        sync:
+          $ref: '#/components/schemas/ConnectorSyncConfigResponse'
+        filters:
+          $ref: '#/components/schemas/ConnectorFiltersConfigResponse'
+
+    # -------------------- Registry --------------------
+
+    ConnectorRegistryItem:
+      type: object
+      description: A connector type from the registry with its full configuration schema
+      additionalProperties: false
+      required: [name, type, appGroup, supportedAuthTypes, appDescription, appCategories, iconPath, supportsRealtime, supportsSync, supportsAgent, config, scope]
+      properties:
+        name:
+          type: string
+          description: Display name
+        type:
+          type: string
+          description: Unique connector type identifier
         appGroup:
           type: string
           description: Application group name (e.g., "Google Workspace")
-        authTypes:
+        supportedAuthTypes:
           type: array
           items:
-            $ref: '#/components/schemas/ConnectorAuthType'
+            type: string
           description: Supported authentication methods
-        supportedScopes:
-          type: array
-          items:
-            $ref: '#/components/schemas/ConnectorScope'
-          description: Supported scope types
-        supportsSync:
-          type: boolean
-          description: Whether connector supports data synchronization
-        supportsAgent:
-          type: boolean
-          description: Whether connector supports AI agent integration
-        supportsRealtime:
-          type: boolean
-          description: Whether connector supports real-time updates
-        iconPath:
+        appDescription:
           type: string
-          description: Path to connector icon
-        categories:
+          description: Description of the connector
+        appCategories:
           type: array
           items:
             type: string
           description: Categories (e.g., "Storage", "Communication")
-        isBeta:
+        iconPath:
+          type: string
+          description: Path to connector icon
+        supportsRealtime:
           type: boolean
-          description: Whether this is a beta connector
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/ConnectorConfigSchema'
+        scope:
+          description: "Scope(s) - single value for instances, array for registry items"
+          oneOf:
+            - $ref: '#/components/schemas/ConnectorScope'
+            - type: array
+              items:
+                $ref: '#/components/schemas/ConnectorScope'
+        connectorInfo:
+          type: string
+          nullable: true
 
-    ConnectorInstance:
+    # -------------------- Instance --------------------
+
+    ConnectorInstanceItem:
       type: object
       description: |
-        A configured connector instance. Represents an active or configured
-        connection to an external service.
+        A configured connector instance. Extends registry item with instance-specific fields.
+      additionalProperties: false
+      required: [name, type, appGroup, supportedAuthTypes, appDescription, appCategories, iconPath, supportsRealtime, supportsSync, supportsAgent, config, scope, _key, authType, isActive, isAgentActive, isConfigured, isAuthenticated, isLocked, status, createdAtTimestamp, updatedAtTimestamp, createdBy, updatedBy]
       properties:
-        connectorId:
+        # --- From ConnectorRegistryItem ---
+        name:
           type: string
-          description: Unique instance identifier
-          example: "conn_abc123"
-        connectorType:
+          description: Display name
+        type:
           type: string
-          description: Type of connector (from registry)
-          example: "google-drive"
-        instanceName:
+          description: Connector type identifier
+        appGroup:
           type: string
-          description: User-defined name for this instance
-          example: "Company Google Drive"
+        supportedAuthTypes:
+          type: array
+          items:
+            type: string
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        iconPath:
+          type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/ConnectorConfigSchema'
+        connectorInfo:
+          type: string
+          nullable: true
+        # --- Instance-specific fields ---
         scope:
           $ref: '#/components/schemas/ConnectorScope'
+        _key:
+          type: string
+          description: Unique instance ID (UUID)
         authType:
-          $ref: '#/components/schemas/ConnectorAuthType'
-        createdBy:
           type: string
-          description: User ID who created this instance
-        orgId:
-          type: string
-          description: Organization ID
+          description: Authentication type for this instance
         isActive:
           type: boolean
-          description: Whether connector is enabled for syncing/agent
+          description: Whether connector is enabled for sync
+        isAgentActive:
+          type: boolean
+          description: Whether connector is enabled for AI agent
         isConfigured:
           type: boolean
           description: Whether all required configuration is complete
         isAuthenticated:
           type: boolean
           description: Whether authentication is complete and valid
-        syncEnabled:
+        isLocked:
           type: boolean
-          description: Whether sync is enabled
-        agentEnabled:
-          type: boolean
-          description: Whether agent integration is enabled
-        lastSyncAt:
+          description: Whether connector is locked for an operation
+        status:
           type: string
-          format: date-time
-          description: Timestamp of last successful sync
-        createdAt:
+          nullable: true
+          description: "Null in normal state; set to e.g. DELETING during lock operations"
+        createdAtTimestamp:
+          type: number
+          description: Creation epoch timestamp in milliseconds
+        updatedAtTimestamp:
+          type: number
+          description: Last update epoch timestamp in milliseconds
+        createdBy:
           type: string
-          format: date-time
-        updatedAt:
+          description: User ID who created this instance
+        updatedBy:
           type: string
-          format: date-time
+          description: User ID who last updated this instance
 
-    ConnectorConfig:
+    ConnectorInstanceItemWithoutConfig:
       type: object
-      description: Configuration for a connector instance including auth, sync, and filter settings
+      description: Connector instance item without the config field (used for active/inactive endpoints)
+      additionalProperties: false
+      required: [name, type, appGroup, supportedAuthTypes, appDescription, appCategories, iconPath, supportsRealtime, supportsSync, supportsAgent, scope, _key, authType, isActive, isAgentActive, isConfigured, isAuthenticated, isLocked, status, createdAtTimestamp, updatedAtTimestamp, createdBy, updatedBy]
       properties:
-        connectorId:
+        name:
           type: string
-          description: Connector instance ID
-        connectorType:
+        type:
           type: string
-          description: Connector type
-        instanceName:
+        appGroup:
           type: string
-          description: Instance name
-        authType:
-          $ref: '#/components/schemas/ConnectorAuthType'
+        supportedAuthTypes:
+          type: array
+          items:
+            type: string
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        iconPath:
+          type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        connectorInfo:
+          type: string
+          nullable: true
         scope:
           $ref: '#/components/schemas/ConnectorScope'
-        config:
-          type: object
-          description: Configuration sections
-          properties:
-            auth:
-              type: object
-              description: Authentication configuration (sensitive data redacted)
-            sync:
-              type: object
-              description: Sync configuration (schedule, options)
-            filters:
-              type: object
-              description: Filter selections for data scope
-        baseUrl:
+        _key:
           type: string
-          description: Base URL for self-hosted instances
+        authType:
+          type: string
+        isActive:
+          type: boolean
+        isAgentActive:
+          type: boolean
+        isConfigured:
+          type: boolean
+        isAuthenticated:
+          type: boolean
+        isLocked:
+          type: boolean
+        status:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: number
+        updatedAtTimestamp:
+          type: number
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+
+    # -------------------- Stored Config Schemas (for GET /:connectorId/config) --------------------
+
+    StoredAuthConfig:
+      type: object
+      description: Stored authentication configuration for a connector instance (secrets redacted)
+      required: [authType, connectorType, connectorScope]
+      properties:
+        authType:
+          type: string
+        connectorType:
+          type: string
+        connectorScope:
+          type: string
+        oauthInstanceName:
+          type: string
+        oauthConfigId:
+          type: string
+        redirectUri:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        authorizeUrl:
+          type: string
+        tokenUrl:
+          type: string
+      additionalProperties: true
+
+    StoredScheduledSyncConfig:
+      type: object
+      description: Stored scheduled sync configuration
+      properties:
+        intervalMinutes:
+          type: number
+        timezone:
+          type: string
+      additionalProperties: true
+
+    StoredSyncConfig:
+      type: object
+      description: Stored sync configuration (e.g. selectedStrategy MANUAL or SCHEDULED)
+      properties:
+        selectedStrategy:
+          type: string
+          description: Sync strategy (e.g. MANUAL, SCHEDULED)
+        scheduledConfig:
+          $ref: '#/components/schemas/StoredScheduledSyncConfig'
+      additionalProperties: true
+
+    StoredFilterOptionEntry:
+      type: object
+      description: Option object for list-type stored filters (id + display label)
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+
+    StoredFilterDateRange:
+      type: object
+      description: Date range stored filter value (bounds may be null when unset)
+      additionalProperties: false
+      required: [start, end]
+      properties:
+        start:
+          type: number
+          nullable: true
+        end:
+          type: number
+          nullable: true
+
+    StoredFilterValueItem:
+      type: object
+      description: A single stored filter field (operator, runtime value, and type hint)
+      additionalProperties: false
+      required: [operator, value, type]
+      properties:
+        operator:
+          type: string
+          description: Filter operator (e.g. in, equals, is, is_not)
+        type:
+          type: string
+          description: Value kind (e.g. list, boolean, string, number)
+        value:
+          description: >-
+            Stored value as returned by GET /connectors/{connectorId}/config: boolean, string, number,
+            array of strings or id/label objects (multi-select), date range object, or null.
+          nullable: true
+          oneOf:
+            - type: boolean
+            - type: string
+            - type: number
+            - type: array
+              items:
+                oneOf:
+                  - type: string
+                  - $ref: '#/components/schemas/StoredFilterOptionEntry'
+            - $ref: '#/components/schemas/StoredFilterDateRange'
+
+    StoredFilterCategory:
+      type: object
+      description: Stored filter values for a category (sync or indexing)
+      additionalProperties: false
+      required: [values]
+      properties:
+        values:
+          type: object
+          description: Map of filter field name to stored operator/value/type
+          additionalProperties:
+            $ref: '#/components/schemas/StoredFilterValueItem'
+
+    StoredFiltersConfig:
+      type: object
+      description: Stored filter configuration
+      additionalProperties: false
+      properties:
+        sync:
+          $ref: '#/components/schemas/StoredFilterCategory'
+        indexing:
+          $ref: '#/components/schemas/StoredFilterCategory'
+
+    StoredConnectorConfig:
+      type: object
+      description: Full stored configuration for a connector instance
+      properties:
+        auth:
+          $ref: '#/components/schemas/StoredAuthConfig'
+        sync:
+          $ref: '#/components/schemas/StoredSyncConfig'
+        filters:
+          $ref: '#/components/schemas/StoredFiltersConfig'
+      additionalProperties: true
+
+    StoredCredentials:
+      type: object
+      description: Stored OAuth credentials
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, refresh_token, refresh_token_expires_in, scope, id_token, created_at, uid, account_id, team_id]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+        expires_in:
+          type: number
+          nullable: true
+        refresh_token:
+          type: string
+          nullable: true
+        refresh_token_expires_in:
+          type: number
+          nullable: true
+        scope:
+          type: string
+          nullable: true
+        id_token:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        uid:
+          type: string
+          nullable: true
+        account_id:
+          type: string
+          nullable: true
+        team_id:
+          type: string
+          nullable: true
+
+    ConfigUpdateResponseConfig:
+      type: object
+      description: Config object returned after auth or filters-sync update
+      properties:
+        auth:
+          $ref: '#/components/schemas/StoredAuthConfig'
+        sync:
+          $ref: '#/components/schemas/StoredSyncConfig'
+        filters:
+          $ref: '#/components/schemas/StoredFiltersConfig'
+        credentials:
+          nullable: true
+          description: "Always null in auth update; may be absent if auth was never configured"
+          allOf:
+            - $ref: '#/components/schemas/StoredCredentials'
+        oauth:
+          type: object
+          nullable: true
+          description: OAuth state (used_codes etc.)
+          properties:
+            used_codes:
+              type: array
+              items:
+                type: string
+          additionalProperties: true
+      additionalProperties: true
+
+    ConnectorInstanceConfigDetail:
+      type: object
+      description: >-
+        Connector instance metadata and optional stored configuration returned by
+        GET /connectors/{connectorId}/config (snake_case connector_id; aligns with Node response validation).
+      additionalProperties: false
+      required: [connector_id, name, type, appGroup, authType, scope, createdBy, updatedBy, appDescription, appCategories, supportsRealtime, supportsSync, supportsAgent, iconPath, isActive, isConfigured, isAuthenticated, createdAtTimestamp, updatedAtTimestamp]
+      properties:
+        connector_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        appGroup:
+          type: string
+        authType:
+          type: string
+        scope:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+          description: "Null for system-created records"
+        updatedBy:
+          type: string
+          nullable: true
+          description: "Null until first update"
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        iconPath:
+          type: string
+        config:
+          description: >-
+            Stored auth, sync, and filter selections. Omitted until the instance is configured
+            (same shape as in config update responses, without credentials).
+          allOf:
+            - $ref: '#/components/schemas/StoredConnectorConfig'
         isActive:
           type: boolean
         isConfigured:
           type: boolean
         isAuthenticated:
           type: boolean
+        createdAtTimestamp:
+          type: number
+          nullable: true
+          description: "Null for legacy records"
+        updatedAtTimestamp:
+          type: number
+          nullable: true
+          description: "Null until first update"
 
-    ConnectorSchema:
+    # -------------------- Created Connector Item --------------------
+
+    CreatedConnectorItem:
       type: object
-      description: Schema definition for configuring a connector type
+      description: Simplified connector item returned after creation
+      additionalProperties: false
+      required: [connectorId, connectorType, instanceName, created, scope, createdBy, isAuthenticated, isConfigured]
       properties:
+        connectorId:
+          type: string
         connectorType:
           type: string
-        authSchema:
-          type: object
-          description: JSON Schema for authentication fields
-        syncSchema:
-          type: object
-          description: JSON Schema for sync configuration
-        filterSchema:
-          type: object
-          description: JSON Schema for filter options
-        requiredFields:
-          type: array
-          items:
-            type: string
-          description: Required field names
-
-    # Sub-schemas for connector configuration
-    ConnectorAuthConfig:
-      type: object
-      description: Authentication configuration for a connector instance
-      properties:
-        values:
-          type: object
-          description: Authentication values (keys depend on connector's auth schema)
-          additionalProperties: true
-          example:
-            apiKey: "sk-xxxxx"
-            baseUrl: "https://api.example.com"
-        oauthConfigId:
+        instanceName:
           type: string
-          description: ID of admin-created OAuth configuration to use
-          example: "oauth_config_123"
-        customValues:
-          type: object
-          description: Custom authentication values specific to the connector
-          additionalProperties: true
-
-    ConnectorSyncConfig:
-      type: object
-      description: Synchronization configuration for a connector instance
-      properties:
-        selectedStrategy:
+        created:
+          type: boolean
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+        createdBy:
           type: string
-          enum: [MANUAL, SCHEDULED, WEBHOOK, REALTIME]
-          description: "Sync strategy: MANUAL (user-triggered), SCHEDULED (interval/cron), WEBHOOK (event-driven), REALTIME (WebSocket)"
-          default: MANUAL
-        scheduledConfig:
-          type: object
-          description: Configuration for scheduled sync strategy
-          properties:
-            intervalMinutes:
-              type: integer
-              description: Sync interval in minutes
-              minimum: 5
-              default: 60
-              example: 60
-            cronExpression:
-              type: string
-              description: Cron expression for advanced scheduling
-              example: "0 */6 * * *"
-            timezone:
-              type: string
-              description: Timezone for scheduled sync
-              default: UTC
-              example: "America/New_York"
-        webhookConfig:
-          type: object
-          description: Configuration for webhook-based sync
-          properties:
-            webhookUrl:
-              type: string
-              description: URL to receive webhook events (auto-generated)
-            events:
-              type: array
-              items:
-                type: string
-              description: Subscribed event types
-              example: ["file.created", "file.modified", "file.deleted"]
-        values:
-          type: object
-          description: Sync setting values specific to the connector
-          additionalProperties: true
-        customValues:
-          type: object
-          description: Custom sync values
-          additionalProperties: true
+        isAuthenticated:
+          type: boolean
+        isConfigured:
+          type: boolean
 
-    ConnectorFiltersConfig:
-      type: object
-      description: "Filter configuration to control what data is synced (sync filters and indexing filters)"
-      properties:
-        sync:
-          type: object
-          description: Sync filter selections
-          properties:
-            values:
-              type: object
-              description: Selected filter values (keys are filter field names)
-              additionalProperties: true
-              example:
-                folders: ["folder_id_1", "folder_id_2"]
-                fileTypes: ["pdf", "docx", "xlsx"]
-                includeShared: true
-        indexing:
-          type: object
-          description: Indexing filter selections
-          properties:
-            values:
-              type: object
-              additionalProperties: true
+    # -------------------- Request Schemas --------------------
 
     CreateConnectorRequest:
       type: object
@@ -3615,55 +4214,29 @@ components:
         connectorType:
           type: string
           description: "Connector type from registry (e.g., google-drive, confluence, slack)"
+          minLength: 1
           example: "google-drive"
         instanceName:
           type: string
           description: Display name for this connector instance
           minLength: 1
-          maxLength: 100
           example: "Marketing Team Drive"
-        scope:
-          $ref: '#/components/schemas/ConnectorScope'
-        authType:
-          type: string
-          description: "Authentication type (required if connector supports multiple auth methods)"
-          enum: [OAUTH, OAUTH_ADMIN_CONSENT, API_TOKEN, USERNAME_PASSWORD, SERVICE_ACCOUNT]
-          example: "OAUTH"
-        oauthConfigId:
-          type: string
-          description: "ID of admin-created OAuth App to use (required for non-admin users creating OAuth connectors, optional for admins)"
-          example: "oauth_config_123"
         config:
           type: object
           description: Initial configuration (can also be set after creation)
           properties:
-            auth:
-              $ref: '#/components/schemas/ConnectorAuthConfig'
-            sync:
-              $ref: '#/components/schemas/ConnectorSyncConfig'
-            filters:
-              $ref: '#/components/schemas/ConnectorFiltersConfig'
+            auth: {}
+            sync: {}
+            filters: {}
         baseUrl:
           type: string
           description: "Base URL for self-hosted instances (e.g., Confluence Server, GitLab Self-Managed)"
-          format: uri
           example: "https://confluence.mycompany.com"
-
-    UpdateConnectorConfigRequest:
-      type: object
-      description: "Request to update connector configuration (partial updates supported)"
-      properties:
-        auth:
-          $ref: '#/components/schemas/ConnectorAuthConfig'
-        sync:
-          $ref: '#/components/schemas/ConnectorSyncConfig'
-        filters:
-          $ref: '#/components/schemas/ConnectorFiltersConfig'
-        baseUrl:
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+        authType:
           type: string
-          description: Base URL for self-hosted instances
-          format: uri
-          example: "https://confluence.mycompany.com"
+          description: Authentication type
 
     UpdateConnectorAuthRequest:
       type: object
@@ -3672,42 +4245,19 @@ components:
         - auth
       properties:
         auth:
-          $ref: '#/components/schemas/ConnectorAuthConfig'
+          description: Auth configuration object (structure depends on connector type)
         baseUrl:
           type: string
           description: Base URL (if changed with auth update)
-          format: uri
 
     UpdateConnectorFiltersSyncRequest:
       type: object
-      description: "Request to update filters and sync config (connector must be authenticated and inactive)"
+      description: "Request to update filters and sync config without touching auth"
       properties:
         sync:
-          $ref: '#/components/schemas/ConnectorSyncConfig'
+          description: Sync configuration update
         filters:
-          $ref: '#/components/schemas/ConnectorFiltersConfig'
-        baseUrl:
-          type: string
-          format: uri
-
-    SaveConnectorFiltersRequest:
-      type: object
-      description: Request to save filter selections for a connector
-      required:
-        - filters
-      properties:
-        filters:
-          type: object
-          description: "Filter values to save (structure depends on connector's filter schema)"
-          additionalProperties: true
-          example:
-            folders:
-              - id: "folder_123"
-                name: "Documents"
-              - id: "folder_456"
-                name: "Reports"
-            fileTypes: ["pdf", "docx"]
-            modifiedAfter: "2024-01-01"
+          description: Filter configuration update
 
     UpdateConnectorNameRequest:
       type: object
@@ -3719,7 +4269,6 @@ components:
           type: string
           description: New display name for the connector instance
           minLength: 1
-          maxLength: 100
           example: "Sales Team Drive (Updated)"
 
     ConnectorToggleRequest:
@@ -3732,40 +4281,9 @@ components:
           type: string
           enum: [sync, agent]
           description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
-
-    FilterOptions:
-      type: object
-      description: Available filter options for a connector
-      properties:
-        filters:
-          type: array
-          items:
-            type: object
-            properties:
-              key:
-                type: string
-                description: Filter field key
-              label:
-                type: string
-                description: Display label
-              type:
-                type: string
-                enum: [select, multiselect, text, boolean]
-                description: Filter input type
-              options:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id:
-                      type: string
-                    value:
-                      type: string
-                    label:
-                      type: string
-              dynamic:
-                type: boolean
-                description: Whether options are loaded dynamically
+        fullSync:
+          type: boolean
+          description: Whether to trigger a full sync when enabling
 
     OAuthConfig:
       type: object
@@ -3846,23 +4364,6 @@ components:
           description: "Base URL for self-hosted instances (e.g., GitLab Self-Managed)"
           format: uri
           example: "https://gitlab.mycompany.com"
-
-    ConnectorPagination:
-      type: object
-      description: Pagination information for connector lists
-      properties:
-        page:
-          type: integer
-          description: Current page number
-        limit:
-          type: integer
-          description: Items per page
-        total:
-          type: integer
-          description: Total number of items
-        hasMore:
-          type: boolean
-          description: Whether more pages exist
 
     # ==================== CONFIGURATION MANAGER SCHEMAS ====================
 
@@ -15003,15 +15504,19 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connectors, pagination]
                 properties:
                   success:
                     type: boolean
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorType'
+                      $ref: '#/components/schemas/ConnectorRegistryItem'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+                  registryCountsByScope:
+                    $ref: '#/components/schemas/ConnectorScopeCounts'
         '401':
           description: Unauthorized
 
@@ -15050,11 +15555,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, schema]
                 properties:
                   success:
                     type: boolean
                   schema:
-                    $ref: '#/components/schemas/ConnectorSchema'
+                    $ref: '#/components/schemas/ConnectorConfigSchema'
         '401':
           description: Unauthorized
         '404':
@@ -15114,15 +15621,19 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connectors, pagination]
                 properties:
                   success:
                     type: boolean
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorInstance'
+                      $ref: '#/components/schemas/ConnectorInstanceItem'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+                  scopeCounts:
+                    $ref: '#/components/schemas/ConnectorScopeCounts'
         '401':
           description: Unauthorized
 
@@ -15189,11 +15700,15 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connector, message]
                 properties:
                   success:
                     type: boolean
                   connector:
-                    $ref: '#/components/schemas/ConnectorInstance'
+                    $ref: '#/components/schemas/CreatedConnectorItem'
+                  message:
+                    type: string
         '400':
           description: |
             Invalid request. Possible reasons:<br>
@@ -15236,13 +15751,15 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connectors]
                 properties:
                   success:
                     type: boolean
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorInstance'
+                      $ref: '#/components/schemas/ConnectorInstanceItemWithoutConfig'
         '401':
           description: Unauthorized
 
@@ -15263,13 +15780,15 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connectors]
                 properties:
                   success:
                     type: boolean
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorInstance'
+                      $ref: '#/components/schemas/ConnectorInstanceItemWithoutConfig'
         '401':
           description: Unauthorized
 
@@ -15316,15 +15835,24 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connectors]
                 properties:
                   success:
                     type: boolean
                   connectors:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ConnectorInstance'
-                  pagination:
-                    $ref: '#/components/schemas/ConnectorPagination'
+                    type: object
+                    additionalProperties: false
+                    required: [connectors, pagination, scopeCounts]
+                    properties:
+                      connectors:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ConnectorInstanceItem'
+                      pagination:
+                        $ref: '#/components/schemas/ConnectorPagination'
+                      scopeCounts:
+                        $ref: '#/components/schemas/ConnectorScopeCounts'
         '401':
           description: Unauthorized
 
@@ -15371,13 +15899,15 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connectors, pagination]
                 properties:
                   success:
                     type: boolean
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorInstance'
+                      $ref: '#/components/schemas/ConnectorInstanceItemWithoutConfig'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
         '401':
@@ -15408,11 +15938,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connector]
                 properties:
                   success:
                     type: boolean
                   connector:
-                    $ref: '#/components/schemas/ConnectorInstance'
+                    $ref: '#/components/schemas/ConnectorInstanceItem'
         '401':
           description: Unauthorized
         '403':
@@ -15451,10 +15983,16 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, message, connectorId, status]
                 properties:
                   success:
                     type: boolean
                   message:
+                    type: string
+                  connectorId:
+                    type: string
+                  status:
                     type: string
         '401':
           description: Unauthorized
@@ -15496,11 +16034,20 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, connector]
                 properties:
                   success:
                     type: boolean
                   connector:
-                    $ref: '#/components/schemas/ConnectorInstance'
+                    type: object
+                    additionalProperties: false
+                    required: [_key, name]
+                    properties:
+                      _key:
+                        type: string
+                      name:
+                        type: string
         '400':
           description: Invalid name
         '401':
@@ -15536,65 +16083,17 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, config]
                 properties:
                   success:
                     type: boolean
                   config:
-                    $ref: '#/components/schemas/ConnectorConfig'
+                    $ref: '#/components/schemas/ConnectorInstanceConfigDetail'
         '401':
           description: Unauthorized
         '403':
           description: No access to this connector
-        '404':
-          description: Connector not found
-
-    put:
-      tags:
-        - Connector Configuration
-      summary: Update connector configuration
-      description: |
-        Update authentication, sync, and filter configuration.<br><br>
-        <b>Prerequisites:</b><br>
-        Connector must be <b>disabled</b> before updating configuration.
-        Disable it first using <code>POST /{id}/toggle</code>.<br><br>
-        <b>Partial Updates:</b><br>
-        Only provide the sections you want to update. Omitted sections
-        are not modified.
-      operationId: updateConnectorConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:write]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateConnectorConfigRequest'
-      responses:
-        '200':
-          description: Configuration updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  config:
-                    $ref: '#/components/schemas/ConnectorConfig'
-        '400':
-          description: |
-            Invalid configuration or connector is active.
-            Disable connector before updating.
-        '401':
-          description: Unauthorized
         '404':
           description: Connector not found
 
@@ -15635,11 +16134,15 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, config, message]
                 properties:
                   success:
                     type: boolean
                   config:
-                    $ref: '#/components/schemas/ConnectorConfig'
+                    $ref: '#/components/schemas/ConfigUpdateResponseConfig'
+                  message:
+                    type: string
         '400':
           description: Connector must be disabled first
         '401':
@@ -15681,11 +16184,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, config, message, syncFiltersChanged]
                 properties:
                   success:
                     type: boolean
                   config:
-                    $ref: '#/components/schemas/ConnectorConfig'
+                    $ref: '#/components/schemas/ConfigUpdateResponseConfig'
                   message:
                     type: string
                     description: Success message
@@ -15745,14 +16250,14 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, message]
                 properties:
                   success:
                     type: boolean
                   message:
                     type: string
                     example: "Sync enabled successfully"
-                  connector:
-                    $ref: '#/components/schemas/ConnectorInstance'
         '400':
           description: |
             Cannot toggle. Possible reasons:<br>
@@ -15809,6 +16314,8 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, authorizationUrl, state]
                 properties:
                   success:
                     type: boolean
@@ -15865,100 +16372,24 @@ paths:
           schema:
             type: string
       responses:
-        '302':
-          description: Redirect to frontend with result
-          headers:
-            Location:
-              description: Frontend URL with success/error params
+        '200':
+          description: OAuth callback processed, returns redirect URL
+          content:
+            application/json:
               schema:
-                type: string
+                type: object
+                additionalProperties: false
+                required: [success, redirect_url]
+                properties:
+                  success:
+                    type: boolean
+                  redirect_url:
+                    type: string
+                    description: Frontend URL to redirect the user to
         '400':
           description: Invalid or missing state parameter
 
   # -------------------- Connector Filters --------------------
-  /connectors/{connectorId}/filters:
-    get:
-      tags:
-        - Connector Filters
-      summary: Get filter options
-      description: |
-        Get available filter options for a connector.<br><br>
-        <b>Overview:</b><br>
-        Returns filter fields that can be used to limit what data is synced.
-        For example, a Google Drive connector might offer filters for
-        specific folders or file types.<br><br>
-        <b>Dynamic Filters:</b><br>
-        Some filter fields have <code>dynamic: true</code>, meaning their
-        options are loaded separately via the filter options endpoint.
-      operationId: getConnectorFilters
-      security:
-        - bearerAuth: []
-        - oauth2: [connector:read]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Filter options retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  filterOptions:
-                    $ref: '#/components/schemas/FilterOptions'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Connector not found
-
-    post:
-      tags:
-        - Connector Filters
-      summary: Save filter selections
-      description: |
-        Save the user's filter selections for a connector.<br><br>
-        <b>Overview:</b><br>
-        After viewing filter options, use this endpoint to save the
-        selected values. These determine what data will be synced.
-      operationId: saveConnectorFilters
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SaveConnectorFiltersRequest'
-      responses:
-        '200':
-          description: Filters saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Connector not found
-
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
       tags:
@@ -16003,7 +16434,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 100
+            maximum: 200
             default: 20
         - name: search
           in: query
@@ -16022,6 +16453,8 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [success, options, page, limit, hasMore]
                 properties:
                   success:
                     type: boolean
@@ -16029,24 +16462,24 @@ paths:
                     type: array
                     items:
                       type: object
+                      additionalProperties: false
+                      required: [id, label]
                       properties:
                         id:
                           type: string
-                        value:
-                          type: string
                         label:
                           type: string
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      hasMore:
-                        type: boolean
-                      cursor:
-                        type: string
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  hasMore:
+                    type: boolean
+                  cursor:
+                    type: string
+                    nullable: true
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -17325,7 +17758,7 @@ paths:
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorType'
+                      $ref: '#/components/schemas/ConnectorRegistryItem'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
         '401':
@@ -17357,7 +17790,7 @@ paths:
                   success:
                     type: boolean
                   connector:
-                    $ref: '#/components/schemas/ConnectorType'
+                    $ref: '#/components/schemas/ConnectorRegistryItem'
         '401':
           description: Unauthorized
         '404':

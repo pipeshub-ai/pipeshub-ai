@@ -12,16 +12,13 @@ import {
   createConnectorInstance,
   getConnectorInstance,
   getConnectorInstanceConfig,
-  updateConnectorInstanceConfig,
   updateConnectorInstanceAuthConfig,
   updateConnectorInstanceFiltersSyncConfig,
   deleteConnectorInstance,
   updateConnectorInstanceName,
   getOAuthAuthorizationUrl,
   handleOAuthCallback,
-  getConnectorInstanceFilterOptions,
   getFilterFieldOptions,
-  saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
   getActiveAgentInstances,
@@ -57,7 +54,25 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     }
 
     next = sinon.stub()
+
+    // Stub handleConnectorResponse to bypass zod schema validation in unit tests.
+    // The actual response validation is tested separately.
+    sinon.stub(connectorUtils, 'handleConnectorResponse').callsFake(
+      (connectorResponse: any, r: any, _operation: string, _failureMessage: string) => {
+        const statusCode = connectorResponse?.statusCode ?? 200
+        r.status(statusCode).json(connectorResponse?.data)
+      },
+    )
   })
+
+  function stubHandleConnectorResponse() {
+    sinon.stub(connectorUtils, 'handleConnectorResponse').callsFake(
+      (connectorResponse: any, res: any, _operation: string, _failureMessage: string) => {
+        const statusCode = connectorResponse?.statusCode ?? 200
+        res.status(statusCode).json(connectorResponse?.data)
+      },
+    )
+  }
 
   afterEach(() => {
     sinon.restore()
@@ -437,41 +452,6 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   })
 
   // =========================================================================
-  // updateConnectorInstanceConfig
-  // =========================================================================
-  describe('updateConnectorInstanceConfig', () => {
-    it('should return an async handler function', () => {
-      const handler = updateConnectorInstanceConfig(mockAppConfig)
-      expect(handler).to.be.a('function')
-    })
-
-    it('should throw BadRequestError when connectorId is missing', async () => {
-      const handler = updateConnectorInstanceConfig(mockAppConfig)
-      req.params = {}
-      req.body = { auth: {} }
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should update connector config for valid request', async () => {
-      const handler = updateConnectorInstanceConfig(mockAppConfig)
-      req.params = { connectorId: 'c1' }
-      req.body = { auth: { type: 'oauth' }, sync: { interval: 60 } }
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: { message: 'Updated' },
-      })
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-    })
-  })
-
-  // =========================================================================
   // updateConnectorInstanceAuthConfig
   // =========================================================================
   describe('updateConnectorInstanceAuthConfig', () => {
@@ -801,39 +781,6 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   })
 
   // =========================================================================
-  // getConnectorInstanceFilterOptions
-  // =========================================================================
-  describe('getConnectorInstanceFilterOptions', () => {
-    it('should return an async handler function', () => {
-      const handler = getConnectorInstanceFilterOptions(mockAppConfig)
-      expect(handler).to.be.a('function')
-    })
-
-    it('should throw BadRequestError when connectorId is missing', async () => {
-      const handler = getConnectorInstanceFilterOptions(mockAppConfig)
-      req.params = {}
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should return filter options for valid request', async () => {
-      const handler = getConnectorInstanceFilterOptions(mockAppConfig)
-      req.params = { connectorId: 'c1' }
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: { filters: [{ key: 'mimetype', values: ['pdf'] }] },
-      })
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-    })
-  })
-
-  // =========================================================================
   // getFilterFieldOptions
   // =========================================================================
   describe('getFilterFieldOptions', () => {
@@ -869,54 +816,6 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { options: ['application/pdf'] },
-      })
-
-      await handler(req, res, next)
-
-      expect(res.status.calledWith(200)).to.be.true
-    })
-  })
-
-  // =========================================================================
-  // saveConnectorInstanceFilterOptions
-  // =========================================================================
-  describe('saveConnectorInstanceFilterOptions', () => {
-    it('should return an async handler function', () => {
-      const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
-      expect(handler).to.be.a('function')
-    })
-
-    it('should throw BadRequestError when connectorId is missing', async () => {
-      const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
-      req.params = {}
-      req.body = { filters: {} }
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should throw BadRequestError when filters is missing', async () => {
-      const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
-      req.params = { connectorId: 'c1' }
-      req.body = {}
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should save filter options for valid request', async () => {
-      const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
-      req.params = { connectorId: 'c1' }
-      req.body = { filters: { mimetype: ['pdf'] } }
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
-      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
-        statusCode: 200,
-        data: { message: 'Filters saved' },
       })
 
       await handler(req, res, next)

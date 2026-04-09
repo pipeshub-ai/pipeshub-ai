@@ -208,19 +208,6 @@ describe('Connector Routes', () => {
       expect(configRoute).to.not.be.undefined
     })
 
-    it('should register PUT /:connectorId/config route', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack
-
-      const updateConfigRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/config' &&
-          layer.route.methods.put,
-      )
-      expect(updateConfigRoute).to.not.be.undefined
-    })
-
     it('should register PUT /:connectorId/config/auth route', () => {
       const router = createConnectorRouter(container)
       const routes = (router as any).stack
@@ -290,32 +277,6 @@ describe('Connector Routes', () => {
   })
 
   describe('filter routes', () => {
-    it('should register GET /:connectorId/filters route', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack
-
-      const filtersRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/filters' &&
-          layer.route.methods.get,
-      )
-      expect(filtersRoute).to.not.be.undefined
-    })
-
-    it('should register POST /:connectorId/filters route', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack
-
-      const saveFiltersRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/filters' &&
-          layer.route.methods.post,
-      )
-      expect(saveFiltersRoute).to.not.be.undefined
-    })
-
     it('should register GET /:connectorId/filters/:filterKey/options route', () => {
       const router = createConnectorRouter(container)
       const routes = (router as any).stack
@@ -345,55 +306,13 @@ describe('Connector Routes', () => {
     })
   })
 
-  describe('legacy routes', () => {
-    it('should register POST /getTokenFromCode route', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack
-
-      const tokenRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/getTokenFromCode' &&
-          layer.route.methods.post,
-      )
-      expect(tokenRoute).to.not.be.undefined
-    })
-
-    it('should register POST /internal/refreshIndividualConnectorToken route', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack
-
-      const refreshRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/internal/refreshIndividualConnectorToken' &&
-          layer.route.methods.post,
-      )
-      expect(refreshRoute).to.not.be.undefined
-    })
-
-    it('should register POST /updateAppConfig route', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack
-
-      const updateConfigRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/updateAppConfig' &&
-          layer.route.methods.post,
-      )
-      expect(updateConfigRoute).to.not.be.undefined
-    })
-  })
-
   describe('route count', () => {
     it('should register all expected routes', () => {
       const router = createConnectorRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-      // Verify we have a significant number of routes
-      // Registry (2) + CRUD (8) + Config (4+1) + OAuth (2) + Filters (3) + Toggle (1) + Legacy dup (3) + Legacy endpoints (3) = 27
-      expect(routes.length).to.be.greaterThanOrEqual(20)
+      // Registry (2) + CRUD (5) + Config (3) + OAuth (2) + Filters (1) + Toggle (1) + Agents (1) + Configured (1) + Active/Inactive (2) = 18
+      expect(routes.length).to.be.greaterThanOrEqual(18)
     })
   })
 
@@ -421,47 +340,6 @@ describe('Connector Routes', () => {
       expect(registryRoute).to.not.be.undefined
       // The route stack should include auth middleware + metrics + validation + handler
       expect(registryRoute.route.stack.length).to.be.greaterThanOrEqual(2)
-    })
-  })
-
-  describe('route handler count per endpoint', () => {
-    it('POST /getTokenFromCode should have auth + userAdminCheck + handler', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack.filter((layer: any) => layer.route)
-
-      const tokenRoute = routes.find(
-        (layer: any) =>
-          layer.route.path === '/getTokenFromCode' && layer.route.methods.post,
-      )
-      expect(tokenRoute).to.not.be.undefined
-      // auth + requireScopes + metrics + userAdminCheck + handler = at least 3
-      expect(tokenRoute.route.stack.length).to.be.greaterThanOrEqual(3)
-    })
-
-    it('POST /internal/refreshIndividualConnectorToken should have scoped auth + handler', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack.filter((layer: any) => layer.route)
-
-      const refreshRoute = routes.find(
-        (layer: any) =>
-          layer.route.path === '/internal/refreshIndividualConnectorToken' &&
-          layer.route.methods.post,
-      )
-      expect(refreshRoute).to.not.be.undefined
-      // scopedTokenValidator + handler = at least 2
-      expect(refreshRoute.route.stack.length).to.be.greaterThanOrEqual(2)
-    })
-
-    it('POST /updateAppConfig should have scoped auth + handler', () => {
-      const router = createConnectorRouter(container)
-      const routes = (router as any).stack.filter((layer: any) => layer.route)
-
-      const updateConfigRoute = routes.find(
-        (layer: any) =>
-          layer.route.path === '/updateAppConfig' && layer.route.methods.post,
-      )
-      expect(updateConfigRoute).to.not.be.undefined
-      expect(updateConfigRoute.route.stack.length).to.be.greaterThanOrEqual(2)
     })
   })
 
@@ -512,7 +390,7 @@ describe('Connector Routes', () => {
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const configRoute = routes.find(
-        (layer: any) => layer.route.path === '/:connectorId/config' && layer.route.methods.put,
+        (layer: any) => layer.route.path === '/:connectorId/config/auth' && layer.route.methods.put,
       )
       expect(configRoute.route.methods.put).to.be.true
       expect(configRoute.route.methods.post).to.be.undefined
@@ -563,95 +441,4 @@ describe('Connector Routes', () => {
     })
   })
 
-  describe('route handler invocations', () => {
-    function findRouteHandler(router: any, path: string, method: string) {
-      const layer = router.stack.find(
-        (l: any) => l.route && l.route.path === path && l.route.methods[method],
-      )
-      if (!layer) return undefined
-      const handlers = layer.route.stack.map((s: any) => s.handle)
-      return handlers[handlers.length - 1]
-    }
-
-    function createMockReqRes() {
-      const mockReq: any = {
-        user: { userId: 'user123', orgId: 'org123' },
-        tokenPayload: { userId: 'user123', orgId: 'org123' },
-        body: {},
-        params: {},
-        query: {},
-        headers: {},
-        ip: '127.0.0.1',
-      }
-      const mockRes: any = {
-        status: sinon.stub().returnsThis(),
-        json: sinon.stub().returnsThis(),
-        cookie: sinon.stub(),
-        redirect: sinon.stub(),
-      }
-      const mockNext = sinon.stub()
-      return { mockReq, mockRes, mockNext }
-    }
-
-    it('POST /updateAppConfig handler should update config and respond 200', async () => {
-      // Stub loadAppConfig
-      const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
-      const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').resolves(mockConfig as any)
-
-      const router = createConnectorRouter(container)
-      const handler = findRouteHandler(router, '/updateAppConfig', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockRes.status.calledWith(200)).to.be.true
-      expect(mockRes.json.calledOnce).to.be.true
-      const jsonArg = mockRes.json.firstCall.args[0]
-      expect(jsonArg.message).to.include('updated successfully')
-
-      loadStub.restore()
-    })
-
-    it('POST /updateAppConfig handler should call next on error', async () => {
-      const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
-      const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').rejects(new Error('Config load failed'))
-
-      const router = createConnectorRouter(container)
-      const handler = findRouteHandler(router, '/updateAppConfig', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockNext.calledOnce).to.be.true
-      expect(mockNext.firstCall.args[0]).to.be.an.instanceOf(Error)
-
-      loadStub.restore()
-    })
-
-    it('POST /getTokenFromCode handler should call next when user is missing', async () => {
-      const router = createConnectorRouter(container)
-      const handler = findRouteHandler(router, '/getTokenFromCode', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      mockReq.user = undefined
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockNext.calledOnce).to.be.true
-    })
-
-    it('POST /internal/refreshIndividualConnectorToken handler should call next on error', async () => {
-      const router = createConnectorRouter(container)
-      const handler = findRouteHandler(router, '/internal/refreshIndividualConnectorToken', 'post')
-      expect(handler).to.not.be.undefined
-
-      // The handler will fail since getRefreshTokenCredentials is not mocked - it should call next
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockNext.calledOnce).to.be.true
-    })
-  })
 })

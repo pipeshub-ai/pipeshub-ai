@@ -79,9 +79,6 @@ const FilterSelectionDialog: React.FC<FilterSelectionDialogProps> = ({
       setSaving(true);
       setError(null);
       
-      // Save the selected filters to the backend
-      await ConnectorApiService.saveConnectorFilters(connector.name, selectedFilters);
-      
       // Call the onSave callback
       onSave(selectedFilters);
       

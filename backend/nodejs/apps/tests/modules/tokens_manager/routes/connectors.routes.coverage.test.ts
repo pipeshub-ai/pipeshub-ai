@@ -153,13 +153,6 @@ describe('Connector Routes - handler coverage', () => {
     })
   })
 
-  describe('PUT /:connectorId/config', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/:connectorId/config', 'put')
-      expect(handler).to.be.a('function')
-    })
-  })
-
   describe('PUT /:connectorId/config/auth', () => {
     it('should have a handler', () => {
       const handler = findHandler('/:connectorId/config/auth', 'put')
@@ -195,20 +188,6 @@ describe('Connector Routes - handler coverage', () => {
     })
   })
 
-  describe('GET /:connectorId/filters', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/:connectorId/filters', 'get')
-      expect(handler).to.be.a('function')
-    })
-  })
-
-  describe('POST /:connectorId/filters', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/:connectorId/filters', 'post')
-      expect(handler).to.be.a('function')
-    })
-  })
-
   describe('GET /:connectorId/filters/:filterKey/options', () => {
     it('should have a handler', () => {
       const handler = findHandler('/:connectorId/filters/:filterKey/options', 'get')
@@ -220,88 +199,6 @@ describe('Connector Routes - handler coverage', () => {
     it('should have a handler', () => {
       const handler = findHandler('/:connectorId/toggle', 'post')
       expect(handler).to.be.a('function')
-    })
-  })
-
-  // Legacy routes
-  describe('POST /getTokenFromCode', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/getTokenFromCode', 'post')
-      expect(handler).to.be.a('function')
-    })
-
-    it('handler should call next on error when user not found', async () => {
-      const handler = findHandler('/getTokenFromCode', 'post')
-      const req = { user: undefined, body: {}, headers: {} }
-      const res = mockRes()
-      const next = sinon.stub()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
-    })
-  })
-
-  describe('POST /internal/refreshIndividualConnectorToken', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/internal/refreshIndividualConnectorToken', 'post')
-      expect(handler).to.be.a('function')
-    })
-  })
-
-  describe('POST /updateAppConfig', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/updateAppConfig', 'post')
-      expect(handler).to.be.a('function')
-    })
-
-    it('handler should call next on error', async () => {
-      const handler = findHandler('/updateAppConfig', 'post')
-      // loadAppConfig will fail since env is not configured
-      const req = { body: {}, headers: {} }
-      const res = mockRes()
-      const next = sinon.stub()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('POST /internal/refreshIndividualConnectorToken', () => {
-    it('should have a handler', () => {
-      const handler = findHandler('/internal/refreshIndividualConnectorToken', 'post')
-      expect(handler).to.be.a('function')
-    })
-
-    it('handler should call next on error when refresh token unavailable', async () => {
-      const handler = findHandler('/internal/refreshIndividualConnectorToken', 'post')
-      const req = {
-        body: {},
-        headers: { authorization: 'Bearer test-token' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-      }
-      const res = mockRes()
-      const next = sinon.stub()
-
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('POST /getTokenFromCode - error paths', () => {
-    it('handler should call next when config response fails', async () => {
-      const handler = findHandler('/getTokenFromCode', 'post')
-      const req = {
-        user: { userId: 'u1', orgId: 'o1' },
-        body: { tempCode: 'auth-code' },
-        headers: { authorization: 'Bearer test-token' },
-      }
-      const res = mockRes()
-      const next = sinon.stub()
-
-      // Will fail because getGoogleWorkspaceConfig makes real HTTP call
-      await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
     })
   })
 
@@ -340,19 +237,13 @@ describe('Connector Routes - handler coverage', () => {
         { path: '/:connectorId', method: 'get' },
         { path: '/:connectorId', method: 'delete' },
         { path: '/:connectorId/config', method: 'get' },
-        { path: '/:connectorId/config', method: 'put' },
         { path: '/:connectorId/config/auth', method: 'put' },
         { path: '/:connectorId/config/filters-sync', method: 'put' },
         { path: '/:connectorId/name', method: 'put' },
         { path: '/:connectorId/oauth/authorize', method: 'get' },
         { path: '/oauth/callback', method: 'get' },
-        { path: '/:connectorId/filters', method: 'get' },
-        { path: '/:connectorId/filters', method: 'post' },
         { path: '/:connectorId/filters/:filterKey/options', method: 'get' },
         { path: '/:connectorId/toggle', method: 'post' },
-        { path: '/getTokenFromCode', method: 'post' },
-        { path: '/internal/refreshIndividualConnectorToken', method: 'post' },
-        { path: '/updateAppConfig', method: 'post' },
       ]
 
       for (const expected of expectedRoutes) {

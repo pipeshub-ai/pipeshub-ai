@@ -213,20 +213,6 @@ export class ConnectorApiService {
   }
 
   /**
-   * Update configuration for a connector instance
-   */
-  static async updateConnectorInstanceConfig(connectorId: string, config: any): Promise<any> {
-    // Trim whitespace from config before sending
-    const trimmedConfig = trimConnectorConfig(config);
-    const response = await axios.put(`${BASE_URL}/${connectorId}/config`, {
-      ...trimmedConfig,
-      baseUrl: window.location.origin,
-    });
-    if (!response.data) throw new Error('Failed to update connector instance config');
-    return response.data.config;
-  }
-
-  /**
    * Update authentication configuration for a connector instance
    */
   static async updateConnectorInstanceAuthConfig(connectorId: string, authConfig: any): Promise<any> {
@@ -435,27 +421,6 @@ export class ConnectorApiService {
   // ============================================================================
 
   /**
-   * Get filter options for a connector instance
-   */
-  static async getConnectorInstanceFilterOptions(connectorId: string): Promise<{ filterOptions: any }> {
-    const response = await axios.get(`${BASE_URL}/${connectorId}/filters`);
-    if (!response.data) throw new Error('Failed to get connector instance filter options');
-    return response.data;
-  }
-
-  /**
-   * Save filter selections for a connector instance
-   */
-  static async saveConnectorInstanceFilters(connectorId: string, filters: any): Promise<any> {
-    const response = await axios.post(`${BASE_URL}/${connectorId}/filters`, {
-      filters,
-      baseUrl: window.location.origin,
-    });
-    if (!response.data) throw new Error('Failed to save connector instance filters');
-    return response.data;
-  }
-
-  /**
    * Get dynamic options for a specific filter field with pagination
    * 
    * @param connectorId - Connector instance ID
@@ -575,19 +540,6 @@ export class ConnectorApiService {
   }
 
   /**
-   * @deprecated Use updateConnectorInstanceConfig instead
-   */
-  static async updateConnectorConfig(connectorName: string, config: any): Promise<any> {
-    // This is a compatibility shim
-    const result = await this.getConnectorInstances();
-    const instance = result.connectors.find((i: Connector) => i.name === connectorName || i.type === connectorName);
-    if (!instance || !instance._key) {
-      throw new Error(`Connector instance not found for name: ${connectorName}`);
-    }
-    return this.updateConnectorInstanceConfig(instance._key, config);
-  }
-
-  /**
    * @deprecated Use toggleConnectorInstance instead
    */
   static async toggleConnector(connectorName: string): Promise<boolean> {
@@ -627,29 +579,4 @@ export class ConnectorApiService {
     throw new Error('OAuth callback is now handled automatically via the backend');
   }
 
-  /**
-   * @deprecated Use getConnectorInstanceFilterOptions instead
-   */
-  static async getConnectorFilterOptions(connectorName: string): Promise<{ filterOptions: any }> {
-    // This is a compatibility shim
-    const result = await this.getConnectorInstances();
-    const instance = result.connectors.find((i: Connector) => i.name === connectorName || i.type === connectorName);
-    if (!instance || !instance._key) {
-      throw new Error(`Connector instance not found for name: ${connectorName}`);
-    }
-    return this.getConnectorInstanceFilterOptions(instance._key);
-  }
-
-  /**
-   * @deprecated Use saveConnectorInstanceFilters instead
-   */
-  static async saveConnectorFilters(connectorName: string, filters: any): Promise<any> {
-    // This is a compatibility shim
-    const result = await this.getConnectorInstances();
-    const instance = result.connectors.find((i: Connector) => i.name === connectorName || i.type === connectorName);
-    if (!instance || !instance._key) {
-      throw new Error(`Connector instance not found for name: ${connectorName}`);
-    }
-    return this.saveConnectorInstanceFilters(instance._key, filters);
-  }
 }
