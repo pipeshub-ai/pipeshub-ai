@@ -2511,9 +2511,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: list[str],
-        record_group_id:str,
-        transaction: str | None = None
-    ) -> dict|None:
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> dict | None:
         """
         Get a record from the FILES collection using its path.
 

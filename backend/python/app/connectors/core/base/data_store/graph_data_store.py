@@ -49,8 +49,8 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
-    async def get_record_by_path(self, connector_id: str, path: list[str],record_group_id:str) -> Optional[Record]:
-        return await self.graph_provider.get_record_by_path(connector_id, path,record_group_id, transaction=self.txn)
+    async def get_record_by_path(self, connector_id: str, path: list[str], record_group_id: str) -> Optional[Record]:
+        return await self.graph_provider.get_record_by_path(connector_id, path, record_group_id, transaction=self.txn)
 
     async def get_record_by_key(self, key: str) -> Optional[Record]:
         return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)

@@ -1610,16 +1610,17 @@ class SharePointPageRecord(Record):
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
-    assignee: list[str] | None= Field(default_factory=list)
+    assignee: list[str] | None = Field(default_factory=list)
     assignee_email: list[str] | None = Field(default_factory=list)
     creator_email: str | None = None
-    creator_name: str | None =None
-    review_email:list[str] | None = Field(default_factory=list)
+    creator_name: str | None = None
+    review_email: list[str] | None = Field(default_factory=list)
     review_name: list[str] | None = Field(default_factory=list)
-    mergeable:str | None=None
-    merged_by:str | None=None
-    labels:list[str] | None = Field(default_factory=list)
-    last_commit_sha:str|None =Field(default=None)
+    mergeable: str | None = None
+    merged_by: str | None = None
+    labels: list[str] | None = Field(default_factory=list)
+    last_commit_sha: str | None = Field(default=None)
+
     def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
@@ -1717,10 +1718,9 @@ class RecordGroup(BaseModel):
 
 class CodeFileRecord(Record):
     """Record class for Code Files"""
-    file_path:str|None = None
-    file_hash: str|None = None
-    # file_type: Optional[str] = None
-    # branch_name: Optional[str] = None
+
+    file_path: str | None = None
+    file_hash: str | None = None
 
     def to_kafka_record(self) -> dict:
         return {
@@ -1740,17 +1740,20 @@ class CodeFileRecord(Record):
             "filePath": self.file_path,
             "fileHash": self.file_hash,
         }
+
     def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "name":self.record_name,
+            "name": self.record_name,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
         }
 
     @staticmethod
-    def from_arango_record(arango_base_code_file_record: dict,arango_base_record:dict) -> "CodeFileRecord":
+    def from_arango_record(
+        arango_base_code_file_record: dict, arango_base_record: dict
+    ) -> "CodeFileRecord":
         """Create CodeFileRecord from ArangoDB documents (records + codeFiles collections)"""
         conn_name_value = arango_base_record.get("connectorName")
         try:

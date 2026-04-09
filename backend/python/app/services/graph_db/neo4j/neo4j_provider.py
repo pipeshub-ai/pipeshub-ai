@@ -1928,7 +1928,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: list[str],
-        record_group_id:str,
+        record_group_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """Get record by path"""

@@ -710,7 +710,7 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         path: list[str],
-        record_group_id:str,
+        record_group_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """
@@ -718,11 +718,12 @@ class IGraphDBProvider(ABC):
 
         Args:
             connector_id (str): Connector ID
-            path (str): File/record path
+            path (list[str]): File/record path in array format
+            record_group_id (str): External Record group ID
             transaction (Optional[Any]): Optional transaction context
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            dict | None: Record data if found, None otherwise
         """
         pass
 
