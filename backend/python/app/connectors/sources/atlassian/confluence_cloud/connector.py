@@ -9,11 +9,16 @@ This connector syncs Confluence Cloud data including:
 Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
+import base64
+import json
 import uuid
-from collections.abc import AsyncGenerator
+from collections import defaultdict
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Optional
+from typing import (
+    Any,
+)
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
@@ -63,13 +68,26 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
+    ConfluenceBlockParser,
+)
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+from app.models.blocks import (
+    BlockComment,
+    BlockGroup,
+    BlockGroupChildren,
+    BlocksContainer,
+    ChildRecord,
+    ChildType,
+    DataFormat,
+    GroupSubType,
+    GroupType,
+)
 from app.models.entities import (
     AppUser,
     AppUserGroup,
-    CommentRecord,
     FileRecord,
     Record,
     RecordGroup,
@@ -106,6 +124,69 @@ CONTENT_EXPAND_PARAMS = (
 
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
+
+
+def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Extract all media nodes from ADF content.
+
+    Returns list of media info dicts with:
+        - id: Media ID/token
+        - alt: Alt text (usually filename)
+        - type: Media type (file, image, etc.)
+        - width: Image width (if available)
+        - height: Image height (if available)
+        - collection: Media collection (if available)
+    """
+    if not adf_content or not isinstance(adf_content, dict):
+        return []
+
+    media_nodes: list[dict[str, Any]] = []
+
+    def traverse(node: dict[str, Any]) -> None:
+        """Recursively traverse ADF nodes to find media."""
+        if not isinstance(node, dict):
+            return
+
+        node_type = node.get("type", "")
+
+        # Check if this is a media node
+        if node_type == "media":
+            attrs = node.get("attrs", {})
+            # Get filename from multiple sources:
+            # - __fileName: Used for PDFs and other files
+            # - alt: Used for images (usually contains filename)
+            alt_text = attrs.get("alt", "")
+            internal_filename = attrs.get("__fileName", "")
+            # Best filename: prefer __fileName (more reliable for files), fallback to alt
+            filename = internal_filename or alt_text
+
+            media_info = {
+                "id": attrs.get("id", ""),
+                "alt": alt_text,
+                "filename": filename,  # Best filename for matching
+                "type": attrs.get("type", "file"),
+                "width": attrs.get("width"),
+                "height": attrs.get("height"),
+                "collection": attrs.get("collection", ""),
+            }
+            if media_info["id"]:  # Only add if we have an ID
+                media_nodes.append(media_info)
+
+        # Recurse into content
+        if "content" in node:
+            for child in node.get("content", []):
+                traverse(child)
+
+    # Start traversal from root
+    if "content" in adf_content:
+        for node in adf_content.get("content", []):
+            traverse(node)
+    else:
+        traverse(adf_content)
+
+    return media_nodes
+
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
@@ -297,8 +378,8 @@ class ConfluenceConnector(BaseConnector):
         )
 
         # Client instances
-        self.external_client: Optional[ExternalConfluenceClient] = None
-        self.data_source: Optional[ConfluenceDataSource] = None
+        self.external_client: ExternalConfluenceClient | None = None
+        self.data_source: ConfluenceDataSource | None = None
         self.connector_id: str = connector_id
 
         # Initialize sync points for incremental sync
@@ -793,12 +874,10 @@ class ConfluenceConnector(BaseConnector):
             content_ids_filter = None
             if record_type == RecordType.CONFLUENCE_PAGE:
                 content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
-                content_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_COMMENTS)
                 content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGE_ATTACHMENTS)
                 content_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
             else:  # CONFLUENCE_BLOGPOST
                 content_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOSTS)
-                content_comments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_COMMENTS)
                 content_attachments_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.BLOGPOST_ATTACHMENTS)
                 content_ids_filter = self.sync_filters.get(SyncFilterKey.BLOGPOST_IDS)
 
@@ -865,7 +944,6 @@ class ConfluenceConnector(BaseConnector):
             cursor = None
             total_synced = 0
             total_attachments_synced = 0
-            total_comments_synced = 0
             total_permissions_synced = 0
 
             # Paginate through all content items
@@ -972,39 +1050,152 @@ class ConfluenceConnector(BaseConnector):
                         # Get parent_node_id for dependent nodes (comments and attachments)
                         parent_node_id = webpage_record.id
 
-                        # Process comments
-                        child_types = item_data.get("childTypes", {})
-                        comment_info = child_types.get("comment", {})
-                        has_comments = comment_info.get("value", False)
-
-                        if has_comments:
-                            self.logger.debug(f"{content_type.capitalize()} {item_title} has comments, fetching...")
-
-                            # Fetch comments (footer and inline)
-                            for comment_type in ["footer", "inline"]:
-                                comments = await self._fetch_comments_recursive(
-                                    item_id,
-                                    item_title,
-                                    comment_type,
-                                    permissions,
-                                    space_id,
-                                    content_type,
-                                    parent_node_id=parent_node_id
-                                )
-                                # Set indexing status for comments if disabled
-                                for comment_record, comment_permissions in comments:
-                                    if not content_comments_indexing_enabled:
-                                        comment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                records_with_permissions.extend(comments)
-                                total_comments_synced += len(comments)
-
-                        # Process attachments
+                        # Process attachments - skip embedded images
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
                         attachments = attachment_data.get("results", [])
 
                         if attachments:
-                            self.logger.debug(f"Found {len(attachments)} attachments for {content_type} {item_title}")
+                            # v2 list API puts base URL only on response _links, not per attachment
+                            v2_attachments_base_url: str | None = None
+
+                            try:
+                                embedded_image_ids: set[str] = set()
+
+                                try:
+                                    if content_type == "page":
+                                        v2_response = await datasource.get_page_attachments(
+                                            id=int(item_id),
+                                            status=["current"],  # Only fetch current version attachments
+                                            limit=100
+                                        )
+                                    else:  # blogpost
+                                        v2_response = await datasource.get_blogpost_attachments(
+                                            id=int(item_id),
+                                            status=["current"],  # Only fetch current version attachments
+                                            limit=100
+                                        )
+                                    if v2_response and v2_response.status == HttpStatusCode.SUCCESS.value:
+                                        v2_data = v2_response.json()
+                                        attachments_v2 = v2_data.get("results", [])
+                                        if attachments_v2:
+                                            attachments = attachments_v2
+                                            v2_attachments_base_url = v2_data.get("_links", {}).get("base")
+                                except Exception as v2_error:
+                                    self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
+
+                                attachment_mime_types: dict[str, str] = {}
+                                for att in attachments:
+                                    att_id = att.get("id")
+                                    if att_id:
+                                        mime_type = att.get("mediaType", "")
+                                        if mime_type:
+                                            attachment_mime_types[att_id] = mime_type
+                                if content_type == "page":
+                                    page_adf_response = await datasource.get_page_content_v2(
+                                        page_id=item_id,
+                                        body_format="atlas_doc_format"
+                                    )
+                                else:  # blogpost
+                                    page_adf_response = await datasource.get_blogpost_content_v2(
+                                        blogpost_id=item_id,
+                                        body_format="atlas_doc_format"
+                                    )
+
+                                if not page_adf_response or page_adf_response.status != HttpStatusCode.SUCCESS.value:
+                                    raise Exception(f"Failed to fetch ADF content: status={page_adf_response.status if page_adf_response else 'None'}")
+
+                                page_adf_data = page_adf_response.json()
+                                body = page_adf_data.get("body", {})
+                                adf_body = body.get("atlas_doc_format", {})
+                                adf_value = adf_body.get("value")
+
+                                if adf_value:
+                                    adf_content = json.loads(adf_value) if isinstance(adf_value, str) else adf_value
+                                    media_nodes = extract_media_from_adf(adf_content)
+
+                                    for media_info in media_nodes:
+                                        attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                        if attachment_id:
+                                            mime_type = attachment_mime_types.get(attachment_id, "")
+                                            if mime_type.startswith("image/"):
+                                                embedded_image_ids.add(attachment_id)
+
+                                try:
+                                    if content_type == "page":
+                                        footer_comments_response = await datasource.get_page_footer_comments(
+                                            id=int(item_id),
+                                            body_format="atlas_doc_format",
+                                            limit=100
+                                        )
+                                    else:
+                                        footer_comments_response = await datasource.get_blog_post_footer_comments(
+                                            id=int(item_id),
+                                            body_format="atlas_doc_format",
+                                            limit=100
+                                        )
+
+                                    if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.value:
+                                        footer_comments_data = footer_comments_response.json()
+                                        footer_comments = footer_comments_data.get("results", [])
+
+                                        for comment in footer_comments:
+                                            comment_body = comment.get("body", {})
+                                            comment_adf = comment_body.get("atlas_doc_format", {})
+                                            comment_adf_value = comment_adf.get("value")
+
+                                            if comment_adf_value:
+                                                comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
+                                                comment_media_nodes = extract_media_from_adf(comment_content)
+
+                                                for media_info in comment_media_nodes:
+                                                    attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                                    if attachment_id:
+                                                        mime_type = attachment_mime_types.get(attachment_id, "")
+                                                        if mime_type.startswith("image/"):
+                                                            embedded_image_ids.add(attachment_id)
+                                except Exception as comment_error:
+                                    self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
+
+                                try:
+                                    if content_type == "page":
+                                        inline_comments_response = await datasource.get_page_inline_comments(
+                                            id=int(item_id),
+                                            body_format="atlas_doc_format",
+                                            limit=100
+                                        )
+                                    else:
+                                        inline_comments_response = await datasource.get_blog_post_inline_comments(
+                                            id=int(item_id),
+                                            body_format="atlas_doc_format",
+                                            limit=100
+                                        )
+
+                                    if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.value:
+                                        inline_comments_data = inline_comments_response.json()
+                                        inline_comments = inline_comments_data.get("results", [])
+
+                                        for comment in inline_comments:
+                                            comment_body = comment.get("body", {})
+                                            comment_adf = comment_body.get("atlas_doc_format", {})
+                                            comment_adf_value = comment_adf.get("value")
+
+                                            if comment_adf_value:
+                                                comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
+                                                comment_media_nodes = extract_media_from_adf(comment_content)
+
+                                                for media_info in comment_media_nodes:
+                                                    attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                                    if attachment_id:
+                                                        mime_type = attachment_mime_types.get(attachment_id, "")
+                                                        if mime_type.startswith("image/"):
+                                                            embedded_image_ids.add(attachment_id)
+                                except Exception as comment_error:
+                                    self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
+
+                            except Exception as adf_error:
+                                self.logger.warning(f"Failed to detect embedded images for {content_type} {item_id}, all attachments will be created as FileRecords: {adf_error}")
+                                embedded_image_ids = set()
 
                             for attachment in attachments:
                                 try:
@@ -1012,7 +1203,8 @@ class ConfluenceConnector(BaseConnector):
                                     if not attachment_id:
                                         continue
 
-                                    # Check if attachment exists in DB
+                                    if attachment_id in embedded_image_ids:
+                                        continue
                                     existing_attachment = await self.data_entities_processor.get_record_by_external_id(
                                         connector_id=self.connector_id,
                                         external_record_id=attachment_id
@@ -1023,30 +1215,28 @@ class ConfluenceConnector(BaseConnector):
                                         item_id,
                                         space_id,
                                         existing_record=existing_attachment,
-                                        parent_node_id=parent_node_id
+                                        parent_node_id=parent_node_id,
+                                        attachment_api_base_url=v2_attachments_base_url,
                                     )
 
                                     if attachment_record:
-                                        # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                        # Attachments inherit permissions from parent
                                         records_with_permissions.append((attachment_record, permissions))
                                         total_attachments_synced += 1
-                                        self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
                                 except Exception as att_error:
-                                    self.logger.error(f"❌ Failed to process attachment: {att_error}")
+                                    self.logger.error(f"Failed to process attachment: {att_error}")
                                     continue
 
                     except Exception as item_error:
-                        self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
+                        self.logger.error(f"Failed to process {content_type} {item_data.get('title')}: {item_error}")
                         continue
 
                 # Save batch to database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
-                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
 
                 # Extract next cursor from response
                 cursor_url = response_data.get("_links", {}).get("next")
@@ -1064,7 +1254,7 @@ class ConfluenceConnector(BaseConnector):
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
-            self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+            self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Permissions: {total_permissions_synced}")
 
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
@@ -1102,7 +1292,7 @@ class ConfluenceConnector(BaseConnector):
             last_sync_time_ms = last_audit_sync.get("last_sync_time_ms") if last_audit_sync else None
 
             # Current time as checkpoint
-            current_time_ms = int(datetime.now().timestamp() * 1000)
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
             # First run: Initialize checkpoint and skip (permissions already synced during content sync)
             if last_sync_time_ms is None:
@@ -1206,7 +1396,7 @@ class ConfluenceConnector(BaseConnector):
 
         return list(content_titles_set)
 
-    def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
+    def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> str | None:
         """
         Extract content title from an audit record if it's a content permission change.
 
@@ -1464,388 +1654,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for page {page_id}: {e}")
             return []  # Return empty list on error, page will be created without permissions
 
-    async def _fetch_comments_recursive(
-        self,
-        page_id: str,
-        page_title: str,
-        comment_type: str,
-        page_permissions: list[Permission],
-        parent_space_id: Optional[str],
-        parent_type: str = "page",
-        parent_node_id: Optional[str] = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
-        """
-        Recursively fetch all comments (footer or inline) for a page or blogpost.
-
-        Fetches top-level comments and all nested replies in a flat list.
-        Each comment inherits permissions from the parent.
-
-        Args:
-            page_id: The page/blogpost ID
-            page_title: The page/blogpost title (for logging)
-            comment_type: "footer" or "inline"
-            page_permissions: Permissions inherited from parent
-            parent_space_id: Space ID for external_record_group_id
-            parent_type: "page" or "blogpost" (determines which API to call)
-            parent_node_id: Internal record ID of parent page
-
-        Returns:
-            List of tuples (CommentRecord, permissions list)
-        """
-        try:
-            all_comments = []
-            batch_size = 100
-            cursor = None
-
-            self.logger.debug(f"Fetching {comment_type} comments for {parent_type}: {page_title}")
-
-            # Fetch top-level comments
-            while True:
-                datasource = await self._get_fresh_datasource()
-
-                # Route to correct API based on parent_type
-                if parent_type == "page":
-                    if comment_type == "footer":
-                        response = await datasource.get_page_footer_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                    else:  # inline
-                        response = await datasource.get_page_inline_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                elif parent_type == "blogpost":
-                    if comment_type == "footer":
-                        response = await datasource.get_blog_post_footer_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                    else:  # inline
-                        response = await datasource.get_blog_post_inline_comments(
-                            id=int(page_id),
-                            cursor=cursor,
-                            limit=batch_size,
-                            body_format="storage"
-                        )
-                else:
-                    self.logger.error(f"Unknown parent type: {parent_type}")
-                    break
-
-                # Check response
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: {response.status if response else 'No response'}")
-                    break
-
-                response_data = response.json()
-                comments_data = response_data.get("results", [])
-
-                if not comments_data:
-                    break
-
-                # Extract base URL from response level (v2 API) - available in response_data._links.base
-                response_links = response_data.get("_links", {})
-                base_url = response_links.get("base")  # v2 format: base URL at response level
-
-                # Process each comment
-                for comment_data in comments_data:
-                    try:
-                        comment_id = comment_data.get("id")
-
-                        if not comment_id:
-                            continue
-
-                        # Check if comment exists in DB
-                        existing_comment = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=comment_id
-                        )
-
-                        # Transform comment to CommentRecord
-                        comment_record = self._transform_to_comment_record(
-                            comment_data,
-                            page_id,
-                            parent_space_id,
-                            comment_type,
-                            None,  # No parent comment for top-level
-                            base_url=base_url,  # Pass base URL from response level
-                            existing_record=existing_comment,
-                            parent_node_id=parent_node_id
-                        )
-
-                        if comment_record:
-                            all_comments.append((comment_record, page_permissions))
-
-                        # Recursively fetch children
-                        children = await self._fetch_comment_children_recursive(
-                            comment_id,
-                            comment_type,
-                            page_id,
-                            parent_space_id,
-                            page_permissions,
-                            parent_node_id=parent_node_id
-                        )
-                        all_comments.extend(children)
-
-                    except Exception as comment_error:
-                        self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
-                        continue
-
-                # Extract next cursor
-                next_url = response_data.get("_links", {}).get("next")
-                if not next_url:
-                    break
-
-                cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
-
-            self.logger.debug(f"✓ Fetched {len(all_comments)} {comment_type} comments (including replies) for page {page_title}")
-            return all_comments
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
-            return []
-
-    async def _fetch_comment_children_recursive(
-        self,
-        comment_id: str,
-        comment_type: str,
-        page_id: str,
-        parent_space_id: Optional[str],
-        page_permissions: list[Permission],
-        parent_node_id: Optional[str] = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
-        """
-        Recursively fetch all children (replies) of a comment.
-
-        Args:
-            comment_id: The parent comment ID
-            comment_type: "footer" or "inline"
-            page_id: The parent page ID
-            parent_space_id: Space ID for external_record_group_id
-            page_permissions: Permissions inherited from parent page
-            parent_node_id: Internal record ID of parent page
-
-        Returns:
-            List of tuples (CommentRecord, permissions list)
-        """
-        try:
-            all_children = []
-            batch_size = 100
-            cursor = None
-
-            # Fetch children comments
-            while True:
-                datasource = await self._get_fresh_datasource()
-                if comment_type == "footer":
-                    response = await datasource.get_footer_comment_children(
-                        id=int(comment_id),
-                        cursor=cursor,
-                        limit=batch_size,
-                        body_format="storage"
-                    )
-                else:  # inline
-                    response = await datasource.get_inline_comment_children(
-                        id=int(comment_id),
-                        cursor=cursor,
-                        limit=batch_size,
-                        body_format="storage"
-                    )
-
-                # Check response
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    break
-
-                response_data = response.json()
-                children_data = response_data.get("results", [])
-
-                if not children_data:
-                    break
-
-                # Extract base URL from response level (v2 API) - available in response_data._links.base
-                response_links = response_data.get("_links", {})
-                base_url = response_links.get("base")  # v2 format: base URL at response level
-
-                # Process each child comment
-                for child_data in children_data:
-                    try:
-                        child_id = child_data.get("id")
-
-                        if not child_id:
-                            continue
-
-                        # Check if child comment exists in DB
-                        existing_child = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=child_id
-                        )
-
-                        # Transform child to CommentRecord
-                        child_record = self._transform_to_comment_record(
-                            child_data,
-                            page_id,
-                            parent_space_id,
-                            comment_type,
-                            comment_id,  # Parent comment ID
-                            base_url=base_url,  # Pass base URL from response level
-                            existing_record=existing_child,
-                            parent_node_id=parent_node_id
-                        )
-
-                        if child_record:
-                            all_children.append((child_record, page_permissions))
-
-                        # Recursively fetch grandchildren
-                        grandchildren = await self._fetch_comment_children_recursive(
-                            child_id,
-                            comment_type,
-                            page_id,
-                            parent_space_id,
-                            page_permissions,
-                            parent_node_id=parent_node_id
-                        )
-                        all_children.extend(grandchildren)
-
-                    except Exception as child_error:
-                        self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
-                        continue
-
-                # Extract next cursor
-                next_url = response_data.get("_links", {}).get("next")
-                if not next_url:
-                    break
-
-                cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
-
-            return all_children
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
-            return []
-
-    def _transform_to_comment_record(
-        self,
-        comment_data: dict[str, Any],
-        page_id: str,
-        parent_space_id: Optional[str],
-        comment_type: str,
-        parent_comment_id: Optional[str],
-        base_url: Optional[str] = None,
-        existing_record: Optional[Record] = None,
-        parent_node_id: Optional[str] = None
-    ) -> Optional[CommentRecord]:
-        """
-        Transform Confluence comment data to CommentRecord entity.
-
-        Args:
-            comment_data: Raw comment data from Confluence API
-            page_id: Parent page external_record_id
-            parent_space_id: Space ID from parent page
-            comment_type: "footer" or "inline"
-            parent_comment_id: Parent comment ID (None for top-level comments)
-            base_url: Base URL from response level (v2 API) - if None, will extract from _links.self (v1 API)
-            existing_record: Optional existing record to check for updates
-            parent_node_id: Internal record ID of parent page
-
-        Returns:
-            CommentRecord object or None if transformation fails
-        """
-        try:
-            comment_id = comment_data.get("id")
-            title = comment_data.get("title", "")
-
-            if not comment_id:
-                return None
-
-            # Extract author accountId
-            author = comment_data.get("version", {}).get("authorId")
-            if not author:
-                self.logger.warning(f"Comment {comment_id} has no author - skipping")
-                return None
-
-            # Parse timestamps
-            source_created_at = None
-
-            created_at_str = comment_data.get("version", {}).get("createdAt")
-            if created_at_str:
-                source_created_at = self._parse_confluence_datetime(created_at_str)
-
-            # Extract resolution status (for inline comments)
-            resolution_status = None
-            if comment_type == "inline":
-                is_resolved = comment_data.get("resolutionStatus", False)
-                resolution_status = "resolved" if is_resolved else "open"
-
-            # Extract inline original selection (for inline comments)
-            inline_original_selection = None
-            if comment_type == "inline":
-                inline_properties = comment_data.get("properties", {})
-                if inline_properties:
-                    inline_original_selection = inline_properties.get("inlineOriginalSelection")
-
-            # Determine parent record ID and type
-            parent_external_record_id = parent_comment_id if parent_comment_id else page_id
-            parent_record_type = RecordType.COMMENT if parent_comment_id else RecordType.WEBPAGE
-
-            # Determine record ID and version
-            is_new = existing_record is None
-            comment_record_id = str(uuid.uuid4()) if is_new else existing_record.id
-
-            version_number = comment_data.get("version", {}).get("number", 0)
-
-            # Calculate version based on changes
-            record_version = 0
-            if not is_new:
-                # Check if content changed (version number changed)
-                if str(version_number) != existing_record.external_revision_id:
-                    record_version = existing_record.version + 1
-                else:
-                    record_version = existing_record.version
-
-            # Construct web URL for comment
-            links = comment_data.get("_links", {})
-            web_url = self._construct_web_url(links, base_url)
-
-            return CommentRecord(
-                id=comment_record_id,
-                org_id=self.data_entities_processor.org_id,
-                record_name=title,
-                record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
-                external_record_id=comment_id,
-                external_revision_id=str(version_number) if version_number else None,
-                version=record_version,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.CONFLUENCE,
-                connector_id=self.connector_id,
-                mime_type=MimeTypes.HTML.value,
-                parent_external_record_id=parent_external_record_id,
-                parent_record_type=parent_record_type,
-                external_record_group_id=parent_space_id,
-                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
-                source_created_at=source_created_at,
-                source_updated_at=source_created_at,
-                weburl=web_url,
-                author_source_id=author,
-                resolution_status=resolution_status,
-                comment_selection=inline_original_selection,
-                is_dependent_node=True,  # Comments are dependent nodes
-                parent_node_id=parent_node_id,  # Internal record ID of parent page
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform comment: {e}")
-            return None
-
-    def _construct_web_url(self, links: dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
+    def _construct_web_url(self, links: dict[str, Any], base_url: str | None = None) -> str | None:
         """
         Construct web URL from _links dictionary.
 
@@ -1876,7 +1685,7 @@ class ConfluenceConnector(BaseConnector):
 
         return None
 
-    def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
+    def _extract_cursor_from_next_link(self, next_url: str) -> str | None:
         """
         Extract cursor value from _links.next URL.
 
@@ -1911,7 +1720,7 @@ class ConfluenceConnector(BaseConnector):
         principal_id: str,
         permission_type: PermissionType,
         create_pseudo_group_if_missing: bool = False
-    ) -> Optional[Permission]:
+    ) -> Permission | None:
         """
         Create Permission object from principal data (user or group).
 
@@ -1992,7 +1801,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
             return None
 
-    async def _create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
+    async def _create_pseudo_group(self, account_id: str) -> AppUserGroup | None:
         """
         Create a pseudo-group for a user without email.
 
@@ -2024,16 +1833,14 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
-    async def _transform_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
+    async def _transform_space_permission(self, perm_data: dict[str, Any]) -> Permission | None:
         """
         Transform Confluence space permission to Permission object.
 
         Maps Confluence operations to PermissionType:
         - administer → OWNER
         - read → READ
-        - create/delete (comment) → COMMENT
         - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content/export → OTHER
         - delete (space) → OWNER
 
         Args:
@@ -2075,14 +1882,13 @@ class ConfluenceConnector(BaseConnector):
         Mapping logic:
         - administer → OWNER
         - read → READ
-        - create/delete (comment) → COMMENT
         - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content/export → OTHER
         - delete (space) → OWNER
+        - any other operation → READ (default)
 
         Args:
             operation_key: Operation key (e.g., "read", "create", "delete")
-            target_type: Target type (e.g., "space", "page", "comment")
+            target_type: Target type (e.g., "space", "page")
 
         Returns:
             PermissionType enum value
@@ -2099,17 +1905,15 @@ class ConfluenceConnector(BaseConnector):
         if operation_key == "delete" and target_type == "space":
             return PermissionType.OWNER
 
-        # Comment operations = COMMENT
-        if target_type == "comment" and operation_key in ["create", "delete"]:
-            return PermissionType.COMMENT
-
         # Page/blogpost/attachment operations = WRITE
-        if target_type in ["page", "blogpost", "attachment"]:
-            if operation_key in ["create", "delete", "archive"]:
-                return PermissionType.WRITE
+        if (
+            target_type in ["page", "blogpost", "attachment"]
+            and operation_key in ["create", "delete", "archive"]
+        ):
+            return PermissionType.WRITE
 
-        # Everything else = OTHER
-        return PermissionType.OTHER
+        # Unrecognized operations default to READ
+        return PermissionType.READ
 
     def _map_page_permission(self, operation: str) -> PermissionType:
         """
@@ -2118,6 +1922,7 @@ class ConfluenceConnector(BaseConnector):
         Page restrictions only have two operations:
         - read → READ
         - update → WRITE
+        Any other value defaults to READ.
 
         Args:
             operation: Operation string ("read" or "update")
@@ -2130,7 +1935,7 @@ class ConfluenceConnector(BaseConnector):
         elif operation == "update":
             return PermissionType.WRITE
         else:
-            return PermissionType.OTHER
+            return PermissionType.READ
 
     async def _transform_page_restriction_to_permissions(
         self,
@@ -2212,8 +2017,8 @@ class ConfluenceConnector(BaseConnector):
     def _transform_to_space_record_group(
         self,
         space_data: dict[str, Any],
-        base_url: Optional[str] = None
-    ) -> Optional[RecordGroup]:
+        base_url: str | None = None
+    ) -> RecordGroup | None:
         """
         Transform Confluence space data to RecordGroup entity.
 
@@ -2268,8 +2073,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         data: dict[str, Any],
         record_type: RecordType,
-        existing_record: Optional[Record] = None
-    ) -> Optional[WebpageRecord]:
+        existing_record: Record | None = None
+    ) -> WebpageRecord | None:
         """
         Unified transform for page/blogpost data to WebpageRecord.
 
@@ -2403,7 +2208,7 @@ class ConfluenceConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 weburl=web_url,
-                mime_type=MimeTypes.HTML.value,
+                mime_type=MimeTypes.BLOCKS.value,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
@@ -2419,10 +2224,11 @@ class ConfluenceConnector(BaseConnector):
         self,
         attachment_data: dict[str, Any],
         parent_external_record_id: str,
-        parent_external_record_group_id: Optional[str],
-        existing_record: Optional[Record] = None,
-        parent_node_id: Optional[str] = None
-    ) -> Optional[FileRecord]:
+        parent_external_record_group_id: str | None,
+        existing_record: Record | None = None,
+        parent_node_id: str | None = None,
+        attachment_api_base_url: str | None = None,
+    ) -> FileRecord | None:
         """
         Transform Confluence attachment to FileRecord entity.
         Supports both v1 and v2 API response formats.
@@ -2433,6 +2239,7 @@ class ConfluenceConnector(BaseConnector):
             parent_external_record_group_id: Space ID from parent page
             existing_record: Optional existing record to check for updates
             parent_node_id: Internal record ID of parent page
+            attachment_api_base_url: Root _links.base from v2 paginated attachment responses (not on each item)
 
         Returns:
             FileRecord object or None if transformation fails
@@ -2519,11 +2326,14 @@ class ConfluenceConnector(BaseConnector):
             if '.' in file_name:
                 extension = file_name.split('.')[-1].lower()
 
-            # Construct web URL using helper method
-            links = attachment_data.get("_links", {})
-            # For attachments, base_url might be in _links itself (v2 format)
-            base_url_from_links = links.get("base")
-            web_url = self._construct_web_url(links, base_url_from_links)
+            # Construct web URL: v2 list responses put base only on the parent _links; per-item has webui + webuiLink
+            links = dict(attachment_data.get("_links") or {})
+            if not links.get("webui"):
+                webui_link = attachment_data.get("webuiLink")
+                if webui_link:
+                    links["webui"] = webui_link
+            effective_base = attachment_api_base_url or links.get("base")
+            web_url = self._construct_web_url(links, effective_base)
 
             # Determine record ID and version
             is_new = existing_record is None
@@ -2572,7 +2382,7 @@ class ConfluenceConnector(BaseConnector):
         self,
         data: dict[str, Any],
         record_type: RecordType,
-        existing_record: Optional[Record],
+        existing_record: Record | None,
         permissions: list[Permission]
     ) -> RecordUpdate:
         """Process webpage with change detection.
@@ -2733,7 +2543,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to get users by emails: {e}")
             return []
 
-    def _transform_to_app_user(self, user_data: dict[str, Any]) -> Optional[AppUser]:
+    def _transform_to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         """
         Transform Confluence user data to AppUser entity.
 
@@ -2774,7 +2584,7 @@ class ConfluenceConnector(BaseConnector):
     def _transform_to_user_group(
         self,
         group_data: dict[str, Any]
-    ) -> Optional[AppUserGroup]:
+    ) -> AppUserGroup | None:
         """
         Transform Confluence group data to AppUserGroup entity.
 
@@ -2803,7 +2613,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform group: {e}")
             return None
 
-    def _parse_confluence_datetime(self, datetime_str: str) -> Optional[int]:
+    def _parse_confluence_datetime(self, datetime_str: str) -> int | None:
         """
         Parse Confluence datetime string to epoch timestamp in milliseconds.
 
@@ -2831,45 +2641,89 @@ class ConfluenceConnector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
-        Stream record content (page HTML, comment HTML, or attachment file) from Confluence.
+        Stream record content (page BlocksContainer or attachment file) from Confluence.
 
-        For pages (WebpageRecord): Fetches HTML content from page body.export_view
-        For comments (CommentRecord): Fetches HTML content from comment body.storage.value
+        For pages/blogposts (WebpageRecord): Fetches ADF content and converts to BlocksContainer with embedded comments
         For attachments (FileRecord): Downloads file from attachment download URL
 
         Args:
-            record: The record to stream (page, comment, or attachment)
+            record: The record to stream (page, blogpost, or attachment)
 
         Returns:
-            StreamingResponse: Streaming response with page/comment HTML or file content
+            StreamingResponse: Streaming response with BlocksContainer JSON or file content
         """
         try:
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if record.record_type in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
-                # Page or blogpost - fetch HTML content based on record type
-                html_content = await self._fetch_page_content(record.external_record_id, record.record_type)
+                # Page or blogpost - fetch ADF content and convert to BlocksContainer
+                page_data = await self._fetch_page_data_with_adf(record.external_record_id, record.record_type)
 
-                async def generate_page() -> AsyncGenerator[bytes, None]:
-                    yield html_content.encode('utf-8')
+                # Process attachments for children_records
+                # Fetch attachments directly from v2 API (since page content API doesn't include them)
+                attachments_data = []
+                attachments_api_base_url: str | None = None
+                try:
+                    datasource = await self._get_fresh_datasource()
+                    if record.record_type == RecordType.CONFLUENCE_PAGE:
+                        attachments_response = await datasource.get_page_attachments(
+                            id=int(record.external_record_id),
+                            status=["current"],  # Only fetch current version attachments
+                            limit=100
+                        )
+                    else:
+                        attachments_response = await datasource.get_blogpost_attachments(
+                            id=int(record.external_record_id),
+                            status=["current"],
+                            limit=100
+                        )
+                    if attachments_response and attachments_response.status == HttpStatusCode.SUCCESS.value:
+                        attachments_result = attachments_response.json()
+                        attachments_data = attachments_result.get("results", [])
+                        attachments_api_base_url = attachments_result.get("_links", {}).get("base")
+                        self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
+                    attachments_data = []
 
-                return StreamingResponse(
-                    generate_page(),
-                    media_type='text/html',
-                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
+                attachment_children_map = await self._process_page_attachments_for_children(
+                    attachments_data,
+                    record.external_record_id,
+                    record.id,
+                    record.external_record_group_id,
+                    record.weburl,
+                    attachment_api_base_url=attachments_api_base_url,
                 )
 
-            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
-                # Comment - fetch HTML content based on comment type
-                html_content = await self._fetch_comment_content(record)
+                # Build MIME types map from attachments_data
+                attachment_mime_types: dict[str, str] = {}
+                for attachment in attachments_data:
+                    attachment_id = attachment.get("id")
+                    if attachment_id:
+                        # Try different locations for mediaType (v2 API structure)
+                        media_type = attachment.get("mediaType") or attachment.get("metadata", {}).get("mediaType")
+                        if media_type:
+                            attachment_mime_types[str(attachment_id)] = media_type
 
-                async def generate_comment() -> AsyncGenerator[bytes, None]:
-                    yield html_content.encode('utf-8')
+                # Parse to BlocksContainer
+                blocks_container = await self._parse_confluence_page_to_blocks(
+                    page_data=page_data,
+                    page_id=record.external_record_id,
+                    page_title=record.record_name,
+                    weburl=record.weburl,
+                    attachment_children_map=attachment_children_map,
+                    attachment_mime_types=attachment_mime_types,
+                    attachments_data=attachments_data,
+                    record_type=record.record_type,
+                )
+
+                # Serialize and stream
+                blocks_json = blocks_container.model_dump_json(indent=2)
 
                 return StreamingResponse(
-                    generate_comment(),
-                    media_type='text/html',
-                    headers={"Content-Disposition": f'inline; filename="comment_{record.external_record_id}.html"'}
+                    iter([blocks_json.encode('utf-8')]),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.json"'}
                 )
 
             elif record.record_type == RecordType.FILE:
@@ -2893,7 +2747,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            ) from e
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -2959,75 +2813,830 @@ class ConfluenceConnector(BaseConnector):
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch content: {str(e)}"
-            )
+            ) from e
 
-    async def _fetch_comment_content(self, record: CommentRecord) -> str:
+    def _resolve_confluence_attachment_id(
+        self,
+        media_info: dict[str, Any],
+        attachments: list[dict[str, Any]] | None = None
+    ) -> str | None:
         """
-        Fetch comment HTML content from Confluence based on record type.
+        Resolve Confluence attachment ID from ADF media node.
+
+        ADF media nodes have attrs.id which is a Media Platform UUID.
+        Attachment objects have:
+        - id: Confluence attachment ID (e.g., "att195952659")
+        - fileId: Media Platform UUID that matches attrs.id from ADF
 
         Args:
-            record: CommentRecord with external_record_id and record_type
+            media_info: Media node info from extract_media_from_adf
+            attachments: Optional list of attachment objects to match against
 
         Returns:
-            str: HTML content of the comment
+            Confluence attachment ID (e.g., "att195952659") or None
+        """
+        media_id = media_info.get("id")  # Media Platform UUID from ADF
+        filename = media_info.get("filename") or media_info.get("alt")
 
-        Raises:
-            HTTPException: If comment not found or fetch fails
+        if media_id and attachments:
+            for att in attachments:
+                att_file_id = att.get("fileId")
+                if att_file_id == media_id:
+                    return att.get("id")
+
+        if filename and attachments:
+            for att in attachments:
+                if att.get("title", "") == filename:
+                    return att.get("id")
+
+            filename_lower = filename.lower().strip()
+            for att in attachments:
+                if att.get("title", "").lower().strip() == filename_lower:
+                    return att.get("id")
+
+        return None
+
+    def _create_confluence_media_fetcher(
+        self,
+        page_id: str,
+        content_type: str = "page"
+    ) -> Callable[[str, str], Awaitable[str | None]]:
+        """
+        Create a media fetcher callback bound to a specific Confluence page.
+
+        Args:
+            page_id: The page ID to bind to the fetcher
+            content_type: "page" or "blogpost" to determine which API to use
+
+        Returns:
+            Async function that takes (media_id, alt_text) and returns base64 data URI
+        """
+        # Capture page_id and content_type in this scope
+        captured_page_id = page_id
+        captured_content_type = content_type
+
+        async def fetcher(media_id: str, alt_text: str) -> str | None:
+            return await self._fetch_confluence_media_as_base64(captured_page_id, media_id, alt_text, captured_content_type)
+
+        return fetcher
+
+    async def _fetch_confluence_media_as_base64(
+        self,
+        page_id: str,
+        media_id: str,
+        media_alt: str,
+        content_type: str = "page"
+    ) -> str | None:
+        """
+        Fetch Confluence attachment content and return as base64 data URI.
+
+        Args:
+            page_id: The page ID containing the attachment
+            media_id: The media ID from ADF (UUID token)
+            media_alt: The alt text/filename for matching
+            content_type: "page" or "blogpost" to determine which API to use
+
+        Returns:
+            Base64 data URI string or None
         """
         try:
-            comment_id = record.external_record_id
-            self.logger.debug(f"Fetching comment content for {comment_id} (type: {record.record_type})")
-
+            # Fetch attachments using v2 API (page or blogpost specific)
             datasource = await self._get_fresh_datasource()
+            # Convert page_id to int if it's a string
+            page_id_int = int(page_id) if isinstance(page_id, str) else page_id
 
-            # Call appropriate API based on record type
-            if record.record_type == RecordType.COMMENT:
-                # Footer comment
-                response = await datasource.get_footer_comment_by_id(
-                    comment_id=int(comment_id),
-                    body_format="storage"
-                )
-            elif record.record_type == RecordType.INLINE_COMMENT:
-                # Inline comment
-                response = await datasource.get_inline_comment_by_id(
-                    comment_id=int(comment_id),
-                    body_format="storage"
+            # Use correct API based on content type
+            if content_type == "blogpost":
+                response = await datasource.get_blogpost_attachments(
+                    id=page_id_int,
+                    status=["current"],  # Only fetch current version attachments
+                    limit=100
                 )
             else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported comment type: {record.record_type}"
+                response = await datasource.get_page_attachments(
+                    id=page_id_int,
+                    status=["current"],  # Only fetch current version attachments
+                    limit=100
                 )
 
-            # Check response
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Comment not found: {comment_id}"
-                )
+            if response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.debug(f"No attachments found for page {page_id}")
+                return None
 
-            response_data = response.json()
+            attachments_data = response.json()
+            attachments = attachments_data.get("results", [])  # v2 API uses "results"
 
-            # Extract HTML content from body.storage.value
-            body = response_data.get("body", {})
-            storage = body.get("storage", {})
-            html_content = storage.get("value", "")
+            # Find attachment by filename (alt text)
+            target_attachment = None
+            if media_alt:
+                for attachment in attachments:
+                    filename = attachment.get("title") or attachment.get("metadata", {}).get("mediaType", "")
+                    if filename == media_alt or filename.lower() == media_alt.lower():
+                        target_attachment = attachment
+                        break
 
-            if not html_content:
-                self.logger.warning(f"Comment {comment_id} has no content")
-                html_content = "<p>No content available</p>"
+            if not target_attachment:
+                self.logger.debug(f"No attachment found matching '{media_alt}' in page {page_id}")
+                return None
 
-            self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for comment {comment_id}")
-            return html_content
+            # Download attachment content
+            attachment_id = target_attachment.get("id")
 
-        except HTTPException:
-            raise
+            # Extract MIME type - check top level first, then metadata object as fallback
+            mime_type = target_attachment.get("mediaType") or "image/png"
+
+            # Stream attachment content
+            content_bytes = b""
+            async for chunk in datasource.download_attachment(
+                parent_page_id=page_id,
+                attachment_id=attachment_id
+            ):
+                content_bytes += chunk
+
+            # Convert to base64
+            base64_data = base64.b64encode(content_bytes).decode('utf-8')
+            return f"data:{mime_type};base64,{base64_data}"
+
+
         except Exception as e:
-            self.logger.error(f"Failed to fetch comment content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch comment content: {str(e)}"
+            self.logger.warning(f"Error fetching media (id='{media_id}', alt='{media_alt}') for page {page_id}: {e}")
+            return None
+
+    async def _fetch_page_comments_recursive(
+        self,
+        page_id: str,
+        record_type: RecordType,
+        comment_type: str  # "footer" or "inline"
+    ) -> list[dict[str, Any]]:
+        """
+        Recursively fetch all comments (footer or inline) for a page or blogpost using v2 API.
+        Returns a flat list of all comments including nested replies.
+
+        Args:
+            page_id: The page/blogpost ID
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            comment_type: "footer" or "inline"
+
+        Returns:
+            List of comment dictionaries with ADF body
+        """
+        all_comments: list[dict[str, Any]] = []
+        batch_size = 100
+        cursor = None
+
+        datasource = await self._get_fresh_datasource()
+        page_id_int = int(page_id) if isinstance(page_id, str) else page_id
+
+        # Fetch top-level comments
+        while True:
+            try:
+                if record_type == RecordType.CONFLUENCE_PAGE:
+                    if comment_type == "footer":
+                        response = await datasource.get_page_footer_comments(
+                            id=page_id_int,
+                            body_format="atlas_doc_format",  # Pass as string
+                            cursor=cursor,
+                            limit=batch_size
+                        )
+                    else:  # inline
+                        response = await datasource.get_page_inline_comments(
+                            id=page_id_int,
+                            body_format="atlas_doc_format",  # Pass as string
+                            cursor=cursor,
+                            limit=batch_size
+                        )
+                elif record_type == RecordType.CONFLUENCE_BLOGPOST:
+                    if comment_type == "footer":
+                        response = await datasource.get_blog_post_footer_comments(
+                            id=page_id_int,
+                            body_format="atlas_doc_format",  # Pass as string
+                            cursor=cursor,
+                            limit=batch_size
+                        )
+                    else:  # inline
+                        response = await datasource.get_blog_post_inline_comments(
+                            id=page_id_int,
+                            body_format="atlas_doc_format",  # Pass as string
+                            cursor=cursor,
+                            limit=batch_size
+                        )
+                else:
+                    self.logger.error(f"Unsupported record type for comments: {record_type}")
+                    break
+
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.debug(f"Failed to fetch {comment_type} comments for {record_type}: {page_id}")
+                    break
+
+                response_data = response.json()
+                comments_data = response_data.get("results", [])
+
+                if not comments_data:
+                    break
+
+                # Process each comment and recursively fetch children
+                for comment in comments_data:
+                    all_comments.append(comment)
+                    # Recursively fetch children
+                    children = await self._fetch_comment_children_recursive(
+                        comment_id=comment.get("id"),
+                        comment_type=comment_type,
+                        record_type=record_type
+                    )
+                    all_comments.extend(children)
+
+                # Extract next cursor
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(next_url)
+                if not cursor:
+                    break
+
+            except Exception as e:
+                self.logger.error(f"Error fetching {comment_type} comments for page {page_id}: {e}", exc_info=True)
+                break
+
+        return all_comments
+
+    async def _fetch_comment_children_recursive(
+        self,
+        comment_id: str,
+        comment_type: str,  # "footer" or "inline"
+        record_type: RecordType
+    ) -> list[dict[str, Any]]:
+        """
+        Recursively fetch all child comments (replies) for a given comment.
+
+        Args:
+            comment_id: The parent comment ID
+            comment_type: "footer" or "inline"
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+
+        Returns:
+            List of child comment dictionaries
+        """
+        all_children: list[dict[str, Any]] = []
+        batch_size = 100
+        cursor = None
+
+        datasource = await self._get_fresh_datasource()
+        comment_id_int = int(comment_id) if isinstance(comment_id, str) else comment_id
+
+        while True:
+            try:
+                if comment_type == "footer":
+                    response = await datasource.get_footer_comment_children(
+                        id=comment_id_int,
+                        body_format="atlas_doc_format",  # Pass as string
+                        cursor=cursor,
+                        limit=batch_size
+                    )
+                else:  # inline
+                    response = await datasource.get_inline_comment_children(
+                        id=comment_id_int,
+                        body_format="atlas_doc_format",  # Pass as string
+                        cursor=cursor,
+                        limit=batch_size
+                    )
+
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    break
+
+                response_data = response.json()
+                children_data = response_data.get("results", [])
+
+                if not children_data:
+                    break
+
+                # Process each child and recursively fetch their children
+                for child in children_data:
+                    all_children.append(child)
+                    # Recursively fetch grandchildren
+                    grandchildren = await self._fetch_comment_children_recursive(
+                        comment_id=child.get("id"),
+                        comment_type=comment_type,
+                        record_type=record_type
+                    )
+                    all_children.extend(grandchildren)
+
+                # Extract next cursor
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                cursor = self._extract_cursor_from_next_link(next_url)
+                if not cursor:
+                    break
+
+            except Exception as e:
+                self.logger.error(f"Error fetching children for comment {comment_id}: {e}", exc_info=True)
+                break
+
+        return all_children
+
+    def _organize_confluence_comments_to_threads(
+        self,
+        comments_data: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
+        """
+        Group Confluence comments by thread (parent comment) and sort by created timestamp.
+        Returns list of threads, each thread is a list of comments sorted by created.
+
+        Confluence comments can have parentCommentId for replies.
+        - Top-level comments (no parentCommentId) start their own thread
+        - Replies grouped under their parent's thread_id
+        - Each thread sorted by created timestamp (oldest first)
+        - Threads sorted by first comment's created timestamp
+        """
+        if not comments_data:
+            return []
+
+        threads: dict[str, list[dict[str, Any]]] = {}
+
+        for comment in comments_data:
+            comment_id = str(comment.get("id", ""))
+            parent_comment_id = comment.get("parentCommentId")
+
+            # Thread ID is parent's ID if it's a reply, or self ID if top-level
+            thread_id = str(parent_comment_id) if parent_comment_id else comment_id
+            if not thread_id:
+                continue
+
+            if thread_id not in threads:
+                threads[thread_id] = []
+            threads[thread_id].append(comment)
+
+        # Sort each thread by created timestamp (oldest first)
+        for thread_id in threads:
+            threads[thread_id].sort(
+                key=lambda c: self._parse_confluence_datetime(
+                    c.get("version", {}).get("createdAt", "")
+                ) or 0
             )
+
+        # Sort threads by first comment's created timestamp (oldest thread first)
+        return sorted(
+            threads.values(),
+            key=lambda t: self._parse_confluence_datetime(
+                t[0].get("version", {}).get("createdAt", "")
+            ) or 0 if t else 0
+        )
+
+
+    def _create_comment_media_fetcher(
+        self,
+        page_id: str,
+        content_type: str = "page"
+    ) -> Callable[[str, str], Awaitable[str | None]]:
+        """
+        Create a media fetcher callback for comments.
+        Comments use collection "comment-container-{pageId}" but attachments
+        are still accessible via page attachments API.
+
+        Args:
+            page_id: The page ID containing the comment
+            content_type: "page" or "blogpost" to determine which API to use
+
+        Returns:
+            Async function that takes (media_id, alt_text) and returns base64 data URI
+        """
+        captured_page_id = page_id
+        captured_content_type = content_type
+
+        async def fetcher(media_id: str, alt_text: str) -> str | None:
+            # For comments, media might be in comment-container collection
+            # but we can still try to fetch from page attachments
+            return await self._fetch_confluence_media_as_base64(captured_page_id, media_id, alt_text, captured_content_type)
+
+        return fetcher
+
+    async def _parse_confluence_page_to_blocks(
+        self,
+        page_data: dict[str, Any],
+        page_id: str,
+        page_title: str,
+        weburl: str | None = None,
+        attachment_children_map: dict[str, ChildRecord] | None = None,
+        attachment_mime_types: dict[str, str] | None = None,
+        attachments_data: list[dict[str, Any]] | None = None,
+        record_type: RecordType | None = None,
+    ) -> BlocksContainer:
+        """
+        Parse Confluence page ADF content into BlocksContainer with comments.
+
+        Structure:
+        - Individual Block objects for each ADF node (paragraphs, headings, images, etc.)
+        - BlockGroups for structural containers (tables, panels, toggles, etc.)
+        - Footer comments as COMMENT_THREAD/COMMENT BlockGroups
+        - Inline comments attached to Block.comments
+        - Attachments as ChildRecords
+
+        Args:
+            page_data: Page data from API (with body.atlas_doc_format.value)
+            page_id: Page external ID
+            page_title: Page title
+            weburl: Page web URL
+            attachment_children_map: Map of attachment_id -> ChildRecord
+            attachment_mime_types: Map of attachment_id -> mime_type
+            attachments_data: List of attachment objects from API (for fileId matching)
+            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+
+        Returns:
+            BlocksContainer with BlockGroups and Blocks
+        """
+        # Initialize parser
+        parser = ConfluenceBlockParser(self.logger)
+
+        # Extract ADF content
+        body = page_data.get("body", {})
+        atlas_doc = body.get("atlas_doc_format", {})
+        adf_content = atlas_doc.get("value")
+
+        # Parse ADF if it's a string
+        if isinstance(adf_content, str):
+            try:
+                adf_dict = json.loads(adf_content)
+            except json.JSONDecodeError:
+                adf_dict = None
+        else:
+            adf_dict = adf_content
+
+        # Determine content_type for API calls
+        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+
+        # 1. Parse ADF content to blocks using the new parser
+        if adf_dict:
+            blocks, block_groups = await parser.parse_adf(
+                adf_content=adf_dict,
+                media_fetcher=self._create_confluence_media_fetcher(page_id, content_type),
+                parent_page_url=weburl,
+                page_id=page_id,
+            )
+        else:
+            blocks = []
+            block_groups = []
+
+        # Prepend page title as H1 — ADF body does not include the title
+        if page_title and str(page_title).strip():
+            title_block = parser.create_title_block(
+                str(page_title).strip(),
+                page_id,
+                weburl,
+            )
+            blocks.insert(0, title_block)
+
+        # Track attachment IDs that are used (embedded images)
+        used_attachment_ids: set[str] = set()
+
+        # Helper function to resolve media from ADF to attachment IDs
+        def resolve_attachment_id(media_info: dict[str, Any]) -> str | None:
+            """Resolve ADF media node to attachment ID."""
+            media_id = media_info.get("id")
+
+            # Method 1: Match by fileId (most reliable)
+            if media_id and attachments_data:
+                for att in attachments_data:
+                    if att.get("fileId") == media_id:
+                        attachment_id = att.get("id")
+                        if attachment_id and str(attachment_id) in (attachment_children_map or {}):
+                            return str(attachment_id)
+
+            # Method 2: Match by filename
+            media_filename = media_info.get("filename", "") or media_info.get("alt", "")
+            if media_filename and attachment_children_map:
+                for att_id, child_record in attachment_children_map.items():
+                    child_name = child_record.child_name
+                    if child_name:
+                        if child_name == media_filename or child_name.lower().strip() == media_filename.lower().strip():
+                            return att_id
+
+            return None
+
+        def is_image_attachment(attachment_id: str) -> bool:
+            """Check if attachment is an image based on MIME type."""
+            _attachment_mime_types = attachment_mime_types or {}
+            mime_type = _attachment_mime_types.get(attachment_id, "")
+            return mime_type.startswith("image/")
+
+        # Track which attachments were used as images in blocks
+        if adf_dict:
+            for media_info in extract_media_from_adf(adf_dict):
+                attachment_id = resolve_attachment_id(media_info)
+                if attachment_id and is_image_attachment(attachment_id):
+                    used_attachment_ids.add(attachment_id)
+
+        # 2. Fetch and process comments
+        footer_comments: list[dict[str, Any]] = []
+        inline_comments: list[dict[str, Any]] = []
+
+        if record_type:
+            # Fetch footer comments
+            footer_comments = await self._fetch_page_comments_recursive(
+                page_id=page_id,
+                record_type=record_type,
+                comment_type="footer"
+            )
+
+            # Fetch inline comments
+            inline_comments = await self._fetch_page_comments_recursive(
+                page_id=page_id,
+                record_type=record_type,
+                comment_type="inline"
+            )
+
+        # 3. Attach inline comments to blocks
+        if inline_comments:
+            await parser.attach_inline_comments_to_blocks(
+                blocks=blocks,
+                inline_comments=inline_comments,
+                media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
+            )
+
+        # 4. Process footer comments as COMMENT_THREAD/COMMENT BlockGroups
+        comment_attachment_ids: set[str] = set()
+
+        if footer_comments:
+            sorted_threads = self._organize_confluence_comments_to_threads(footer_comments)
+
+            for thread_comments in sorted_threads:
+                if not thread_comments:
+                    continue
+
+                # Get thread ID
+                first_comment = thread_comments[0]
+                parent_comment_id = first_comment.get("parentCommentId")
+                first_comment_id = str(first_comment.get("id", ""))
+                thread_id = str(parent_comment_id) if parent_comment_id else first_comment_id
+
+                # Create COMMENT_THREAD BlockGroup
+                thread_group_index = len(block_groups)
+                thread_group = parser.create_comment_thread_group(
+                    thread_id=thread_id,
+                    group_index=thread_group_index,
+                    comment_type="footer",
+                    page_title=page_title,
+                    weburl=weburl,
+                )
+                block_groups.append(thread_group)
+
+                # Create COMMENT BlockGroups for each comment in thread
+                for comment in thread_comments:
+                    comment_id = str(comment.get("id", ""))
+                    comment_body_data = comment.get("body", {})
+                    atlas_doc_format = comment_body_data.get("atlas_doc_format", {})
+                    adf_value = atlas_doc_format.get("value")
+
+                    if not adf_value:
+                        continue
+
+                    # Parse ADF
+                    try:
+                        if isinstance(adf_value, str):
+                            comment_body_adf = json.loads(adf_value)
+                        else:
+                            comment_body_adf = adf_value
+                    except json.JSONDecodeError:
+                        self.logger.warning(f"Failed to parse ADF for comment {comment_id}")
+                        continue
+
+                    # Convert ADF comment body to markdown
+                    comment_body = parser._adf_to_markdown_simple(comment_body_adf)
+
+                    if not comment_body:
+                        continue
+
+                    # Build comment weburl
+                    links = comment.get("_links", {})
+                    comment_weburl_raw = links.get("webui", weburl)
+                    comment_weburl = comment_weburl_raw
+                    if (
+                        comment_weburl
+                        and not comment_weburl.startswith("http")
+                        and weburl
+                        and weburl.startswith("http")
+                    ):
+                        parsed = urlparse(weburl)
+                        base_url = f"{parsed.scheme}://{parsed.netloc}/wiki"
+                        comment_weburl = f"{base_url}{comment_weburl}"
+
+                    # Get author info
+                    version = comment.get("version", {})
+                    author_id = version.get("authorId", "Unknown")
+
+                    # Get file attachments used in this comment (images excluded)
+                    comment_children: list[ChildRecord] = []
+                    for media_info in extract_media_from_adf(comment_body_adf):
+                        attachment_id = resolve_attachment_id(media_info)
+                        if attachment_id and attachment_id in (attachment_children_map or {}):
+                            comment_attachment_ids.add(attachment_id)
+                            if not is_image_attachment(attachment_id):
+                                comment_children.append(attachment_children_map[attachment_id])
+
+                    # Create BlockComment for parser
+                    block_comment = BlockComment(
+                        text=comment_body,
+                        format=DataFormat.MARKDOWN,
+                        author_id=author_id,
+                        thread_id=thread_id,
+                        weburl=parser._normalize_url(comment_weburl),
+                        created_at=parser._parse_confluence_timestamp(comment.get("createdAt")),
+                    )
+
+                    # Create COMMENT BlockGroup
+                    comment_group_index = len(block_groups)
+                    comment_group = parser.create_comment_group(
+                        block_comment=block_comment,
+                        group_index=comment_group_index,
+                        parent_group_index=thread_group_index,
+                        source_id=comment_id,
+                        children_records=comment_children if comment_children else None,
+                    )
+                    block_groups.append(comment_group)
+
+        # 5. Track attachments used in inline comments
+        for block in blocks:
+            if block.comments:
+                for thread in block.comments:
+                    for comment in thread:
+                        if comment.attachments:
+                            for att in comment.attachments:
+                                comment_attachment_ids.add(att.id)
+
+        # 6. Build non-comment attachments (excluding embedded images)
+        remaining_attachments: list[ChildRecord] = []
+        if attachment_children_map:
+            for attachment_id, child_record in attachment_children_map.items():
+                if attachment_id in comment_attachment_ids:
+                    continue  # Used in comment
+                if attachment_id in used_attachment_ids:
+                    continue  # Embedded image - already in blocks as IMAGE
+                remaining_attachments.append(child_record)
+
+        # 7. Post-process blocks (fix indices, list numbering, grouping)
+        parser.post_process_blocks(blocks, block_groups)
+
+        # 8. Assign remaining attachments to appropriate parent
+        # For now, assign to first block group (content wrapper) if it exists
+        # Otherwise create a wrapper group
+        if remaining_attachments:
+            if block_groups:
+                # Find or create content wrapper group
+                content_group = None
+                for bg in block_groups:
+                    if bg.sub_type == GroupSubType.CONTENT:
+                        content_group = bg
+                        break
+
+                if not content_group:
+                    # Create content wrapper group
+                    content_group = BlockGroup(
+                        id=str(uuid.uuid4()),
+                        index=0,
+                        name=page_title,
+                        type=GroupType.TEXT_SECTION,
+                        sub_type=GroupSubType.CONTENT,
+                        source_group_id=f"{page_id}_content",
+                        weburl=parser._normalize_url(weburl),
+                    )
+                    block_groups.insert(0, content_group)
+
+                    # Update indices after insertion
+                    for i, bg in enumerate(block_groups):
+                        bg.index = i
+
+                # Assign attachments
+                content_group.children_records = remaining_attachments
+            else:
+                # No block groups - create a content wrapper
+                content_group = BlockGroup(
+                    id=str(uuid.uuid4()),
+                    index=0,
+                    name=page_title,
+                    type=GroupType.TEXT_SECTION,
+                    sub_type=GroupSubType.CONTENT,
+                    source_group_id=f"{page_id}_content",
+                    weburl=parser._normalize_url(weburl),
+                    children_records=remaining_attachments,
+                )
+                block_groups.append(content_group)
+
+        # 9. Update parent relationships after post-processing
+        # Build children references for block groups
+        blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
+        block_children_map: dict[int, list[int]] = defaultdict(list)
+
+        for bg in block_groups:
+            if bg.parent_index is not None:
+                blockgroup_children_map[bg.parent_index].append(bg.index)
+
+        for b in blocks:
+            if b.parent_index is not None:
+                block_children_map[b.parent_index].append(b.index)
+
+        # Populate children arrays
+        for bg in block_groups:
+            child_block_indices = []
+            child_bg_indices = []
+
+            if bg.index in blockgroup_children_map:
+                child_bg_indices = sorted(blockgroup_children_map[bg.index])
+
+            if bg.index in block_children_map:
+                child_block_indices = sorted(block_children_map[bg.index])
+
+            # Only update if we have children and group doesn't already have children set
+            if (child_block_indices or child_bg_indices) and not bg.children:
+                bg.children = BlockGroupChildren.from_indices(
+                    block_indices=child_block_indices,
+                    block_group_indices=child_bg_indices
+                )
+
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
+
+    async def _fetch_page_data_with_adf(self, page_id: str, record_type: RecordType) -> dict[str, Any]:
+        """Fetch page/blogpost with ADF format instead of HTML."""
+        datasource = await self._get_fresh_datasource()
+
+        if record_type == RecordType.CONFLUENCE_PAGE:
+            response = await datasource.get_page_content_v2(
+                page_id=page_id,
+                body_format="atlas_doc_format"  # ADF format
+            )
+        elif record_type == RecordType.CONFLUENCE_BLOGPOST:
+            response = await datasource.get_blogpost_content_v2(
+                blogpost_id=page_id,
+                body_format="atlas_doc_format"  # ADF format
+            )
+        else:
+            raise ValueError(f"Unsupported record type: {record_type}")
+
+        if response.status != HttpStatusCode.SUCCESS.value:
+            raise HTTPException(status_code=404, detail=f"Content not found: {page_id}")
+
+        return response.json()
+
+    async def _process_page_attachments_for_children(
+        self,
+        attachments_data: list[dict[str, Any]],
+        page_id: str,
+        page_node_id: str,
+        space_id: str,
+        page_weburl: str | None,
+        attachment_api_base_url: str | None = None,
+    ) -> dict[str, ChildRecord]:
+        """
+        Process page attachments and create ChildRecords.
+        Creates FileRecords if they don't exist (for new attachments added after sync).
+
+        Args:
+            attachment_api_base_url: v2 list response _links.base (required to build absolute web URLs for attachments).
+        """
+        attachment_children_map: dict[str, ChildRecord] = {}
+        new_file_records: list[tuple[FileRecord, list[Permission]]] = []
+
+        async with self.data_store_provider.transaction() as tx_store:
+            for attachment in attachments_data:
+                attachment_id = attachment.get("id")
+                if not attachment_id:
+                    continue
+
+                # Look up existing FileRecord (without "attachment_" prefix - matches how records are stored)
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=str(attachment_id)  # No prefix - matches external_record_id in FileRecord
+                )
+
+                # Create FileRecord if it doesn't exist (new attachment added after sync)
+                if not existing_record:
+                    # Transform to FileRecord
+                    file_record = self._transform_to_attachment_file_record(
+                        attachment_data=attachment,
+                        parent_external_record_id=page_id,
+                        parent_external_record_group_id=space_id,
+                        existing_record=None,
+                        parent_node_id=page_node_id,
+                        attachment_api_base_url=attachment_api_base_url,
+                    )
+
+                    if file_record:
+                        new_file_records.append((file_record, []))
+                        existing_record = file_record
+
+                if existing_record:
+                    attachment_children_map[str(attachment_id)] = ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_record.id,
+                        child_name=existing_record.record_name
+                    )
+
+        # Save new FileRecords if any were created
+        if new_file_records:
+            await self.data_entities_processor.on_new_records(new_file_records)
+            self.logger.info(f"📎 Created {len(new_file_records)} new FileRecords for attachments added after sync")
+
+        return attachment_children_map
 
     async def _fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
         """
@@ -3073,7 +3682,7 @@ class ConfluenceConnector(BaseConnector):
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to download attachment: {str(e)}"
-            )
+            ) from e
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""
@@ -3088,7 +3697,7 @@ class ConfluenceConnector(BaseConnector):
         3. Publishes reindex events for all records via data_entities_processor
 
         Args:
-            records: List of properly typed Record instances (WebpageRecord, FileRecord, CommentRecord, etc.)
+            records: List of properly typed Record instances (WebpageRecord, FileRecord, etc.)
         """
         try:
             if not records:
@@ -3140,8 +3749,10 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[tuple[Record, list[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from source and return data for reindexing.
+
+        Supports: pages, blogposts, and attachments.
 
         Args:
             org_id: Organization ID
@@ -3155,8 +3766,6 @@ class ConfluenceConnector(BaseConnector):
                 return await self._check_and_fetch_updated_page(org_id, record)
             elif record.record_type == RecordType.CONFLUENCE_BLOGPOST:
                 return await self._check_and_fetch_updated_blogpost(org_id, record)
-            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
-                return await self._check_and_fetch_updated_comment(org_id, record)
             elif record.record_type == RecordType.FILE:
                 return await self._check_and_fetch_updated_attachment(org_id, record)
             else:
@@ -3169,7 +3778,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_page(
         self, org_id: str, record: Record
-    ) -> Optional[tuple[Record, list[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch page from source for reindexing."""
         try:
             page_id = record.external_record_id
@@ -3225,7 +3834,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_blogpost(
         self, org_id: str, record: Record
-    ) -> Optional[tuple[Record, list[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch blogpost from source for reindexing."""
         try:
             blogpost_id = record.external_record_id
@@ -3278,94 +3887,9 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"Error fetching blogpost {record.external_record_id}: {e}")
             return None
 
-    async def _check_and_fetch_updated_comment(
-        self, org_id: str, record: Record
-    ) -> Optional[tuple[Record, list[Permission]]]:
-        """Fetch comment from source for reindexing."""
-        try:
-            comment_id = record.external_record_id
-            is_inline = record.record_type == RecordType.INLINE_COMMENT
-
-            # Get parent page's internal record ID
-            parent_page_id = record.parent_external_record_id
-            parent_node_id = None
-            if parent_page_id:
-                parent_record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=parent_page_id
-                )
-                if parent_record:
-                    parent_node_id = parent_record.id
-
-            # Fetch comment from source using v2 API
-            datasource = await self._get_fresh_datasource()
-
-            if is_inline:
-                response = await datasource.get_inline_comment_by_id(
-                    comment_id=int(comment_id),
-                    body_format="storage"
-                )
-            else:
-                response = await datasource.get_footer_comment_by_id(
-                    comment_id=int(comment_id),
-                    body_format="storage"
-                )
-
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Comment {comment_id} not found at source, may have been deleted")
-                return None
-
-            response_data = response.json()
-            comment_data = response_data  # Single comment response is the comment data itself
-
-            # Extract base URL from response level (v2 API) - available in response_data._links.base
-            response_links = response_data.get("_links", {})
-            base_url = response_links.get("base")  # v2 format: base URL at response level
-
-            # Check if version changed
-            current_version = comment_data.get("version", {}).get("number")
-            if current_version is None:
-                self.logger.warning(f"Comment {comment_id} has no version number")
-                return None
-
-            # Compare versions using external_revision_id
-            if record.external_revision_id and str(current_version) == record.external_revision_id:
-                self.logger.debug(f"Comment {comment_id} has not changed at source (version {current_version})")
-                return None
-
-            self.logger.info(f"Comment {comment_id} has changed at source (version {record.external_revision_id} -> {current_version})")
-
-            # Transform comment to CommentRecord with existing record context
-            comment_type = "inline" if is_inline else "footer"
-
-            comment_record = self._transform_to_comment_record(
-                comment_data,
-                record.parent_external_record_id,
-                record.external_record_group_id,
-                comment_type,
-                record.parent_external_record_id,
-                base_url=base_url,  # Pass base URL from response level
-                existing_record=record,
-                parent_node_id=parent_node_id
-            )
-
-            if not comment_record:
-                return None
-
-            # Comments inherit permissions from parent page - fetch page permissions
-            permissions = []
-            if parent_page_id:
-                permissions = await self._fetch_page_permissions(parent_page_id)
-
-            return (comment_record, permissions)
-
-        except Exception as e:
-            self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
-            return None
-
     async def _check_and_fetch_updated_attachment(
         self, org_id: str, record: Record
-    ) -> Optional[tuple[Record, list[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
@@ -3396,6 +3920,7 @@ class ConfluenceConnector(BaseConnector):
                 return None
 
             attachment_data = response.json()
+            single_attachment_base = attachment_data.get("_links", {}).get("base")
 
             # Check if version changed
             current_version = attachment_data.get("version", {}).get("number")
@@ -3419,7 +3944,8 @@ class ConfluenceConnector(BaseConnector):
                 parent_page_id,
                 parent_space_id,
                 existing_record=record,
-                parent_node_id=parent_node_id
+                parent_node_id=parent_node_id,
+                attachment_api_base_url=single_attachment_base,
             )
 
             if not attachment_record:
@@ -3444,8 +3970,8 @@ class ConfluenceConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """
         Get dynamic filter options for Confluence filters with cursor-based pagination.
@@ -3478,8 +4004,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str],
-        cursor: Optional[str]
+        search: str | None,
+        cursor: str | None
     ) -> FilterOptionsResponse:
         """Fetch available Confluence spaces with cursor-based pagination.
 
@@ -3582,8 +4108,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str],
-        cursor: Optional[str]
+        search: str | None,
+        cursor: str | None
     ) -> FilterOptionsResponse:
         """Fetch pages with cursor-based pagination.
 
@@ -3675,8 +4201,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str],
-        cursor: Optional[str]
+        search: str | None,
+        cursor: str | None
     ) -> FilterOptionsResponse:
         """Fetch blogposts with cursor-based pagination.
 
