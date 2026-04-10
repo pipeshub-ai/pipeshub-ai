@@ -1,0 +1,299 @@
+## ---------------------------------------------------------------------------
+## User Account API – Response Schemas
+## ---------------------------------------------------------------------------
+## Single file containing all response schemas for /api/v1/userAccount routes.
+## Mirrors the Zod schemas in userAccount.txt.
+##
+## Usage:
+##   schemas = load_yaml_schemas("response-validation/schemas/auth/userAccount-response-schemas.yaml")
+##   assert_response_matches_schema(body, schemas["InitAuthResponse"])
+## ---------------------------------------------------------------------------
+
+# Reusable anchor – Google auth provider public config
+_google_auth_provider: &google_auth_provider
+  clientId:
+    type: string
+    required: false
+  enableJit:
+    type: boolean
+    required: false
+
+# Reusable anchor – Microsoft / Azure AD auth provider public config
+_microsoft_azuread_auth_provider: &microsoft_azuread_auth_provider
+  tenantId:
+    type: string
+    required: false
+  clientId:
+    type: string
+    required: false
+  enableJit:
+    type: boolean
+    required: false
+
+# Reusable anchor – OAuth auth provider public config
+_oauth_auth_provider: &oauth_auth_provider
+  providerName:
+    type: string
+    required: true
+  clientId:
+    type: string
+    required: true
+  tokenEndpoint:
+    type: string
+    required: true
+  authorizationUrl:
+    type: string
+    required: true
+  clientSecret:
+    type: string
+    required: false
+  userInfoEndpoint:
+    type: string
+    required: false
+  scope:
+    type: string
+    required: false
+  enableJit:
+    type: boolean
+    required: false
+
+# Reusable anchor – authProviders object
+_auth_providers: &auth_providers
+  google:
+    type: object
+    required: false
+    properties:
+      <<: *google_auth_provider
+  microsoft:
+    type: object
+    required: false
+    properties:
+      <<: *microsoft_azuread_auth_provider
+  azuread:
+    type: object
+    required: false
+    properties:
+      <<: *microsoft_azuread_auth_provider
+  oauth:
+    type: object
+    required: false
+    properties:
+      <<: *oauth_auth_provider
+  saml:
+    type: object
+    required: false
+
+schemas:
+
+  # ==================================================================
+  # POST /api/v1/userAccount/initAuth
+  # ==================================================================
+  - name: InitAuthResponse
+    description: "POST /api/v1/userAccount/initAuth — initAuth"
+    path: /api/v1/userAccount/initAuth
+    method: POST
+    fields:
+      currentStep:
+        type: integer
+        required: true
+      allowedMethods:
+        type: array
+        required: true
+        items:
+          type: string
+      message:
+        type: string
+        required: true
+      authProviders:
+        type: object
+        required: true
+        properties:
+          <<: *auth_providers
+      jitEnabled:
+        type: boolean
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/userAccount/authenticate (multi-step — more steps remain)
+  # ==================================================================
+  - name: AuthenticateMultiStepResponse
+    description: "POST /api/v1/userAccount/authenticate — multi-step (more steps remain)"
+    path: /api/v1/userAccount/authenticate
+    method: POST
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      nextStep:
+        type: integer
+        required: true
+      allowedMethods:
+        type: array
+        required: true
+        items:
+          type: string
+      authProviders:
+        type: object
+        required: true
+        properties:
+          <<: *auth_providers
+
+  # ==================================================================
+  # POST /api/v1/userAccount/authenticate (final — all steps complete)
+  # ==================================================================
+  - name: AuthenticateResponse
+    description: "POST /api/v1/userAccount/authenticate — fully authenticated"
+    path: /api/v1/userAccount/authenticate
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+      accessToken:
+        type: string
+        required: true
+      refreshToken:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/userAccount/login/otp/generate
+  # ==================================================================
+  - name: LoginOtpGenerateResponse
+    description: "POST /api/v1/userAccount/login/otp/generate — getLoginOtp"
+    path: /api/v1/userAccount/login/otp/generate
+    method: POST
+    fields:
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/userAccount/password/reset
+  # ==================================================================
+  - name: ResetPasswordResponse
+    description: "POST /api/v1/userAccount/password/reset — resetPassword"
+    path: /api/v1/userAccount/password/reset
+    method: POST
+    fields:
+      data:
+        type: string
+        required: true
+      accessToken:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/userAccount/password/forgot
+  # POST /api/v1/userAccount/password/reset/token
+  # ==================================================================
+  - name: DataStringResponse
+    description: "POST /password/forgot and POST /password/reset/token — { data: string }"
+    path: /api/v1/userAccount/password/forgot
+    method: POST
+    fields:
+      data:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/userAccount/refresh/token
+  # ==================================================================
+  - name: RefreshTokenResponse
+    description: "POST /api/v1/userAccount/refresh/token — getAccessTokenFromRefreshToken"
+    path: /api/v1/userAccount/refresh/token
+    method: POST
+    fields:
+      user:
+        type: object
+        required: true
+        properties:
+          _id:
+            type: string
+            required: true
+          orgId:
+            type: string
+            required: true
+          email:
+            type: string
+            required: true
+          fullName:
+            type: string
+            required: true
+          firstName:
+            type: string
+            required: false
+          lastName:
+            type: string
+            required: false
+          designation:
+            type: string
+            required: false
+          hasLoggedIn:
+            type: boolean
+            required: true
+          isDeleted:
+            type: boolean
+            required: true
+          slug:
+            type: string
+            required: true
+          createdAt:
+            type: string
+            required: true
+          updatedAt:
+            type: string
+            required: true
+          __v:
+            type: number
+            required: true
+      accessToken:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/userAccount/internal/password/check
+  # ==================================================================
+  - name: HasPasswordMethodResponse
+    description: "GET /api/v1/userAccount/internal/password/check — hasPasswordMethod"
+    path: /api/v1/userAccount/internal/password/check
+    method: GET
+    fields:
+      isPasswordAuthEnabled:
+        type: boolean
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/userAccount/oauth/exchange
+  # ==================================================================
+  - name: OAuthExchangeResponse
+    description: "POST /api/v1/userAccount/oauth/exchange — exchangeOAuthToken"
+    path: /api/v1/userAccount/oauth/exchange
+    method: POST
+    fields:
+      access_token:
+        type: string
+        required: true
+      id_token:
+        type: string
+        required: false
+      token_type:
+        type: string
+        required: true
+      expires_in:
+        type: number
+        required: false
+
+  # ==================================================================
+  # PUT /api/v1/userAccount/validateEmailChange
+  # ==================================================================
+  - name: ValidateEmailChangeResponse
+    description: "PUT /api/v1/userAccount/validateEmailChange — validateEmailChange"
+    path: /api/v1/userAccount/validateEmailChange
+    method: PUT
+    fields:
+      message:
+        type: string
+        required: true
