@@ -1,13 +1,7 @@
 ## ---------------------------------------------------------------------------
 ## Organization API – Response Schemas
 ## ---------------------------------------------------------------------------
-## Single file containing all response schemas for /api/v1/org routes.
-## Mirrors the Zod schemas in org.schemas.ts.
-##
-## Usage:
-##   schemas = load_yaml_schemas("response-validation/schemas/user_management/org-response-schemas.yaml")
-##   assert_response_matches_schema(body, schemas["OrgDocumentResponse"])
-## ---------------------------------------------------------------------------
+
 
 # Reusable anchor for the org document fields shared by
 # OrgDocumentResponse, OrgUpdateDetailsResponse.data, and OrgDeleteResponse.data.

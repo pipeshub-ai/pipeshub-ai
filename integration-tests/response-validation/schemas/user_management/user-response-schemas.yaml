@@ -1,13 +1,7 @@
 ## ---------------------------------------------------------------------------
 ## Users API – Response Schemas
 ## ---------------------------------------------------------------------------
-## Single file containing all response schemas for /api/v1/users routes.
-## Mirrors the Zod schemas in user.schemas.ts.
-##
-## Usage:
-##   schemas = load_yaml_schemas("response-validation/schemas/user_management/user-response-schemas.yaml")
-##   assert_response_matches_schema(body, schemas["GetAllUsersListItem"])
-## ---------------------------------------------------------------------------
+
 
 # Reusable anchor – address sub-object
 _address_fields: &address_fields

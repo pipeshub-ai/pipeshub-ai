@@ -1,13 +1,7 @@
 ## ---------------------------------------------------------------------------
 ## User Groups API – Response Schemas
 ## ---------------------------------------------------------------------------
-## Single file containing all response schemas for /api/v1/userGroups routes.
-## Mirrors the Zod schemas in userGroup.schemas.ts.
-##
-## Usage:
-##   schemas = load_yaml_schemas("response-validation/schemas/user_management/user-group-response-schemas.yaml")
-##   assert_response_matches_schema(body, schemas["UserGroupDocumentResponse"])
-## ---------------------------------------------------------------------------
+
 
 # Reusable anchor for the user group document fields shared by
 # CreateResponseSchema, DocumentResponseSchema, and GetAllResponseSchema items.
