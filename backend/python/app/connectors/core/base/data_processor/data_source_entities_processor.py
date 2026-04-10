@@ -1394,10 +1394,10 @@ class DataSourceEntitiesProcessor:
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
         """
         Get app metadata (scope, createdBy, etc.) from the database.
-        
+
         Args:
             connector_id: The connector/app ID
-            
+
         Returns:
             AppMetadata object or None if not found
         """
