@@ -584,8 +584,8 @@ async def _enrich_user_info_for_service_account_agent_chat(
             status_code=500,
             detail="Agent creator user not found; cannot resolve knowledge permissions.",
         )
-    creator_user_id = creator_doc.get("userId") or creator_doc.get("user_id")
-    if not creator_user_id or not str(creator_user_id).strip():
+    creator_user_id = creator_doc.get("userId")
+    if not creator_user_id:
         logger.error(
             "Service account agent creator %s has no userId field",
             creator_key,
@@ -595,11 +595,28 @@ async def _enrich_user_info_for_service_account_agent_chat(
             detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
         )
     synthetic = {
-        "userId": str(creator_user_id).strip(),
+        "userId": str(creator_user_id),
         "orgId": str(creator_doc.get("orgId") or "").strip(),
         "email": (creator_doc.get("email") or "").strip(),
     }
     return await _enrich_user_info(synthetic, creator_doc)
+
+
+async def _load_service_account_agent_for_chat(
+    agent_id: str,
+    org_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Fetch service-account agent, validate, and build creator-based user info for chat/stream."""
+    agent = await graph_provider.get_agent(agent_id, org_key)
+    if not agent or not agent.get("isServiceAccount"):
+        raise AgentNotFoundError(agent_id)
+    enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+        agent, graph_provider, logger
+    )
+    perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+    return agent, enriched_user_info, perm
 
 
 def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
@@ -2723,13 +2740,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         if is_service_account:
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent or not agent.get("isServiceAccount"):
-                raise AgentNotFoundError(agent_id)
-            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
-                agent, services["graph_provider"], logger
+            agent, enriched_user_info, perm = await _load_service_account_agent_for_chat(
+                agent_id, org_key, services["graph_provider"], logger
             )
-            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
@@ -2912,13 +2925,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         else:
             if is_service_account:
-                agent = await services["graph_provider"].get_agent(agent_id, org_key)
-                if not agent or not agent.get("isServiceAccount"):
-                    raise AgentNotFoundError(agent_id)
-                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
-                    agent, services["graph_provider"], logger
+                agent, enriched_user_info, perm = await _load_service_account_agent_for_chat(
+                    agent_id, org_key, services["graph_provider"], logger
                 )
-                perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
