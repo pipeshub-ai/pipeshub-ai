@@ -4255,9 +4255,15 @@ class TestServiceAccountAgentRoutes:
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
             "isServiceAccount": True,
+            "createdBy": "creator-key-1",
             "knowledge": [],
             "toolsets": [{"name": "jira", "instanceId": "inst-1", "displayName": "Jira", "tools": []}],
             "models": ["mk1_mn1"],
+        })
+        services["graph_provider"].get_document = AsyncMock(return_value={
+            "_key": "creator-key-1",
+            "userId": "creator-user-1",
+            "email": "creator@example.com",
         })
 
         async def mock_config(path, *args, **kwargs):
@@ -4283,6 +4289,7 @@ class TestServiceAccountAgentRoutes:
 
         assert isinstance(result, StreamingResponse)
         mock_user_doc.assert_not_awaited()
+        services["graph_provider"].get_document.assert_awaited_once()
         mock_cfg_path.assert_called_with("inst-1", "a1")
 
     @pytest.mark.asyncio

@@ -384,7 +384,6 @@ class TestAbstractMethodInventory:
         # Agent permission operations
         "get_agent",
         "check_agent_permission",
-        "get_all_virtual_record_ids_for_knowledge",
     ]
 
     def test_all_expected_methods_are_abstract(self):

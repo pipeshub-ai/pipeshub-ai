@@ -608,11 +608,8 @@ async def execute_tool_calls(
 
             virtual_record_ids = [r.get("virtual_record_id") for r in records if r.get("virtual_record_id")]
             vector_db_limit =  get_vectorDb_limit(context_length)
-            # For service-account agents pass the agent-scoped filter_groups so the
-            # fallback retrieval honours the same KB/connector scope that the primary
-            # retrieval used.  Also forward is_service_account so per-user permission
-            # checks are bypassed — otherwise a user who has no direct access to the
-            # agent's knowledge sources would always get an empty fallback result.
+            # For service-account agents pass agent-scoped filter_groups so fallback
+            # retrieval matches the primary KB/connector scope.
             result = await retrieval_service.search_with_filters(
                 queries=[all_queries[0]],
                 org_id=org_id,
@@ -620,7 +617,6 @@ async def execute_tool_calls(
                 limit=vector_db_limit,
                 filter_groups=filter_groups if is_service_account else None,
                 virtual_record_ids_from_tool=virtual_record_ids,
-                is_service_account=is_service_account,
             )
 
             search_results = result.get("searchResults", [])
