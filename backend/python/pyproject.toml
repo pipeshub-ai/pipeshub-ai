@@ -212,7 +212,7 @@ dependencies = [
     "langchain-community==0.4.1",
     "langchain-experimental==0.4.0",
     "langchain-fireworks==1.1.0",
-    "langchain-google-genai==3.0.0",
+    "langchain-google-genai==4.2.1",
     "langchain-google-vertexai==2.1.2",
     "langchain-groq==1.1.0",
     "langchain-huggingface==1.1.0",
