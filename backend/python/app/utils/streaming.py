@@ -26,7 +26,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.agents.qna.schemas import (
@@ -324,7 +324,25 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
         config = {}
     try:
         if hasattr(llm, "astream"):
-            async for part in llm.astream(messages, config=config):
+            # Fix #1710: Manual iteration to catch per-chunk ValidationError
+            # when providers like LiteLLM send role=None on non-first chunks
+            astream_iter = llm.astream(messages, config=config).__aiter__()
+            while True:
+                try:
+                    part = await astream_iter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except ValidationError as e:
+                    # Only suppress the specific validation error related to 'role'
+                    if "role" in str(e).lower():
+                        logger.warning(
+                            f"Skipping chunk due to validation error "
+                            f"(likely role=None from provider): {e}"
+                        )
+                        continue
+                    # Re-raise other validation errors to avoid hiding unexpected issues.
+                    raise
+
                 if not part:
                     continue
                 parts.append(part)
