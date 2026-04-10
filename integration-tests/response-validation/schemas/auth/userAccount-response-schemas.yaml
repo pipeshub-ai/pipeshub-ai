@@ -247,7 +247,7 @@ schemas:
             type: string
             required: true
           __v:
-            type: number
+            type: integer
             required: true
       accessToken:
         type: string
@@ -283,7 +283,7 @@ schemas:
         type: string
         required: true
       expires_in:
-        type: number
+        type: integer
         required: false
 
   # ==================================================================
