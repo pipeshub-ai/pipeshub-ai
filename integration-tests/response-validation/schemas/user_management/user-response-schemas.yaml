@@ -707,6 +707,12 @@ schemas:
             updatedAtTimestamp:
               type: number
               required: true
+            _key:
+              type: string
+              required: true
+            _id:
+              type: string
+              required: true
       pagination:
         type: object
         required: true
@@ -725,7 +731,7 @@ schemas:
             required: true
           hasNext:
             type: boolean
-            required: true
+            required: false
           hasPrev:
             type: boolean
-            required: true
+            required: false
