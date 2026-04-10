@@ -31,7 +31,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 import pytest
 import requests
@@ -49,8 +48,6 @@ from response_validator import (  # noqa: E402
     load_yaml_schemas,
 )
 
-logger = logging.getLogger("orgAuthConfig-integration-test")
-
 # ------------------------------------------------------------------ #
 # Load all response schemas
 # ------------------------------------------------------------------ #
@@ -60,7 +57,6 @@ _SCHEMAS = load_yaml_schemas(
 
 _SCHEMA_GET_AUTH_METHODS = _SCHEMAS["GetAuthMethodsResponse"]
 _SCHEMA_SETUP_ALREADY_DONE = _SCHEMAS["SetUpAuthConfigAlreadyDoneResponse"]
-_SCHEMA_SETUP_CREATED = _SCHEMAS["SetUpAuthConfigCreatedResponse"]
 _SCHEMA_UPDATE_AUTH_METHOD = _SCHEMAS["UpdateAuthMethodResponse"]
 
 
@@ -255,21 +251,21 @@ class TestUpdateAuthMethod:
     def test_update_password_only_response_schema(self) -> None:
         """Update to password-only — response must match schema, then restore."""
         original = self._get_current_auth_method()
-
-        new_method = [
-            {
-                "order": 1,
-                "allowedMethods": [{"type": "password"}],
-            },
-        ]
-        resp = self._update_auth_method(new_method)
-        assert resp.status_code == 200, (
-            f"Expected 200, got {resp.status_code}: {resp.text}"
-        )
-        assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_AUTH_METHOD)
-
-        # Restore
-        self._update_auth_method(original)
+        try:
+            new_method = [
+                {
+                    "order": 1,
+                    "allowedMethods": [{"type": "password"}],
+                },
+            ]
+            resp = self._update_auth_method(new_method)
+            assert resp.status_code == 200, (
+                f"Expected 200, got {resp.status_code}: {resp.text}"
+            )
+            assert_response_matches_schema(resp.json(), _SCHEMA_UPDATE_AUTH_METHOD)
+        finally:
+            # Restore
+            self._update_auth_method(original)
 
     def test_update_multiple_methods_response_schema(self) -> None:
         """Update to password + otp — response must match schema, then restore."""

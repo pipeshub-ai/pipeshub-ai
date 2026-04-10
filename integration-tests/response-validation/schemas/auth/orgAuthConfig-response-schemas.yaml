@@ -26,7 +26,7 @@ _auth_method_entry: &auth_method_entry
 # Reusable anchor – a single auth step
 _auth_step_fields: &auth_step_fields
   order:
-    type: number
+    type: integer
     required: true
   allowedMethods:
     type: array

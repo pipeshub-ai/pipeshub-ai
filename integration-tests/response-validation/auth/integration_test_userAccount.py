@@ -52,8 +52,6 @@ from response_validator import (  # noqa: E402
     load_yaml_schemas,
 )
 
-logger = logging.getLogger("userAccount-integration-test")
-
 # ------------------------------------------------------------------ #
 # Load all response schemas
 # ------------------------------------------------------------------ #
