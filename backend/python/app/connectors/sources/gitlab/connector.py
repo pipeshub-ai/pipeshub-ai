@@ -22,6 +22,7 @@ from gitlab.v4.objects import (
     ProjectMergeRequestNote,
 )
 from PIL import Image
+from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -92,6 +93,15 @@ AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
 TOKEN_URL = "https://gitlab.com/oauth/token"
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
+
+
+class FileAttachment(BaseModel):
+    """File attachment model"""
+
+    href: str = Field(description="URL of the attachment", min_length=1)
+    filename: str = Field(description="Name of the attachment", min_length=1)
+    filetype: str = Field(description="Type of the attachment")
+    category: str = Field(description="Category of the attachment image or file")
 
 
 @dataclass
@@ -2068,9 +2078,9 @@ class GitLabConnector(BaseConnector):
         if not attachments:
             return markdown_content_clean
         for attach in attachments:
-            if attach.get("category") != "image":
+            if attach.category != "image":
                 continue
-            attachment_url = attach.get("href")
+            attachment_url = attach.href
             full_attachment_url = f"{base_project_url}{attachment_url}"
             try:
                 image_bytes = await self.data_source.get_img_bytes(full_attachment_url)
@@ -2088,29 +2098,23 @@ class GitLabConnector(BaseConnector):
         return markdown_content_clean
 
     async def make_file_records_from_list(
-        self, attachments: list[dict[str, Any]], record: Record
+        self, attachments: list[FileAttachment], record: Record
     ) -> list[RecordUpdate]:
         """Building file records from list of attachment links."""
         project_id = record.external_record_group_id.split("-")[0]
         base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         list_records_new: list[RecordUpdate] = []
         for attach in attachments:
-            if attach.get("category") == "image":
+            if attach.category == "image":
                 continue
             # creating file record for each attachment
-            attachment_url = attach.get("href")
+            attachment_url = attach.href
             full_attachment_url = f"{base_url_for_attachments}{attachment_url}"
-            attachment_name = attach.get("filename")
-            attachment_type = attach.get("filetype")
+            attachment_name = attach.filename
+            attachment_type = attach.filetype
             self.logger.debug(
                 f"Processing attachment: {attachment_name} of type {attachment_type} from URL: {attachment_url}"
             )
-            if not attachment_url or not attachment_name:
-                self.logger.warning(
-                    f"Skipping attachment due to missing URL or Name: {attach}"
-                )
-                continue
-
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
@@ -2195,16 +2199,10 @@ class GitLabConnector(BaseConnector):
         project_id = record.external_record_group_id.split("-")[0]
         base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         for attach in attachments:
-            if attach.get("category") == "image":
+            if attach.category == "image":
                 continue
-            attachment_url = attach.get("href")
+            attachment_url = attach.href
             full_attachment_url = f"{base_url_for_attachments}{attachment_url}"
-            attachment_name = attach.get("filename")
-            if not attachment_url or not attachment_name:
-                self.logger.warning(
-                    f"Skipping attachment due to missing URL or Name: {attach}"
-                )
-                continue
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
@@ -2243,16 +2241,10 @@ class GitLabConnector(BaseConnector):
         project_id = record.external_record_group_id.split("-")[0]
         base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         for attach in attachments:
-            if attach.get("category") == "image":
+            if attach.category == "image":
                 continue
-            attachment_url = attach.get("href")
+            attachment_url = attach.href
             full_attachment_url = f"{base_url_for_attachments}{attachment_url}"
-            attachment_name = attach.get("filename")
-            if not attachment_url or not attachment_name:
-                self.logger.warning(
-                    f"Skipping attachment due to missing URL or Name: {attach}"
-                )
-                continue
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
@@ -2305,11 +2297,12 @@ class GitLabConnector(BaseConnector):
 
     async def parse_gitlab_uploads_clean_test(
         self, text: str
-    ) -> tuple[list[dict[str, Any]], str]:
+    ) -> tuple[list[FileAttachment], str]:
         """
+        Parses markdown content and returns cleaned markdown with images and attachments
         Returns:
-            "files": [...],
-            "cleaned_markdown": "..." ,
+            list[FileAttachment]: List of file attachments
+            str: Cleaned markdown content
         """
         IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
         UPLOAD_PATTERN = re.compile(
@@ -2353,14 +2346,20 @@ class GitLabConnector(BaseConnector):
 
             category = "image" if extension in IMAGE_EXTENSIONS else "attachment"
 
-            files.append(
-                {
-                    "href": href,
-                    "filename": filename,
-                    "filetype": extension,
-                    "category": category,
-                }
-            )
+            try:
+                files.append(
+                    FileAttachment(
+                        href=href,
+                        filename=filename,
+                        filetype=extension,
+                        category=category,
+                    )
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Skipping malformed attachment missing required fields: {e}"
+                )
+                continue
 
             # Remove from markdown
             cleaned_text = cleaned_text.replace(full_match, "")
