@@ -2905,6 +2905,7 @@ Generate:
 {mariadb_guidance}
 {redshift_guidance}
 {zoom_guidance}
+{salesforce_guidance}
 
 ## Planning Best Practices
 
@@ -3555,6 +3556,75 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 - When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
 - `occurrence_dates` must be YYYY-MM-DD format strings.
 """
+SALESFORCE_GUIDANCE = r"""
+# Salesforce Toolset Guidance
+
+## Available Tools
+- **soql_query / sosl_search** — Run SOQL (structured) or SOSL (full-text) queries. Always include `LIMIT` in SOQL.
+- **get_record / create_record / update_record / delete_record** — Generic CRUD by sObject API name + Id. Use specialized tools below for standard objects when possible.
+- **describe_object** — Inspect fields, types, and picklist values for any sObject before querying or creating.
+- **list_recent_records** — Quick "recent N" listing for any sObject.
+- **search_accounts / create_account** — Account search and create.
+- **search_contacts / create_contact** — Contact search and create (LastName required).
+- **search_leads / create_lead / convert_lead** — Lead search, create, and convert (to Account/Contact, optionally Opportunity).
+- **search_opportunities / create_opportunity** — Opportunity search and create (Name, StageName, CloseDate required).
+- **search_cases / create_case** — Case search and create.
+- **search_products / create_product** — Product2 catalog search and create.
+- **add_product_to_opportunity** — Adds an OpportunityLineItem (resolves PricebookEntry from product_id automatically).
+- **search_tasks / create_task** — Task activities (use `what_id` for Account/Opportunity/Case, `who_id` for Contact/Lead).
+- **get_record_chatter** — Fetches the Chatter feed (posts, comments, authors, timestamps) for any record by Id.
+- **post_chatter_to_record** — Creates a new top-level Chatter post on any record.
+- **post_chatter_comment** — Replies to an existing Chatter feed item (use the FeedElement Id, starts with `0D5`).
+- **get_current_user** — Returns the authenticated user's profile / Id.
+
+## Core Rules
+- **Prefer specialized tools** over `soql_query` / `create_record` / `update_record` for standard objects (Account, Contact, Lead, Opportunity, Case, Product2, Task). Use generic tools only for custom objects (`__c`) or when a specialized tool can't express the request.
+- **SOQL must always include `LIMIT`** (default to `LIMIT 10-50`) and prefer `ORDER BY LastModifiedDate DESC`.
+- **Never invent record Ids.** If you only have a name, search first (e.g., `search_accounts`) then use the returned Id.
+- **Never guess picklist values** (StageName, Status, Priority, Industry). If unsure, call `describe_object` to discover valid values.
+- **Date format**: All date fields (e.g., `CloseDate`, `ActivityDate`) must be `YYYY-MM-DD`.
+- **Don't ask the user for optional fields** they didn't mention — omit them.
+- **Act first, don't ask.** If the user gives a record name (opportunity, account, contact, etc.), immediately search for it with a fuzzy `LIKE` match — DO NOT ask for the Id or the exact spelling. Only ask for clarification if the search returns multiple ambiguous results AND you cannot pick a clearly best match. Single match → proceed silently.
+
+## Tool-Level Dependencies
+
+| Tool | Dependency Logic |
+|-----|----------------|
+| `get_record` | Requires `record_id` → resolve via the matching `search_*` tool first if missing |
+| `update_record` | Requires `record_id` → resolve via search first; never update by name |
+| `delete_record` | Requires `record_id` → resolve via search first; confirm deletion intent |
+| `describe_object` | Standalone — call BEFORE creating/querying when unsure of fields or picklist values |
+| `list_recent_records` | Standalone |
+| `soql_query` | Standalone — but if filtering by a name, first resolve to an Id via the matching `search_*` tool |
+| `sosl_search` | Standalone — use for cross-object full-text search when the target object is unknown |
+| `get_record_chatter` | Requires `record_id` → resolve via the matching `search_*` tool (e.g., `search_opportunities`, `search_accounts`) |
+| `post_chatter_to_record` | Requires `record_id` → resolve via the matching `search_*` tool. Use for NEW top-level posts on a record |
+| `post_chatter_comment` | Requires `feed_element_id` (starts with `0D5`) → if you already have it from a prior `get_record_chatter` in this conversation use it directly; otherwise resolve record → `get_record_chatter` → pick the target post. Use for REPLIES to existing posts |
+| `search_accounts` | Standalone |
+| `create_account` | Standalone — only `Name` is required |
+| `search_contacts` | Optional `account_id` filter → resolve via `search_accounts` if user filters by account name |
+| `create_contact` | Optional `account_id` → resolve via `search_accounts` if user mentions an account by name |
+| `search_leads` | Standalone |
+| `create_lead` | Standalone — `LastName` and `Company` required |
+| `convert_lead` | Requires `lead_id` → resolve via `search_leads`. `converted_status` is a `LeadStatus` picklist with `IsConverted=true` (commonly `'Closed - Converted'`); call `describe_object("LeadStatus")` if unsure |
+| `search_opportunities` | Optional `account_id` filter → resolve via `search_accounts` if user filters by account name |
+| `create_opportunity` | Optional `account_id` → resolve via `search_accounts`. `stage_name` is a picklist → call `describe_object("Opportunity")` if unsure |
+| `search_cases` | Optional `account_id` filter → resolve via `search_accounts` |
+| `create_case` | Optional `account_id` / `contact_id` → resolve via `search_accounts` / `search_contacts` |
+| `search_products` | Standalone |
+| `create_product` | Standalone — note: needs a separate `PricebookEntry` to be sellable on opportunities |
+| `add_product_to_opportunity` | Requires `opportunity_id` (→ `search_opportunities`) AND `product_id` (→ `search_products`). Auto-resolves PricebookEntry |
+| `search_tasks` | Optional `what_id` (→ matching `search_*`), `who_id` (→ `search_contacts` / `search_leads`), `owner_id` (→ `get_current_user` for self) |
+| `create_task` | `what_id` → resolve via the right `search_*` tool (Account/Opportunity/Case). `who_id` → resolve via `search_contacts` / `search_leads`. `owner_id` defaults to current user |
+| `get_current_user` | Standalone — call FIRST whenever the user says "my X" so you can filter by the returned `OwnerId` |
+
+## Example Flow: "what is being discussed in the Acme opportunity chatter?"
+1. `search_opportunities(name="Acme")` → get the Id (and `webUrl`).
+2. `get_record_chatter(record_id=<id>)` → fetch the feed.
+3. Summarize the latest posts/comments with authors and dates. Surface the `webUrl`.
+DO NOT ask the user for the Opportunity Id or to confirm the exact name before step 1.
+"""
+
 ZOOM_GUIDANCE = r"""
 # Zoom Toolset Guidance
 
@@ -3853,6 +3923,7 @@ async def planner_node(
     mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
     redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
     zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
+    salesforce_guidance = SALESFORCE_GUIDANCE if _has_salesforce_tools(state) else ""
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -3865,7 +3936,8 @@ async def planner_node(
         clickup_guidance=clickup_guidance,
         mariadb_guidance=mariadb_guidance,
         redshift_guidance=redshift_guidance,
-        zoom_guidance=zoom_guidance
+        zoom_guidance=zoom_guidance,
+        salesforce_guidance=salesforce_guidance,
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4917,6 +4989,12 @@ def _has_zoom_tools(state: ChatState) -> bool:
     """Check if Zoom tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "zoom" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_salesforce_tools(state: ChatState) -> bool:
+    """Check if Salesforce tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "salesforce" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _has_clickup_tools(state: ChatState) -> bool:
@@ -8005,6 +8083,9 @@ Use this decision tree to choose the right approach:
 
     if _has_zoom_tools(state):
         base_prompt += "\n" + ZOOM_GUIDANCE
+
+    if _has_salesforce_tools(state):
+        base_prompt += "\n" + SALESFORCE_GUIDANCE
 
     if _has_clickup_tools(state):
         base_prompt += "\n" + CLICKUP_GUIDANCE
