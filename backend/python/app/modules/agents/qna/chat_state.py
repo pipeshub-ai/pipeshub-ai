@@ -125,8 +125,9 @@ class ChatState(TypedDict):
     tool_configs: dict[str, Any] | None  # Tool configurations (Slack tokens, etc.)
     registry_tool_instances: dict[str, Any] | None  # Cached tool instances
 
-    # Service account flag: when True, knowledge retrieval bypasses per-user permissions
-    # and uses all records for the configured connectors/KBs
+    # True when the request uses a service identity JWT (e.g. Slack bot). Knowledge
+    # retrieval still applies normal graph permissions using the agent creator's userId
+    # (set in agent chat routes), not unscoped org-wide record access.
     is_service_account: bool
 
     # Knowledge retrieval processing fields
