@@ -19,12 +19,12 @@ from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 @pytest.fixture(scope="session")
 def confluence_storage():
     """Session-scoped Confluence storage helper."""
-    base_url = os.getenv("CONFLUENCE_BASE_URL")
-    email = os.getenv("CONFLUENCE_EMAIL")
-    api_token = os.getenv("CONFLUENCE_API_TOKEN")
+    base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
+    email = os.getenv("CONFLUENCE_TEST_EMAIL")
+    api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
     
     if not base_url or not email or not api_token:
-        pytest.skip("Confluence credentials not set (CONFLUENCE_BASE_URL, CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN)")
+        pytest.skip("Confluence credentials not set (CONFLUENCE_TEST_BASE_URL, CONFLUENCE_TEST_EMAIL, CONFLUENCE_TEST_API_TOKEN)")
     
     return ConfluenceStorageHelper(
         base_url=base_url,
@@ -41,9 +41,9 @@ def confluence_connector(
     sample_data_root,
 ) -> Generator[Dict[str, Any], None, None]:
     """Module-scoped Confluence connector with full lifecycle."""
-    base_url = os.getenv("CONFLUENCE_BASE_URL")
-    email = os.getenv("CONFLUENCE_EMAIL")
-    api_token = os.getenv("CONFLUENCE_API_TOKEN")
+    base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
+    email = os.getenv("CONFLUENCE_TEST_EMAIL")
+    api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
     
     # Allow custom space key via env var (useful if you have an existing test space)
     custom_space_key = os.getenv("CONFLUENCE_TEST_SPACE_KEY")
