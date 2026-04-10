@@ -2,7 +2,6 @@
 ## User Account API – Response Schemas
 ## ---------------------------------------------------------------------------
 ## Single file containing all response schemas for /api/v1/userAccount routes.
-## Mirrors the Zod schemas in userAccount.txt.
 ##
 ## Usage:
 ##   schemas = load_yaml_schemas("response-validation/schemas/auth/userAccount-response-schemas.yaml")
