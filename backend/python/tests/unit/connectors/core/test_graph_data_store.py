@@ -8,6 +8,8 @@ import pytest
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     GraphTransactionStore,
+    _is_deadlock_error,
+    retry_on_deadlock,
 )
 
 
@@ -780,3 +782,242 @@ class TestGraphDataStore:
         result = await store.execute_in_transaction(my_func)
         assert result == "result"
         mock_graph_provider.commit_transaction.assert_awaited_once()
+
+class TestDeadlockDetection:
+    """Tests for _is_deadlock_error function."""
+
+    def create_deadlock_error(self):
+        """Create a mock Neo4j TransientError with DeadlockDetected."""
+        class TransientError(Exception):
+            pass
+
+        return TransientError(
+            "{neo4j_code: Neo.TransientError.Transaction.DeadlockDetected} "
+            "{message: ForsetiClient[transactionId=558, clientId=1] can't acquire ExclusiveLock "
+            "because holders of that lock are waiting for ForsetiClient[transactionId=558, clientId=1]}"
+        )
+
+    def test_detects_deadlock_error(self):
+        assert _is_deadlock_error(self.create_deadlock_error()) is True
+
+    def test_rejects_non_deadlock_error(self):
+        assert _is_deadlock_error(RuntimeError("Some other error")) is False
+
+    def test_rejects_regular_exception(self):
+        assert _is_deadlock_error(ValueError("regular error")) is False
+
+
+class TestRetryOnDeadlockDecorator:
+    """Tests for the @retry_on_deadlock decorator."""
+
+    def create_deadlock_error(self):
+        class TransientError(Exception):
+            pass
+
+        return TransientError(
+            "{neo4j_code: Neo.TransientError.Transaction.DeadlockDetected} "
+            "{message: ForsetiClient[transactionId=558, clientId=1] can't acquire ExclusiveLock "
+            "because holders of that lock are waiting for ForsetiClient[transactionId=558, clientId=1]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_succeeds_without_retry(self):
+        """Test that a successful function is not retried."""
+        call_count = 0
+
+        @retry_on_deadlock()
+        async def my_func():
+            nonlocal call_count
+            call_count += 1
+            return "success"
+
+        result = await my_func()
+        assert result == "success"
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_on_single_deadlock(self):
+        """Test that function retries once on deadlock and succeeds."""
+        call_count = 0
+
+        @retry_on_deadlock()
+        async def my_func():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise self.create_deadlock_error()
+            return "success"
+
+        result = await my_func()
+        assert result == "success"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_multiple_times(self):
+        """Test that function retries multiple times before succeeding."""
+        call_count = 0
+
+        @retry_on_deadlock(max_retries=3)
+        async def my_func():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise self.create_deadlock_error()
+            return "success"
+
+        result = await my_func()
+        assert result == "success"
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_fails_after_max_retries(self):
+        """Test that function fails after exhausting all retries."""
+        call_count = 0
+
+        @retry_on_deadlock(max_retries=3)
+        async def my_func():
+            nonlocal call_count
+            call_count += 1
+            raise self.create_deadlock_error()
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await my_func()
+
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_non_deadlock_error_not_retried(self):
+        """Test that non-deadlock errors propagate immediately."""
+        call_count = 0
+
+        @retry_on_deadlock()
+        async def my_func():
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Some other database error")
+
+        with pytest.raises(RuntimeError, match="Some other database error"):
+            await my_func()
+
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff(self):
+        """Test that retries use exponential backoff timing."""
+        @retry_on_deadlock(max_retries=4)
+        async def my_func():
+            raise self.create_deadlock_error()
+
+        with patch('app.connectors.core.base.data_store.graph_data_store.asyncio.sleep',
+                   new_callable=AsyncMock) as mock_sleep:
+            try:
+                await my_func()
+            except Exception:
+                pass
+
+            # 4 attempts means 3 sleeps (between attempts)
+            assert mock_sleep.await_count == 3
+            sleep_calls = [call.args[0] for call in mock_sleep.await_args_list]
+            assert sleep_calls[0] == pytest.approx(0.1, rel=0.01)
+            assert sleep_calls[1] == pytest.approx(0.2, rel=0.01)
+            assert sleep_calls[2] == pytest.approx(0.4, rel=0.01)
+
+    @pytest.mark.asyncio
+    async def test_custom_max_retries(self):
+        """Test that custom max_retries is respected."""
+        call_count = 0
+
+        @retry_on_deadlock(max_retries=5)
+        async def my_func():
+            nonlocal call_count
+            call_count += 1
+            raise self.create_deadlock_error()
+
+        try:
+            await my_func()
+        except Exception:
+            pass
+
+        assert call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_preserves_function_name(self):
+        """Test that the decorator preserves the original function name."""
+        @retry_on_deadlock()
+        async def my_special_function():
+            pass
+
+        assert my_special_function.__name__ == "my_special_function"
+
+    @pytest.mark.asyncio
+    async def test_passes_args_and_kwargs(self):
+        """Test that arguments are correctly passed through on retries."""
+        call_count = 0
+        received_args = []
+
+        @retry_on_deadlock()
+        async def my_func(a, b, key=None):
+            nonlocal call_count
+            call_count += 1
+            received_args.append((a, b, key))
+            if call_count == 1:
+                raise self.create_deadlock_error()
+            return "success"
+
+        result = await my_func("x", "y", key="z")
+        assert result == "success"
+        assert call_count == 2
+        # Both attempts should receive the same arguments
+        assert received_args == [("x", "y", "z"), ("x", "y", "z")]
+
+    @pytest.mark.asyncio
+    async def test_works_with_transaction_context_manager(self, mock_graph_provider):
+        """Test decorator works with real transaction context manager usage pattern."""
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        call_count = 0
+
+        @retry_on_deadlock()
+        async def process_data():
+            nonlocal call_count
+            call_count += 1
+            async with store.transaction() as tx_store:
+                if call_count == 1:
+                    raise self.create_deadlock_error()
+                return "done"
+
+        result = await process_data()
+        assert result == "done"
+        assert call_count == 2
+        # Two transactions opened (one rolled back, one committed)
+        assert mock_graph_provider.begin_transaction.await_count == 2
+        assert mock_graph_provider.commit_transaction.await_count == 1
+        assert mock_graph_provider.rollback_transaction.await_count == 1
+
+
+class TestGraphDataStoreTransaction:
+    """Tests for GraphDataStore.transaction() context manager (no retry)."""
+
+    @pytest.mark.asyncio
+    async def test_transaction_commits_on_success(self, mock_graph_provider):
+        """Test that a successful transaction commits."""
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        async with store.transaction() as tx_store:
+            assert isinstance(tx_store, GraphTransactionStore)
+
+        mock_graph_provider.begin_transaction.assert_awaited_once()
+        mock_graph_provider.commit_transaction.assert_awaited_once()
+        mock_graph_provider.rollback_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transaction_rollback_on_error(self, mock_graph_provider):
+        """Test that a failed transaction rolls back."""
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(RuntimeError, match="test error"):
+            async with store.transaction() as tx_store:
+                raise RuntimeError("test error")
+
+        mock_graph_provider.begin_transaction.assert_awaited_once()
+        mock_graph_provider.commit_transaction.assert_not_awaited()
+        mock_graph_provider.rollback_transaction.assert_awaited_once()

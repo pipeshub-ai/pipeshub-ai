@@ -1,6 +1,17 @@
+import asyncio
+import functools
+import logging
 from contextlib import asynccontextmanager
 from logging import Logger
 from typing import AsyncContextManager, Dict, List, Optional
+
+# Import Neo4j exceptions with fallback for compatibility
+try:
+    from neo4j.exceptions import TransientError
+    NEO4J_AVAILABLE = True
+except ImportError:
+    TransientError = None
+    NEO4J_AVAILABLE = False
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.data_store import (
@@ -27,6 +38,75 @@ from app.models.entities import (
 from app.models.permission import Permission
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+def _is_deadlock_error(exception: Exception) -> bool:
+    """
+    Check if exception is a Neo4j deadlock error.
+    Module-level function used by both the decorator and GraphDataStore.
+    """
+    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
+        return "DeadlockDetected" in str(exception)
+
+    exception_str = str(exception)
+    exception_type = type(exception).__name__
+
+    return (
+        "TransientError" in exception_type and
+        "DeadlockDetected" in exception_str
+    )
+
+
+def retry_on_deadlock(max_retries: int = 3):
+    """
+    Decorator that retries an async function on Neo4j deadlock errors.
+    
+    When a deadlock is detected, the entire function is re-executed from scratch,
+    which naturally creates a fresh transaction on retry.
+    
+    Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
+    
+    Args:
+        max_retries: Maximum number of attempts (default: 3)
+        
+    Usage:
+        @retry_on_deadlock(max_retries=3)
+        async def on_new_records(self, records):
+            async with self.data_store_provider.transaction() as tx_store:
+                # transaction code here
+                pass
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            logger = logging.getLogger(func.__module__)
+            last_exception = None
+            logger.info(f"🔄 Retryingggggg {func.__name__} {max_retries} times")
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+
+                    if _is_deadlock_error(e) and attempt < max_retries - 1:
+                        backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
+                        logger.warning(
+                            f"Deadlock detected in {func.__name__} "
+                            f"(attempt {attempt + 1}/{max_retries}), "
+                            f"retrying in {backoff:.1f}s: {str(e)[:200]}"
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        if _is_deadlock_error(e):
+                            logger.error(
+                                f"Deadlock persists in {func.__name__} "
+                                f"after {max_retries} attempts: {str(e)[:200]}"
+                            )
+                        raise
+
+            raise last_exception
+        return wrapper
+    return decorator
 
 read_collections = [
     collection.value for collection in CollectionNames
