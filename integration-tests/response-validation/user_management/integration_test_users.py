@@ -17,7 +17,7 @@ Routes covered:
   GET    /api/v1/users/:id/email          — getUserEmailByUserId
   GET    /api/v1/users/:id/adminCheck     — adminCheck
   GET    /api/v1/users/health             — health check
-  GET    /api/v1/users/graph/list         — listUsers
+  GET    /api/v1/users/graph/list         — listUsers (defaults, page+limit, page2, search)
   PATCH  /api/v1/users/:id/fullname       — updateFullName
   PATCH  /api/v1/users/:id/firstName      — updateFirstName
   PATCH  /api/v1/users/:id/lastName       — updateLastName
@@ -550,8 +550,8 @@ class TestGraphList:
         self.client = pipeshub_client
         self.url = f"{pipeshub_client.base_url}/api/v1/users/graph/list"
 
-    def test_response_schema(self) -> None:
-        """Response must match GraphListResponse schema."""
+    def test_response_schema_defaults(self) -> None:
+        """No query params — response must match GraphListResponse schema."""
         resp = requests.get(
             self.url,
             headers=self.client._headers(),
@@ -561,3 +561,57 @@ class TestGraphList:
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_schema(resp.json(), _SCHEMA_GRAPH_LIST)
+
+    def test_response_schema_page_and_limit(self) -> None:
+        """page=1&limit=2 — response must match schema and respect limit."""
+        resp = requests.get(
+            self.url,
+            headers=self.client._headers(),
+            params={"page": "1", "limit": "2"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_schema(body, _SCHEMA_GRAPH_LIST)
+        assert len(body["users"]) <= 2, (
+            f"Expected at most 2 users, got {len(body['users'])}"
+        )
+        assert body["pagination"]["page"] == 1
+        assert body["pagination"]["limit"] == 2
+
+    def test_response_schema_page2(self) -> None:
+        """page=2&limit=1 — response must match schema with page=2."""
+        resp = requests.get(
+            self.url,
+            headers=self.client._headers(),
+            params={"page": "2", "limit": "1"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_schema(body, _SCHEMA_GRAPH_LIST)
+        assert len(body["users"]) <= 1, (
+            f"Expected at most 1 user, got {len(body['users'])}"
+        )
+        assert body["pagination"]["page"] == 2
+        assert body["pagination"]["limit"] == 1
+
+    def test_response_schema_with_search(self) -> None:
+        """search param — response must match schema (may return empty list)."""
+        resp = requests.get(
+            self.url,
+            headers=self.client._headers(),
+            params={"search": "integration", "page": "1", "limit": "5"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_schema(body, _SCHEMA_GRAPH_LIST)
+        assert body["pagination"]["page"] == 1
+        assert body["pagination"]["limit"] == 5
