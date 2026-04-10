@@ -24,7 +24,6 @@ from app.modules.agents.qna.nodes import (
     check_for_error,
     clean_tool_result,
     format_result_for_llm,
-    merge_and_number_retrieval_results,
     route_after_reflect,
     should_execute_tools,
 )

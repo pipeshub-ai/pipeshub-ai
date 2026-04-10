@@ -14,10 +14,9 @@ import base64
 import json
 import logging
 from enum import Enum
-from typing import Any, cast
+from typing import Any, cast, override
 
 from pydantic import BaseModel, Field  # type: ignore
-from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient

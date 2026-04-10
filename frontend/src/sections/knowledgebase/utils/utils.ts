@@ -381,6 +381,10 @@ export const addTextFragmentToUrl = (webUrl: string, textFragment: string): stri
     return webUrl;
   }
 
+  if(webUrl.includes(':~:text=')) {
+    return webUrl;
+  }
+
   const encodedFragment = encodeURIComponent(textFragment);
 
   try {
