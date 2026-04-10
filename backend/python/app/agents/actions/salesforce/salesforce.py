@@ -38,12 +38,8 @@ from app.agents.actions.salesforce.salesforce_models import (
     SF_CHATTER_FEED_ELEMENT_TYPE,
     SF_FIELD_PRICEBOOK2_ID,
     SF_FIELD_UNIT_PRICE,
-    SF_KEY_ATTRIBUTES,
     SF_KEY_ID,
-    SF_KEY_ID_LOWER,
     SF_KEY_RECORDS,
-    SF_KEY_SEARCH_RECORDS,
-    SF_KEY_SUCCESS,
     OpportunityData,
     OpportunityLineItemData,
     PostChatterCommentInput,
@@ -56,7 +52,6 @@ from app.agents.actions.salesforce.salesforce_models import (
     SearchOpportunitiesInput,
     SearchProductsInput,
     SearchTasksInput,
-    SalesforceRecord,
     SF_JSON_DATA_KEY,
     SF_JSON_ERROR_KEY,
     SF_JSON_MESSAGE_KEY,
@@ -79,6 +74,7 @@ from app.agents.actions.salesforce.salesforce_models import (
     SOQL_SEARCH_OPPORTUNITIES,
     SOQL_SEARCH_PRODUCTS,
     SOQL_SEARCH_TASKS,
+    SF_KEY_ID_LIST,
     SOQLQueryInput,
     SOSLSearchInput,
     TaskData,
@@ -100,6 +96,8 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.sources.client.salesforce.salesforce import SalesforceClient, SalesforceResponse
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
+
+_SF_KEY_ID_SET = frozenset(SF_KEY_ID_LIST)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -164,67 +162,44 @@ class Salesforce:
             return None
         return f"{self.instance_url}/{record_id}"
 
-    def _enrich_with_web_urls(
-        self, data: Any
-    ) -> Any:
-        """Inject a webUrl field into records by inspecting attributes.type and Id.
+    def _inject_web_url(self, obj: object) -> object:
+        """Recursively add web URLs for every SF_KEY_ID_LIST field on each dict.
 
-        Handles:
-        - SOQL/SOSL responses: {"records": [...], "totalSize": N}
-        - SOSL searchRecords responses: {"searchRecords": [...]}
-        - Single record dicts (e.g., from sobject_get): {"Id": "...", "attributes": {...}}
-        - Create responses: {"id": "...", "success": true}
+        For each key that matches SF_KEY_ID_LIST (case-insensitive) with a non-null
+        value, sets ``weburl_<lowercase_key>`` to the instance URL for that id.
+        Walks dicts and lists so nested SOQL rows are enriched.
         """
-        if not isinstance(data, dict): # Does not have fixed schema
-            return data
+        if isinstance(obj, list):
+            return [self._inject_web_url(item) for item in obj]
 
-        def _enrich_record(record: SalesforceRecord) -> SalesforceRecord:
-            web_url = self._build_web_url(record.record_id)
+        if not isinstance(obj, dict):
+            return obj
+
+        # Recurse into all values first so nested records are enriched
+        for key, value in obj.items():
+            obj[key] = self._inject_web_url(value)
+
+        id_fields = [
+            (key, val)
+            for key, val in obj.items()
+            if val is not None and str(key).lower() in _SF_KEY_ID_SET
+        ]
+        for key, val in id_fields:
+            web_url = self._build_web_url(str(val))
             if web_url:
-                record.webUrl = web_url
-            return record
+                obj[f"weburl_{str(key).lower()}"] = web_url
 
-        def _to_record(raw: dict[str, Any]) -> SalesforceRecord: # Converts raw dict to SalesforceRecord
-            return SalesforceRecord.model_validate(raw)
-
-        # SOQL/SOSL query response
-        records = data.get(SF_KEY_RECORDS)
-        if isinstance(records, list):
-            data[SF_KEY_RECORDS] = [
-                _enrich_record(_to_record(r)).model_dump(exclude_none=True)
-                for r in records
-            ]
-
-        # SOSL searchRecords response
-        search_records = data.get(SF_KEY_SEARCH_RECORDS)
-        if isinstance(search_records, list):
-            data[SF_KEY_SEARCH_RECORDS] = [
-                _enrich_record(_to_record(r)).model_dump(exclude_none=True)
-                for r in search_records
-            ]
-
-        # Create response: {"id": "...", "success": true} — more specific, check first
-        if SF_KEY_ID_LOWER in data and SF_KEY_SUCCESS in data:
-            record = _enrich_record(_to_record(data))
-            data.clear()
-            data.update(record.model_dump(exclude_none=True))
-        # Single record (from sobject_get) — has "attributes" or an Id field
-        elif SF_KEY_ATTRIBUTES in data or SF_KEY_ID in data or SF_KEY_ID_LOWER in data:
-            record = _enrich_record(_to_record(data))
-            data.clear()
-            data.update(record.model_dump(exclude_none=True))
-
-        return data
+        return obj
 
     def _handle_response(
         self,
         response: SalesforceResponse,
         success_message: str,
-        **_unused: Any,
+        **_unused: object,
     ) -> tuple[bool, str]:
         """Return a standardised (success, json_string) tuple."""
         if response.success:
-            data = self._enrich_with_web_urls(response.data)
+            data = self._inject_web_url(response.data)
             return True, json.dumps(
                 {SF_JSON_MESSAGE_KEY: success_message, SF_JSON_DATA_KEY: data},
                 default=str,

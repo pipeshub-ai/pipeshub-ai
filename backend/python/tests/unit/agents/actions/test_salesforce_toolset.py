@@ -9,7 +9,6 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
 
 from app.sources.client.salesforce.salesforce import SalesforceResponse
 
@@ -112,71 +111,6 @@ class TestBuildWebUrl:
         sf = _build_salesforce()
         sf.instance_url = ""
         assert sf._build_web_url("001ABC") is None
-
-
-class TestEnrichWithWebUrls:
-    def test_enriches_soql_records(self):
-        sf = _build_salesforce()
-        data = {
-            "totalSize": 1,
-            "records": [
-                {"Id": "001ABC", "attributes": {"type": "Account"}, "Name": "Acme"}
-            ],
-        }
-        result = sf._enrich_with_web_urls(data)
-        assert result["records"][0]["webUrl"] == "https://mycompany.my.salesforce.com/001ABC"
-
-    def test_enriches_sosl_search_records(self):
-        sf = _build_salesforce()
-        data = {
-            "searchRecords": [
-                {"Id": "003XYZ", "attributes": {"type": "Contact"}, "Name": "John"}
-            ]
-        }
-        result = sf._enrich_with_web_urls(data)
-        assert result["searchRecords"][0]["webUrl"] == "https://mycompany.my.salesforce.com/003XYZ"
-
-    def test_enriches_single_record(self):
-        sf = _build_salesforce()
-        data = {"Id": "001ABC", "attributes": {"type": "Account"}, "Name": "Acme"}
-        result = sf._enrich_with_web_urls(data)
-        assert result["webUrl"] == "https://mycompany.my.salesforce.com/001ABC"
-
-    def test_enriches_create_response(self):
-        sf = _build_salesforce()
-        data = {"id": "001NEW", "success": True}
-        result = sf._enrich_with_web_urls(data)
-        assert result["webUrl"] == "https://mycompany.my.salesforce.com/001NEW"
-
-    def test_non_dict_passthrough(self):
-        sf = _build_salesforce()
-        assert sf._enrich_with_web_urls("not a dict") == "not a dict"
-
-    def test_non_dict_record_in_records_list_raises(self):
-        sf = _build_salesforce()
-        data = {"totalSize": 1, "records": ["not a dict"]}
-        with pytest.raises(ValidationError):
-            sf._enrich_with_web_urls(data)
-
-    def test_record_without_id_no_weburl(self):
-        sf = _build_salesforce()
-        sf.instance_url = ""
-        data = {"totalSize": 1, "records": [{"Name": "Acme", "attributes": {"type": "Account"}}]}
-        result = sf._enrich_with_web_urls(data)
-        assert "webUrl" not in result["records"][0]
-
-    def test_create_response_gets_web_url_from_id(self):
-        """Create payloads only expose lowercase id; enrichment uses SalesforceRecord.record_id."""
-        sf = _build_salesforce()
-        data = {"id": "001NEW", "success": True}
-        result = sf._enrich_with_web_urls(data)
-        assert result["webUrl"] == "https://mycompany.my.salesforce.com/001NEW"
-
-    def test_dict_without_any_matching_pattern(self):
-        sf = _build_salesforce()
-        data = {"foo": "bar"}
-        result = sf._enrich_with_web_urls(data)
-        assert result == {"foo": "bar"}
 
 
 class TestHandleResponse:

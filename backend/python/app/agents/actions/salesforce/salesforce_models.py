@@ -81,7 +81,6 @@ ERR_NO_ACTIVE_PBE = "No active PricebookEntry found for the given product and pr
 # Salesforce API response keys
 SF_KEY_RECORDS = "records"
 SF_KEY_SEARCH_RECORDS = "searchRecords"
-SF_KEY_ATTRIBUTES = "attributes"
 SF_KEY_ID = "Id"
 SF_KEY_ID_LOWER = "id"
 SF_KEY_SUCCESS = "success"
@@ -96,6 +95,55 @@ SF_CHATTER_FEED_ELEMENT_TYPE = "FeedItem"
 # Error log message template
 ERR_LOG = "Error in %s: %s"
 
+SF_KEY_ID_LIST = [
+  "id",
+  "accountid",
+  "ownerid",
+  "createdbyid",
+  "lastmodifiedbyid",
+  "contactid",
+  "opportunityid",
+  "leadid",
+  "caseid",
+  "parentid",
+  "whatid",
+  "whoid",
+  "product2id",
+  "productid",
+  "pricebookentryid",
+  "pricebook2id",
+  "assetid",
+  "contractid",
+  "orderid",
+  "quoteid",
+  "quotelineitemid",
+  "opportunitylineitemid",
+  "campaignid",
+  "campaignmemberid",
+  "recordtypeid",
+  "userid",
+  "profileid",
+  "roleid",
+  "groupid",
+  "queueid",
+  "territoryid",
+  "territory2id",
+  "businessprocessid",
+  "divisionid",
+  "folderid",
+  "contentdocumentid",
+  "contentversionid",
+  "contentdocumentlinkid",
+  "linkedentityid",
+  "feeditemid",
+  "feedcommentid",
+  "duplicaterecordid",
+  "mergedrecordid",
+  "masterrecordid",
+  "connectionid",
+  "loginhistoryid",
+  "setupentityid"
+]
 
 # ---------------------------------------------------------------------------
 # Chatter message-segment models
