@@ -560,6 +560,48 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+async def _enrich_user_info_for_service_account_agent_chat(
+    agent: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> dict[str, Any]:
+    """
+    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
+    permission checks must use the agent creator's real userId — the same identity whose
+    knowledge access configured the agent — not the service principal.
+    """
+    creator_key = agent.get("createdBy")
+    if not creator_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
+        )
+    creator_doc = await graph_provider.get_document(
+        str(creator_key), CollectionNames.USERS.value
+    )
+    if not creator_doc:
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+        )
+    creator_user_id = creator_doc.get("userId") or creator_doc.get("user_id")
+    if not creator_user_id or not str(creator_user_id).strip():
+        logger.error(
+            "Service account agent creator %s has no userId field",
+            creator_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+        )
+    synthetic = {
+        "userId": str(creator_user_id).strip(),
+        "orgId": str(creator_doc.get("orgId") or "").strip(),
+        "email": (creator_doc.get("email") or "").strip(),
+    }
+    return await _enrich_user_info(synthetic, creator_doc)
+
+
 def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
     """Validate required fields in request data"""
     for field in required_fields:
@@ -2681,18 +2723,12 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         if is_service_account:
-            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-            # Service account agents are always org-wide, so skip user-specific permission checks
-            # and the user document lookup which would fail.
-            enriched_user_info = {
-                "userId": user_context["userId"],
-                "orgId": user_context["orgId"],
-                "userEmail": user_context.get("email", user_context["userId"]),
-                "_key": None,
-            }
             agent = await services["graph_provider"].get_agent(agent_id, org_key)
             if not agent or not agent.get("isServiceAccount"):
                 raise AgentNotFoundError(agent_id)
+            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                agent, services["graph_provider"], logger
+            )
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
         else:
             # Standard user path: look up the user document and verify permissions.
@@ -2778,6 +2814,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
             "conversationId": chat_query.conversationId,
+            "is_service_account": is_service_account,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
@@ -2875,18 +2912,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         else:
             if is_service_account:
-                # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-                # Service account agents are always org-wide, so skip user-specific permission checks
-                # and the user document lookup which would fail.
-                enriched_user_info = {
-                    "userId": user_context["userId"],
-                    "orgId": user_context["orgId"],
-                    "userEmail": user_context.get("email", user_context["userId"]),
-                    "_key": None,
-                }
                 agent = await services["graph_provider"].get_agent(agent_id, org_key)
                 if not agent or not agent.get("isServiceAccount"):
                     raise AgentNotFoundError(agent_id)
+                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
+                    agent, services["graph_provider"], logger
+                )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             else:
                 # Standard user path: look up the user document and verify permissions.
