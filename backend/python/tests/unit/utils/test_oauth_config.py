@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import pytest_asyncio
 
 from app.utils.oauth_config import fetch_oauth_config_by_id, get_oauth_config
 

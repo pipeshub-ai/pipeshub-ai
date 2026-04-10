@@ -22,6 +22,12 @@ BASE = "http://app.example.com"
 REC1 = "rec-aaa-111"
 REC2 = "rec-bbb-222"
 
+# Decodes to a real PNG; is_base64_image() rejects placeholder payloads like abc123.
+_VALID_MINIMAL_PNG_DATA_URI = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
 
 def _url(record_id: str, block_index: int, base: str = BASE) -> str:
     """Build a canonical block preview URL."""
@@ -440,7 +446,7 @@ class TestNormalizeCitationsAndChunks:
 
     def test_image_content_replaced_with_label(self):
         url = _url(REC1, 0)
-        docs = [_make_doc(REC1, 0, "data:image/png;base64,abc123", block_web_url=url)]
+        docs = [_make_doc(REC1, 0, _VALID_MINIMAL_PNG_DATA_URI, block_web_url=url)]
         answer = f"See [1]({url})."
         _, citations = normalize_citations_and_chunks(answer, docs)
         assert citations[0]["content"] == "Image"
@@ -562,7 +568,7 @@ class TestNormalizeCitationsAndChunks:
             "block_containers": {
                 "blocks": [{
                     "type": BlockType.IMAGE.value,
-                    "data": {"uri": "data:image/png;base64,xyz"},
+                    "data": {"uri": _VALID_MINIMAL_PNG_DATA_URI},
                     "index": 0,
                 }]
             },
@@ -736,7 +742,7 @@ class TestNormalizeCitationsAndChunksForAgent:
 
     def test_image_content_replaced_with_label(self):
         url = _url(REC1, 0)
-        docs = [_make_doc(REC1, 0, "data:image/gif;base64,R0lGOD", block_web_url=url)]
+        docs = [_make_doc(REC1, 0, _VALID_MINIMAL_PNG_DATA_URI, block_web_url=url)]
         answer = f"[1]({url})"
         _, citations = normalize_citations_and_chunks_for_agent(answer, docs)
         assert citations[0]["content"] == "Image"
@@ -834,7 +840,7 @@ class TestNormalizeCitationsAndChunksForAgent:
             "block_containers": {
                 "blocks": [{
                     "type": BlockType.IMAGE.value,
-                    "data": {"uri": "data:image/png;base64,xyz"},
+                    "data": {"uri": _VALID_MINIMAL_PNG_DATA_URI},
                     "index": 0,
                 }]
             },

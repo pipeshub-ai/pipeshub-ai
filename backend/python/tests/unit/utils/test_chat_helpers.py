@@ -44,6 +44,13 @@ from app.utils.chat_helpers import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+# 1x1 PNG; satisfies is_base64_image() magic-byte checks (placeholders like abc123 do not).
+_VALID_MINIMAL_PNG_DATA_URI = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
 def _all_text(content: list) -> str:
     """Join all text items from a record_to_message_content result list."""
     return " ".join(item["text"] for item in content if item.get("type") == "text")
@@ -1142,7 +1149,7 @@ class TestGetMessageContent:
             _make_flattened_result(
                 block_index=0,
                 block_type=BlockType.IMAGE.value,
-                content="data:image/png;base64,abc123",
+                content=_VALID_MINIMAL_PNG_DATA_URI,
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
@@ -1158,7 +1165,7 @@ class TestGetMessageContent:
         # Should contain an image_url type item
         image_items = [item for item in result if item.get("type") == "image_url"]
         assert len(image_items) == 1
-        assert image_items[0]["image_url"]["url"] == "data:image/png;base64,abc123"
+        assert image_items[0]["image_url"]["url"] == _VALID_MINIMAL_PNG_DATA_URI
 
     def test_json_mode_image_block_non_data_uri(self):
         flattened = [
@@ -2199,7 +2206,7 @@ class TestGetFlattenedResults:
 
     @pytest.mark.asyncio
     async def test_image_block_non_multimodal_with_data_uri_skipped(self):
-        img_block = _make_image_block(index=0, uri="data:image/png;base64,abc")
+        img_block = _make_image_block(index=0, uri=_VALID_MINIMAL_PNG_DATA_URI)
         record = _make_record_blob()
         record["block_containers"]["blocks"] = [img_block]
 
@@ -2208,7 +2215,7 @@ class TestGetFlattenedResults:
 
         result_set = [
             {
-                "content": "data:image/png;base64,something",
+                "content": _VALID_MINIMAL_PNG_DATA_URI,
                 "score": 0.8,
                 "metadata": {
                     "virtualRecordId": "vr-1",
@@ -2220,7 +2227,7 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map
         )
-        # Images with data: URIs should be skipped for non-multimodal
+        # Valid data: image URIs are skipped for non-multimodal (see get_flattened_results)
         image_results = [r for r in results if r.get("block_type") == BlockType.IMAGE.value]
         assert len(image_results) == 0
 
@@ -3586,7 +3593,7 @@ class TestGetMessageContentDeeper:
             "virtual_record_id": "vr-1",
             "block_index": 0,
             "block_type": "image",
-            "content": "data:image/png;base64,abc123",
+            "content": _VALID_MINIMAL_PNG_DATA_URI,
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
         result = get_message_content(
