@@ -1,8 +1,7 @@
 ## ---------------------------------------------------------------------------
 ## Org Auth Config API – Response Schemas
 ## ---------------------------------------------------------------------------
-## Single file containing all response schemas for /api/v1/orgAuthConfig routes.
-## Mirrors the Zod schemas in orgAuth-schema.txt / orgAuthConfig.routes.ts.
+## contains all response schemas for /api/v1/orgAuthConfig routes.
 ##
 ## Usage:
 ##   schemas = load_yaml_schemas("response-validation/schemas/auth/orgAuthConfig-response-schemas.yaml")
