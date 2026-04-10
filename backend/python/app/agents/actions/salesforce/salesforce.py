@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Any
 
-from app.agents.actions.salesforce.salesforce_models import (
+from app.agents.actions.salesforce.models import (
     AccountData,
     AddProductToOpportunityInput,
     CaseData,

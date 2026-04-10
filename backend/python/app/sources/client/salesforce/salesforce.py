@@ -73,7 +73,9 @@ class SalesforceConfig(BaseModel):
     instance_url: str = Field(..., description="The Salesforce instance URL")
     access_token: str = Field(..., description="The OAuth access token")
     api_version: str = Field(default="59.0", description="The Salesforce API version")
-    refresh_token: str = Field(default=None, description="The OAuth refresh token")
+    refresh_token: str | None = Field(
+        default=None, description="The OAuth refresh token"
+    )
 
     @field_validator('instance_url')
     @classmethod
