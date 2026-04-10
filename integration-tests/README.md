@@ -36,7 +36,7 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
 
 ## Prerequisites
 
-- **Python 3.12+**
+- **Python 3.10+** (3.12 recommended)
 - **Git** (for cloning the sample data repo)
 - **Network access** to:
   - Pipeshub (test.pipeshub.com or your local backend)

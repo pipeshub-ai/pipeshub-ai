@@ -155,7 +155,7 @@ install-deps-mac: ## Install system dependencies on macOS
 	@echo "$(BLUE)Installing macOS dependencies...$(NC)"
 	@echo "$(YELLOW)Installing Homebrew if not already installed...$(NC)"
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
-	brew install python@3.12 || true
+	brew install python@3.12 || true  # Python 3.10-3.12 supported (3.12 recommended)
 	brew install libreoffice || true
 	brew install ocrmypdf ghostscript unpaper qpdf tesseract || true
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
@@ -164,7 +164,7 @@ install-deps-mac: ## Install system dependencies on macOS
 
 install-deps-windows: ## Show Windows installation instructions
 	@echo "$(YELLOW)Windows Installation Instructions:$(NC)"
-	@echo "1. Install Python 3.12 from python.org"
+	@echo "1. Install Python 3.10-3.12 from python.org (3.12 recommended)"
 	@echo "2. Install Tesseract OCR if you need to test OCR functionality"
 	@echo "3. Consider using WSL2 for a Linux-like environment"
 	@echo "4. Run: make install-deps-linux in WSL2"
