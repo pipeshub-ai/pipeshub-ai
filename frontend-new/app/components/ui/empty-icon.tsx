@@ -1,0 +1,25 @@
+'use client';
+
+import React from 'react';
+
+interface EmptyIconProps {
+  size?: number;
+  color?: string;
+  style?: React.CSSProperties;
+}
+
+export const EmptyIcon = ({ size = 56, color = 'currentColor', style }: EmptyIconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 56 56"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    style={{ display: 'inline-flex', flexShrink: 0, color, ...style }}
+  >
+    <path
+      d="M21 45.5H14V42H21V45.5ZM31.5 45.5H24.5V42H31.5V45.5ZM42 45.5H35V42H42V45.5ZM14 42H10.5V17.5H14V42ZM24.5 42H21V38.5H24.5V42ZM35 42H31.5V38.5H35V42ZM45.5 42H42V17.5H45.5V42ZM24.5 21V24.5H21V28H17.5V21H24.5ZM38.5 28H35V24.5H31.5V21H38.5V28ZM17.5 17.5H14V14H17.5V17.5ZM42 17.5H38.5V14H42V17.5ZM38.5 14H17.5V10.5H38.5V14Z"
+      fill="currentColor"
+    />
+  </svg>
+);

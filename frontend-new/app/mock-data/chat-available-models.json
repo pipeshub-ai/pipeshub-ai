@@ -1,0 +1,26 @@
+{
+    "status": "success",
+    "models": [
+        {
+            "modelType": "llm",
+            "provider": "openAI",
+            "modelName": "gpt-4o-mini",
+            "modelKey": "0c7bbaf2-bc69-4ace-ae72-aeb416759aa2",
+            "isMultimodal": true,
+            "isReasoning": false,
+            "isDefault": true,
+            "modelFriendlyName": "4o mini"
+        },
+        {
+            "modelType": "llm",
+            "provider": "openAI",
+            "modelName": "gpt-5.2",
+            "modelKey": "35af1c33-9f78-4b5a-9d6e-28c367d394bc",
+            "isMultimodal": true,
+            "isReasoning": true,
+            "isDefault": false,
+            "modelFriendlyName": "5.2"
+        }
+    ],
+    "message": "Found 2 llm models"
+}
