@@ -16,10 +16,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.deep.graph import deep_agent_graph
@@ -140,6 +141,13 @@ class LLMInitializationError(AgentError):
             status_code=500
         )
 
+class ReasoningModelRequiredError(AgentError):
+    """Reasoning model required"""
+    def __init__(self) -> None:
+        super().__init__(
+            detail="Reasoning model is required in agent mode. Please use a reasoning model.",
+            status_code=400
+        )
 
 # ============================================================================
 # Helper Functions
@@ -2825,30 +2833,38 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
-        if is_service_account:
-            # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
-            # Service account agents are always org-wide, so skip user-specific permission checks
-            # and the user document lookup which would fail.
-            enriched_user_info = {
-                "userId": user_context["userId"],
-                "orgId": user_context["orgId"],
-                "userEmail": user_context.get("email", user_context["userId"]),
-                "_key": None,
-            }
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent or not agent.get("isServiceAccount"):
-                raise AgentNotFoundError(agent_id)
-            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-        else:
-            # Standard user path: look up the user document and verify permissions.
+        if agent_id == "agentIdPlaceholder":
+            toolset_registry = getattr(request.app.state, "toolset_registry", None)
+            agent = await get_assistant_agent(user_context["userId"], org_key, config_service, graph_provider, toolset_registry, logger)
             user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
-            perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-            if not perm:
-                raise AgentNotFoundError(agent_id)
-            agent = await services["graph_provider"].get_agent(agent_id, org_key)
-            if not agent:
-                raise AgentNotFoundError(agent_id)
+            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+
+        else:
+            if is_service_account:
+                # Service account (Slack bot) path: userId is the bot's email, not a real user ID.
+                # Service account agents are always org-wide, so skip user-specific permission checks
+                # and the user document lookup which would fail.
+                enriched_user_info = {
+                    "userId": user_context["userId"],
+                    "orgId": user_context["orgId"],
+                    "userEmail": user_context.get("email", user_context["userId"]),
+                    "_key": None,
+                }
+                agent = await services["graph_provider"].get_agent(agent_id, org_key)
+                if not agent or not agent.get("isServiceAccount"):
+                    raise AgentNotFoundError(agent_id)
+                perm = {"can_edit": False, "can_share": False, "role": "viewer"}
+            else:
+                # Standard user path: look up the user document and verify permissions.
+                user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+                enriched_user_info = await _enrich_user_info(user_context, user_doc)
+                perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+                if not perm:
+                    raise AgentNotFoundError(agent_id)
+                agent = await services["graph_provider"].get_agent(agent_id, org_key)
+                if not agent:
+                    raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
 
@@ -2872,15 +2888,21 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
 
         # Get LLM for chat
-        llm = (await get_llm_for_chat(
+        llm_result = (await get_llm_for_chat(
             services["config_service"],
             model_key,
             model_name,
             chat_query.chatMode
-        ))[0]
+        ))
 
-        if not llm:
+        if not llm_result:
             raise LLMInitializationError()
+
+        llm = llm_result[0]
+        llm_config = llm_result[1]
+
+        if not llm_config.get("isReasoning", False):
+            raise ReasoningModelRequiredError()
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
@@ -3082,7 +3104,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
 
-        if not filters.get("kb"):
+        if not filters.get("kb") and agent_id != "agentIdPlaceholder":
             filters["kb"] = [NO_KB_SELECTED_FILTER]
 
         logger.info(f"Filters: {filters}")
@@ -3140,3 +3162,88 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+async def get_assistant_agent(
+    user_id: str,
+    org_id: str,
+    config_service: ConfigurationService,
+    graph_provider: IGraphDBProvider,
+    toolset_registry: ToolsetRegistry,
+    logger: Logger,
+) -> dict:
+    """
+    Get the assistant agent with all authenticated toolsets and accessible connectors.
+
+    Args:
+        user_id: User ID
+        org_id: Organization ID
+        config_service: Configuration service for etcd access
+        graph_provider: Graph provider instance
+        toolset_registry: Toolset registry instance
+        logger: Logger instance
+
+    Returns:
+        Dictionary containing assistant agent configuration with toolsets and knowledge sources
+    """
+    from app.api.routes.toolsets import get_authenticated_toolsets
+
+    # Get authenticated toolsets using the helper method
+    try:
+        authenticated_toolsets_list = await get_authenticated_toolsets(
+            user_id=user_id,
+            org_id=org_id,
+            config_service=config_service,
+            registry=toolset_registry,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
+        authenticated_toolsets_list = []
+
+    # Get all accessible connectors for knowledge sources
+    knowledge_sources = []
+
+    try:
+        # Get active connector instances accessible to the user
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+        if not user:
+            logger.error(f"User not found: {user_id}")
+            return []
+        user_key = user.get("id") or user.get("_key")
+        connectors = await graph_provider.get_user_apps(
+            user_id=user_key,
+        )
+        for connector in connectors:
+            connector_id = connector.get("id", "") or connector.get("_key", "")
+            connector_name = connector.get("name", "")
+            connector_type = connector.get("type", "")
+
+            if connector_type == Connectors.KNOWLEDGE_BASE:
+                continue
+            # Build knowledge source entry
+            knowledge_entry = {
+                "connectorId": connector_id,
+                "name": connector_name,
+                "displayName": connector_name,
+                "type": connector_type,
+                "filtersParsed": {
+                    "recordGroups": [],
+                    "records": []
+                }
+            }
+            knowledge_sources.append(knowledge_entry)
+    except Exception as e:
+        logger.error(f"Error fetching knowledge sources: {e}", exc_info=True)
+        knowledge_sources = []
+
+    # Return assistant agent configuration
+    return {
+        "systemPrompt": "You are a helpful AI assistant with access to various tools and knowledge sources. Use them to help users accomplish their tasks efficiently.",
+        "models": [],
+        "startMessage": "Hello! I'm your AI assistant. I have access to your connected tools and knowledge bases. How can I help you today?",
+        "name": "assistant",
+        "description": "AI assistant with access to all your authenticated tools and knowledge sources",
+        "isActive": True,
+        "tags": ["assistant", "general-purpose"],
+        "toolsets": authenticated_toolsets_list,
+        "knowledge": knowledge_sources,
+    }
