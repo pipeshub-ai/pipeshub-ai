@@ -1,0 +1,520 @@
+/**
+ * Slot-scoped SSE streaming logic.
+ *
+ * Extracted from the old ChatModelAdapter — this module is purely
+ * imperative (no React hooks) so SSE streams can write to any slot
+ * in Zustand regardless of which slot is currently active.
+ *
+ * Key design:
+ * - `streamMessageForSlot()` handles new + existing conversations.
+ * - `streamRegenerateForSlot()` handles message regeneration.
+ * - rAF batching collapses high-frequency SSE chunks into one Zustand
+ *   write per animation frame. Background (inactive) slot writes happen
+ *   silently — no React component subscribes to those fields.
+ */
+
+import { ChatApi, type StreamMessageCallbacks } from './api';
+import { AgentsApi } from '@/app/(main)/agents/api';
+import { useChatStore } from './store';
+import { debugLog } from './debug-logger';
+import { loadHistoricalMessages } from './runtime';
+import type { StreamChatRequest, StatusMessage, ModelOverride } from './types';
+import {
+  buildCitationMapsFromStreaming,
+} from './components/message-area/response-tabs/citations';
+
+/**
+ * Stream a message for a specific slot.
+ *
+ * The function writes to `slots[slotId]` in Zustand — it does NOT
+ * need the slot to be active. A background slot will accumulate
+ * messages silently.
+ *
+ * @param slotId  — stable slot key in the store dictionary
+ * @param query   — user's plain-text question
+ * @param request — full StreamChatRequest (model, chatMode, filters, etc.)
+ */
+export async function streamMessageForSlot(
+  slotId: string,
+  query: string,
+  request: StreamChatRequest
+): Promise<void> {
+  const store = useChatStore.getState();
+  const slot = store.slots[slotId];
+  if (!slot) return;
+
+  // Create an abort controller scoped to this stream
+  const abortController = new AbortController();
+
+  // Append user message + set streaming state atomically
+  store.updateSlot(slotId, {
+    isStreaming: true,
+    streamingQuestion: query,
+    streamingContent: '',
+    currentStatusMessage: null,
+    streamingCitationMaps: null,
+    abortController,
+    threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
+    ...(request.agentId && (request.agentStreamTools?.length ?? 0) > 0
+      ? { agentStreamTools: [...request.agentStreamTools!] }
+      : {}),
+    messages: [
+      ...slot.messages,
+      { role: 'user', content: [{ type: 'text', text: query }] },
+    ],
+  });
+
+  // For new conversations, push a pending sidebar entry keyed by slotId
+  const isNewConversation = slot.isTemp;
+  if (isNewConversation) {
+    store.addPendingConversation(slotId);
+  }
+
+  debugLog.flush('stream-started', { slotId, convId: slot.convId, isNew: isNewConversation });
+
+  // ── Time-throttled content + citation accumulator ──────────────────
+  // Flushes streamingContent + streamingCitationMaps to Zustand at most
+  // once per ~16 ms (≈60 fps).
+  //
+  // WHY NOT requestAnimationFrame:
+  // rAF is a macrotask that only runs when the browser is idle. When the
+  // server sends many SSE chunks in a rapid burst (all arrive as microtasks
+  // in the same event-loop turn), rafPending stays `true` through the entire
+  // burst and the single rAF fires at the very end — producing one giant
+  // update instead of incremental ones. A time-based throttle avoids this:
+  //   • First chunk → flush immediately (content appears right away).
+  //   • Subsequent chunks within 16 ms → schedule a setTimeout for the
+  //     remaining window (still fires between bursts, not just at the end).
+  //   • Chunks arriving ≥16 ms apart → each flushes immediately.
+  //
+  // BACKGROUND THROTTLING: When this slot is NOT the active (visible) one,
+  // no React component subscribes to its `streamingContent` — but each
+  // `updateSlot()` still creates a new `slots` reference, causing ALL
+  // subscriber selectors across the app to re-evaluate synchronously.
+  // With N background streams at 60 fps each, that starves the main
+  // thread and breaks the active chat's scroll tracking.  To avoid this,
+  // background slots flush at a much lower cadence (200 ms).
+  const ACTIVE_FLUSH_MS = 16;
+  const BACKGROUND_FLUSH_MS = 200;
+  let accumulatedContent = '';
+  let pendingCitationMaps: ReturnType<typeof buildCitationMapsFromStreaming> | null = null;
+  let lastCitationKey = ''; // JSON.stringify key for dedup
+  let lastFlushTime = 0;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushContentToStore() {
+    debugLog.rafFlush();
+    const citationMaps = pendingCitationMaps;
+    if (citationMaps) {
+      pendingCitationMaps = null;
+    }
+    useChatStore.getState().updateSlot(slotId, {
+      streamingContent: accumulatedContent,
+      ...(citationMaps ? { streamingCitationMaps: citationMaps } : {}),
+    });
+  }
+
+  function scheduleFlush() {
+    const now = Date.now();
+    // Check activity on every call — adapts immediately when user switches.
+    const isActive = useChatStore.getState().activeSlotId === slotId;
+    const interval = isActive ? ACTIVE_FLUSH_MS : BACKGROUND_FLUSH_MS;
+    if (now - lastFlushTime >= interval) {
+      // Enough time has passed — flush immediately.
+      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      lastFlushTime = now;
+      flushContentToStore();
+    } else if (flushTimer === null) {
+      // Within the throttle window — schedule a deferred flush.
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        lastFlushTime = Date.now();
+        flushContentToStore();
+      }, interval - (now - lastFlushTime));
+    }
+  }
+
+  try {
+    await ChatApi.streamMessage(request, {
+      onConnected: () => {
+        // No action needed — stream is established
+      },
+
+      onStatus: (data) => {
+        const statusMessage: StatusMessage = {
+          id: `status-${Date.now()}`,
+          status: data.status,
+          message: data.message,
+          timestamp: new Date().toISOString(),
+        };
+        useChatStore.getState().updateSlot(slotId, {
+          currentStatusMessage: statusMessage,
+        });
+      },
+
+      onChunk: (data) => {
+        debugLog.chunk();
+        accumulatedContent = data.accumulated;
+        // Deduplicate citation maps: only stage a new maps object when
+        // the serialized key changes (citations grow monotonically).
+        if (data.citations && data.citations.length > 0) {
+          const key = JSON.stringify(data.citations);
+          if (key !== lastCitationKey) {
+            lastCitationKey = key;
+            pendingCitationMaps = buildCitationMapsFromStreaming(data.citations);
+          }
+        }
+        scheduleFlush();
+      },
+
+      onComplete: (data) => {
+        if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+        const conv = data.conversation as { _id?: string; id?: string };
+        const newConvId = conv._id || conv.id || '';
+
+        // Build finalized messages from API response
+        const finalMessages = loadHistoricalMessages(data.conversation.messages);
+
+        useChatStore.getState().updateSlot(slotId, {
+          isStreaming: false,
+          streamingContent: '',
+          streamingQuestion: '',
+          currentStatusMessage: null,
+          streamingCitationMaps: null,
+          pendingCollections: [],
+          messages: finalMessages,
+          hasLoaded: true,
+          abortController: null,
+        });
+
+        // Resolve temp → real convId
+        const currentStore = useChatStore.getState();
+        if (isNewConversation && newConvId) {
+          currentStore.resolveSlotConvId(slotId, newConvId);
+          currentStore.resolvePendingConversation(
+            slotId,
+            {
+              id: newConvId,
+              title: data.conversation.title,
+              createdAt: data.conversation.createdAt,
+              updatedAt: data.conversation.updatedAt,
+              isShared: data.conversation.isShared,
+              lastActivityAt: data.conversation.lastActivityAt,
+              status: data.conversation.status,
+              modelInfo: data.conversation.modelInfo,
+              isOwner: true,
+              sharedWith: [],
+            },
+            { isAgentStream: Boolean(request.agentId) }
+          );
+        } else if (slot.convId) {
+          currentStore.moveConversationToTop(slot.convId);
+        }
+
+        debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
+      },
+
+      onError: (error) => {
+        if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+        console.error('[streaming] Stream error for slot', slotId, error);
+        const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
+        useChatStore.getState().updateSlot(slotId, {
+          isStreaming: false,
+          streamingContent: '',
+          streamingQuestion: '',
+          currentStatusMessage: null,
+          streamingCitationMaps: null,
+          pendingCollections: [],
+          abortController: null,
+          messages: [
+            ...currentMessages,
+            {
+              role: 'assistant' as const,
+              content: [{ type: 'text' as const, text: error.message || 'An error occurred. Please try again.' }],
+            },
+          ],
+        });
+        if (isNewConversation) {
+          useChatStore.getState().clearPendingConversation(slotId);
+        }
+        debugLog.flush('stream-error', { slotId });
+      },
+
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+
+    const aborted =
+      (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') ||
+      (error instanceof Error &&
+        (error.name === 'AbortError' || error.name === 'CanceledError'));
+
+    if (aborted) {
+      const cur = useChatStore.getState().slots[slotId];
+      if (cur?.isStreaming) {
+        useChatStore.getState().updateSlot(slotId, {
+          isStreaming: false,
+          streamingContent: '',
+          streamingQuestion: '',
+          currentStatusMessage: null,
+          streamingCitationMaps: null,
+          pendingCollections: [],
+          abortController: null,
+        });
+      }
+      if (isNewConversation) {
+        useChatStore.getState().clearPendingConversation(slotId);
+      }
+      debugLog.flush('stream-aborted', { slotId });
+      return;
+    }
+
+    console.error('[streaming] Fatal error for slot', slotId, error);
+    const currentMessages = useChatStore.getState().slots[slotId]?.messages ?? [];
+    const errorMessage = error instanceof Error ? error.message : 'An error occurred. Please try again.';
+    useChatStore.getState().updateSlot(slotId, {
+      isStreaming: false,
+      streamingContent: '',
+      streamingQuestion: '',
+      currentStatusMessage: null,
+      streamingCitationMaps: null,
+      pendingCollections: [],
+      abortController: null,
+      messages: [
+        ...currentMessages,
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: errorMessage }],
+        },
+      ],
+    });
+    if (isNewConversation) {
+      useChatStore.getState().clearPendingConversation(slotId);
+    }
+    debugLog.flush('stream-fatal-error', { slotId });
+  }
+}
+
+/**
+ * Regenerate a bot response for a specific slot.
+ *
+ * Similar to `streamMessageForSlot` but uses the regenerate endpoint
+ * and replaces the last assistant message rather than appending.
+ *
+ * @param slotId    — stable slot key
+ * @param messageId — backend _id of the bot_response to regenerate
+ */
+export async function streamRegenerateForSlot(
+  slotId: string,
+  messageId: string,
+  modelOverride?: ModelOverride
+): Promise<void> {
+  const store = useChatStore.getState();
+  const slot = store.slots[slotId];
+  if (!slot || !slot.convId) return;
+
+  // Resolve model: explicit override → store's selectedModel → defaultModel (from API)
+  const resolvedModel: ModelOverride =
+    modelOverride ?? store.settings.selectedModel ?? store.settings.defaultModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
+
+  const abortController = new AbortController();
+
+  store.updateSlot(slotId, {
+    isStreaming: true,
+    regenerateMessageId: messageId,
+    streamingContent: '',
+    currentStatusMessage: null,
+    streamingCitationMaps: null,
+    abortController,
+  });
+
+  debugLog.flush('regenerate-started', { slotId, messageId });
+
+  // ── Time-throttled content + citation accumulator (same as streamMessageForSlot) ──
+  const ACTIVE_FLUSH_MS = 16;
+  const BACKGROUND_FLUSH_MS = 200;
+  let accumulatedContent = '';
+  let pendingCitationMaps: ReturnType<typeof buildCitationMapsFromStreaming> | null = null;
+  let lastCitationKey = '';
+  let lastFlushTime = 0;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushContentToStore() {
+    debugLog.rafFlush();
+    const citationMaps = pendingCitationMaps;
+    if (citationMaps) {
+      pendingCitationMaps = null;
+    }
+    useChatStore.getState().updateSlot(slotId, {
+      streamingContent: accumulatedContent,
+      ...(citationMaps ? { streamingCitationMaps: citationMaps } : {}),
+    });
+  }
+
+  function scheduleFlush() {
+    const now = Date.now();
+    const isActive = useChatStore.getState().activeSlotId === slotId;
+    const interval = isActive ? ACTIVE_FLUSH_MS : BACKGROUND_FLUSH_MS;
+    if (now - lastFlushTime >= interval) {
+      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      lastFlushTime = now;
+      flushContentToStore();
+    } else if (flushTimer === null) {
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        lastFlushTime = Date.now();
+        flushContentToStore();
+      }, interval - (now - lastFlushTime));
+    }
+  }
+
+  const rawAgentIdFromUrl =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null;
+  const agentIdFromUrl = rawAgentIdFromUrl?.trim() ? rawAgentIdFromUrl : null;
+  const slotAgentId = slot.threadAgentId?.trim() || null;
+  const threadAgentId = slotAgentId ?? agentIdFromUrl;
+  /** Which API we use for reload — frozen at regen start (URL may change before `complete`) */
+  const reloadViaAgentId = threadAgentId;
+
+  const regenerateCallbacks: StreamMessageCallbacks = {
+    onStatus: (data) => {
+      useChatStore.getState().updateSlot(slotId, {
+        currentStatusMessage: {
+          id: `status-${Date.now()}`,
+          status: data.status,
+          message: data.message,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    },
+
+    onChunk: (data) => {
+      debugLog.chunk();
+      accumulatedContent = data.accumulated;
+      if (data.citations && data.citations.length > 0) {
+        const key = JSON.stringify(data.citations);
+        if (key !== lastCitationKey) {
+          lastCitationKey = key;
+          pendingCitationMaps = buildCitationMapsFromStreaming(data.citations);
+        }
+      }
+      scheduleFlush();
+    },
+
+    onComplete: async () => {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      try {
+        const messages = reloadViaAgentId
+          ? (await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)).messages
+          : (await ChatApi.fetchConversation(slot.convId!)).messages;
+        const finalMessages = loadHistoricalMessages(messages);
+
+        useChatStore.getState().updateSlot(slotId, {
+          isStreaming: false,
+          regenerateMessageId: null,
+          streamingContent: '',
+          currentStatusMessage: null,
+          streamingCitationMaps: null,
+          messages: finalMessages,
+          abortController: null,
+        });
+        debugLog.flush('regenerate-completed', { slotId, messageId });
+      } catch (err) {
+        console.error('[streaming] Failed to reload after regenerate:', err);
+        useChatStore.getState().updateSlot(slotId, {
+          isStreaming: false,
+          regenerateMessageId: null,
+          streamingContent: '',
+          currentStatusMessage: null,
+          streamingCitationMaps: null,
+          abortController: null,
+        });
+        debugLog.flush('regenerate-reload-error', { slotId });
+      }
+    },
+
+    onError: (error: Error) => {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      console.error('[streaming] Regenerate error for slot', slotId, error);
+      useChatStore.getState().updateSlot(slotId, {
+        isStreaming: false,
+        regenerateMessageId: null,
+        streamingContent: '',
+        currentStatusMessage: null,
+        streamingCitationMaps: null,
+        abortController: null,
+      });
+      debugLog.flush('regenerate-error', { slotId });
+    },
+
+    signal: abortController.signal,
+  };
+
+  try {
+    if (threadAgentId && slotAgentId !== threadAgentId) {
+      useChatStore.getState().updateSlot(slotId, { threadAgentId });
+    }
+    if (threadAgentId) {
+      await ChatApi.streamAgentRegenerate(
+        threadAgentId,
+        slot.convId,
+        messageId,
+        regenerateCallbacks,
+        {
+          modelKey: resolvedModel.modelKey.trim(),
+          modelName: resolvedModel.modelName || resolvedModel.modelKey,
+          modelProvider: resolvedModel.modelProvider ?? 'openAI',
+          chatMode: 'auto',
+        }
+      );
+    } else {
+      await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, resolvedModel);
+    }
+  } catch (error) {
+    if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+    console.error('[streaming] Fatal regenerate error for slot', slotId, error);
+    useChatStore.getState().updateSlot(slotId, {
+      isStreaming: false,
+      regenerateMessageId: null,
+      streamingContent: '',
+      currentStatusMessage: null,
+      streamingCitationMaps: null,
+      abortController: null,
+    });
+    debugLog.flush('regenerate-fatal-error', { slotId });
+  }
+}
+
+/**
+ * Cancel the active stream for a slot by aborting its AbortController.
+ */
+export function cancelStreamForSlot(slotId: string): void {
+  const store = useChatStore.getState();
+  const slot = store.slots[slotId];
+  if (!slot) return;
+
+  slot.abortController?.abort();
+  store.updateSlot(slotId, {
+    isStreaming: false,
+    streamingContent: '',
+    streamingQuestion: '',
+    currentStatusMessage: null,
+    streamingCitationMaps: null,
+    abortController: null,
+    regenerateMessageId: null,
+  });
+  if (slot.isTemp) {
+    store.clearPendingConversation(slotId);
+  }
+  debugLog.flush('stream-cancelled', { slotId });
+}

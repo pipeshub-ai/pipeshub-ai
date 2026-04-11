@@ -1,0 +1,103 @@
+{
+    "success": true,
+    "schema": {
+        "iconPath": "/assets/icons/connectors/rss.svg",
+        "supportsRealtime": false,
+        "supportsSync": true,
+        "supportsAgent": false,
+        "documentationLinks": [
+            {
+                "title": "RSS Connector Guide",
+                "url": "https://docs.pipeshub.ai/connectors/rss",
+                "type": "setup"
+            }
+        ],
+        "hideConnector": false,
+        "auth": {
+            "supportedAuthTypes": [
+                "NONE"
+            ],
+            "schemas": {},
+            "values": {},
+            "customFields": [],
+            "customValues": {},
+            "conditionalDisplay": {}
+        },
+        "sync": {
+            "supportedStrategies": [
+                "MANUAL",
+                "SCHEDULED"
+            ],
+            "selectedStrategy": "MANUAL",
+            "webhookConfig": {
+                "supported": false,
+                "webhookUrl": "",
+                "events": [],
+                "verificationToken": "",
+                "secretKey": ""
+            },
+            "scheduledConfig": {
+                "intervalMinutes": 60,
+                "cronExpression": "",
+                "timezone": "UTC",
+                "startTime": 0,
+                "nextTime": 0,
+                "endTime": 0,
+                "maxRepetitions": 0,
+                "repetitionCount": 0
+            },
+            "realtimeConfig": {
+                "supported": false,
+                "connectionType": "WEBSOCKET"
+            },
+            "customFields": [
+                {
+                    "name": "feed_urls",
+                    "displayName": "Feed URLs",
+                    "description": "RSS or Atom feed URLs, separated by commas or newlines (e.g., https://blog.example.com/rss, https://news.ycombinator.com/rss)",
+                    "fieldType": "TEXT",
+                    "required": true,
+                    "defaultValue": "",
+                    "validation": {},
+                    "isSecret": false
+                },
+                {
+                    "name": "max_articles_per_feed",
+                    "displayName": "Max Articles Per Feed",
+                    "description": "Maximum number of articles to process per feed (1-500)",
+                    "fieldType": "NUMBER",
+                    "required": false,
+                    "defaultValue": "50",
+                    "validation": {},
+                    "isSecret": false
+                },
+                {
+                    "name": "fetch_full_content",
+                    "displayName": "Fetch Full Content",
+                    "description": "Crawl each article URL for full content. If disabled, only the feed summary/description is indexed.",
+                    "fieldType": "BOOLEAN",
+                    "required": false,
+                    "defaultValue": "true",
+                    "validation": {},
+                    "isSecret": false
+                }
+            ],
+            "customValues": {},
+            "values": {}
+        },
+        "filters": {
+            "sync": {
+                "schema": {
+                    "fields": []
+                },
+                "values": {}
+            },
+            "indexing": {
+                "schema": {
+                    "fields": []
+                },
+                "values": {}
+            }
+        }
+    }
+}

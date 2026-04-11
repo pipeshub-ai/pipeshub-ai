@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "jsx": "react",
+    "paths": {
+      "@/*": ["./*"],
+      "@/chat/*": ["./app/(main)/chat/*"],
+      "@/knowledge-base/*": ["./app/(main)/knowledge-base/*"]
+    }
+  }
+}
