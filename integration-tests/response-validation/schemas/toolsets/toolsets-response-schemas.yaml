@@ -1,0 +1,943 @@
+## ---------------------------------------------------------------------------
+## Toolsets API – Response Schemas
+## ---------------------------------------------------------------------------
+
+
+# Reusable: pagination with hasNext/hasPrev
+_pagination_full: &pagination_full
+  page:
+    type: number
+    required: true
+  limit:
+    type: number
+    required: true
+  total:
+    type: number
+    required: true
+  totalPages:
+    type: number
+    required: true
+  hasNext:
+    type: boolean
+    required: true
+  hasPrev:
+    type: boolean
+    required: true
+
+# Reusable: simple pagination (no hasNext/hasPrev)
+_pagination_simple: &pagination_simple
+  page:
+    type: number
+    required: true
+  limit:
+    type: number
+    required: true
+  total:
+    type: number
+    required: true
+  totalPages:
+    type: number
+    required: true
+
+# Reusable: filter counts for my-toolsets / agent toolsets
+_filter_counts: &filter_counts
+  all:
+    type: number
+    required: true
+  authenticated:
+    type: number
+    required: true
+  notAuthenticated:
+    type: number
+    required: true
+
+# Reusable: tool parameter
+_tool_parameter: &tool_parameter
+  name:
+    type: string
+    required: true
+  type:
+    type: string
+    required: true
+  description:
+    type: string
+    required: true
+
+# Reusable: registry tool entry
+_registry_tool: &registry_tool
+  name:
+    type: string
+    required: true
+  fullName:
+    type: string
+    required: true
+  displayName:
+    type: string
+    required: true
+  description:
+    type: string
+    required: true
+  parameters:
+    type: array
+    required: true
+    items:
+      type: object
+      properties:
+        <<: *tool_parameter
+  returns:
+    required: true
+    oneOf:
+      - type: string
+      - type: "null"
+  tags:
+    type: array
+    required: true
+    items:
+      type: string
+
+# Reusable: stored instance fields
+_instance_stored_fields: &instance_stored_fields
+  _id:
+    type: string
+    required: true
+  instanceName:
+    type: string
+    required: true
+  toolsetType:
+    type: string
+    required: true
+  authType:
+    type: string
+    required: true
+  orgId:
+    type: string
+    required: true
+  createdBy:
+    type: string
+    required: true
+  createdAtTimestamp:
+    type: number
+    required: true
+  updatedAtTimestamp:
+    type: number
+    required: true
+  oauthConfigId:
+    type: string
+    required: false
+
+# Reusable: my-toolset tool entry (compact)
+_my_toolset_tool: &my_toolset_tool
+  name:
+    type: string
+    required: true
+  fullName:
+    type: string
+    required: true
+  description:
+    type: string
+    required: true
+
+# Reusable: my-toolset entry
+_my_toolset_entry_fields: &my_toolset_entry_fields
+  instanceId:
+    type: string
+    required: true
+  instanceName:
+    type: string
+    required: true
+  toolsetType:
+    type: string
+    required: true
+  authType:
+    type: string
+    required: true
+  oauthConfigId:
+    required: false
+    oneOf:
+      - type: string
+      - type: "null"
+  displayName:
+    type: string
+    required: true
+  description:
+    type: string
+    required: true
+  iconPath:
+    type: string
+    required: true
+  category:
+    type: string
+    required: true
+  supportedAuthTypes:
+    type: array
+    required: true
+    items:
+      type: string
+  toolCount:
+    type: number
+    required: true
+  tools:
+    type: array
+    required: true
+    items:
+      type: object
+      properties:
+        <<: *my_toolset_tool
+  isConfigured:
+    type: boolean
+    required: true
+  isAuthenticated:
+    type: boolean
+    required: true
+  isFromRegistry:
+    type: boolean
+    required: true
+  createdBy:
+    type: string
+    required: false
+  createdAtTimestamp:
+    type: number
+    required: false
+  updatedAtTimestamp:
+    type: number
+    required: false
+  auth:
+    required: false
+
+# Reusable: schema tool entry (used in GET /registry/:type/schema)
+_schema_tool_entry: &schema_tool_entry
+  name:
+    type: string
+    required: true
+  description:
+    type: string
+    required: true
+  parameters:
+    type: array
+    required: true
+    items:
+      type: object
+      properties:
+        <<: *tool_parameter
+  returns:
+    required: true
+    oneOf:
+      - type: string
+      - type: "null"
+  examples:
+    type: array
+    required: false
+  tags:
+    type: array
+    required: true
+    items:
+      type: string
+
+# Reusable: auth field
+_auth_field: &auth_field
+  name:
+    type: string
+    required: true
+  displayName:
+    type: string
+    required: true
+  placeholder:
+    type: string
+    required: true
+  description:
+    type: string
+    required: true
+  fieldType:
+    type: string
+    required: true
+  required:
+    type: boolean
+    required: true
+  usage:
+    type: string
+    required: true
+    enum:
+      - CONFIGURE
+      - AUTHENTICATE
+      - BOTH
+  defaultValue:
+    required: true
+    oneOf:
+      - type: string
+      - type: boolean
+      - type: "null"
+  validation:
+    type: object
+    required: true
+    properties:
+      minLength:
+        type: number
+        required: true
+      maxLength:
+        type: number
+        required: true
+  isSecret:
+    type: boolean
+    required: true
+
+schemas:
+
+  # ==================================================================
+  # GET /api/v1/toolsets/registry
+  # ==================================================================
+  - name: ToolsetListResponse
+    description: "GET /api/v1/toolsets/registry — getRegistryToolsets"
+    path: /api/v1/toolsets/registry
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      toolsets:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+              required: true
+            displayName:
+              type: string
+              required: true
+            description:
+              type: string
+              required: true
+            category:
+              type: string
+              required: true
+            group:
+              type: string
+              required: true
+            iconPath:
+              type: string
+              required: true
+            supportedAuthTypes:
+              type: array
+              required: true
+              items:
+                type: string
+            toolCount:
+              type: number
+              required: true
+            tools:
+              type: array
+              required: true
+              items:
+                type: object
+                properties:
+                  <<: *registry_tool
+      categorizedToolsets:
+        type: object
+        required: true
+      pagination:
+        type: object
+        required: true
+        properties:
+          <<: *pagination_simple
+
+  # ==================================================================
+  # GET /api/v1/toolsets/registry/:toolsetType/schema
+  # ==================================================================
+  - name: GetToolsetSchemaResponse
+    description: "GET /api/v1/toolsets/registry/:toolsetType/schema — getToolsetSchema"
+    path: /api/v1/toolsets/registry/:toolsetType/schema
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      toolset:
+        type: object
+        required: true
+        properties:
+          name:
+            type: string
+            required: true
+          displayName:
+            type: string
+            required: true
+          description:
+            type: string
+            required: true
+          category:
+            type: string
+            required: true
+          supportedAuthTypes:
+            type: array
+            required: true
+            items:
+              type: string
+          config:
+            type: object
+            required: true
+          oauthConfig:
+            required: true
+            oneOf:
+              - type: object
+              - type: "null"
+          tools:
+            type: array
+            required: true
+            items:
+              type: object
+              properties:
+                <<: *schema_tool_entry
+
+  # ==================================================================
+  # GET /api/v1/toolsets/instances
+  # ==================================================================
+  - name: GetToolsetInstancesResponse
+    description: "GET /api/v1/toolsets/instances — getToolsetInstances"
+    path: /api/v1/toolsets/instances
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      instances:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            <<: *instance_stored_fields
+            displayName:
+              type: string
+              required: true
+            description:
+              type: string
+              required: true
+            iconPath:
+              type: string
+              required: true
+            toolCount:
+              type: number
+              required: true
+            auth:
+              type: object
+              required: false
+      pagination:
+        type: object
+        required: true
+        properties:
+          <<: *pagination_full
+
+  # ==================================================================
+  # GET /api/v1/toolsets/instances/:instanceId
+  # ==================================================================
+  - name: GetToolsetInstanceResponse
+    description: "GET /api/v1/toolsets/instances/:instanceId — getToolsetInstance"
+    path: /api/v1/toolsets/instances/:instanceId
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      instance:
+        type: object
+        required: true
+        properties:
+          <<: *instance_stored_fields
+          displayName:
+            type: string
+            required: true
+          description:
+            type: string
+            required: true
+          iconPath:
+            type: string
+            required: true
+          supportedAuthTypes:
+            type: array
+            required: true
+            items:
+              type: string
+          toolCount:
+            type: number
+            required: true
+          auth:
+            required: false
+          oauthConfig:
+            type: object
+            required: false
+          authenticatedUserCount:
+            type: number
+            required: false
+
+  # ==================================================================
+  # POST /api/v1/toolsets/instances
+  # ==================================================================
+  - name: CreateToolsetInstanceResponse
+    description: "POST /api/v1/toolsets/instances — createToolsetInstance"
+    path: /api/v1/toolsets/instances
+    method: POST
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      instance:
+        type: object
+        required: true
+        properties:
+          <<: *instance_stored_fields
+          auth:
+            type: object
+            required: true
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # PUT /api/v1/toolsets/instances/:instanceId
+  # ==================================================================
+  - name: UpdateToolsetInstanceResponse
+    description: "PUT /api/v1/toolsets/instances/:instanceId — updateToolsetInstance"
+    path: /api/v1/toolsets/instances/:instanceId
+    method: PUT
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      instance:
+        type: object
+        required: true
+        properties:
+          <<: *instance_stored_fields
+      message:
+        type: string
+        required: true
+      deauthenticatedUserCount:
+        type: number
+        required: true
+
+  # ==================================================================
+  # DELETE /api/v1/toolsets/instances/:instanceId
+  # ==================================================================
+  - name: DeleteToolsetInstanceResponse
+    description: "DELETE /api/v1/toolsets/instances/:instanceId — deleteToolsetInstance"
+    path: /api/v1/toolsets/instances/:instanceId
+    method: DELETE
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+      instanceId:
+        type: string
+        required: true
+      deletedCredentialsCount:
+        type: number
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/toolsets/my-toolsets
+  # ==================================================================
+  - name: GetMyToolsetsResponse
+    description: "GET /api/v1/toolsets/my-toolsets — getMyToolsets"
+    path: /api/v1/toolsets/my-toolsets
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      toolsets:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            <<: *my_toolset_entry_fields
+      pagination:
+        type: object
+        required: true
+        properties:
+          <<: *pagination_full
+      filterCounts:
+        type: object
+        required: true
+        properties:
+          <<: *filter_counts
+
+
+  # ==================================================================
+  # GET /api/v1/toolsets/instances/:instanceId/status
+  # ==================================================================
+  - name: GetInstanceStatusResponse
+    description: "GET /api/v1/toolsets/instances/:instanceId/status — getInstanceStatus"
+    path: /api/v1/toolsets/instances/:instanceId/status
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      instanceId:
+        type: string
+        required: true
+      instanceName:
+        required: true
+        oneOf:
+          - type: string
+          - type: "null"
+      toolsetType:
+        required: true
+        oneOf:
+          - type: string
+          - type: "null"
+      authType:
+        required: true
+        oneOf:
+          - type: string
+          - type: "null"
+      isConfigured:
+        type: boolean
+        required: true
+      isAuthenticated:
+        type: boolean
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/toolsets/instances/:instanceId/authenticate
+  # ==================================================================
+  - name: AuthenticateToolsetInstanceResponse
+    description: "POST /api/v1/toolsets/instances/:instanceId/authenticate — authenticateToolsetInstance"
+    path: /api/v1/toolsets/instances/:instanceId/authenticate
+    method: POST
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+      isAuthenticated:
+        type: boolean
+        required: true
+
+  # ==================================================================
+  # PUT /api/v1/toolsets/instances/:instanceId/credentials
+  # ==================================================================
+  - name: UpdateUserToolsetCredentialsResponse
+    description: "PUT /api/v1/toolsets/instances/:instanceId/credentials — updateUserToolsetInstance"
+    path: /api/v1/toolsets/instances/:instanceId/credentials
+    method: PUT
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # DELETE /api/v1/toolsets/instances/:instanceId/credentials
+  # ==================================================================
+  - name: RemoveToolsetCredentialsResponse
+    description: "DELETE /api/v1/toolsets/instances/:instanceId/credentials — removeToolsetCredentials"
+    path: /api/v1/toolsets/instances/:instanceId/credentials
+    method: DELETE
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /api/v1/toolsets/instances/:instanceId/reauthenticate
+  # ==================================================================
+  - name: ReauthenticateToolsetInstanceResponse
+    description: "POST /api/v1/toolsets/instances/:instanceId/reauthenticate — reauthenticateToolsetInstance"
+    path: /api/v1/toolsets/instances/:instanceId/reauthenticate
+    method: POST
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/toolsets/instances/:instanceId/oauth/authorize
+  # ==================================================================
+  - name: GetInstanceOAuthAuthorizationUrlResponse
+    description: "GET /api/v1/toolsets/instances/:instanceId/oauth/authorize — getInstanceOAuthAuthorizationUrl"
+    path: /api/v1/toolsets/instances/:instanceId/oauth/authorize
+    method: GET
+    fields:
+      success:
+        type: boolean
+        required: true
+      authorizationUrl:
+        type: string
+        required: true
+      state:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/toolsets/oauth-configs/:toolsetType
+  # ==================================================================
+  - name: ListToolsetOAuthConfigsResponse
+    description: "GET /api/v1/toolsets/oauth-configs/:toolsetType — listToolsetOAuthConfigs"
+    path: /api/v1/toolsets/oauth-configs/:toolsetType
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      oauthConfigs:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            _id:
+              type: string
+              required: true
+            oauthInstanceName:
+              type: string
+              required: true
+            toolsetType:
+              type: string
+              required: true
+            userId:
+              type: string
+              required: true
+            orgId:
+              type: string
+              required: true
+            createdAtTimestamp:
+              type: number
+              required: true
+            updatedAtTimestamp:
+              type: number
+              required: true
+            tenantId:
+              type: string
+              required: false
+            clientId:
+              type: string
+              required: true
+            clientSecret:
+              type: string
+              required: true
+            redirectUri:
+              type: string
+              required: true
+            authorizeUrl:
+              type: string
+              required: true
+            tokenUrl:
+              type: string
+              required: true
+            scopes:
+              type: array
+              required: true
+              items:
+                type: string
+            additionalParams:
+              required: false
+            clientSecretSet:
+              type: boolean
+              required: true
+      total:
+        type: number
+        required: true
+
+  # ==================================================================
+  # PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId
+  # ==================================================================
+  - name: UpdateToolsetOAuthConfigResponse
+    description: "PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId — updateToolsetOAuthConfig"
+    path: /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId
+    method: PUT
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      oauthConfigId:
+        type: string
+        required: true
+      message:
+        type: string
+        required: true
+      deauthenticatedUserCount:
+        type: number
+        required: true
+
+  # ==================================================================
+  # DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId
+  # ==================================================================
+  - name: DeleteToolsetOAuthConfigResponse
+    description: "DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId — deleteToolsetOAuthConfig"
+    path: /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId
+    method: DELETE
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /api/v1/toolsets/agents/:agentKey
+  # ==================================================================
+  - name: GetAgentToolsetsResponse
+    description: "GET /api/v1/toolsets/agents/:agentKey — getAgentToolsets"
+    path: /api/v1/toolsets/agents/:agentKey
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      toolsets:
+        type: array
+        required: true
+        items:
+          type: object
+          properties:
+            <<: *my_toolset_entry_fields
+      pagination:
+        type: object
+        required: true
+        properties:
+          <<: *pagination_full
+      filterCounts:
+        type: object
+        required: true
+        properties:
+          <<: *filter_counts
+
+  # ==================================================================
+  # POST /api/v1/toolsets/agents/:agentKey/instances/:instanceId/authenticate
+  # ==================================================================
+  - name: AuthenticateAgentToolsetResponse
+    description: "POST /agents/:agentKey/instances/:instanceId/authenticate — authenticateAgentToolset"
+    path: /api/v1/toolsets/agents/:agentKey/instances/:instanceId/authenticate
+    method: POST
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+      isAuthenticated:
+        type: boolean
+        required: true
+
+  # ==================================================================
+  # PUT /agents/:agentKey/instances/:instanceId/credentials
+  # ==================================================================
+  - name: UpdateAgentToolsetCredentialsResponse
+    description: "PUT /agents/:agentKey/instances/:instanceId/credentials — updateAgentToolsetCredentials"
+    path: /api/v1/toolsets/agents/:agentKey/instances/:instanceId/credentials
+    method: PUT
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # DELETE /agents/:agentKey/instances/:instanceId/credentials
+  # ==================================================================
+  - name: RemoveAgentToolsetCredentialsResponse
+    description: "DELETE /agents/:agentKey/instances/:instanceId/credentials — removeAgentToolsetCredentials"
+    path: /api/v1/toolsets/agents/:agentKey/instances/:instanceId/credentials
+    method: DELETE
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # POST /agents/:agentKey/instances/:instanceId/reauthenticate
+  # ==================================================================
+  - name: ReauthenticateAgentToolsetResponse
+    description: "POST /agents/:agentKey/instances/:instanceId/reauthenticate — reauthenticateAgentToolset"
+    path: /api/v1/toolsets/agents/:agentKey/instances/:instanceId/reauthenticate
+    method: POST
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - success
+      message:
+        type: string
+        required: true
+
+  # ==================================================================
+  # GET /agents/:agentKey/instances/:instanceId/oauth/authorize
+  # ==================================================================
+  - name: GetAgentToolsetOAuthUrlResponse
+    description: "GET /agents/:agentKey/instances/:instanceId/oauth/authorize — getAgentToolsetOAuthUrl"
+    path: /api/v1/toolsets/agents/:agentKey/instances/:instanceId/oauth/authorize
+    method: GET
+    fields:
+      success:
+        type: boolean
+        required: true
+      authorizationUrl:
+        type: string
+        required: true
+      state:
+        type: string
+        required: true
