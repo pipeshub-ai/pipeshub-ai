@@ -50,15 +50,7 @@ class FetchBlockGroupArgs(BaseModel):
 
 
 def _extract_text_from_message_content(content: Any) -> str:
-    logger.debug(
-        "_extract_text_from_message_content: entry content_type=%s",
-        type(content).__name__,
-    )
     if isinstance(content, str):
-        logger.debug(
-            "_extract_text_from_message_content: returning raw string length=%d",
-            len(content),
-        )
         return content
     if isinstance(content, list):
         text = ""
@@ -67,52 +59,22 @@ def _extract_text_from_message_content(content: Any) -> str:
                 text += item
             elif isinstance(item, dict) and item.get("type") == "text":
                 text += item.get("text", "")
-        logger.debug(
-            "_extract_text_from_message_content: extracted from list item_count=%d result_length=%d",
-            len(content),
-            len(text),
-        )
         return text
-    logger.debug(
-        "_extract_text_from_message_content: unhandled content type=%s, returning empty string",
-        type(content).__name__,
-    )
     return ""
 
 
 def _extract_text_from_messages(messages: list) -> str:
     """Return concatenated text from HumanMessage, ToolMessage, and user-role dict messages."""
-    logger.debug(
-        "_extract_text_from_messages: entry message_count=%d",
-        len(messages),
-    )
     all_text = ""
-    for i, msg in enumerate(messages):
+    for msg in messages:
         if isinstance(msg, (HumanMessage, ToolMessage)):
             content = msg.content
-            msg_label = type(msg).__name__
         elif isinstance(msg, dict) and msg.get("role") == "user":
             content = msg.get("content")
-            msg_label = "dict[role=user]"
         else:
-            logger.debug(
-                "_extract_text_from_messages: skipping msg[%d] type=%s",
-                i,
-                type(msg).__name__,
-            )
             continue
         text = _extract_text_from_message_content(content)
-        logger.debug(
-            "_extract_text_from_messages: msg[%d] type=%s contributed_length=%d",
-            i,
-            msg_label,
-            len(text),
-        )
         all_text += f" {text}"
-    logger.debug(
-        "_extract_text_from_messages: done total_length=%d",
-        len(all_text),
-    )
     return all_text
 
 async def _fetch_multiple_records_impl(
@@ -141,34 +103,12 @@ async def _fetch_multiple_records_impl(
       "not_available_ids": [...],
     }
     """
-    logger.debug(
-        "_fetch_multiple_records_impl: entry record_ids=%s org_id=%s has_messages=%s has_graph_provider=%s map_keys=%s",
-        record_ids,
-        org_id,
-        messages is not None,
-        graph_provider is not None,
-        list(virtual_record_id_to_result.keys()),
-    )
-
     if messages:
         all_text = _extract_text_from_messages(messages)
-        logger.debug(
-            "_fetch_multiple_records_impl: extracted all_text length=%d snippet=%r",
-            len(all_text),
-            all_text[:200] if len(all_text) > 200 else all_text,
-        )
         invalid_ids = [rid for rid in record_ids if rid not in all_text]
-        logger.debug(
-            "_fetch_multiple_records_impl: id validation invalid_ids=%s",
-            invalid_ids,
-        )
 
         if invalid_ids:
             ids_str = ", ".join(f"'{rid}'" for rid in invalid_ids)
-            logger.debug(
-                "_fetch_multiple_records_impl: returning reflection for %d invalid id(s)",
-                len(invalid_ids),
-            )
             return {
                 "ok": False,
                 "message": (
@@ -179,9 +119,6 @@ async def _fetch_multiple_records_impl(
                 ),
             }
 
-    else:
-        logger.debug("_fetch_multiple_records_impl: no messages provided, skipping id validation")
-
     found_records = []
     not_available_ids = []
 
@@ -191,10 +128,8 @@ async def _fetch_multiple_records_impl(
          if r is not None and r.get("frontend_url")),
         None,
     )
-    logger.debug("_fetch_multiple_records_impl: frontend_url from map=%r", frontend_url)
 
     for record_id in record_ids:
-        logger.debug("_fetch_multiple_records_impl: processing record_id=%r", record_id)
         virtual_record_id = None
         found_record = None
 
@@ -205,21 +140,9 @@ async def _fetch_multiple_records_impl(
                 break
 
         if found_record:
-            logger.debug(
-                "_fetch_multiple_records_impl: record_id=%r found in map via virtual_record_id=%r",
-                record_id,
-                virtual_record_id,
-            )
             found_record["virtual_record_id"] = virtual_record_id
             found_records.append(found_record)
             continue
-
-        logger.debug(
-            "_fetch_multiple_records_impl: record_id=%r not in map, trying graph DB (org_id=%r has_graph_provider=%s)",
-            record_id,
-            org_id,
-            graph_provider is not None,
-        )
 
         if org_id and graph_provider:
             try:
@@ -227,31 +150,12 @@ async def _fetch_multiple_records_impl(
                     document_key=record_id,
                     collection=CollectionNames.RECORDS.value
                 )
-                logger.debug(
-                    "_fetch_multiple_records_impl: graph DB lookup record_id=%r found=%s",
-                    record_id,
-                    graphDb_record is not None,
-                )
 
                 if graphDb_record:
                     indexing_status = graphDb_record.get("indexingStatus")
-                    logger.debug(
-                        "_fetch_multiple_records_impl: record_id=%r indexingStatus=%r",
-                        record_id,
-                        indexing_status,
-                    )
                     if indexing_status == ProgressStatus.COMPLETED.value:
                         vrid = graphDb_record.get("virtualRecordId")
-                        logger.debug(
-                            "_fetch_multiple_records_impl: record_id=%r virtualRecordId=%r",
-                            record_id,
-                            vrid,
-                        )
                         if not vrid:
-                            logger.debug(
-                                "_fetch_multiple_records_impl: record_id=%r has no virtualRecordId, marking not_available",
-                                record_id,
-                            )
                             not_available_ids.append(record_id)
                             continue
                         blob_store = BlobStorage(
@@ -267,23 +171,9 @@ async def _fetch_multiple_records_impl(
                             )
                             if isinstance(endpoints_config, dict):
                                 frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
-                            logger.debug(
-                                "_fetch_multiple_records_impl: record_id=%r resolved frontend_url=%r",
-                                record_id,
-                                frontend_url,
-                            )
-                        except Exception as e:
-                            logger.debug(
-                                "_fetch_multiple_records_impl: record_id=%r failed to resolve frontend_url error=%r",
-                                record_id,
-                                str(e),
-                            )
+                        except Exception:
+                            pass
                         virtual_to_record_map = {vrid: graphDb_record}
-                        logger.debug(
-                            "_fetch_multiple_records_impl: record_id=%r calling get_record vrid=%r",
-                            record_id,
-                            vrid,
-                        )
                         await get_record(
                             vrid,
                             virtual_record_id_to_result,
@@ -294,54 +184,16 @@ async def _fetch_multiple_records_impl(
                             frontend_url,
                         )
                         blob_record = virtual_record_id_to_result.get(vrid)
-                        logger.debug(
-                            "_fetch_multiple_records_impl: record_id=%r blob_record found=%s",
-                            record_id,
-                            blob_record is not None,
-                        )
                         if blob_record:
                             blob_record["virtual_record_id"] = vrid
                             found_records.append(blob_record)
                             continue
-                    else:
-                        logger.debug(
-                            "_fetch_multiple_records_impl: record_id=%r indexingStatus=%r is not COMPLETED, skipping",
-                            record_id,
-                            indexing_status,
-                        )
-                else:
-                    logger.debug(
-                        "_fetch_multiple_records_impl: record_id=%r not found in graph DB",
-                        record_id,
-                    )
-            except Exception as e:
-                logger.debug(
-                    "_fetch_multiple_records_impl: record_id=%r graph DB fetch raised exception=%r",
-                    record_id,
-                    str(e),
-                )
-        else:
-            logger.debug(
-                "_fetch_multiple_records_impl: record_id=%r skipping graph DB (org_id=%r has_graph_provider=%s)",
-                record_id,
-                org_id,
-                graph_provider is not None,
-            )
+            except Exception:
+                pass
 
-        logger.debug(
-            "_fetch_multiple_records_impl: record_id=%r could not be resolved, marking not_available",
-            record_id,
-        )
         not_available_ids.append(record_id)
 
-    logger.debug(
-        "_fetch_multiple_records_impl: done found_count=%d not_available_ids=%s",
-        len(found_records),
-        not_available_ids,
-    )
-
     if not found_records:
-        logger.debug("_fetch_multiple_records_impl: no records found, returning error response")
         return {"ok": False, "error": "None of the requested records were found."}
 
     result: dict[str, Any] = {
@@ -374,14 +226,6 @@ def create_fetch_full_record_tool() -> Callable:
 
         Returns: Complete content of the records or {"ok": false, "message/error": "..."}.
         """
-        logger.debug(
-            "fetch_full_record_tool: entry record_ids=%s reason=%r org_id=%s has_messages=%s has_graph_provider=%s",
-            record_ids,
-            reason,
-            org_id,
-            messages is not None,
-            graph_provider is not None,
-        )
         try:
             result = await _fetch_multiple_records_impl(
                 record_ids=record_ids,
@@ -390,20 +234,11 @@ def create_fetch_full_record_tool() -> Callable:
                 graph_provider=graph_provider,
                 messages=messages,
             )
-            logger.debug(
-                "fetch_full_record_tool: completed ok=%s records_count=%d",
-                result.get("ok"),
-                len(result.get("records", [])),
-            )
             return result
         except Exception as e:
-            logger.debug(
-                "fetch_full_record_tool: unhandled exception error=%r",
-                str(e),
-            )
+            logger.exception("fetch_full_records failed")
             return {"ok": False, "error": f"Failed to fetch records: {str(e)}"}
 
     return fetch_full_record_tool
-
 
 
