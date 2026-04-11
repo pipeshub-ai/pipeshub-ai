@@ -671,8 +671,8 @@ class BlobStorage(Transformer):
 
                         document_id = document.get("_id")
                         if not document_id:
-                            self.logger.error("❌ No document ID %s in placeholder response", document_id)
-                            raise Exception(f"No document ID {document_id} in placeholder response")
+                            self.logger.error("❌ No document ID found in placeholder response")
+                            raise Exception("No document ID found in placeholder response")
 
                         self.logger.debug("📄 Created placeholder with ID: %s", document_id)
 
