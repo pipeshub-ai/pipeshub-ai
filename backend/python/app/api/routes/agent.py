@@ -3207,7 +3207,7 @@ async def get_assistant_agent(
         user = await graph_provider.get_user_by_user_id(user_id=user_id)
         if not user:
             logger.error(f"User not found: {user_id}")
-            return []
+            return {}
         user_key = user.get("id") or user.get("_key")
         connectors = await graph_provider.get_user_apps(
             user_id=user_key,
