@@ -21,6 +21,16 @@ const UserGroupIdValidationSchema = z.object({
   headers: z.object({}),
 });
 
+export const UpdateGroupValidationSchema = z.object({
+  body: z.object({
+    name: z.string().min(1, 'name is required'),
+  }),
+  query: z.object({}),
+  params: UserGroupIdUrlParams,
+  headers: z.object({}),
+});
+
+
 const groupValidationSchema = z.object({
   body: z.object({
     type: z.string().min(1, 'type is required'),
@@ -71,6 +81,14 @@ export function createUserGroupRouter(container: Container) {
     },
   );
 
+  // Must be registered before `/:groupId` or `/health` is matched as groupId "health".
+  router.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   router.get(
     '/:groupId',
     authMiddleware.authenticate,
@@ -97,7 +115,7 @@ export function createUserGroupRouter(container: Container) {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
-    ValidationMiddleware.validate(UserGroupIdValidationSchema),
+    ValidationMiddleware.validate(UpdateGroupValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -238,14 +256,6 @@ export function createUserGroupRouter(container: Container) {
       }
     },
   );
-
-  // Health check endpoint
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-    });
-  });
 
   return router;
 }
