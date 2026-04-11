@@ -312,8 +312,9 @@ class BlobStorage(Transformer):
             parallel_download_duration_ms = (time.time() - parallel_download_start) * 1000
             self.logger.debug("⏱️ Parallel download completed in %.0fms", parallel_download_duration_ms)
         except Exception as e:
-            self.logger.exception("❌ Parallel download failed: %s", str(e))
-            raise e
+            self.logger.exception("❌ Parallel download failed: %s", e)
+            raise
+
 
         # Reassemble chunks in correct order
         reassembly_start = time.time()
