@@ -2597,7 +2597,15 @@ components:
     AppType:
       type: string
       enum: [drive, gmail, onedrive, sharepointOnline, bookstack, confluence, jira, slack, dropbox, outlook, servicenow, web, local]
-      description: Supported application/connector types
+      description: Supported application/connector types (legacy product vocabulary; filter IDs use AppOrKnowledgeBaseId)
+
+    AppOrKnowledgeBaseId:
+      type: string
+      description: |
+        Application instance or knowledge scope identifier accepted by enterprise search validators:
+        a UUID, or a collection-style id in the form <code>knowledgeBase_<orgId></code> (alphanumeric, underscore, hyphen).
+      pattern: '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|knowledgeBase_[a-zA-Z0-9_-]+)$'
+      example: "550e8400-e29b-41d4-a716-446655440000"
 
     Filters:
       type: object
@@ -2605,14 +2613,13 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppType'
-          description: Filter by application types
+            $ref: '#/components/schemas/AppOrKnowledgeBaseId'
+          description: Scope search to specific app instance or collection ids (UUID or knowledgeBase_*)
         kb:
           type: array
           items:
-            type: string
-            format: uuid
-          description: Filter by knowledge base IDs
+            $ref: '#/components/schemas/AppOrKnowledgeBaseId'
+          description: Scope search to specific knowledge-base or collection ids (same format as apps)
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
@@ -2657,20 +2664,36 @@ components:
           $ref: '#/components/schemas/Filters'
         modelKey:
           type: string
+          minLength: 1
           description: |
             Identifier for the AI model configuration to use.
-            Available models depend on organization settings.
+            Available models depend on organization settings. If sent, must be non-empty.
           example: "gpt-4-turbo"
         modelName:
           type: string
-          description: Display name of the AI model
+          minLength: 1
+          description: Display name of the AI model. If sent, must be non-empty.
           example: "GPT-4 Turbo"
         chatMode:
           type: string
+          minLength: 1
           description: |
-            Chat mode affecting response behavior.
-            Different modes optimize for different use cases.
-          example: "balanced"
+            Chat mode affecting response behavior (e.g. quick, analysis, deep_research, creative, precise, standard).
+            Different modes optimize for temperature, max tokens, and system prompt. If sent, must be non-empty.
+          example: "standard"
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Human-readable model label for UI or logging
+        timezone:
+          type: string
+          minLength: 1
+          description: IANA time zone id from the client (e.g. America/New_York); used when building LLM time context
+          example: "America/New_York"
+        currentTime:
+          type: string
+          format: date-time
+          description: Client clock as ISO 8601 datetime; paired with timezone for accurate relative-date answers
 
     AddMessageRequest:
       type: object
@@ -2687,13 +2710,109 @@ components:
           $ref: '#/components/schemas/Filters'
         modelKey:
           type: string
-          description: Override the model for this specific message
+          minLength: 1
+          description: Override the model for this specific message. If sent, must be non-empty.
         modelName:
           type: string
-          description: Display name of the model
+          minLength: 1
+          description: Display name of the model. If sent, must be non-empty.
         chatMode:
           type: string
-          description: Chat mode for this message
+          description: Chat mode for this message (e.g. quick, analysis, deep_research, creative, precise, standard)
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Human-readable model label for UI or logging
+        timezone:
+          type: string
+          minLength: 1
+          description: IANA time zone id from the client; used for LLM time context
+          example: "Europe/London"
+        currentTime:
+          type: string
+          format: date-time
+          description: Client clock as ISO 8601 datetime (RFC 3339); must be a valid datetime string per API validation
+
+    ChatStreamHistoryItem:
+      type: object
+      required:
+        - role
+        - content
+      description: One prior turn for follow-up context (mirrors conversation message roles used by the chat pipeline)
+      properties:
+        role:
+          type: string
+          enum: [user_query, bot_response]
+          description: Maps to user vs assistant when building the LLM message list
+        content:
+          type: string
+          description: Plain text for that turn
+
+    ChatStreamRequest:
+      type: object
+      description: |
+        Body for the Python query service <code>POST /api/v1/chat/stream</code> endpoint (retrieval + LLM with tools, SSE).
+        Aligns with the FastAPI <code>ChatQuery</code> model. The server may override <code>mode</code> for streaming based on the configured LLM provider.
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: User question; may be rewritten when prior turns are present
+        limit:
+          type: integer
+          minimum: 1
+          default: 50
+          description: Maximum retrieval hits passed into ranking (default 50)
+        previousConversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatStreamHistoryItem'
+          default: []
+          description: Prior user/assistant turns for follow-up rewriting and context
+        filters:
+          description: Optional retrieval filter groups (apps/kb ids); the backend may accept additional filter keys
+          allOf:
+            - $ref: '#/components/schemas/Filters'
+        retrievalMode:
+          type: string
+          nullable: true
+          default: HYBRID
+          description: Retrieval strategy (e.g. HYBRID)
+        quickMode:
+          type: boolean
+          nullable: true
+          default: false
+        modelKey:
+          type: string
+          nullable: true
+          description: Organization LLM configuration key (UUID-style id from AI models config)
+        modelName:
+          type: string
+          nullable: true
+          description: Concrete model name within the selected configuration
+        chatMode:
+          type: string
+          nullable: true
+          default: standard
+          description: |
+            Response profile (e.g. quick, analysis, deep_research, creative, precise, standard)—affects temperature, max tokens, and system prompt.
+        mode:
+          type: string
+          nullable: true
+          default: json
+          description: |
+            Client hint for answer formatting; the streaming handler may set this to <code>simple</code> or <code>no_tools</code> depending on provider.
+        timezone:
+          type: string
+          nullable: true
+          description: IANA time zone id for LLM time context (e.g. America/New_York)
+        currentTime:
+          type: string
+          format: date-time
+          nullable: true
+          description: Client clock as ISO 8601 for accurate relative-date answers
 
     Message:
       type: object
@@ -3011,7 +3130,8 @@ components:
         <li>Matching chunks with metadata are returned</li>
         </ol>
         <b>Filtering:</b><br>
-        Use filters to narrow search scope to specific apps or knowledge bases.
+        Use filters to narrow search scope to specific app or knowledge-base ids
+        (UUID or <code>knowledgeBase_<orgId></code> per <code>AppOrKnowledgeBaseId</code>).
       required:
         - query
       properties:
@@ -3032,13 +3152,20 @@ components:
           description: Maximum number of results to return
         modelKey:
           type: string
-          description: AI model to use for embeddings
+          minLength: 1
+          description: AI model to use for embeddings. If sent, must be non-empty.
         modelName:
           type: string
-          description: Display name of the model
+          minLength: 1
+          description: Display name of the model. If sent, must be non-empty.
         chatMode:
           type: string
-          description: Processing mode configuration
+          minLength: 1
+          description: Processing mode configuration. If sent, must be non-empty.
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Human-readable model label for UI or logging. If sent, must be non-empty.
 
     SearchResult:
       type: object
@@ -12647,8 +12774,8 @@ paths:
         <b>Filtering Options:</b><br>
         <ul>
         <li><b>recordIds:</b> Limit search to specific documents</li>
-        <li><b>filters.apps:</b> Search only specific connector apps</li>
-        <li><b>filters.kb:</b> Search only specific knowledge bases</li>
+        <li><b>filters.apps:</b> Scope to app instance or collection ids (UUID or <code>knowledgeBase_<orgId></code>)</li>
+        <li><b>filters.kb:</b> Same id format for knowledge-base scope</li>
         </ul>
         <b>Model Selection:</b><br>
         Use <code>modelKey</code> to select different AI models configured for your organization.
@@ -12751,6 +12878,48 @@ paths:
           description: Unauthorized - Valid bearer token required
         '502':
           description: AI backend service unavailable
+
+  /chat/stream:
+    post:
+      tags:
+        - Conversations
+      summary: Stream retrieval-backed chat (query service)
+      description: |
+        Direct streaming chat against the Python query service: semantic retrieval, optional tools, then LLM output as Server-Sent Events.<br><br>
+        This is the same route the enterprise search layer calls as <code>${aiBackend}/api/v1/chat/stream</code> when not in agent mode.
+        Requires scope <code>conversation:chat</code>.<br><br>
+        Optional query parameter <code>sendUserInfo</code> (default true): when true, user and organization display context may be appended to the LLM user message.
+      operationId: chatStreamQueryService
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: sendUserInfo
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: When true, include user/org display context in the LLM prompt where supported
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatStreamRequest'
+      responses:
+        '200':
+          description: |
+            SSE stream of status, token chunks, tool activity, and completion events.
+            Retrieval or LLM failures that occur after the stream has started are typically emitted as <code>error</code> events in the body rather than non-200 HTTP statuses.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SSEEvent'
+        '400':
+          description: Invalid JSON body or request parameters failed validation before streaming starts
+        '401':
+          description: Unauthorized
 
   /conversations:
     get:
@@ -13339,6 +13508,10 @@ paths:
                   type: string
                 chatMode:
                   type: string
+                modelFriendlyName:
+                  type: string
+                  minLength: 1
+                  description: Human-readable model label for UI or logging
       responses:
         '200':
           description: Response regenerated successfully
@@ -14878,8 +15051,15 @@ paths:
                   $ref: '#/components/schemas/Filters'
                 modelKey:
                   type: string
+                modelName:
+                  type: string
+                  minLength: 1
                 chatMode:
                   type: string
+                modelFriendlyName:
+                  type: string
+                  minLength: 1
+                  description: Human-readable model label for UI or logging
       responses:
         '200':
           description: Response regenerated

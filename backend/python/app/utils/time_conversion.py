@@ -10,7 +10,7 @@ _LLM_TIME_CONTEXT_SUBLINE = (
     "Use this when the user asks about the current date, time, day of week, "
     "or time-relative wording (today, tomorrow, this week, etc.). "
     "In replies to the user, use **Time zone** (when shown) for calendar dates and "
-    "timezone-aware times (am/pm). For tools, keep each API's datetime format as required._"
+    "timezone-aware times (am/pm). For tools, keep each API's datetime format as required."
 )
 
 
@@ -54,7 +54,7 @@ def format_user_timezone_prompt_line(
     try:
         tz = ZoneInfo(name)
     except (ZoneInfoNotFoundError, OSError):
-        return f"**Time zone**: {time_zone_name}"
+        return f"**Time zone**: {name}"
 
     if moment is None:
         now = datetime.now(tz)
