@@ -1,6 +1,3 @@
-# Kaia Dashboard Template
-
-This template provides a solid foundation for creating Next.js dashboard applications with authentication, a clean layout structure, and established patterns for API integration.
 
 ## Features
 
