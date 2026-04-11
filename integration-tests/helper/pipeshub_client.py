@@ -7,6 +7,8 @@ Supports:
   - Polling helpers for sync completion
 """
 
+import base64
+import json
 import logging
 import os
 import time
@@ -46,11 +48,61 @@ class PipeshubClient:
         self.base_url = (base_url or os.getenv("PIPESHUB_BASE_URL") or "").rstrip("/")
         self.timeout_seconds = timeout_seconds
         self._access_token: Optional[str] = None
+        self._token_claims: Optional[Dict[str, Any]] = None
 
         if not self.base_url:
             raise PipeshubClientError(
                 "PIPESHUB_BASE_URL must be set in integration-tests/.env to talk to test.pipeshub.com"
             )
+
+    # --------------------------------------------------------------------- #
+    # JWT claim helpers — mirrors the backend's extractOrgId/extractUserId
+    # which read orgId/userId straight off the request's token payload.
+    # --------------------------------------------------------------------- #
+    def _decode_jwt_claims(self, token: str) -> Dict[str, Any]:
+        """Decode the payload
+        """
+        try:
+            _, payload_b64, _ = token.split(".", 2)
+        except ValueError as exc:
+            raise PipeshubClientError("Access token is not a valid JWT") from exc
+        # base64url with missing padding is legal in JWTs.
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        try:
+            payload_bytes = base64.urlsafe_b64decode(padded)
+            return json.loads(payload_bytes)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise PipeshubClientError("Failed to decode JWT payload") from exc
+
+    def _claims(self) -> Dict[str, Any]:
+        """Return (and memoise) the decoded claims of the current access token."""
+        self._ensure_access_token()
+        if self._token_claims is None:
+            assert self._access_token is not None  # for type-checkers
+            self._token_claims = self._decode_jwt_claims(self._access_token)
+        return self._token_claims
+
+    @property
+    def org_id(self) -> str:
+        """orgId claim from the authenticated access token.
+
+        Matches the backend's ``extractOrgId`` which reads ``orgId`` off the
+        request's decoded token payload.
+        """
+        claims = self._claims()
+        org_id = claims.get("orgId")
+        if not org_id:
+            raise PipeshubClientError(
+                "orgId claim not found in access token payload"
+            )
+        return str(org_id)
+
+    @property
+    def user_id(self) -> Optional[str]:
+        """userId claim from the authenticated access token, if present."""
+        claims = self._claims()
+        user_id = claims.get("userId")
+        return str(user_id) if user_id else None
 
     # --------------------------------------------------------------------- #
     # Internal helpers
