@@ -32,6 +32,7 @@ If the user's underlying intent is to get real information, find something, or u
 
 {tool_guidance}
 
+{time_context}
 ## Response Format
 Return ONLY valid JSON (no other text):
 
@@ -144,7 +145,6 @@ Within each connector, issue **multiple parallel calls with different query phra
 - Your response is the final analysis. Format it as a well-structured markdown document with tables, lists, and all items presented comprehensively.
 - If the tool returns 50 items, your response must contain all 50 items. Never say "and X more items not shown."
 
-## Current Time
 {time_context}
 """
 
@@ -167,7 +167,6 @@ MINI_ORCHESTRATOR_PROMPT = """{agent_instructions}You are executing a multi-step
 ## Context
 {task_context}
 
-## Current Time
 {time_context}
 
 You will execute each step sequentially. For the CURRENT step:
@@ -288,7 +287,8 @@ DOMAIN_CONSOLIDATION_PROMPT = """You are merging batch summaries into a single c
 
 ## Domain: {domain}
 ## Task: {task_description}
-## Time Context: {time_context}
+
+{time_context}
 
 ## Batch Summaries
 {batch_summaries}

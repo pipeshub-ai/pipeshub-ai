@@ -1231,8 +1231,8 @@ class TestOrchestratorNodeAdditional:
         assert "john@example.com" in last_msg.content
 
     @pytest.mark.asyncio
-    async def test_time_context_appended(self):
-        """When time context is available, it's appended to query (line 137)."""
+    async def test_time_context_in_system_prompt(self):
+        """When time context is available, it is included in the system prompt."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
         mock_response = MagicMock()
@@ -1257,9 +1257,13 @@ class TestOrchestratorNodeAdditional:
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
             result = await orchestrator_node(state, config, writer)
 
-        last_msg = llm.ainvoke.call_args[0][0][-1]
-        assert "2026-03-24" in last_msg.content
-        assert "US/Pacific" in last_msg.content
+        messages = llm.ainvoke.call_args[0][0]
+        system_content = messages[0].content
+        assert "2026-03-24" in system_content
+        assert "US/Pacific" in system_content
+        last_msg = messages[-1]
+        assert "2026-03-24" not in last_msg.content
+        assert "US/Pacific" not in last_msg.content
 
     @pytest.mark.asyncio
     async def test_reasoning_streamed_when_present(self):
