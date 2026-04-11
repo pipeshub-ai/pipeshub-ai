@@ -5,6 +5,7 @@ Tests cover:
 - Dispatching to qdrant async (default)
 - Dispatching to qdrant sync
 - Case-insensitive service type matching
+- Dispatching to opensearch
 - Unsupported service type raises ValueError
 """
 
@@ -15,7 +16,6 @@ from app.services.vector_db.vector_db_factory import VectorDBFactory
 
 
 class TestVectorDBFactoryCreateVectorDbService:
-    """Tests for VectorDBFactory.create_vector_db_service."""
 
     @pytest.mark.asyncio
     @patch(
@@ -103,6 +103,39 @@ class TestVectorDBFactoryCreateVectorDbService:
         assert result is mock_service
 
     @pytest.mark.asyncio
+    @patch(
+        "app.services.vector_db.opensearch.opensearch.OpenSearchService.create",
+        new_callable=AsyncMock,
+    )
+    async def test_opensearch_dispatching(self, mock_create):
+        mock_service = MagicMock()
+        mock_create.return_value = mock_service
+        config = MagicMock()
+
+        result = await VectorDBFactory.create_vector_db_service(
+            service_type="opensearch",
+            config=config,
+        )
+        assert result is mock_service
+        mock_create.assert_awaited_once_with(config, is_async=True)
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.services.vector_db.opensearch.opensearch.OpenSearchService.create",
+        new_callable=AsyncMock,
+    )
+    async def test_opensearch_case_insensitive(self, mock_create):
+        mock_service = MagicMock()
+        mock_create.return_value = mock_service
+        config = MagicMock()
+
+        result = await VectorDBFactory.create_vector_db_service(
+            service_type="OpenSearch",
+            config=config,
+        )
+        assert result is mock_service
+
+    @pytest.mark.asyncio
     async def test_unsupported_service_type_raises(self):
         config = MagicMock()
         with pytest.raises(ValueError, match="Unsupported vector database service type"):
@@ -122,7 +155,6 @@ class TestVectorDBFactoryCreateVectorDbService:
 
 
 class TestVectorDBFactoryCreateQdrantServiceSync:
-    """Tests for VectorDBFactory.create_qdrant_service_sync."""
 
     @pytest.mark.asyncio
     @patch(
@@ -140,7 +172,6 @@ class TestVectorDBFactoryCreateQdrantServiceSync:
 
 
 class TestVectorDBFactoryCreateQdrantServiceAsync:
-    """Tests for VectorDBFactory.create_qdrant_service_async."""
 
     @pytest.mark.asyncio
     @patch(

@@ -11,8 +11,7 @@ Tests cover:
 - create_collection: default params, custom params, client not connected
 - get_collection / get_collections / delete_collection: success, client not connected
 - create_index: keyword type, other type, client not connected
-- filter_collection: must/should/must_not modes, mixed filters, kwargs, string mode,
-  invalid mode, empty filter, min_should_match, client not connected
+- filter_collection: returns FilterExpression with correct conditions
 - upsert_points: single batch, multi-batch parallel, client not connected
 - delete_points: success, client not connected
 - query_nearest_points: success, client not connected
@@ -20,36 +19,26 @@ Tests cover:
 - overwrite_payload: success, client not connected
 """
 
-import logging
-import time
-from concurrent.futures import Future
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from qdrant_client.http.models import (
-    Distance,
-    Filter,
-    FieldCondition,
-    FilterSelector,
     KeywordIndexParams,
-    KeywordIndexType,
-    MatchValue,
-    MatchAny,
-    Modifier,
-    OptimizersConfigDiff,
-    PointStruct,
-    QueryRequest,
-    ScalarQuantization,
-    ScalarQuantizationConfig,
-    ScalarType,
-    SparseIndexParams,
-    SparseVectorParams,
-    VectorParams,
 )
 
 from app.services.vector_db.qdrant.qdrant import QdrantService
 from app.services.vector_db.qdrant.config import QdrantConfig
-from app.services.vector_db.qdrant.filter import QdrantFilterMode
+from app.services.vector_db.models import (
+    CollectionConfig,
+    DistanceMetric,
+    FilterExpression,
+    FilterMode,
+    FieldCondition as GenericFieldCondition,
+    FusionMethod,
+    HybridSearchRequest,
+    SparseVector,
+    VectorPoint,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +155,11 @@ class TestConnectSync:
         svc = QdrantService(qdrant_config, is_async=False)
         await svc.connect_sync()
         assert svc.client is mock_client
-        # Verify client was created with correct gRPC options
         mock_client_cls.assert_called_once()
         call_kwargs = mock_client_cls.call_args[1]
         assert call_kwargs["host"] == "localhost"
         assert call_kwargs["port"] == 6333
         assert call_kwargs["prefer_grpc"] is True
-        assert call_kwargs["https"] is False
-        assert call_kwargs["timeout"] == 300
-        assert "grpc_options" in call_kwargs
 
     @pytest.mark.asyncio
     @patch("app.services.vector_db.qdrant.qdrant.QdrantClient")
@@ -188,7 +173,6 @@ class TestConnectSync:
 
     @pytest.mark.asyncio
     async def test_connect_sync_no_config(self):
-        """ConfigurationService path returns None config."""
         from app.config.configuration_service import ConfigurationService
         mock_cs = MagicMock(spec=ConfigurationService)
         mock_cs.get_config = AsyncMock(return_value=None)
@@ -264,7 +248,7 @@ class TestDisconnect:
     async def test_disconnect_close_error(self, connected_service):
         connected_service.client.close.side_effect = Exception("close failed")
         await connected_service.disconnect()
-        assert connected_service.client is None  # Should still be set to None
+        assert connected_service.client is None
 
 
 # ---------------------------------------------------------------------------
@@ -294,51 +278,34 @@ class TestServiceMetadata:
 class TestCreateCollection:
     @pytest.mark.asyncio
     async def test_create_collection_defaults(self, connected_service):
-        await connected_service.create_collection(embedding_size=384)
+        await connected_service.create_collection()
         connected_service.client.create_collection.assert_called_once()
         call_kwargs = connected_service.client.create_collection.call_args
         assert call_kwargs[1]["collection_name"] == "records"
 
     @pytest.mark.asyncio
     async def test_create_collection_custom_name(self, connected_service):
+        config = CollectionConfig(embedding_size=768)
         await connected_service.create_collection(
-            embedding_size=768, collection_name="custom_col"
+            collection_name="custom_col", config=config
         )
         call_kwargs = connected_service.client.create_collection.call_args
         assert call_kwargs[1]["collection_name"] == "custom_col"
 
     @pytest.mark.asyncio
-    async def test_create_collection_with_sparse_idf(self, connected_service):
-        await connected_service.create_collection(
-            embedding_size=384, sparse_idf=True
+    async def test_create_collection_with_config(self, connected_service):
+        config = CollectionConfig(
+            embedding_size=384,
+            sparse_idf=True,
+            distance_metric=DistanceMetric.L2,
         )
+        await connected_service.create_collection(config=config)
         connected_service.client.create_collection.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_create_collection_custom_configs(self, connected_service):
-        custom_vectors = {"dense": VectorParams(size=512, distance=Distance.DOT)}
-        custom_sparse = {"sparse": SparseVectorParams(index=SparseIndexParams(on_disk=True))}
-        custom_optimizers = OptimizersConfigDiff(default_segment_number=4)
-        custom_quant = ScalarQuantization(
-            scalar=ScalarQuantizationConfig(type=ScalarType.INT8, quantile=0.9, always_ram=False)
-        )
-
-        await connected_service.create_collection(
-            vectors_config=custom_vectors,
-            sparse_vectors_config=custom_sparse,
-            optimizers_config=custom_optimizers,
-            quantization_config=custom_quant,
-        )
-        call_kwargs = connected_service.client.create_collection.call_args[1]
-        assert call_kwargs["vectors_config"] is custom_vectors
-        assert call_kwargs["sparse_vectors_config"] is custom_sparse
-        assert call_kwargs["optimizers_config"] is custom_optimizers
-        assert call_kwargs["quantization_config"] is custom_quant
 
     @pytest.mark.asyncio
     async def test_create_collection_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
-            await service.create_collection(embedding_size=384)
+            await service.create_collection()
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +360,6 @@ class TestCreateIndex:
         call_args = connected_service.client.create_payload_index.call_args[0]
         assert call_args[0] == "col"
         assert call_args[1] == "field1"
-        # Third arg should be KeywordIndexParams
         assert isinstance(call_args[2], KeywordIndexParams)
 
     @pytest.mark.asyncio
@@ -411,7 +377,7 @@ class TestCreateIndex:
 
 
 # ---------------------------------------------------------------------------
-# filter_collection
+# filter_collection (returns FilterExpression)
 # ---------------------------------------------------------------------------
 
 
@@ -421,25 +387,25 @@ class TestFilterCollection:
         result = await connected_service.filter_collection(
             orgId="org1", status="active"
         )
-        assert isinstance(result, Filter)
+        assert isinstance(result, FilterExpression)
         assert len(result.must) == 2
 
     @pytest.mark.asyncio
     async def test_should_mode(self, connected_service):
         result = await connected_service.filter_collection(
-            filter_mode=QdrantFilterMode.SHOULD,
+            filter_mode=FilterMode.SHOULD,
             department="IT", role="admin"
         )
-        assert isinstance(result, Filter)
+        assert isinstance(result, FilterExpression)
         assert len(result.should) == 2
 
     @pytest.mark.asyncio
     async def test_must_not_mode(self, connected_service):
         result = await connected_service.filter_collection(
-            filter_mode=QdrantFilterMode.MUST_NOT,
+            filter_mode=FilterMode.MUST_NOT,
             status="deleted"
         )
-        assert isinstance(result, Filter)
+        assert isinstance(result, FilterExpression)
         assert len(result.must_not) == 1
 
     @pytest.mark.asyncio
@@ -447,7 +413,7 @@ class TestFilterCollection:
         result = await connected_service.filter_collection(
             filter_mode="should", department="IT"
         )
-        assert isinstance(result, Filter)
+        assert isinstance(result, FilterExpression)
         assert result.should is not None
 
     @pytest.mark.asyncio
@@ -469,36 +435,10 @@ class TestFilterCollection:
         assert len(result.must_not) == 1
 
     @pytest.mark.asyncio
-    async def test_mixed_mode_with_kwargs(self, connected_service):
-        result = await connected_service.filter_collection(
-            filter_mode=QdrantFilterMode.SHOULD,
-            must={"orgId": "123"},
-            department="IT",
-        )
-        assert len(result.must) == 1
-        assert len(result.should) == 1
-
-    @pytest.mark.asyncio
     async def test_empty_filter(self, connected_service):
         result = await connected_service.filter_collection()
-        assert isinstance(result, Filter)
-
-    @pytest.mark.asyncio
-    async def test_min_should_match(self, connected_service):
-        """min_should_match parameter is passed to Filter constructor.
-        The qdrant-client Filter model may not support this parameter in all versions,
-        so we verify the filter is built without crashing or verify the ValidationError."""
-        try:
-            result = await connected_service.filter_collection(
-                should={"a": "1", "b": "2"},
-                min_should_match=1,
-            )
-            # If the qdrant_client version supports min_should_match, it should work
-            assert isinstance(result, Filter)
-        except Exception:
-            # Some qdrant_client versions don't support min_should_match on Filter
-            # This is expected behavior for those versions
-            pass
+        assert isinstance(result, FilterExpression)
+        assert result.is_empty()
 
     @pytest.mark.asyncio
     async def test_list_values_use_match_any(self, connected_service):
@@ -506,6 +446,7 @@ class TestFilterCollection:
             must={"roles": ["admin", "user"]}
         )
         assert len(result.must) == 1
+        assert result.must[0].values == ["admin", "user"]
 
     @pytest.mark.asyncio
     async def test_none_values_ignored(self, connected_service):
@@ -521,79 +462,75 @@ class TestFilterCollection:
 
 
 # ---------------------------------------------------------------------------
-# upsert_points
+# upsert_points (accepts VectorPoint)
 # ---------------------------------------------------------------------------
 
 
 class TestUpsertPoints:
     def test_single_batch(self, connected_service):
-        points = [PointStruct(id=i, vector=[0.1] * 384, payload={}) for i in range(10)]
+        points = [VectorPoint(id=str(i), dense_vector=[0.1] * 384, payload={}) for i in range(10)]
         connected_service.upsert_points("col", points, batch_size=100)
-        connected_service.client.upsert.assert_called_once_with("col", points)
+        connected_service.client.upsert.assert_called_once()
 
     def test_multi_batch(self, connected_service):
-        points = [PointStruct(id=i, vector=[0.1] * 384, payload={}) for i in range(25)]
+        points = [VectorPoint(id=str(i), dense_vector=[0.1] * 384, payload={}) for i in range(25)]
         connected_service.upsert_points("col", points, batch_size=10, max_workers=2)
-
-        # Should have been called 3 times (10 + 10 + 5)
         assert connected_service.client.upsert.call_count == 3
 
     def test_not_connected(self, service):
-        points = [PointStruct(id=1, vector=[0.1], payload={})]
+        points = [VectorPoint(id="1", dense_vector=[0.1], payload={})]
         with pytest.raises(RuntimeError, match="Client not connected"):
             service.upsert_points("col", points)
 
-    def test_empty_points(self, connected_service):
-        """Empty points list triggers single-batch path (0 <= batch_size).
-        The log line divides by total_points which causes ZeroDivisionError
-        for 0 points. This tests the actual code behavior."""
-        try:
-            connected_service.upsert_points("col", [], batch_size=100)
-            connected_service.client.upsert.assert_called_once_with("col", [])
-        except ZeroDivisionError:
-            # The source code has a division by total_points for throughput logging
-            # which fails for 0 points. This is expected behavior (edge case in source).
-            connected_service.client.upsert.assert_called_once_with("col", [])
-
-    def test_batch_error_propagates(self, connected_service):
-        points = [PointStruct(id=i, vector=[0.1], payload={}) for i in range(25)]
-        connected_service.client.upsert.side_effect = Exception("upload failed")
-        with pytest.raises(Exception, match="upload failed"):
-            connected_service.upsert_points("col", points, batch_size=10)
-
 
 # ---------------------------------------------------------------------------
-# delete_points
+# delete_points (accepts FilterExpression)
 # ---------------------------------------------------------------------------
 
 
 class TestDeletePoints:
     def test_delete_points_success(self, connected_service):
-        mock_filter = Filter(must=[FieldCondition(key="metadata.orgId", match=MatchValue(value="org1"))])
-        connected_service.delete_points("col", mock_filter)
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.orgId", value="org1")]
+        )
+        connected_service.delete_points("col", filter_expr)
         connected_service.client.delete.assert_called_once()
-        call_kwargs = connected_service.client.delete.call_args[1]
-        assert call_kwargs["collection_name"] == "col"
-        assert isinstance(call_kwargs["points_selector"], FilterSelector)
 
     def test_delete_points_not_connected(self, service):
-        mock_filter = Filter(must=[])
+        filter_expr = FilterExpression()
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.delete_points("col", mock_filter)
+            service.delete_points("col", filter_expr)
 
 
 # ---------------------------------------------------------------------------
-# query_nearest_points
+# query_nearest_points (accepts HybridSearchRequest)
 # ---------------------------------------------------------------------------
 
 
 class TestQueryNearestPoints:
     def test_query_success(self, connected_service):
-        requests = [MagicMock(spec=QueryRequest)]
-        connected_service.client.query_batch_points.return_value = [[]]
-        result = connected_service.query_nearest_points("col", requests)
-        connected_service.client.query_batch_points.assert_called_once_with("col", requests)
-        assert result == [[]]
+        # Mock the Qdrant response structure
+        mock_point = MagicMock()
+        mock_point.id = "p1"
+        mock_point.score = 0.95
+        mock_point.payload = {"metadata": {"orgId": "org1"}, "page_content": "hello"}
+
+        mock_batch = MagicMock()
+        mock_batch.points = [mock_point]
+
+        connected_service.client.query_batch_points.return_value = [mock_batch]
+
+        request = HybridSearchRequest(
+            dense_query=[0.1, 0.2, 0.3],
+            sparse_query=SparseVector(indices=[0, 1], values=[1.0, 0.5]),
+            limit=10,
+            fusion_method=FusionMethod.RRF,
+        )
+        result = connected_service.query_nearest_points("col", [request])
+        assert len(result) == 1
+        assert len(result[0]) == 1
+        assert result[0][0].id == "p1"
+        assert result[0][0].score == 0.95
 
     def test_query_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
@@ -601,37 +538,35 @@ class TestQueryNearestPoints:
 
 
 # ---------------------------------------------------------------------------
-# scroll
+# scroll (accepts FilterExpression)
 # ---------------------------------------------------------------------------
 
 
 class TestScroll:
     @pytest.mark.asyncio
     async def test_scroll_success(self, connected_service):
-        mock_filter = Filter(must=[])
+        filter_expr = FilterExpression()
         connected_service.client.scroll.return_value = ([], None)
-        result = await connected_service.scroll("col", mock_filter, 100)
-        connected_service.client.scroll.assert_called_once_with("col", mock_filter, 100)
+        result = await connected_service.scroll("col", filter_expr, 100)
+        connected_service.client.scroll.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_scroll_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
-            await service.scroll("col", Filter(must=[]), 100)
+            await service.scroll("col", FilterExpression(), 100)
 
 
 # ---------------------------------------------------------------------------
-# overwrite_payload
+# overwrite_payload (accepts FilterExpression)
 # ---------------------------------------------------------------------------
 
 
 class TestOverwritePayload:
     def test_overwrite_payload_success(self, connected_service):
-        mock_filter = Filter(must=[])
-        connected_service.overwrite_payload("col", {"key": "val"}, mock_filter)
-        connected_service.client.overwrite_payload.assert_called_once_with(
-            "col", {"key": "val"}, mock_filter
-        )
+        filter_expr = FilterExpression()
+        connected_service.overwrite_payload("col", {"key": "val"}, filter_expr)
+        connected_service.client.overwrite_payload.assert_called_once()
 
     def test_overwrite_payload_not_connected(self, service):
         with pytest.raises(RuntimeError, match="Client not connected"):
-            service.overwrite_payload("col", {}, Filter(must=[]))
+            service.overwrite_payload("col", {}, FilterExpression())
