@@ -21,7 +21,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vis.gl/react-google-maps": "^1.6.1",
     "@xyflow/react": "^12.10.2",
-    "axios": "^1.13.2",
+    "axios": "^1.15.0",
     "docx-preview": "^0.3.7",
     "dompurify": "^3.3.3",
     "i18next": "^25.8.0",
