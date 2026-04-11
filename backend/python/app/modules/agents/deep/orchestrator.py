@@ -32,6 +32,7 @@ from app.modules.agents.deep.tool_router import (
     group_tools_by_domain,
 )
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -98,6 +99,7 @@ async def orchestrator_node(
         agent_instructions = _build_agent_instructions(state)
 
         capability_summary = build_capability_summary(state)
+        time_context = _build_time_context(state)
 
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(
             tool_domains=domain_desc,
@@ -105,6 +107,7 @@ async def orchestrator_node(
             tool_guidance=tool_guidance,
             agent_instructions=agent_instructions,
             capability_summary=capability_summary,
+            time_context=f"{time_context}\n\n" if time_context else "",
         )
 
         # Build messages
@@ -135,10 +138,6 @@ async def orchestrator_node(
         user_ctx = _build_user_context(state)
         if user_ctx:
             user_content += f"\n\n{user_ctx}"
-
-        time_ctx = _build_time_context(state)
-        if time_ctx:
-            user_content += f"\n\n{time_ctx}"
 
         messages.append(HumanMessage(content=user_content))
 
@@ -563,14 +562,10 @@ def _build_agent_instructions(state: DeepAgentState) -> str:
 
 def _build_time_context(state: DeepAgentState) -> str:
     """Build time context string."""
-    parts = []
-    current_time = state.get("current_time")
-    timezone = state.get("timezone")
-    if current_time:
-        parts.append(f"Current time: {current_time}")
-    if timezone:
-        parts.append(f"Timezone: {timezone}")
-    return "\n".join(parts) if parts else ""
+    return build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
 
 
 def _build_user_context(state: DeepAgentState) -> str:
