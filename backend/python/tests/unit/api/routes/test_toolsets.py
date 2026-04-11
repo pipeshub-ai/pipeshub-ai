@@ -2,32 +2,31 @@
 import json
 import logging
 import uuid
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
-
 
 # ---------------------------------------------------------------------------
 # Custom Exceptions
 # ---------------------------------------------------------------------------
 
 class TestToolsetError:
-    def test_base_error(self):
+    def test_base_error(self) -> None:
         from app.api.routes.toolsets import ToolsetError
         e = ToolsetError("something broke", 500)
         assert e.status_code == 500
         assert e.detail == "something broke"
 
-    def test_default_status_code(self):
+    def test_default_status_code(self) -> None:
         from app.api.routes.toolsets import ToolsetError
         e = ToolsetError("oops")
         assert e.status_code == 500
 
 
 class TestToolsetNotFoundError:
-    def test_message_and_status(self):
+    def test_message_and_status(self) -> None:
         from app.api.routes.toolsets import ToolsetNotFoundError
         e = ToolsetNotFoundError("jira")
         assert e.status_code == 404
@@ -35,7 +34,7 @@ class TestToolsetNotFoundError:
 
 
 class TestToolsetConfigNotFoundError:
-    def test_message_and_status(self):
+    def test_message_and_status(self) -> None:
         from app.api.routes.toolsets import ToolsetConfigNotFoundError
         e = ToolsetConfigNotFoundError("slack")
         assert e.status_code == 404
@@ -44,7 +43,7 @@ class TestToolsetConfigNotFoundError:
 
 
 class TestToolsetAlreadyExistsError:
-    def test_message_and_status(self):
+    def test_message_and_status(self) -> None:
         from app.api.routes.toolsets import ToolsetAlreadyExistsError
         e = ToolsetAlreadyExistsError("jira")
         assert e.status_code == 409
@@ -52,28 +51,28 @@ class TestToolsetAlreadyExistsError:
 
 
 class TestToolsetInUseError:
-    def test_single_agent(self):
+    def test_single_agent(self) -> None:
         from app.api.routes.toolsets import ToolsetInUseError
         e = ToolsetInUseError("jira", ["Agent A"])
         assert e.status_code == 409
         assert "Agent A" in e.detail
         assert "Cannot delete" in e.detail
 
-    def test_multiple_agents(self):
+    def test_multiple_agents(self) -> None:
         from app.api.routes.toolsets import ToolsetInUseError
         e = ToolsetInUseError("jira", ["Agent A", "Agent B"])
         assert e.status_code == 409
         assert "2 agents" in e.detail
 
-    def test_many_agents_truncated(self):
-        from app.api.routes.toolsets import ToolsetInUseError, MAX_AGENT_NAMES_DISPLAY
+    def test_many_agents_truncated(self) -> None:
+        from app.api.routes.toolsets import MAX_AGENT_NAMES_DISPLAY, ToolsetInUseError
         agents = [f"Agent {i}" for i in range(MAX_AGENT_NAMES_DISPLAY + 3)]
         e = ToolsetInUseError("jira", agents)
         assert "and 3 more" in e.detail
 
 
 class TestInvalidAuthConfigError:
-    def test_message_and_status(self):
+    def test_message_and_status(self) -> None:
         from app.api.routes.toolsets import InvalidAuthConfigError
         e = InvalidAuthConfigError("missing client ID")
         assert e.status_code == 400
@@ -81,7 +80,7 @@ class TestInvalidAuthConfigError:
 
 
 class TestOAuthConfigError:
-    def test_message_and_status(self):
+    def test_message_and_status(self) -> None:
         from app.api.routes.toolsets import OAuthConfigError
         e = OAuthConfigError("token URL invalid")
         assert e.status_code == 400
@@ -93,108 +92,108 @@ class TestOAuthConfigError:
 # ---------------------------------------------------------------------------
 
 class TestValidateNonEmptyString:
-    def test_valid_string(self):
+    def test_valid_string(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         result = _validate_non_empty_string("  hello  ", "name")
         assert result == "hello"
 
-    def test_empty_string_raises(self):
+    def test_empty_string_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException) as exc:
             _validate_non_empty_string("", "field")
         assert exc.value.status_code == 400
 
-    def test_whitespace_string_raises(self):
+    def test_whitespace_string_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string("   ", "field")
 
-    def test_none_raises(self):
+    def test_none_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string(None, "field")
 
-    def test_non_string_raises(self):
+    def test_non_string_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string(123, "field")
 
-    def test_false_value_raises(self):
+    def test_false_value_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string(0, "field")
 
 
 class TestValidateList:
-    def test_valid_list(self):
+    def test_valid_list(self) -> None:
         from app.api.routes.toolsets import _validate_list
         result = _validate_list([1, 2, 3], "items")
         assert result == [1, 2, 3]
 
-    def test_empty_list_allowed(self):
+    def test_empty_list_allowed(self) -> None:
         from app.api.routes.toolsets import _validate_list
         result = _validate_list([], "items")
         assert result == []
 
-    def test_none_returns_empty_when_allow_empty(self):
+    def test_none_returns_empty_when_allow_empty(self) -> None:
         from app.api.routes.toolsets import _validate_list
         result = _validate_list(None, "items", allow_empty=True)
         assert result == []
 
-    def test_none_raises_when_not_allow_empty(self):
+    def test_none_raises_when_not_allow_empty(self) -> None:
         from app.api.routes.toolsets import _validate_list
         with pytest.raises(HTTPException) as exc:
             _validate_list(None, "items", allow_empty=False)
         assert exc.value.status_code == 400
         assert "required" in exc.value.detail
 
-    def test_non_list_raises(self):
+    def test_non_list_raises(self) -> None:
         from app.api.routes.toolsets import _validate_list
         with pytest.raises(HTTPException) as exc:
             _validate_list("not a list", "items")
         assert "must be a list" in exc.value.detail
 
-    def test_dict_raises(self):
+    def test_dict_raises(self) -> None:
         from app.api.routes.toolsets import _validate_list
         with pytest.raises(HTTPException):
             _validate_list({"a": 1}, "items")
 
-    def test_int_raises(self):
+    def test_int_raises(self) -> None:
         from app.api.routes.toolsets import _validate_list
         with pytest.raises(HTTPException):
             _validate_list(42, "items")
 
 
 class TestValidateDict:
-    def test_valid_dict(self):
+    def test_valid_dict(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         result = _validate_dict({"key": "val"}, "config")
         assert result == {"key": "val"}
 
-    def test_empty_dict_allowed(self):
+    def test_empty_dict_allowed(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         result = _validate_dict({}, "config")
         assert result == {}
 
-    def test_none_returns_empty_when_allow_empty(self):
+    def test_none_returns_empty_when_allow_empty(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         result = _validate_dict(None, "config", allow_empty=True)
         assert result == {}
 
-    def test_none_raises_when_not_allow_empty(self):
+    def test_none_raises_when_not_allow_empty(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         with pytest.raises(HTTPException) as exc:
             _validate_dict(None, "config", allow_empty=False)
         assert exc.value.status_code == 400
         assert "required" in exc.value.detail
 
-    def test_non_dict_raises(self):
+    def test_non_dict_raises(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         with pytest.raises(HTTPException) as exc:
             _validate_dict([1, 2], "config")
         assert "must be an object" in exc.value.detail
 
-    def test_string_raises(self):
+    def test_string_raises(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         with pytest.raises(HTTPException):
             _validate_dict("not a dict", "config")
@@ -205,19 +204,19 @@ class TestValidateDict:
 # ---------------------------------------------------------------------------
 
 class TestHasOauthCredentials:
-    def test_empty_dict(self):
+    def test_empty_dict(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials({}) is False
 
-    def test_none(self):
+    def test_none(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials(None) is False
 
-    def test_not_a_dict(self):
+    def test_not_a_dict(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials("string") is False
 
-    def test_only_infrastructure_fields(self):
+    def test_only_infrastructure_fields(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {
             "type": "OAUTH",
@@ -228,22 +227,22 @@ class TestHasOauthCredentials:
         }
         assert _has_oauth_credentials(config) is False
 
-    def test_has_client_id(self):
+    def test_has_client_id(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"clientId": "abc123"}
         assert _has_oauth_credentials(config) is True
 
-    def test_has_client_secret(self):
+    def test_has_client_secret(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"clientSecret": "secret"}
         assert _has_oauth_credentials(config) is True
 
-    def test_has_tenant_id(self):
+    def test_has_tenant_id(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"tenantId": "tenant-abc"}
         assert _has_oauth_credentials(config) is True
 
-    def test_empty_string_values_ignored(self):
+    def test_empty_string_values_ignored(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         # Only truly empty strings are ignored by the string branch,
         # but whitespace-only strings fall through to the elif and are
@@ -251,33 +250,33 @@ class TestHasOauthCredentials:
         config = {"clientId": "", "clientSecret": ""}
         assert _has_oauth_credentials(config) is False
 
-    def test_whitespace_only_string_is_truthy(self):
+    def test_whitespace_only_string_is_truthy(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         # "  " is not in (None, "", [], {}), so the elif branch returns True
         config = {"clientId": "  "}
         assert _has_oauth_credentials(config) is True
 
-    def test_none_values_ignored(self):
+    def test_none_values_ignored(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"clientId": None, "extra": None}
         assert _has_oauth_credentials(config) is False
 
-    def test_empty_list_and_dict_ignored(self):
+    def test_empty_list_and_dict_ignored(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"field1": [], "field2": {}}
         assert _has_oauth_credentials(config) is False
 
-    def test_non_string_truthy_value(self):
+    def test_non_string_truthy_value(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"customField": 42}
         assert _has_oauth_credentials(config) is True
 
-    def test_boolean_true_value(self):
+    def test_boolean_true_value(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {"isEnabled": True}
         assert _has_oauth_credentials(config) is True
 
-    def test_mixed_infra_and_credentials(self):
+    def test_mixed_infra_and_credentials(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         config = {
             "type": "OAUTH",
@@ -293,19 +292,19 @@ class TestHasOauthCredentials:
 
 class TestGetOauthCredentialsForToolset:
     @pytest.mark.asyncio
-    async def test_empty_config_raises(self):
+    async def test_empty_config_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         with pytest.raises(ValueError, match="required"):
             await get_oauth_credentials_for_toolset({}, AsyncMock())
 
     @pytest.mark.asyncio
-    async def test_none_config_raises(self):
+    async def test_none_config_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         with pytest.raises(ValueError, match="required"):
             await get_oauth_credentials_for_toolset(None, AsyncMock())
 
     @pytest.mark.asyncio
-    async def test_legacy_auth_credentials_returned(self):
+    async def test_legacy_auth_credentials_returned(self) -> None:
         """When auth config already has clientId/clientSecret, return as-is."""
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         config = {
@@ -322,7 +321,7 @@ class TestGetOauthCredentialsForToolset:
         assert result["tenantId"] == "tenant-1"
 
     @pytest.mark.asyncio
-    async def test_legacy_with_client_id_alt_name(self):
+    async def test_legacy_with_client_id_alt_name(self) -> None:
         """Handles client_id (underscore style) in auth config."""
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         config = {
@@ -336,14 +335,14 @@ class TestGetOauthCredentialsForToolset:
         assert result["client_id"] == "alt-id"
 
     @pytest.mark.asyncio
-    async def test_missing_toolset_type_raises(self):
+    async def test_missing_toolset_type_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         config = {"auth": {}, "oauthConfigId": "cfg-1"}
         with pytest.raises(ValueError, match="Toolset type not found"):
             await get_oauth_credentials_for_toolset(config, AsyncMock())
 
     @pytest.mark.asyncio
-    async def test_missing_oauth_config_id_fetches_from_instance(self):
+    async def test_missing_oauth_config_id_fetches_from_instance(self) -> None:
         """When oauthConfigId missing but instanceId present, fetches from instance."""
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
@@ -374,7 +373,7 @@ class TestGetOauthCredentialsForToolset:
         assert result["clientId"] == "fetched-id"
 
     @pytest.mark.asyncio
-    async def test_no_oauth_config_id_and_no_instance_raises(self):
+    async def test_no_oauth_config_id_and_no_instance_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -388,7 +387,7 @@ class TestGetOauthCredentialsForToolset:
             await get_oauth_credentials_for_toolset(toolset_config, config_service)
 
     @pytest.mark.asyncio
-    async def test_oauth_config_found_by_id(self):
+    async def test_oauth_config_found_by_id(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -419,7 +418,7 @@ class TestGetOauthCredentialsForToolset:
         assert result["tenantId"] == "t1"
 
     @pytest.mark.asyncio
-    async def test_oauth_config_not_found_raises(self):
+    async def test_oauth_config_not_found_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -440,7 +439,7 @@ class TestGetOauthCredentialsForToolset:
             await get_oauth_credentials_for_toolset(toolset_config, config_service)
 
     @pytest.mark.asyncio
-    async def test_invalid_format_raises(self):
+    async def test_invalid_format_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -455,7 +454,7 @@ class TestGetOauthCredentialsForToolset:
             await get_oauth_credentials_for_toolset(toolset_config, config_service)
 
     @pytest.mark.asyncio
-    async def test_empty_config_data_raises(self):
+    async def test_empty_config_data_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -476,7 +475,7 @@ class TestGetOauthCredentialsForToolset:
             await get_oauth_credentials_for_toolset(toolset_config, config_service)
 
     @pytest.mark.asyncio
-    async def test_missing_client_secret_raises(self):
+    async def test_missing_client_secret_raises(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -497,7 +496,7 @@ class TestGetOauthCredentialsForToolset:
             await get_oauth_credentials_for_toolset(toolset_config, config_service)
 
     @pytest.mark.asyncio
-    async def test_general_exception_wraps(self):
+    async def test_general_exception_wraps(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
         config_service = AsyncMock()
@@ -518,7 +517,7 @@ class TestGetOauthCredentialsForToolset:
 
 class TestGetToolsetById:
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -529,7 +528,7 @@ class TestGetToolsetById:
         assert result["name"] == "Jira"
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -539,7 +538,7 @@ class TestGetToolsetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_empty_instances(self):
+    async def test_empty_instances(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -547,7 +546,7 @@ class TestGetToolsetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_non_list_returns_none(self):
+    async def test_non_list_returns_none(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not a list")
@@ -555,7 +554,7 @@ class TestGetToolsetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_returns_none(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
@@ -570,7 +569,7 @@ class TestGetToolsetById:
 class TestCheckUserIsAdmin:
     @pytest.mark.asyncio
     @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_admin_returns_true(self, mock_client_cls):
+    async def test_admin_returns_true(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
         mock_response = MagicMock()
@@ -595,7 +594,7 @@ class TestCheckUserIsAdmin:
 
     @pytest.mark.asyncio
     @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_non_admin_returns_false(self, mock_client_cls):
+    async def test_non_admin_returns_false(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
         mock_response = MagicMock()
@@ -620,7 +619,7 @@ class TestCheckUserIsAdmin:
 
     @pytest.mark.asyncio
     @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_fallback_endpoint_on_config_error(self, mock_client_cls):
+    async def test_fallback_endpoint_on_config_error(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
         mock_response = MagicMock()
@@ -646,7 +645,7 @@ class TestCheckUserIsAdmin:
 
     @pytest.mark.asyncio
     @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_exception_returns_false(self, mock_client_cls):
+    async def test_exception_returns_false(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
         mock_client = AsyncMock()
@@ -666,7 +665,7 @@ class TestCheckUserIsAdmin:
 
     @pytest.mark.asyncio
     @patch("app.api.routes.toolsets.httpx.AsyncClient")
-    async def test_forwards_auth_headers(self, mock_client_cls):
+    async def test_forwards_auth_headers(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
         mock_response = MagicMock()
@@ -704,7 +703,7 @@ class TestCheckUserIsAdmin:
 # ---------------------------------------------------------------------------
 
 class TestGetUserContext:
-    def test_valid_from_state(self):
+    def test_valid_from_state(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1", "orgId": "o1"}
@@ -713,7 +712,7 @@ class TestGetUserContext:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_fallback_to_headers(self):
+    def test_fallback_to_headers(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -722,7 +721,7 @@ class TestGetUserContext:
         assert ctx["user_id"] == "u2"
         assert ctx["org_id"] == "o2"
 
-    def test_missing_user_id_raises(self):
+    def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -737,7 +736,7 @@ class TestGetUserContext:
 # ---------------------------------------------------------------------------
 
 class TestGetRegistry:
-    def test_returns_registry(self):
+    def test_returns_registry(self) -> None:
         from app.api.routes.toolsets import _get_registry
         mock_registry = MagicMock()
         request = MagicMock()
@@ -745,7 +744,7 @@ class TestGetRegistry:
         result = _get_registry(request)
         assert result is mock_registry
 
-    def test_missing_raises(self):
+    def test_missing_raises(self) -> None:
         from app.api.routes.toolsets import _get_registry
         request = MagicMock()
         request.app.state.toolset_registry = None
@@ -759,7 +758,7 @@ class TestGetRegistry:
 # ---------------------------------------------------------------------------
 
 class TestGetGraphProvider:
-    def test_returns_provider(self):
+    def test_returns_provider(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         mock_gp = MagicMock()
         request = MagicMock()
@@ -767,7 +766,7 @@ class TestGetGraphProvider:
         result = _get_graph_provider(request)
         assert result is mock_gp
 
-    def test_missing_raises(self):
+    def test_missing_raises(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         request = MagicMock()
         request.app.state.graph_provider = None
@@ -781,7 +780,7 @@ class TestGetGraphProvider:
 # ---------------------------------------------------------------------------
 
 class TestGetToolsetMetadata:
-    def test_valid_toolset(self):
+    def test_valid_toolset(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {
@@ -791,28 +790,28 @@ class TestGetToolsetMetadata:
         result = _get_toolset_metadata(registry, "jira")
         assert result["display_name"] == "Jira"
 
-    def test_empty_type_raises(self):
+    def test_empty_type_raises(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         with pytest.raises(HTTPException) as exc:
             _get_toolset_metadata(registry, "")
         assert exc.value.status_code == 400
 
-    def test_whitespace_type_raises(self):
+    def test_whitespace_type_raises(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         with pytest.raises(HTTPException):
             _get_toolset_metadata(registry, "   ")
 
-    def test_not_found_raises(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_not_found_raises(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_toolset_metadata(registry, "nonexistent")
 
-    def test_internal_toolset_raises(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_internal_toolset_raises(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"isInternal": True}
         with pytest.raises(ToolsetNotFoundError):
@@ -824,33 +823,33 @@ class TestGetToolsetMetadata:
 # ---------------------------------------------------------------------------
 
 class TestStoragePathHelpers:
-    def test_get_instances_path(self):
+    def test_get_instances_path(self) -> None:
         from app.api.routes.toolsets import _get_instances_path
         path = _get_instances_path("org-1")
         assert path == "/services/toolset-instances"
 
-    def test_get_user_auth_path(self):
+    def test_get_user_auth_path(self) -> None:
         from app.api.routes.toolsets import _get_user_auth_path
         path = _get_user_auth_path("inst-1", "user-1")
         assert path == "/services/toolsets/inst-1/user-1"
 
-    def test_get_instance_users_prefix(self):
+    def test_get_instance_users_prefix(self) -> None:
         from app.api.routes.toolsets import _get_instance_users_prefix
         prefix = _get_instance_users_prefix("inst-1")
         assert prefix == "/services/toolsets/inst-1/"
 
-    def test_get_toolset_oauth_config_path(self):
+    def test_get_toolset_oauth_config_path(self) -> None:
         from app.api.routes.toolsets import _get_toolset_oauth_config_path
         path = _get_toolset_oauth_config_path("JIRA")
         assert path == "/services/oauths/toolsets/jira"
 
-    def test_generate_instance_id(self):
+    def test_generate_instance_id(self) -> None:
         from app.api.routes.toolsets import _generate_instance_id
         result = _generate_instance_id()
         # Should be a valid UUID string
         uuid.UUID(result)
 
-    def test_generate_oauth_config_id(self):
+    def test_generate_oauth_config_id(self) -> None:
         from app.api.routes.toolsets import _generate_oauth_config_id
         result = _generate_oauth_config_id()
         uuid.UUID(result)
@@ -861,48 +860,48 @@ class TestStoragePathHelpers:
 # ---------------------------------------------------------------------------
 
 class TestApplyTenantToMicrosoftOAuthUrl:
-    def test_replaces_tenant(self):
+    def test_replaces_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant")
         assert "my-tenant" in result
         assert "common" not in result
 
-    def test_no_op_for_empty_tenant(self):
+    def test_no_op_for_empty_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "")
         assert result == url
 
-    def test_no_op_for_none_tenant(self):
+    def test_no_op_for_none_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, None)
         assert result == url
 
-    def test_no_op_for_common_tenant(self):
+    def test_no_op_for_common_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
         result = _apply_tenant_to_microsoft_oauth_url(url, "common")
         assert result == url
 
-    def test_no_op_for_non_microsoft_url(self):
+    def test_no_op_for_non_microsoft_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://accounts.google.com/o/oauth2/v2/auth"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant")
         assert result == url
 
-    def test_no_op_for_empty_url(self):
+    def test_no_op_for_empty_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         result = _apply_tenant_to_microsoft_oauth_url("", "my-tenant")
         assert result == ""
 
-    def test_no_op_for_none_url(self):
+    def test_no_op_for_none_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         result = _apply_tenant_to_microsoft_oauth_url(None, "my-tenant")
         assert result is None
 
-    def test_token_url(self):
+    def test_token_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
         result = _apply_tenant_to_microsoft_oauth_url(url, "abc-123")
@@ -914,7 +913,7 @@ class TestApplyTenantToMicrosoftOAuthUrl:
 # ---------------------------------------------------------------------------
 
 class TestFormatToolsetData:
-    def test_without_tools(self):
+    def test_without_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "display_name": "Jira",
@@ -931,7 +930,7 @@ class TestFormatToolsetData:
         assert result["toolCount"] == 2
         assert "tools" not in result
 
-    def test_with_tools(self):
+    def test_with_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "tools": [
@@ -943,7 +942,7 @@ class TestFormatToolsetData:
         assert result["tools"][0]["fullName"] == "jira.search"
         assert result["tools"][0]["displayName"] == "Search"
 
-    def test_empty_metadata(self):
+    def test_empty_metadata(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         result = _format_toolset_data("test", {})
         assert result["name"] == "test"
@@ -955,24 +954,24 @@ class TestFormatToolsetData:
 # ---------------------------------------------------------------------------
 
 class TestParseRequestJson:
-    def test_valid_json(self):
+    def test_valid_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         data = json.dumps({"key": "value"}).encode()
         result = _parse_request_json(MagicMock(), data)
         assert result["key"] == "value"
 
-    def test_empty_body_raises(self):
+    def test_empty_body_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"")
         assert exc.value.status_code == 400
 
-    def test_none_body_raises(self):
+    def test_none_body_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException):
             _parse_request_json(MagicMock(), None)
 
-    def test_invalid_json_raises(self):
+    def test_invalid_json_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"not json{")
@@ -986,7 +985,7 @@ class TestParseRequestJson:
 
 class TestLoadToolsetInstances:
     @pytest.mark.asyncio
-    async def test_loads_instances(self):
+    async def test_loads_instances(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "1"}, {"_id": "2"}])
@@ -994,7 +993,7 @@ class TestLoadToolsetInstances:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_empty_returns_empty(self):
+    async def test_empty_returns_empty(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -1002,7 +1001,7 @@ class TestLoadToolsetInstances:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_raises_http_error(self):
+    async def test_exception_raises_http_error(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
@@ -1016,20 +1015,20 @@ class TestLoadToolsetInstances:
 # ---------------------------------------------------------------------------
 
 class TestConstants:
-    def test_oauth_infrastructure_fields_is_frozenset(self):
+    def test_oauth_infrastructure_fields_is_frozenset(self) -> None:
         from app.api.routes.toolsets import OAUTH_INFRASTRUCTURE_FIELDS
         assert isinstance(OAUTH_INFRASTRUCTURE_FIELDS, frozenset)
         assert "redirectUri" in OAUTH_INFRASTRUCTURE_FIELDS
         assert "clientId" not in OAUTH_INFRASTRUCTURE_FIELDS
 
-    def test_default_constants(self):
+    def test_default_constants(self) -> None:
         from app.api.routes.toolsets import (
             DEFAULT_BASE_URL,
             DEFAULT_ENDPOINTS_PATH,
             DEFAULT_TOOLSET_INSTANCES_PATH,
+            ENCRYPTED_KEY_PARTS_COUNT,
             MAX_AGENT_NAMES_DISPLAY,
             SPLIT_PATH_EXPECTED_PARTS,
-            ENCRYPTED_KEY_PARTS_COUNT,
         )
         assert DEFAULT_BASE_URL == "http://localhost:3001"
         assert DEFAULT_ENDPOINTS_PATH == "/services/endpoints"
@@ -1046,7 +1045,7 @@ class TestConstants:
 class TestFormatToolsetDataDeep:
     """Deeper tests for _format_toolset_data with full metadata, OAuth URLs, tool schemas."""
 
-    def test_all_metadata_fields_present(self):
+    def test_all_metadata_fields_present(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "display_name": "Microsoft Graph",
@@ -1071,7 +1070,7 @@ class TestFormatToolsetDataDeep:
         assert result["toolCount"] == 2
         assert "tools" not in result
 
-    def test_include_tools_with_full_schema(self):
+    def test_include_tools_with_full_schema(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "tools": [
@@ -1099,7 +1098,7 @@ class TestFormatToolsetDataDeep:
         assert tool["returns"] == "dict"
         assert tool["tags"] == ["write", "issues"]
 
-    def test_tool_display_name_from_underscored_name(self):
+    def test_tool_display_name_from_underscored_name(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "tools": [
@@ -1109,7 +1108,7 @@ class TestFormatToolsetDataDeep:
         result = _format_toolset_data("drive", metadata, include_tools=True)
         assert result["tools"][0]["displayName"] == "Get All User Files"
 
-    def test_tool_missing_optional_fields_defaults(self):
+    def test_tool_missing_optional_fields_defaults(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "tools": [
@@ -1123,7 +1122,7 @@ class TestFormatToolsetDataDeep:
         assert tool["returns"] is None
         assert tool["tags"] == []
 
-    def test_metadata_defaults_for_missing_keys(self):
+    def test_metadata_defaults_for_missing_keys(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         result = _format_toolset_data("unknown", {})
         assert result["displayName"] == "unknown"
@@ -1134,7 +1133,7 @@ class TestFormatToolsetDataDeep:
         assert result["supportedAuthTypes"] == []
         assert result["toolCount"] == 0
 
-    def test_many_tools_count(self):
+    def test_many_tools_count(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "tools": [{"name": f"tool_{i}"} for i in range(50)],
@@ -1142,7 +1141,7 @@ class TestFormatToolsetDataDeep:
         result = _format_toolset_data("big_toolset", metadata)
         assert result["toolCount"] == 50
 
-    def test_include_tools_false_no_tools_key(self):
+    def test_include_tools_false_no_tools_key(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {"tools": [{"name": "a"}]}
         result = _format_toolset_data("x", metadata, include_tools=False)
@@ -1156,7 +1155,7 @@ class TestFormatToolsetDataDeep:
 
 class TestLoadToolsetInstancesDeep:
     @pytest.mark.asyncio
-    async def test_returns_validated_list(self):
+    async def test_returns_validated_list(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         items = [
@@ -1170,7 +1169,7 @@ class TestLoadToolsetInstancesDeep:
         assert result[0]["_id"] == "1"
 
     @pytest.mark.asyncio
-    async def test_default_empty_list(self):
+    async def test_default_empty_list(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=None)
@@ -1179,7 +1178,7 @@ class TestLoadToolsetInstancesDeep:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_non_list_raises_validation_error(self):
+    async def test_non_list_raises_validation_error(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not a list")
@@ -1189,7 +1188,7 @@ class TestLoadToolsetInstancesDeep:
         assert "must be a list" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_http_exception_propagated(self):
+    async def test_http_exception_propagated(self) -> None:
         """HTTPException from _validate_list should propagate, not be wrapped."""
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
@@ -1205,19 +1204,19 @@ class TestLoadToolsetInstancesDeep:
 # ---------------------------------------------------------------------------
 
 class TestApplyTenantToMicrosoftOAuthUrlDeep:
-    def test_whitespace_only_tenant(self):
+    def test_whitespace_only_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "   ")
         assert result == url
 
-    def test_common_case_insensitive(self):
+    def test_common_case_insensitive(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "COMMON")
         assert result == url
 
-    def test_tenant_with_guid_format(self):
+    def test_tenant_with_guid_format(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
         tenant = "12345678-1234-1234-1234-123456789abc"
@@ -1225,33 +1224,33 @@ class TestApplyTenantToMicrosoftOAuthUrlDeep:
         assert tenant in result
         assert "common" not in result
 
-    def test_already_has_custom_tenant_replaced(self):
+    def test_already_has_custom_tenant_replaced(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/old-tenant/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "new-tenant")
         assert "new-tenant" in result
         assert "old-tenant" not in result
 
-    def test_preserves_path_after_tenant(self):
+    def test_preserves_path_after_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant")
         assert result == "https://login.microsoftonline.com/my-tenant/oauth2/v2.0/authorize"
 
-    def test_token_url_preserves_path(self):
+    def test_token_url_preserves_path(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant")
         assert result == "https://login.microsoftonline.com/my-tenant/oauth2/v2.0/token"
 
-    def test_url_with_query_params(self):
+    def test_url_with_query_params(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?response_type=code"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant")
         assert "my-tenant" in result
         assert "response_type=code" in result
 
-    def test_organizations_tenant_no_op(self):
+    def test_organizations_tenant_no_op(self) -> None:
         """The regex just replaces the tenant segment; 'organizations' is not treated specially."""
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
@@ -1265,46 +1264,46 @@ class TestApplyTenantToMicrosoftOAuthUrlDeep:
 # ---------------------------------------------------------------------------
 
 class TestCheckInstanceNameConflict:
-    def test_no_conflict_empty_list(self):
+    def test_no_conflict_empty_list(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         assert _check_instance_name_conflict([], "My Jira", "org-1", "jira") is False
 
-    def test_conflict_same_name_same_org_same_type(self):
+    def test_conflict_same_name_same_org_same_type(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-1", "toolsetType": "jira", "instanceName": "My Jira"},
         ]
         assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira") is True
 
-    def test_case_insensitive_conflict(self):
+    def test_case_insensitive_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-1", "toolsetType": "jira", "instanceName": "MY JIRA"},
         ]
         assert _check_instance_name_conflict(instances, "my jira", "org-1", "jira") is True
 
-    def test_no_conflict_different_org(self):
+    def test_no_conflict_different_org(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-2", "toolsetType": "jira", "instanceName": "My Jira"},
         ]
         assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira") is False
 
-    def test_no_conflict_different_toolset_type(self):
+    def test_no_conflict_different_toolset_type(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-1", "toolsetType": "slack", "instanceName": "My Jira"},
         ]
         assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira") is False
 
-    def test_exclude_id_skips_self(self):
+    def test_exclude_id_skips_self(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-1", "toolsetType": "jira", "instanceName": "My Jira"},
         ]
         assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira", exclude_id="1") is False
 
-    def test_exclude_id_does_not_skip_others(self):
+    def test_exclude_id_does_not_skip_others(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-1", "toolsetType": "jira", "instanceName": "My Jira"},
@@ -1313,7 +1312,7 @@ class TestCheckInstanceNameConflict:
         # exclude_id="1" skips first but second still conflicts
         assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira", exclude_id="1") is True
 
-    def test_missing_instance_name_no_conflict(self):
+    def test_missing_instance_name_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "1", "orgId": "org-1", "toolsetType": "jira"},
@@ -1326,32 +1325,32 @@ class TestCheckInstanceNameConflict:
 # ---------------------------------------------------------------------------
 
 class TestCheckOAuthNameConflict:
-    def test_no_conflict_empty(self):
+    def test_no_conflict_empty(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         assert _check_oauth_name_conflict([], "Config A", "org-1") is False
 
-    def test_conflict_same_name_same_org(self):
+    def test_conflict_same_name_same_org(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [
             {"_id": "1", "orgId": "org-1", "oauthInstanceName": "Config A"},
         ]
         assert _check_oauth_name_conflict(configs, "Config A", "org-1") is True
 
-    def test_case_insensitive(self):
+    def test_case_insensitive(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [
             {"_id": "1", "orgId": "org-1", "oauthInstanceName": "CONFIG A"},
         ]
         assert _check_oauth_name_conflict(configs, "config a", "org-1") is True
 
-    def test_no_conflict_different_org(self):
+    def test_no_conflict_different_org(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [
             {"_id": "1", "orgId": "org-2", "oauthInstanceName": "Config A"},
         ]
         assert _check_oauth_name_conflict(configs, "Config A", "org-1") is False
 
-    def test_exclude_id_skips_self(self):
+    def test_exclude_id_skips_self(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [
             {"_id": "1", "orgId": "org-1", "oauthInstanceName": "Config A"},
@@ -1364,7 +1363,7 @@ class TestCheckOAuthNameConflict:
 # ---------------------------------------------------------------------------
 
 class TestEncodeDecodeStateWithInstance:
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         from app.api.routes.toolsets import (
             _decode_state_with_instance,
             _encode_state_with_instance,
@@ -1375,44 +1374,64 @@ class TestEncodeDecodeStateWithInstance:
         assert decoded["instance_id"] == "inst-42"
         assert decoded["user_id"] == "user-99"
 
-    def test_encode_is_base64_url_safe(self):
-        from app.api.routes.toolsets import _encode_state_with_instance
+    def test_encode_is_base64_url_safe(self) -> None:
         import base64
+
+        from app.api.routes.toolsets import _encode_state_with_instance
         encoded = _encode_state_with_instance("state", "inst", "user")
         # Should be decodable as urlsafe base64
         decoded_bytes = base64.urlsafe_b64decode(encoded.encode())
         assert b"state" in decoded_bytes
 
-    def test_decode_invalid_base64_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, _decode_state_with_instance
+    def test_decode_invalid_base64_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         with pytest.raises(OAuthConfigError):
             _decode_state_with_instance("not!valid!base64!!!")
 
-    def test_decode_valid_base64_but_not_json_raises(self):
+    def test_decode_valid_base64_but_not_json_raises(self) -> None:
         import base64
-        from app.api.routes.toolsets import OAuthConfigError, _decode_state_with_instance
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         encoded = base64.urlsafe_b64encode(b"not json").decode()
         with pytest.raises(OAuthConfigError, match="not valid JSON"):
             _decode_state_with_instance(encoded)
 
-    def test_decode_json_missing_fields_raises(self):
+    def test_decode_json_missing_fields_raises(self) -> None:
         import base64
-        from app.api.routes.toolsets import OAuthConfigError, _decode_state_with_instance
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         # Missing user_id
         encoded = base64.urlsafe_b64encode(json.dumps({"state": "s", "instance_id": "i"}).encode()).decode()
         with pytest.raises(OAuthConfigError, match="Missing required fields"):
             _decode_state_with_instance(encoded)
 
-    def test_decode_json_missing_state_raises(self):
+    def test_decode_json_missing_state_raises(self) -> None:
         import base64
-        from app.api.routes.toolsets import OAuthConfigError, _decode_state_with_instance
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         encoded = base64.urlsafe_b64encode(json.dumps({"instance_id": "i", "user_id": "u"}).encode()).decode()
         with pytest.raises(OAuthConfigError, match="Missing required fields"):
             _decode_state_with_instance(encoded)
 
-    def test_decode_json_missing_instance_id_raises(self):
+    def test_decode_json_missing_instance_id_raises(self) -> None:
         import base64
-        from app.api.routes.toolsets import OAuthConfigError, _decode_state_with_instance
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         encoded = base64.urlsafe_b64encode(json.dumps({"state": "s", "user_id": "u"}).encode()).decode()
         with pytest.raises(OAuthConfigError, match="Missing required fields"):
             _decode_state_with_instance(encoded)
@@ -1424,7 +1443,7 @@ class TestEncodeDecodeStateWithInstance:
 
 class TestGetOAuthConfigsForType:
     @pytest.mark.asyncio
-    async def test_returns_list(self):
+    async def test_returns_list(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "1"}, {"_id": "2"}])
@@ -1432,7 +1451,7 @@ class TestGetOAuthConfigsForType:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_non_list_returns_empty(self):
+    async def test_non_list_returns_empty(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="bad data")
@@ -1440,7 +1459,7 @@ class TestGetOAuthConfigsForType:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_empty(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
@@ -1448,7 +1467,7 @@ class TestGetOAuthConfigsForType:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_default_empty_list(self):
+    async def test_default_empty_list(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -1462,7 +1481,7 @@ class TestGetOAuthConfigsForType:
 
 class TestGetOAuthConfigById:
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -1473,7 +1492,7 @@ class TestGetOAuthConfigById:
         assert result["config"]["clientId"] == "y"
 
     @pytest.mark.asyncio
-    async def test_not_found_wrong_id(self):
+    async def test_not_found_wrong_id(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -1483,7 +1502,7 @@ class TestGetOAuthConfigById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_not_found_wrong_org(self):
+    async def test_not_found_wrong_org(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -1493,7 +1512,7 @@ class TestGetOAuthConfigById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_empty_list_returns_none(self):
+    async def test_empty_list_returns_none(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -1506,15 +1525,21 @@ class TestGetOAuthConfigById:
 # ---------------------------------------------------------------------------
 
 class TestGetOAuthConfigFromRegistry:
-    def test_not_found_raises(self):
-        from app.api.routes.toolsets import ToolsetNotFoundError, _get_oauth_config_from_registry
+    def test_not_found_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            ToolsetNotFoundError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_oauth_config_from_registry("missing", registry)
 
-    def test_no_oauth_config_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, _get_oauth_config_from_registry
+    def test_no_oauth_config_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {
             "config": {},
@@ -1523,8 +1548,11 @@ class TestGetOAuthConfigFromRegistry:
         with pytest.raises(OAuthConfigError, match="does not support OAuth"):
             _get_oauth_config_from_registry("apikey_only", registry)
 
-    def test_incomplete_oauth_config_raises(self):
-        from app.api.routes.toolsets import OAuthConfigError, _get_oauth_config_from_registry
+    def test_incomplete_oauth_config_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         # Has _oauth_configs but the config object is missing attributes
         mock_oauth = MagicMock(spec=[])  # Empty spec = no attributes
@@ -1534,7 +1562,7 @@ class TestGetOAuthConfigFromRegistry:
         with pytest.raises(OAuthConfigError, match="incomplete OAuth configuration"):
             _get_oauth_config_from_registry("broken", registry)
 
-    def test_valid_returns_oauth_config(self):
+    def test_valid_returns_oauth_config(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_from_registry
         registry = MagicMock()
         mock_oauth = MagicMock()
@@ -1553,7 +1581,7 @@ class TestGetOAuthConfigFromRegistry:
 
 class TestBuildOAuthConfig:
     @pytest.mark.asyncio
-    async def test_missing_client_id_raises(self):
+    async def test_missing_client_id_raises(self) -> None:
         from app.api.routes.toolsets import InvalidAuthConfigError, _build_oauth_config
         with pytest.raises(InvalidAuthConfigError, match="Client ID and Client Secret"):
             await _build_oauth_config(
@@ -1561,7 +1589,7 @@ class TestBuildOAuthConfig:
             )
 
     @pytest.mark.asyncio
-    async def test_missing_client_secret_raises(self):
+    async def test_missing_client_secret_raises(self) -> None:
         from app.api.routes.toolsets import InvalidAuthConfigError, _build_oauth_config
         with pytest.raises(InvalidAuthConfigError, match="Client ID and Client Secret"):
             await _build_oauth_config(
@@ -1569,7 +1597,7 @@ class TestBuildOAuthConfig:
             )
 
     @pytest.mark.asyncio
-    async def test_valid_config_returned(self):
+    async def test_valid_config_returned(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
         registry = MagicMock()
         mock_scopes = MagicMock()
@@ -1599,7 +1627,7 @@ class TestBuildOAuthConfig:
         assert result["name"] == "test_toolset"
 
     @pytest.mark.asyncio
-    async def test_tenant_id_included_in_config(self):
+    async def test_tenant_id_included_in_config(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
         registry = MagicMock()
         mock_scopes = MagicMock()
@@ -1634,7 +1662,7 @@ class TestCreateOrUpdateToolsetOAuthConfig:
     """Tests for _create_or_update_toolset_oauth_config()."""
 
     @pytest.mark.asyncio
-    async def test_create_new_config(self):
+    async def test_create_new_config(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
 
         config_service = AsyncMock()
@@ -1672,7 +1700,7 @@ class TestCreateOrUpdateToolsetOAuthConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_update_existing_config(self):
+    async def test_update_existing_config(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
 
         config_service = AsyncMock()
@@ -1716,7 +1744,7 @@ class TestCreateOrUpdateToolsetOAuthConfig:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_update_not_found_falls_through_to_create(self):
+    async def test_update_not_found_falls_through_to_create(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
 
         config_service = AsyncMock()
@@ -1755,7 +1783,7 @@ class TestCreateOrUpdateToolsetOAuthConfig:
         assert result_id != "nonexistent-cfg"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_returns_none(self) -> None:
         """When set_config fails during creation, returns None."""
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
 
@@ -1801,7 +1829,7 @@ class TestPrepareToolsetAuthConfig:
     """Tests for _prepare_toolset_auth_config()."""
 
     @pytest.mark.asyncio
-    async def test_non_oauth_type_returned_as_is(self):
+    async def test_non_oauth_type_returned_as_is(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         auth_config = {"type": "API_KEY", "apiKey": "my-key"}
@@ -1811,7 +1839,7 @@ class TestPrepareToolsetAuthConfig:
         assert result == auth_config
 
     @pytest.mark.asyncio
-    async def test_oauth_type_enriched(self):
+    async def test_oauth_type_enriched(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         registry = MagicMock()
@@ -1841,7 +1869,7 @@ class TestPrepareToolsetAuthConfig:
         assert "callback" in result["redirectUri"]
 
     @pytest.mark.asyncio
-    async def test_oauth_with_tenant_substitution(self):
+    async def test_oauth_with_tenant_substitution(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         registry = MagicMock()
@@ -1869,7 +1897,7 @@ class TestPrepareToolsetAuthConfig:
         assert "my-tenant" in result["tokenUrl"]
 
     @pytest.mark.asyncio
-    async def test_oauth_fallback_base_url_from_endpoints(self):
+    async def test_oauth_fallback_base_url_from_endpoints(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         registry = MagicMock()
@@ -1908,7 +1936,7 @@ class TestDeauthAllInstanceUsers:
     """Tests for _deauth_all_instance_users()."""
 
     @pytest.mark.asyncio
-    async def test_no_users_returns_zero(self):
+    async def test_no_users_returns_zero(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
 
         config_service = AsyncMock()
@@ -1917,7 +1945,7 @@ class TestDeauthAllInstanceUsers:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_deauths_users(self):
+    async def test_deauths_users(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
 
         config_service = AsyncMock()
@@ -1936,7 +1964,7 @@ class TestDeauthAllInstanceUsers:
             assert auth_data["deauthReason"] == "admin_oauth_config_updated"
 
     @pytest.mark.asyncio
-    async def test_list_keys_error_returns_zero(self):
+    async def test_list_keys_error_returns_zero(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
 
         config_service = AsyncMock()
@@ -1945,7 +1973,7 @@ class TestDeauthAllInstanceUsers:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_individual_deauth_failure_still_counts(self):
+    async def test_individual_deauth_failure_still_counts(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
 
         config_service = AsyncMock()
@@ -1966,7 +1994,7 @@ class TestDeauthAllInstanceUsers:
 
 class TestDeauthAllInstanceUsersDeep:
     @pytest.mark.asyncio
-    async def test_deauth_skips_non_dict_records(self):
+    async def test_deauth_skips_non_dict_records(self) -> None:
         """Records that are not dicts are skipped gracefully."""
         from app.api.routes.toolsets import _deauth_all_instance_users
 
@@ -1983,7 +2011,7 @@ class TestDeauthAllInstanceUsersDeep:
         config_service.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_deauth_handles_set_config_failure(self):
+    async def test_deauth_handles_set_config_failure(self) -> None:
         """Individual set_config failures don't prevent counting."""
         from app.api.routes.toolsets import _deauth_all_instance_users
 
@@ -2001,7 +2029,7 @@ class TestDeauthAllInstanceUsersDeep:
         assert count == 2
 
     @pytest.mark.asyncio
-    async def test_deauth_sets_deauth_timestamp(self):
+    async def test_deauth_sets_deauth_timestamp(self) -> None:
         """Deauth sets deauthAt timestamp field."""
         from app.api.routes.toolsets import _deauth_all_instance_users
 
@@ -2024,7 +2052,7 @@ class TestDeauthAllInstanceUsersDeep:
 
 class TestPrepareToolsetAuthConfigDeep:
     @pytest.mark.asyncio
-    async def test_additional_params_included(self):
+    async def test_additional_params_included(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         registry = MagicMock()
@@ -2054,7 +2082,7 @@ class TestPrepareToolsetAuthConfigDeep:
         assert result["tokenResponsePath"] == "data.access_token"
 
     @pytest.mark.asyncio
-    async def test_no_additional_params_when_absent(self):
+    async def test_no_additional_params_when_absent(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         registry = MagicMock()
@@ -2084,7 +2112,7 @@ class TestPrepareToolsetAuthConfigDeep:
         assert "tokenResponsePath" not in result
 
     @pytest.mark.asyncio
-    async def test_fallback_redirect_uri_when_config_endpoint_fails(self):
+    async def test_fallback_redirect_uri_when_config_endpoint_fails(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         registry = MagicMock()
@@ -2121,7 +2149,7 @@ class TestPrepareToolsetAuthConfigDeep:
 
 class TestBuildOAuthConfigDeep:
     @pytest.mark.asyncio
-    async def test_custom_redirect_uri_preserved(self):
+    async def test_custom_redirect_uri_preserved(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         registry = MagicMock()
@@ -2152,7 +2180,7 @@ class TestBuildOAuthConfigDeep:
         assert result["redirectUri"] == "https://custom.example.com/callback"
 
     @pytest.mark.asyncio
-    async def test_custom_scopes_preserved(self):
+    async def test_custom_scopes_preserved(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         registry = MagicMock()
@@ -2183,7 +2211,7 @@ class TestBuildOAuthConfigDeep:
         assert result["scopes"] == ["custom_read", "custom_write"]
 
     @pytest.mark.asyncio
-    async def test_additional_params_from_auth_config(self):
+    async def test_additional_params_from_auth_config(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         registry = MagicMock()
@@ -2215,7 +2243,7 @@ class TestBuildOAuthConfigDeep:
         assert result["additionalParams"] == {"from_user": True}
 
     @pytest.mark.asyncio
-    async def test_token_access_type_from_registry(self):
+    async def test_token_access_type_from_registry(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         registry = MagicMock()
@@ -2242,7 +2270,7 @@ class TestBuildOAuthConfigDeep:
         assert result["tokenAccessType"] == "offline"
 
     @pytest.mark.asyncio
-    async def test_scope_parameter_name_from_registry(self):
+    async def test_scope_parameter_name_from_registry(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         registry = MagicMock()
@@ -2270,7 +2298,7 @@ class TestBuildOAuthConfigDeep:
         assert result["tokenResponsePath"] == "nested.token"
 
     @pytest.mark.asyncio
-    async def test_no_base_url_falls_back_to_localhost(self):
+    async def test_no_base_url_falls_back_to_localhost(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         registry = MagicMock()
@@ -2304,7 +2332,7 @@ class TestBuildOAuthConfigDeep:
 
 class TestCreateOrUpdateToolsetOAuthConfigDeep:
     @pytest.mark.asyncio
-    async def test_update_preserves_existing_client_secret_when_empty(self):
+    async def test_update_preserves_existing_client_secret_when_empty(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
 
         config_service = AsyncMock()
@@ -2351,7 +2379,7 @@ class TestCreateOrUpdateToolsetOAuthConfigDeep:
         assert saved_data[0]["config"]["clientSecret"] == "old-secret"
 
     @pytest.mark.asyncio
-    async def test_update_wrong_org_falls_through_to_create(self):
+    async def test_update_wrong_org_falls_through_to_create(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
 
         config_service = AsyncMock()
@@ -2400,33 +2428,33 @@ class TestCreateOrUpdateToolsetOAuthConfigDeep:
 # ---------------------------------------------------------------------------
 
 class TestValidateNonEmptyStringDeep:
-    def test_unicode_string_accepted(self):
+    def test_unicode_string_accepted(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         result = _validate_non_empty_string("  unicode  ", "field")
         assert result == "unicode"
 
-    def test_tab_whitespace_raises(self):
+    def test_tab_whitespace_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string("\t\n", "field")
 
-    def test_error_detail_contains_field_name(self):
+    def test_error_detail_contains_field_name(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException) as exc:
             _validate_non_empty_string("", "myField")
         assert "myField" in exc.value.detail
 
-    def test_list_raises(self):
+    def test_list_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string(["a"], "field")
 
-    def test_dict_raises(self):
+    def test_dict_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string({"a": 1}, "field")
 
-    def test_bool_raises(self):
+    def test_bool_raises(self) -> None:
         from app.api.routes.toolsets import _validate_non_empty_string
         with pytest.raises(HTTPException):
             _validate_non_empty_string(True, "field")
@@ -2437,18 +2465,18 @@ class TestValidateNonEmptyStringDeep:
 # ---------------------------------------------------------------------------
 
 class TestValidateListDeep:
-    def test_tuple_raises(self):
+    def test_tuple_raises(self) -> None:
         from app.api.routes.toolsets import _validate_list
         with pytest.raises(HTTPException) as exc:
             _validate_list((1, 2, 3), "items")
         assert "must be a list" in exc.value.detail
 
-    def test_nested_list_allowed(self):
+    def test_nested_list_allowed(self) -> None:
         from app.api.routes.toolsets import _validate_list
         result = _validate_list([[1], [2]], "items")
         assert result == [[1], [2]]
 
-    def test_error_detail_contains_field_name(self):
+    def test_error_detail_contains_field_name(self) -> None:
         from app.api.routes.toolsets import _validate_list
         with pytest.raises(HTTPException) as exc:
             _validate_list(None, "myItems", allow_empty=False)
@@ -2460,23 +2488,23 @@ class TestValidateListDeep:
 # ---------------------------------------------------------------------------
 
 class TestValidateDictDeep:
-    def test_nested_dict_allowed(self):
+    def test_nested_dict_allowed(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         result = _validate_dict({"a": {"b": 1}}, "config")
         assert result == {"a": {"b": 1}}
 
-    def test_error_detail_contains_field_name(self):
+    def test_error_detail_contains_field_name(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         with pytest.raises(HTTPException) as exc:
             _validate_dict(None, "myConfig", allow_empty=False)
         assert "myConfig" in exc.value.detail
 
-    def test_bool_raises(self):
+    def test_bool_raises(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         with pytest.raises(HTTPException):
             _validate_dict(True, "config")
 
-    def test_int_raises(self):
+    def test_int_raises(self) -> None:
         from app.api.routes.toolsets import _validate_dict
         with pytest.raises(HTTPException):
             _validate_dict(42, "config")
@@ -2487,25 +2515,25 @@ class TestValidateDictDeep:
 # ---------------------------------------------------------------------------
 
 class TestParseRequestJsonDeep:
-    def test_valid_list_json(self):
+    def test_valid_list_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         data = json.dumps([1, 2, 3]).encode()
         result = _parse_request_json(MagicMock(), data)
         assert result == [1, 2, 3]
 
-    def test_nested_json(self):
+    def test_nested_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         data = json.dumps({"key": {"nested": True}}).encode()
         result = _parse_request_json(MagicMock(), data)
         assert result["key"]["nested"] is True
 
-    def test_whitespace_only_body_raises(self):
+    def test_whitespace_only_body_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"   ")
         assert exc.value.status_code == 400
 
-    def test_truncated_json_raises(self):
+    def test_truncated_json_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b'{"key": ')
@@ -2517,7 +2545,7 @@ class TestParseRequestJsonDeep:
 # ---------------------------------------------------------------------------
 
 class TestGetUserContextDeep:
-    def test_state_user_takes_precedence_over_headers(self):
+    def test_state_user_takes_precedence_over_headers(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "state-user", "orgId": "state-org"}
@@ -2526,7 +2554,7 @@ class TestGetUserContextDeep:
         assert ctx["user_id"] == "state-user"
         assert ctx["org_id"] == "state-org"
 
-    def test_missing_org_id_does_not_raise(self):
+    def test_missing_org_id_does_not_raise(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1"}
@@ -2535,7 +2563,7 @@ class TestGetUserContextDeep:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] is None or ctx["org_id"] == ""
 
-    def test_state_attribute_error_falls_back_to_headers(self):
+    def test_state_attribute_error_falls_back_to_headers(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -2551,7 +2579,7 @@ class TestGetUserContextDeep:
 
 class TestGetToolsetRegistryEndpoint:
     @pytest.mark.asyncio
-    async def test_basic_listing(self):
+    async def test_basic_listing(self) -> None:
         from app.api.routes.toolsets import get_toolset_registry_endpoint
 
         registry = MagicMock()
@@ -2575,7 +2603,7 @@ class TestGetToolsetRegistryEndpoint:
         assert len(result["toolsets"]) == 2
 
     @pytest.mark.asyncio
-    async def test_search_filter(self):
+    async def test_search_filter(self) -> None:
         from app.api.routes.toolsets import get_toolset_registry_endpoint
 
         registry = MagicMock()
@@ -2600,7 +2628,7 @@ class TestGetToolsetRegistryEndpoint:
         assert "slack" not in toolset_names
 
     @pytest.mark.asyncio
-    async def test_internal_toolsets_excluded(self):
+    async def test_internal_toolsets_excluded(self) -> None:
         from app.api.routes.toolsets import get_toolset_registry_endpoint
 
         registry = MagicMock()
@@ -2624,7 +2652,7 @@ class TestGetToolsetRegistryEndpoint:
         assert "internal_tool" not in names
 
     @pytest.mark.asyncio
-    async def test_group_by_category(self):
+    async def test_group_by_category(self) -> None:
         from app.api.routes.toolsets import get_toolset_registry_endpoint
 
         registry = MagicMock()
@@ -2643,7 +2671,7 @@ class TestGetToolsetRegistryEndpoint:
 
 class TestGetToolsetSchema:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import get_toolset_schema
 
         registry = MagicMock()
@@ -2661,7 +2689,7 @@ class TestGetToolsetSchema:
         assert result["toolset"]["name"] == "jira"
 
     @pytest.mark.asyncio
-    async def test_with_oauth_registry(self):
+    async def test_with_oauth_registry(self) -> None:
         from app.api.routes.toolsets import get_toolset_schema
 
         registry = MagicMock()
@@ -2684,7 +2712,7 @@ class TestGetToolsetSchema:
 
 class TestGetAllTools:
     @pytest.mark.asyncio
-    async def test_returns_flat_list(self):
+    async def test_returns_flat_list(self) -> None:
         from app.api.routes.toolsets import get_all_tools
 
         registry = MagicMock()
@@ -2703,7 +2731,7 @@ class TestGetAllTools:
         assert result[0]["full_name"] == "jira.search"
 
     @pytest.mark.asyncio
-    async def test_filter_by_app_name(self):
+    async def test_filter_by_app_name(self) -> None:
         from app.api.routes.toolsets import get_all_tools
 
         registry = MagicMock()
@@ -2721,7 +2749,7 @@ class TestGetAllTools:
         assert all(t["app_name"] == "jira" for t in result)
 
     @pytest.mark.asyncio
-    async def test_filter_by_search(self):
+    async def test_filter_by_search(self) -> None:
         from app.api.routes.toolsets import get_all_tools
 
         registry = MagicMock()
@@ -2743,7 +2771,7 @@ class TestGetAllTools:
 
 class TestGetToolsetTools:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import get_toolset_tools
 
         registry = MagicMock()
@@ -2768,7 +2796,7 @@ class TestGetToolsetTools:
 
 class TestCreateToolsetInstance:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self):
+    async def test_non_admin_rejected(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
 
         request = MagicMock()
@@ -2787,7 +2815,7 @@ class TestCreateToolsetInstance:
 
 class TestGetToolsetInstances:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import get_toolset_instances
 
         request = MagicMock()
@@ -2809,7 +2837,7 @@ class TestGetToolsetInstances:
             assert len(result["instances"]) == 1
 
     @pytest.mark.asyncio
-    async def test_with_search(self):
+    async def test_with_search(self) -> None:
         from app.api.routes.toolsets import get_toolset_instances
 
         request = MagicMock()
@@ -2832,7 +2860,7 @@ class TestGetToolsetInstances:
 
 class TestGetToolsetInstance:
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.toolsets import get_toolset_instance
 
         request = MagicMock()
@@ -2855,7 +2883,7 @@ class TestGetToolsetInstance:
             assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import get_toolset_instance
 
         request = MagicMock()
@@ -2871,7 +2899,7 @@ class TestGetToolsetInstance:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_admin_gets_oauth_config(self):
+    async def test_admin_gets_oauth_config(self) -> None:
         from app.api.routes.toolsets import get_toolset_instance
 
         request = MagicMock()
@@ -2902,7 +2930,7 @@ class TestGetToolsetInstance:
 
 class TestDeleteToolsetInstance:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self):
+    async def test_non_admin_rejected(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
 
         request = MagicMock()
@@ -2916,7 +2944,7 @@ class TestDeleteToolsetInstance:
             assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
 
         request = MagicMock()
@@ -2931,8 +2959,8 @@ class TestDeleteToolsetInstance:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_in_use_blocked(self):
-        from app.api.routes.toolsets import delete_toolset_instance, ToolsetInUseError
+    async def test_in_use_blocked(self) -> None:
+        from app.api.routes.toolsets import ToolsetInUseError, delete_toolset_instance
 
         request = MagicMock()
         graph_provider = MagicMock()
@@ -2951,7 +2979,7 @@ class TestDeleteToolsetInstance:
                 await delete_toolset_instance("i1", request, config_service=config_service)
 
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
 
         request = MagicMock()
@@ -2980,7 +3008,7 @@ class TestDeleteToolsetInstance:
 
 class TestGetMyToolsets:
     @pytest.mark.asyncio
-    async def test_empty_instances(self):
+    async def test_empty_instances(self) -> None:
         from app.api.routes.toolsets import get_my_toolsets
 
         request = MagicMock()
@@ -2993,7 +3021,7 @@ class TestGetMyToolsets:
             assert result["toolsets"] == []
 
     @pytest.mark.asyncio
-    async def test_with_instances(self):
+    async def test_with_instances(self) -> None:
         from app.api.routes.toolsets import get_my_toolsets
 
         request = MagicMock()
@@ -3021,7 +3049,7 @@ class TestGetMyToolsets:
             assert result["filterCounts"]["all"] == 1
 
     @pytest.mark.asyncio
-    async def test_auth_status_filter(self):
+    async def test_auth_status_filter(self) -> None:
         from app.api.routes.toolsets import get_my_toolsets
 
         request = MagicMock()
@@ -3060,7 +3088,7 @@ class TestGetMyToolsets:
 
 class TestAuthenticateToolsetInstance:
     @pytest.mark.asyncio
-    async def test_success_api_token(self):
+    async def test_success_api_token(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
 
         request = MagicMock()
@@ -3080,7 +3108,7 @@ class TestAuthenticateToolsetInstance:
             assert result["isAuthenticated"] is True
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
 
         request = MagicMock()
@@ -3093,7 +3121,7 @@ class TestAuthenticateToolsetInstance:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_oauth_type_rejected(self):
+    async def test_oauth_type_rejected(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
 
         request = MagicMock()
@@ -3110,7 +3138,7 @@ class TestAuthenticateToolsetInstance:
 
 class TestUpdateToolsetCredentials:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import update_toolset_credentials
 
         request = MagicMock()
@@ -3127,7 +3155,7 @@ class TestUpdateToolsetCredentials:
             assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_no_existing_raises(self):
+    async def test_no_existing_raises(self) -> None:
         from app.api.routes.toolsets import update_toolset_credentials
 
         request = MagicMock()
@@ -3144,7 +3172,7 @@ class TestUpdateToolsetCredentials:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_empty_auth_raises(self):
+    async def test_empty_auth_raises(self) -> None:
         from app.api.routes.toolsets import update_toolset_credentials
 
         request = MagicMock()
@@ -3162,7 +3190,7 @@ class TestUpdateToolsetCredentials:
 
 class TestRemoveToolsetCredentials:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import remove_toolset_credentials
 
         request = MagicMock()
@@ -3182,7 +3210,7 @@ class TestRemoveToolsetCredentials:
 
 class TestReauthenticateToolsetInstance:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import reauthenticate_toolset_instance
 
         request = MagicMock()
@@ -3203,7 +3231,7 @@ class TestReauthenticateToolsetInstance:
             assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import reauthenticate_toolset_instance
 
         request = MagicMock()
@@ -3223,7 +3251,7 @@ class TestReauthenticateToolsetInstance:
 
 class TestListToolsetOAuthConfigs:
     @pytest.mark.asyncio
-    async def test_admin_sees_secrets(self):
+    async def test_admin_sees_secrets(self) -> None:
         from app.api.routes.toolsets import list_toolset_oauth_configs
 
         request = MagicMock()
@@ -3242,7 +3270,7 @@ class TestListToolsetOAuthConfigs:
             assert result["oauthConfigs"][0]["clientId"] == "cid"
 
     @pytest.mark.asyncio
-    async def test_non_admin_no_secrets(self):
+    async def test_non_admin_no_secrets(self) -> None:
         from app.api.routes.toolsets import list_toolset_oauth_configs
 
         request = MagicMock()
@@ -3262,7 +3290,7 @@ class TestListToolsetOAuthConfigs:
 
 class TestDeleteToolsetOAuthConfig:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self):
+    async def test_non_admin_rejected(self) -> None:
         from app.api.routes.toolsets import delete_toolset_oauth_config
 
         request = MagicMock()
@@ -3276,7 +3304,7 @@ class TestDeleteToolsetOAuthConfig:
             assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import delete_toolset_oauth_config
 
         request = MagicMock()
@@ -3291,7 +3319,7 @@ class TestDeleteToolsetOAuthConfig:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_in_use_blocked(self):
+    async def test_in_use_blocked(self) -> None:
         from app.api.routes.toolsets import delete_toolset_oauth_config
 
         request = MagicMock()
@@ -3314,7 +3342,7 @@ class TestDeleteToolsetOAuthConfig:
             assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import delete_toolset_oauth_config
 
         request = MagicMock()
@@ -3344,7 +3372,7 @@ class TestDeleteToolsetOAuthConfig:
 
 class TestGetInstanceStatus:
     @pytest.mark.asyncio
-    async def test_success_authenticated(self):
+    async def test_success_authenticated(self) -> None:
         from app.api.routes.toolsets import get_instance_status
 
         request = MagicMock()
@@ -3366,7 +3394,7 @@ class TestGetInstanceStatus:
             assert result["isAuthenticated"] is True
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import get_instance_status
 
         request = MagicMock()
@@ -3386,7 +3414,7 @@ class TestGetInstanceStatus:
 
 class TestHandleToolsetOAuthCallback:
     @pytest.mark.asyncio
-    async def test_error_param(self):
+    async def test_error_param(self) -> None:
         from app.api.routes.toolsets import handle_toolset_oauth_callback
 
         request = MagicMock()
@@ -3400,7 +3428,7 @@ class TestHandleToolsetOAuthCallback:
         assert "access_denied" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_missing_code(self):
+    async def test_missing_code(self) -> None:
         from app.api.routes.toolsets import handle_toolset_oauth_callback
 
         request = MagicMock()
@@ -3414,7 +3442,7 @@ class TestHandleToolsetOAuthCallback:
         assert "missing_parameters" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_missing_state(self):
+    async def test_missing_state(self) -> None:
         from app.api.routes.toolsets import handle_toolset_oauth_callback
 
         request = MagicMock()
@@ -3434,7 +3462,7 @@ class TestHandleToolsetOAuthCallback:
 
 class TestUpdateToolsetInstance:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self):
+    async def test_non_admin_rejected(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
 
         request = MagicMock()
@@ -3448,7 +3476,7 @@ class TestUpdateToolsetInstance:
             assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
 
         request = MagicMock()
@@ -3466,7 +3494,7 @@ class TestUpdateToolsetInstance:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_rename_success(self):
+    async def test_rename_success(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
 
         request = MagicMock()
@@ -3494,7 +3522,7 @@ class TestUpdateToolsetInstance:
 
 class TestGetMyToolsetsWithRegistry:
     @pytest.mark.asyncio
-    async def test_include_registry(self):
+    async def test_include_registry(self) -> None:
         from app.api.routes.toolsets import get_my_toolsets
 
         request = MagicMock()
@@ -3536,7 +3564,7 @@ class TestGetMyToolsetsWithRegistry:
 
 class TestDeleteToolsetInstanceWithCredentials:
     @pytest.mark.asyncio
-    async def test_delete_with_user_credentials(self):
+    async def test_delete_with_user_credentials(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
 
         request = MagicMock()
@@ -3563,7 +3591,7 @@ class TestDeleteToolsetInstanceWithCredentials:
             assert result["deletedCredentialsCount"] == 2
 
     @pytest.mark.asyncio
-    async def test_graph_check_non_list_returns_error(self):
+    async def test_graph_check_non_list_returns_error(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
 
         request = MagicMock()
@@ -3584,7 +3612,7 @@ class TestDeleteToolsetInstanceWithCredentials:
             assert exc.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_graph_check_exception_blocks_delete(self):
+    async def test_graph_check_exception_blocks_delete(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
 
         request = MagicMock()
@@ -3612,7 +3640,7 @@ class TestDeleteToolsetInstanceWithCredentials:
 
 class TestUpdateToolsetOAuthConfig:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self):
+    async def test_non_admin_rejected(self) -> None:
         from app.api.routes.toolsets import update_toolset_oauth_config
 
         request = MagicMock()
@@ -3626,7 +3654,7 @@ class TestUpdateToolsetOAuthConfig:
             assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import update_toolset_oauth_config
 
         request = MagicMock()
@@ -3644,7 +3672,7 @@ class TestUpdateToolsetOAuthConfig:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_success_with_deauth(self):
+    async def test_success_with_deauth(self) -> None:
         from app.api.routes.toolsets import update_toolset_oauth_config
 
         request = MagicMock()
@@ -3704,7 +3732,7 @@ class TestUpdateToolsetOAuthConfig:
 
 class TestGetConfiguredToolsets:
     @pytest.mark.asyncio
-    async def test_delegates_to_my_toolsets(self):
+    async def test_delegates_to_my_toolsets(self) -> None:
         from app.api.routes.toolsets import get_configured_toolsets
 
         request = MagicMock()
@@ -3726,7 +3754,7 @@ class TestGetConfiguredToolsets:
 
 class TestAuthenticateBasicAuth:
     @pytest.mark.asyncio
-    async def test_basic_auth_success(self):
+    async def test_basic_auth_success(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
 
         request = MagicMock()
@@ -3745,7 +3773,7 @@ class TestAuthenticateBasicAuth:
             assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_empty_credentials_rejected(self):
+    async def test_empty_credentials_rejected(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
 
         request = MagicMock()
@@ -3771,7 +3799,7 @@ class TestAuthenticateBasicAuth:
 
 class TestCreateToolsetInstanceFull:
     @pytest.mark.asyncio
-    async def test_success_with_api_token(self):
+    async def test_success_with_api_token(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
 
         request = MagicMock()
@@ -3803,7 +3831,7 @@ class TestCreateToolsetInstanceFull:
             assert result["instance"]["instanceName"] == "My Jira"
 
     @pytest.mark.asyncio
-    async def test_duplicate_name_rejected(self):
+    async def test_duplicate_name_rejected(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
 
         request = MagicMock()
@@ -3830,7 +3858,7 @@ class TestCreateToolsetInstanceFull:
             assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_unsupported_auth_type_rejected(self):
+    async def test_unsupported_auth_type_rejected(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
 
         request = MagicMock()
@@ -3856,7 +3884,7 @@ class TestCreateToolsetInstanceFull:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_oauth_with_existing_config_id(self):
+    async def test_oauth_with_existing_config_id(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
 
         request = MagicMock()
@@ -3893,7 +3921,7 @@ class TestCreateToolsetInstanceFull:
             assert result["instance"].get("oauthConfigId") == "cfg-1"
 
     @pytest.mark.asyncio
-    async def test_oauth_with_new_credentials(self):
+    async def test_oauth_with_new_credentials(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
 
         request = MagicMock()
@@ -3949,7 +3977,7 @@ class TestCreateToolsetInstanceFull:
 
 class TestUpdateToolsetInstanceOAuth:
     @pytest.mark.asyncio
-    async def test_oauth_config_switch(self):
+    async def test_oauth_config_switch(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
 
         request = MagicMock()
@@ -3979,7 +4007,7 @@ class TestUpdateToolsetInstanceOAuth:
             assert result["instance"]["oauthConfigId"] == "cfg-2"
 
     @pytest.mark.asyncio
-    async def test_name_conflict_on_rename(self):
+    async def test_name_conflict_on_rename(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
 
         request = MagicMock()
@@ -4006,7 +4034,7 @@ class TestUpdateToolsetInstanceOAuth:
 
 class TestGetOauthCredentialsEdgeCases:
     @pytest.mark.asyncio
-    async def test_logger_debug_on_legacy(self):
+    async def test_logger_debug_on_legacy(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         log = MagicMock()
         config = {"auth": {"clientId": "id", "clientSecret": "s"}, "toolsetType": "jira"}
@@ -4015,7 +4043,7 @@ class TestGetOauthCredentialsEdgeCases:
         log.debug.assert_called()
 
     @pytest.mark.asyncio
-    async def test_missing_instance_in_list(self):
+    async def test_missing_instance_in_list(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
@@ -4028,7 +4056,7 @@ class TestGetOauthCredentialsEdgeCases:
             await get_oauth_credentials_for_toolset(config, cs)
 
     @pytest.mark.asyncio
-    async def test_instance_fetch_exception(self):
+    async def test_instance_fetch_exception(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
@@ -4041,7 +4069,7 @@ class TestGetOauthCredentialsEdgeCases:
             await get_oauth_credentials_for_toolset(config, cs, logger=MagicMock())
 
     @pytest.mark.asyncio
-    async def test_oauth_config_not_found_with_logger(self):
+    async def test_oauth_config_not_found_with_logger(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
@@ -4054,7 +4082,7 @@ class TestGetOauthCredentialsEdgeCases:
             await get_oauth_credentials_for_toolset(config, cs, logger=MagicMock())
 
     @pytest.mark.asyncio
-    async def test_non_dict_config_data(self):
+    async def test_non_dict_config_data(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         async def mock_gc(path, default=None, use_cache=True):
@@ -4068,64 +4096,77 @@ class TestGetOauthCredentialsEdgeCases:
 
 
 class TestEncodeDecodeState:
-    def test_encode_state(self):
+    def test_encode_state(self) -> None:
         from app.api.routes.toolsets import _encode_state_with_instance
         result = _encode_state_with_instance("orig_state", "inst-1", "user-1")
         assert isinstance(result, str)
 
-    def test_decode_state(self):
-        from app.api.routes.toolsets import _encode_state_with_instance, _decode_state_with_instance
+    def test_decode_state(self) -> None:
+        from app.api.routes.toolsets import (
+            _decode_state_with_instance,
+            _encode_state_with_instance,
+        )
         encoded = _encode_state_with_instance("orig", "inst-1", "user-1")
         decoded = _decode_state_with_instance(encoded)
         assert decoded["state"] == "orig"
         assert decoded["instance_id"] == "inst-1"
 
-    def test_decode_invalid_json(self):
+    def test_decode_invalid_json(self) -> None:
         import base64
-        from app.api.routes.toolsets import _decode_state_with_instance, OAuthConfigError
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         encoded = base64.urlsafe_b64encode(b"not json").decode()
         with pytest.raises(OAuthConfigError, match="not valid JSON"):
             _decode_state_with_instance(encoded)
 
-    def test_decode_missing_fields(self):
+    def test_decode_missing_fields(self) -> None:
         import base64
-        from app.api.routes.toolsets import _decode_state_with_instance, OAuthConfigError
+
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _decode_state_with_instance,
+        )
         encoded = base64.urlsafe_b64encode(b'{"state":"s"}').decode()
         with pytest.raises(OAuthConfigError, match="Missing required"):
             _decode_state_with_instance(encoded)
 
-    def test_encode_failure(self):
-        from app.api.routes.toolsets import OAuthConfigError
-        from app.api.routes.toolsets import _encode_state_with_instance
+    def test_encode_failure(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _encode_state_with_instance,
+        )
         with patch("json.dumps", side_effect=Exception("fail")):
             with pytest.raises(OAuthConfigError):
                 _encode_state_with_instance("s", "i", "u")
 
 
 class TestApplyTenantToMicrosoftUrl:
-    def test_non_microsoft_url(self):
+    def test_non_microsoft_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         assert _apply_tenant_to_microsoft_oauth_url("https://example.com/auth", "tenant") == "https://example.com/auth"
 
-    def test_empty_url(self):
+    def test_empty_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         assert _apply_tenant_to_microsoft_oauth_url("", "tenant") == ""
 
-    def test_none_url(self):
+    def test_none_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         assert _apply_tenant_to_microsoft_oauth_url(None, "tenant") is None
 
-    def test_common_tenant_noop(self):
+    def test_common_tenant_noop(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         assert _apply_tenant_to_microsoft_oauth_url(url, "common") == url
 
-    def test_empty_tenant_noop(self):
+    def test_empty_tenant_noop(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         assert _apply_tenant_to_microsoft_oauth_url(url, "") == url
 
-    def test_custom_tenant(self):
+    def test_custom_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant-id")
@@ -4134,32 +4175,32 @@ class TestApplyTenantToMicrosoftUrl:
 
 
 class TestCheckInstanceNameConflict:
-    def test_no_conflict(self):
+    def test_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"orgId": "o1", "toolsetType": "jira", "instanceName": "Existing"}]
         assert _check_instance_name_conflict(instances, "New", "o1", "jira") is False
 
-    def test_conflict_same_type(self):
+    def test_conflict_same_type(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"orgId": "o1", "toolsetType": "jira", "instanceName": "Existing"}]
         assert _check_instance_name_conflict(instances, "existing", "o1", "jira") is True
 
-    def test_no_conflict_different_type(self):
+    def test_no_conflict_different_type(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"orgId": "o1", "toolsetType": "slack", "instanceName": "My Slack"}]
         assert _check_instance_name_conflict(instances, "My Slack", "o1", "jira") is False
 
-    def test_no_conflict_different_org(self):
+    def test_no_conflict_different_org(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"orgId": "o2", "toolsetType": "jira", "instanceName": "My Jira"}]
         assert _check_instance_name_conflict(instances, "My Jira", "o1", "jira") is False
 
-    def test_exclude_id(self):
+    def test_exclude_id(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira"}]
         assert _check_instance_name_conflict(instances, "My Jira", "o1", "jira", exclude_id="i1") is False
 
-    def test_exclude_id_still_conflicts_with_other(self):
+    def test_exclude_id_still_conflicts_with_other(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [
             {"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira"},
@@ -4169,29 +4210,29 @@ class TestCheckInstanceNameConflict:
 
 
 class TestCheckOauthNameConflict:
-    def test_no_conflict(self):
+    def test_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"orgId": "o1", "oauthInstanceName": "Existing"}]
         assert _check_oauth_name_conflict(configs, "New", "o1") is False
 
-    def test_conflict(self):
+    def test_conflict(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"orgId": "o1", "oauthInstanceName": "Existing"}]
         assert _check_oauth_name_conflict(configs, "existing", "o1") is True
 
-    def test_different_org(self):
+    def test_different_org(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"orgId": "o2", "oauthInstanceName": "Existing"}]
         assert _check_oauth_name_conflict(configs, "Existing", "o1") is False
 
-    def test_exclude_id(self):
+    def test_exclude_id(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"_id": "c1", "orgId": "o1", "oauthInstanceName": "Existing"}]
         assert _check_oauth_name_conflict(configs, "Existing", "o1", exclude_id="c1") is False
 
 
 class TestFormatToolsetData:
-    def test_basic_format(self):
+    def test_basic_format(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {"display_name": "Jira", "description": "D", "category": "app", "group": "dev", "icon_path": "/icon.png", "supported_auth_types": ["OAUTH"], "tools": [{"name": "search"}]}
         result = _format_toolset_data("jira", metadata)
@@ -4199,7 +4240,7 @@ class TestFormatToolsetData:
         assert result["toolCount"] == 1
         assert "tools" not in result
 
-    def test_with_tools(self):
+    def test_with_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {"display_name": "J", "description": "", "category": "app", "group": "", "icon_path": "", "supported_auth_types": [], "tools": [{"name": "search", "description": "S", "parameters": [], "returns": None, "tags": []}]}
         result = _format_toolset_data("jira", metadata, include_tools=True)
@@ -4208,18 +4249,18 @@ class TestFormatToolsetData:
 
 
 class TestParseRequestJson:
-    def test_valid(self):
+    def test_valid(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         result = _parse_request_json(MagicMock(), b'{"key": "val"}')
         assert result == {"key": "val"}
 
-    def test_empty_raises(self):
+    def test_empty_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"")
         assert exc.value.status_code == 400
 
-    def test_invalid_json_raises(self):
+    def test_invalid_json_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"not json")
@@ -4227,7 +4268,7 @@ class TestParseRequestJson:
 
 
 class TestGetUserContextToolsets:
-    def test_valid(self):
+    def test_valid(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1", "orgId": "o1"}
@@ -4235,7 +4276,7 @@ class TestGetUserContextToolsets:
         ctx = _get_user_context(request)
         assert ctx["user_id"] == "u1"
 
-    def test_from_headers(self):
+    def test_from_headers(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -4243,7 +4284,7 @@ class TestGetUserContextToolsets:
         ctx = _get_user_context(request)
         assert ctx["user_id"] == "u2"
 
-    def test_missing_user_id(self):
+    def test_missing_user_id(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -4254,7 +4295,7 @@ class TestGetUserContextToolsets:
 
 
 class TestGetRegistryAndGraphProvider:
-    def test_registry_not_found(self):
+    def test_registry_not_found(self) -> None:
         from app.api.routes.toolsets import _get_registry
         request = MagicMock()
         request.app.state = MagicMock(spec=[])
@@ -4262,7 +4303,7 @@ class TestGetRegistryAndGraphProvider:
             _get_registry(request)
         assert exc.value.status_code == 500
 
-    def test_graph_provider_not_found(self):
+    def test_graph_provider_not_found(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         request = MagicMock()
         request.app.state = MagicMock(spec=[])
@@ -4272,21 +4313,21 @@ class TestGetRegistryAndGraphProvider:
 
 
 class TestGetToolsetMetadata:
-    def test_empty_type(self):
+    def test_empty_type(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         with pytest.raises(HTTPException) as exc:
             _get_toolset_metadata(MagicMock(), "")
         assert exc.value.status_code == 400
 
-    def test_not_found(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_not_found(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_toolset_metadata(registry, "nonexistent")
 
-    def test_internal_toolset(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_internal_toolset(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"isInternal": True}
         with pytest.raises(ToolsetNotFoundError):
@@ -4294,26 +4335,26 @@ class TestGetToolsetMetadata:
 
 
 class TestStoragePathHelpers:
-    def test_instances_path(self):
+    def test_instances_path(self) -> None:
         from app.api.routes.toolsets import _get_instances_path
         assert _get_instances_path("org-1") == "/services/toolset-instances"
 
-    def test_user_auth_path(self):
+    def test_user_auth_path(self) -> None:
         from app.api.routes.toolsets import _get_user_auth_path
         assert _get_user_auth_path("inst-1", "user-1") == "/services/toolsets/inst-1/user-1"
 
-    def test_instance_users_prefix(self):
+    def test_instance_users_prefix(self) -> None:
         from app.api.routes.toolsets import _get_instance_users_prefix
         assert _get_instance_users_prefix("inst-1") == "/services/toolsets/inst-1/"
 
-    def test_oauth_config_path(self):
+    def test_oauth_config_path(self) -> None:
         from app.api.routes.toolsets import _get_toolset_oauth_config_path
         assert _get_toolset_oauth_config_path("JIRA") == "/services/oauths/toolsets/jira"
 
 
 class TestLoadToolsetInstances:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "i1", "orgId": "o1"}])
@@ -4321,7 +4362,7 @@ class TestLoadToolsetInstances:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_exception(self):
+    async def test_exception(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("fail"))
@@ -4332,7 +4373,7 @@ class TestLoadToolsetInstances:
 
 class TestDeauthAllInstanceUsers:
     @pytest.mark.asyncio
-    async def test_no_users(self):
+    async def test_no_users(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
         cs = AsyncMock()
         cs.list_keys_in_directory = AsyncMock(return_value=[])
@@ -4340,7 +4381,7 @@ class TestDeauthAllInstanceUsers:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_list_keys_exception(self):
+    async def test_list_keys_exception(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
         cs = AsyncMock()
         cs.list_keys_in_directory = AsyncMock(side_effect=Exception("fail"))
@@ -4348,7 +4389,7 @@ class TestDeauthAllInstanceUsers:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_deauth_users(self):
+    async def test_deauth_users(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
         cs = AsyncMock()
         cs.list_keys_in_directory = AsyncMock(return_value=["/services/toolsets/inst-1/user-1"])
@@ -4360,7 +4401,7 @@ class TestDeauthAllInstanceUsers:
 
 class TestGetOauthConfigsForType:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "c1"}])
@@ -4368,7 +4409,7 @@ class TestGetOauthConfigsForType:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_non_list(self):
+    async def test_non_list(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not a list")
@@ -4376,7 +4417,7 @@ class TestGetOauthConfigsForType:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self):
+    async def test_exception(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
@@ -4386,7 +4427,7 @@ class TestGetOauthConfigsForType:
 
 class TestGetOauthConfigById:
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "c1", "orgId": "o1"}])
@@ -4394,7 +4435,7 @@ class TestGetOauthConfigById:
         assert result["_id"] == "c1"
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "c1", "orgId": "o2"}])
@@ -4403,11 +4444,11 @@ class TestGetOauthConfigById:
 
 
 class TestGenerateIds:
-    def test_instance_id(self):
+    def test_instance_id(self) -> None:
         from app.api.routes.toolsets import _generate_instance_id
         assert len(_generate_instance_id()) > 0
 
-    def test_oauth_config_id(self):
+    def test_oauth_config_id(self) -> None:
         from app.api.routes.toolsets import _generate_oauth_config_id
         assert len(_generate_oauth_config_id()) > 0
 
@@ -4421,7 +4462,7 @@ class TestGetOauthCredentialsDebugLogging:
     """Cover line 250 (logger.debug on successful fetch) and line 263 (logger.error on failure)."""
 
     @pytest.mark.asyncio
-    async def test_debug_logging_on_success(self):
+    async def test_debug_logging_on_success(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
@@ -4438,7 +4479,7 @@ class TestGetOauthCredentialsDebugLogging:
         mock_logger.debug.assert_called()
 
     @pytest.mark.asyncio
-    async def test_error_logging_on_unexpected_exception(self):
+    async def test_error_logging_on_unexpected_exception(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
@@ -4453,7 +4494,7 @@ class TestGetOauthCredentialsMissingOauthConfigIdWithLogger:
     """Cover lines 142 (legacy with logger) and 184/188 (instance fetch with logger)."""
 
     @pytest.mark.asyncio
-    async def test_legacy_auth_with_logger(self):
+    async def test_legacy_auth_with_logger(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         config = {"auth": {"clientId": "id1", "clientSecret": "sec1"}, "toolsetType": "slack"}
@@ -4462,7 +4503,7 @@ class TestGetOauthCredentialsMissingOauthConfigIdWithLogger:
         mock_logger.debug.assert_called()
 
     @pytest.mark.asyncio
-    async def test_fetches_oauth_from_instance_with_logger(self):
+    async def test_fetches_oauth_from_instance_with_logger(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
@@ -4482,7 +4523,7 @@ class TestGetOauthCredentialsMissingOauthConfigIdWithLogger:
         mock_logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_instance_fetch_exception_with_logger(self):
+    async def test_instance_fetch_exception_with_logger(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
@@ -4497,7 +4538,7 @@ class TestGetToolsetById:
     """Cover get_toolset_by_id function."""
 
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "inst-1", "name": "Jira"}])
@@ -4505,7 +4546,7 @@ class TestGetToolsetById:
         assert result["_id"] == "inst-1"
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "other"}])
@@ -4513,7 +4554,7 @@ class TestGetToolsetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_non_list_result(self):
+    async def test_non_list_result(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not-a-list")
@@ -4521,7 +4562,7 @@ class TestGetToolsetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_returns_none(self) -> None:
         from app.api.routes.toolsets import get_toolset_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("boom"))
@@ -4533,7 +4574,7 @@ class TestBuildOAuthConfigPassthrough:
     """Cover lines 794-813 in _build_oauth_config (tokenAccessType, scopeParameterName, tokenResponsePath)."""
 
     @pytest.mark.asyncio
-    async def test_auth_config_passthrough_fields(self):
+    async def test_auth_config_passthrough_fields(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         mock_registry = MagicMock()
@@ -4572,7 +4613,7 @@ class TestCreateOrUpdateOauthConfigNoExistingConfig:
     """Cover line 906 (missing 'config' key in existing OAuth config)."""
 
     @pytest.mark.asyncio
-    async def test_update_creates_config_key_if_missing(self):
+    async def test_update_creates_config_key_if_missing(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{
@@ -4614,7 +4655,7 @@ class TestCreateOrUpdateOauthConfigNewCreate:
     """Cover the create path in _create_or_update_toolset_oauth_config."""
 
     @pytest.mark.asyncio
-    async def test_creates_new_config_when_no_existing_id(self):
+    async def test_creates_new_config_when_no_existing_id(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -4648,7 +4689,7 @@ class TestCreateOrUpdateOauthConfigNewCreate:
         cs.set_config.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_create_exception_returns_none(self):
+    async def test_create_exception_returns_none(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -4685,7 +4726,7 @@ class TestPrepareToolsetAuthConfigFallback:
     """Cover lines 700-707 in _prepare_toolset_auth_config (fallback endpoint resolution)."""
 
     @pytest.mark.asyncio
-    async def test_no_base_url_fallback_to_config_service(self):
+    async def test_no_base_url_fallback_to_config_service(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         cs = AsyncMock()
@@ -4712,7 +4753,7 @@ class TestPrepareToolsetAuthConfigFallback:
         assert "https://app.example.com" in result["redirectUri"]
 
     @pytest.mark.asyncio
-    async def test_no_base_url_config_service_fails(self):
+    async def test_no_base_url_config_service_fails(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
 
         cs = AsyncMock()
@@ -4739,7 +4780,7 @@ class TestPrepareToolsetAuthConfigFallback:
         assert "localhost:3001" in result["redirectUri"]
 
     @pytest.mark.asyncio
-    async def test_non_oauth_passthrough(self):
+    async def test_non_oauth_passthrough(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
         cs = AsyncMock()
         registry = MagicMock()
@@ -4751,7 +4792,7 @@ class TestPrepareToolsetAuthConfigExtraFields:
     """Cover lines 728-735 in _prepare_toolset_auth_config (extra optional fields from oauth_config)."""
 
     @pytest.mark.asyncio
-    async def test_additional_params_and_token_fields(self):
+    async def test_additional_params_and_token_fields(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={})
@@ -4783,15 +4824,15 @@ class TestPrepareToolsetAuthConfigExtraFields:
 class TestHasOauthCredentials:
     """Cover _has_oauth_credentials function (line 1069 area)."""
 
-    def test_has_credentials(self):
+    def test_has_credentials(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials({"clientId": "x", "clientSecret": "y"})
 
-    def test_no_credentials(self):
+    def test_no_credentials(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert not _has_oauth_credentials({"type": "OAUTH"})
 
-    def test_infrastructure_only_fields(self):
+    def test_infrastructure_only_fields(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert not _has_oauth_credentials({
             "type": "OAUTH", "redirectUri": "http://x", "scopes": "read",
@@ -4802,17 +4843,17 @@ class TestHasOauthCredentials:
 class TestCheckInstanceNameConflict:
     """Cover _check_instance_name_conflict."""
 
-    def test_no_conflict(self):
+    def test_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"instanceName": "Jira", "orgId": "o1", "toolsetType": "jira", "_id": "i1"}]
         assert not _check_instance_name_conflict(instances, "Slack", "o1", "slack")
 
-    def test_conflict(self):
+    def test_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"instanceName": "Jira", "orgId": "o1", "toolsetType": "jira", "_id": "i1"}]
         assert _check_instance_name_conflict(instances, "Jira", "o1", "jira")
 
-    def test_conflict_with_exclude_id(self):
+    def test_conflict_with_exclude_id(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"instanceName": "Jira", "orgId": "o1", "toolsetType": "jira", "_id": "i1"}]
         assert not _check_instance_name_conflict(instances, "Jira", "o1", "jira", exclude_id="i1")
@@ -4821,12 +4862,12 @@ class TestCheckInstanceNameConflict:
 class TestCheckOauthNameConflict:
     """Cover _check_oauth_name_conflict."""
 
-    def test_no_conflict(self):
+    def test_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"oauthInstanceName": "My App", "orgId": "o1"}]
         assert not _check_oauth_name_conflict(configs, "Other App", "o1")
 
-    def test_conflict(self):
+    def test_conflict(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"oauthInstanceName": "My App", "orgId": "o1"}]
         assert _check_oauth_name_conflict(configs, "My App", "o1")
@@ -4835,15 +4876,18 @@ class TestCheckOauthNameConflict:
 class TestEncodeDecodeState:
     """Cover _encode_state_with_instance and _decode_state_with_instance."""
 
-    def test_roundtrip(self):
-        from app.api.routes.toolsets import _encode_state_with_instance, _decode_state_with_instance
+    def test_roundtrip(self) -> None:
+        from app.api.routes.toolsets import (
+            _decode_state_with_instance,
+            _encode_state_with_instance,
+        )
         encoded = _encode_state_with_instance("orig-state", "inst-1", "user-1")
         decoded = _decode_state_with_instance(encoded)
         assert decoded["state"] == "orig-state"
         assert decoded["instance_id"] == "inst-1"
         assert decoded["user_id"] == "user-1"
 
-    def test_decode_invalid_base64(self):
+    def test_decode_invalid_base64(self) -> None:
         from app.api.routes.toolsets import _decode_state_with_instance
         with pytest.raises(Exception):
             _decode_state_with_instance("not-valid-json-base64!!!")
@@ -4853,7 +4897,7 @@ class TestCheckUserIsAdmin:
     """Cover _check_user_is_admin function."""
 
     @pytest.mark.asyncio
-    async def test_is_admin(self):
+    async def test_is_admin(self) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"nodejs": {"endpoint": "http://localhost:3001"}})
@@ -4872,7 +4916,7 @@ class TestCheckUserIsAdmin:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_not_admin(self):
+    async def test_not_admin(self) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"nodejs": {"endpoint": "http://localhost:3001"}})
@@ -4891,7 +4935,7 @@ class TestCheckUserIsAdmin:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_defaults_false(self):
+    async def test_exception_defaults_false(self) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
@@ -4907,7 +4951,7 @@ class TestDeauthAllInstanceUsersWithExceptions:
     """Cover deauth edge cases with set_config exceptions."""
 
     @pytest.mark.asyncio
-    async def test_deauth_sets_false_on_valid_auth(self):
+    async def test_deauth_sets_false_on_valid_auth(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
         cs = AsyncMock()
         cs.list_keys_in_directory = AsyncMock(return_value=["/services/toolsets/inst-1/user-1"])
@@ -4919,7 +4963,7 @@ class TestDeauthAllInstanceUsersWithExceptions:
         cs.set_config.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_deauth_skips_none_auth(self):
+    async def test_deauth_skips_none_auth(self) -> None:
         """When get_config returns None, _deauth_one returns early."""
         from app.api.routes.toolsets import _deauth_all_instance_users
         cs = AsyncMock()
@@ -4932,7 +4976,7 @@ class TestDeauthAllInstanceUsersWithExceptions:
         cs.set_config.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_deauth_handles_get_config_exception(self):
+    async def test_deauth_handles_get_config_exception(self) -> None:
         from app.api.routes.toolsets import _deauth_all_instance_users
         cs = AsyncMock()
         cs.list_keys_in_directory = AsyncMock(return_value=["/services/toolsets/inst-1/user-1"])
@@ -4945,20 +4989,20 @@ class TestDeauthAllInstanceUsersWithExceptions:
 class TestApplyTenantToMicrosoftOauthUrl:
     """Cover _apply_tenant_to_microsoft_oauth_url."""
 
-    def test_replaces_common(self):
+    def test_replaces_common(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant-id")
         assert "my-tenant-id" in result
         assert "common" not in result
 
-    def test_no_tenant_returns_original(self):
+    def test_no_tenant_returns_original(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "")
         assert result == url
 
-    def test_non_microsoft_url(self):
+    def test_non_microsoft_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://accounts.google.com/o/oauth2/auth"
         result = _apply_tenant_to_microsoft_oauth_url(url, "tenant-1")
@@ -4968,21 +5012,21 @@ class TestApplyTenantToMicrosoftOauthUrl:
 class TestParseRequestJson:
     """Cover _parse_request_json."""
 
-    def test_valid_json(self):
+    def test_valid_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         request = MagicMock()
         body = json.dumps({"key": "val"}).encode()
         result = _parse_request_json(request, body)
         assert result["key"] == "val"
 
-    def test_empty_body_raises(self):
+    def test_empty_body_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         request = MagicMock()
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(request, b"")
         assert exc.value.status_code == 400
 
-    def test_invalid_json(self):
+    def test_invalid_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         request = MagicMock()
         with pytest.raises(HTTPException) as exc:
@@ -4993,7 +5037,7 @@ class TestParseRequestJson:
 class TestGetUserContext:
     """Cover _get_user_context."""
 
-    def test_extracts_context_from_state(self):
+    def test_extracts_context_from_state(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1", "orgId": "o1"}
@@ -5002,7 +5046,7 @@ class TestGetUserContext:
         assert result["user_id"] == "u1"
         assert result["org_id"] == "o1"
 
-    def test_extracts_context_from_headers(self):
+    def test_extracts_context_from_headers(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -5011,7 +5055,7 @@ class TestGetUserContext:
         assert result["user_id"] == "u2"
         assert result["org_id"] == "o2"
 
-    def test_missing_user_id_raises(self):
+    def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -5024,7 +5068,7 @@ class TestGetUserContext:
 class TestFormatToolsetData:
     """Cover _format_toolset_data."""
 
-    def test_basic_format(self):
+    def test_basic_format(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "name": "jira",
@@ -5040,7 +5084,7 @@ class TestFormatToolsetData:
         assert result["displayName"] == "Jira"
         assert len(result["tools"]) == 1
 
-    def test_no_tools(self):
+    def test_no_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "name": "test",
@@ -5058,7 +5102,7 @@ class TestFormatToolsetData:
 class TestGetRegistry:
     """Cover _get_registry."""
 
-    def test_returns_registry(self):
+    def test_returns_registry(self) -> None:
         from app.api.routes.toolsets import _get_registry
         request = MagicMock()
         mock_reg = MagicMock()
@@ -5066,7 +5110,7 @@ class TestGetRegistry:
         result = _get_registry(request)
         assert result is mock_reg
 
-    def test_missing_registry(self):
+    def test_missing_registry(self) -> None:
         from app.api.routes.toolsets import _get_registry
         request = MagicMock()
         request.app.state = MagicMock(spec=[])
@@ -5077,14 +5121,14 @@ class TestGetRegistry:
 class TestGetToolsetMetadata:
     """Cover _get_toolset_metadata."""
 
-    def test_found(self):
+    def test_found(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"name": "jira"}
         result = _get_toolset_metadata(registry, "jira")
         assert result["name"] == "jira"
 
-    def test_not_found(self):
+    def test_not_found(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
@@ -5096,7 +5140,7 @@ class TestGetToolsetMetadata:
 class TestGetOauthConfigFromRegistry:
     """Cover _get_oauth_config_from_registry."""
 
-    def test_found(self):
+    def test_found(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_from_registry
         registry = MagicMock()
         mock_cfg = MagicMock()
@@ -5107,15 +5151,21 @@ class TestGetOauthConfigFromRegistry:
         result = _get_oauth_config_from_registry("jira", registry)
         assert result is mock_cfg
 
-    def test_no_metadata(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, ToolsetNotFoundError
+    def test_no_metadata(self) -> None:
+        from app.api.routes.toolsets import (
+            ToolsetNotFoundError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_oauth_config_from_registry("jira", registry)
 
-    def test_no_oauth_config_in_metadata(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, OAuthConfigError
+    def test_no_oauth_config_in_metadata(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"config": {"_oauth_configs": {}}, "supported_auth_types": ["API_TOKEN"]}
         with pytest.raises(OAuthConfigError, match="does not support OAuth"):
@@ -5125,19 +5175,19 @@ class TestGetOauthConfigFromRegistry:
 class TestHasOauthCredentialsEdgeCases:
     """Cover lines 402-414 edge cases."""
 
-    def test_none_config(self):
+    def test_none_config(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert not _has_oauth_credentials(None)
 
-    def test_non_dict_config(self):
+    def test_non_dict_config(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert not _has_oauth_credentials("not a dict")
 
-    def test_non_string_non_empty_value(self):
+    def test_non_string_non_empty_value(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials({"apiKey": 12345})
 
-    def test_list_value(self):
+    def test_list_value(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials({"roles": ["admin"]})
 
@@ -5145,15 +5195,15 @@ class TestHasOauthCredentialsEdgeCases:
 class TestGetToolsetMetadataEdgeCases:
     """Cover lines 519-530."""
 
-    def test_empty_toolset_type(self):
+    def test_empty_toolset_type(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         with pytest.raises(HTTPException) as exc:
             _get_toolset_metadata(registry, "")
         assert exc.value.status_code == 400
 
-    def test_internal_toolset(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_internal_toolset(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"name": "internal", "isInternal": True}
         with pytest.raises(ToolsetNotFoundError):
@@ -5163,7 +5213,7 @@ class TestGetToolsetMetadataEdgeCases:
 class TestGetGraphProvider:
     """Cover _get_graph_provider."""
 
-    def test_returns_provider(self):
+    def test_returns_provider(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         request = MagicMock()
         provider = MagicMock()
@@ -5171,7 +5221,7 @@ class TestGetGraphProvider:
         result = _get_graph_provider(request)
         assert result is provider
 
-    def test_missing_provider(self):
+    def test_missing_provider(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         request = MagicMock()
         request.app.state = MagicMock(spec=[])
@@ -5182,12 +5232,12 @@ class TestGetGraphProvider:
 class TestCheckInstanceNameConflictDifferentTypes:
     """Cover line 979-980 (different toolset type check)."""
 
-    def test_same_name_different_type_no_conflict(self):
+    def test_same_name_different_type_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"instanceName": "My App", "orgId": "o1", "toolsetType": "jira", "_id": "i1"}]
         assert not _check_instance_name_conflict(instances, "My App", "o1", "slack")
 
-    def test_same_name_different_org_no_conflict(self):
+    def test_same_name_different_org_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"instanceName": "My App", "orgId": "o2", "toolsetType": "jira", "_id": "i1"}]
         assert not _check_instance_name_conflict(instances, "My App", "o1", "jira")
@@ -5196,12 +5246,12 @@ class TestCheckInstanceNameConflictDifferentTypes:
 class TestCheckOauthNameConflictWithExcludeId:
     """Cover exclude_id path in _check_oauth_name_conflict."""
 
-    def test_exclude_self(self):
+    def test_exclude_self(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"oauthInstanceName": "App", "orgId": "o1", "_id": "c1"}]
         assert not _check_oauth_name_conflict(configs, "App", "o1", exclude_id="c1")
 
-    def test_different_org_no_conflict(self):
+    def test_different_org_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"oauthInstanceName": "App", "orgId": "o2", "_id": "c1"}]
         assert not _check_oauth_name_conflict(configs, "App", "o1")
@@ -5211,7 +5261,7 @@ class TestGetOauthConfigByIdEdge:
     """Cover edge cases for _get_oauth_config_by_id."""
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_returns_none(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_by_id
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
@@ -5223,7 +5273,7 @@ class TestCreateOrUpdateOauthConfigUpdateNotFoundFallsThrough:
     """Cover the case where update config_id not found creates new."""
 
     @pytest.mark.asyncio
-    async def test_oauth_config_not_found_creates_new(self):
+    async def test_oauth_config_not_found_creates_new(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "other-id", "orgId": "o1", "config": {}}])
@@ -5262,7 +5312,7 @@ class TestBuildOAuthConfigFallbacks:
     """Cover lines in _build_oauth_config for fallback oauth config fields."""
 
     @pytest.mark.asyncio
-    async def test_fallback_to_registry_fields(self):
+    async def test_fallback_to_registry_fields(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         mock_oauth = MagicMock()
@@ -5290,14 +5340,14 @@ class TestBuildOAuthConfigFallbacks:
         assert result["tokenResponsePath"] == "data.token"
 
     @pytest.mark.asyncio
-    async def test_missing_client_credentials_raises(self):
-        from app.api.routes.toolsets import _build_oauth_config, InvalidAuthConfigError
+    async def test_missing_client_credentials_raises(self) -> None:
+        from app.api.routes.toolsets import InvalidAuthConfigError, _build_oauth_config
         registry = MagicMock()
         with pytest.raises(InvalidAuthConfigError):
             await _build_oauth_config({"clientId": "", "clientSecret": ""}, "google", registry)
 
     @pytest.mark.asyncio
-    async def test_tenant_id_substitution(self):
+    async def test_tenant_id_substitution(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         mock_oauth = MagicMock()
@@ -5323,7 +5373,7 @@ class TestBuildOAuthConfigFallbacks:
         assert result["tenantId"] == "my-tenant"
 
     @pytest.mark.asyncio
-    async def test_no_base_url_uses_default(self):
+    async def test_no_base_url_uses_default(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         mock_oauth = MagicMock()
@@ -5351,7 +5401,7 @@ class TestBuildOAuthConfigTokenAccessTypeInAdditionalParams:
     """Cover line 801: token_access_type skipped when access_type already in additionalParams."""
 
     @pytest.mark.asyncio
-    async def test_token_access_type_skipped_when_in_additional_params(self):
+    async def test_token_access_type_skipped_when_in_additional_params(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
 
         mock_oauth = MagicMock()
@@ -5382,7 +5432,7 @@ class TestBuildOAuthConfigTokenAccessTypeInAdditionalParams:
 class TestGetInstancesPath:
     """Cover _get_instances_path."""
 
-    def test_returns_path(self):
+    def test_returns_path(self) -> None:
         from app.api.routes.toolsets import _get_instances_path
         result = _get_instances_path("org-1")
         assert "/services/toolset-instances" in result
@@ -5392,7 +5442,7 @@ class TestGetOauthCredentialsInvalidConfigData:
     """Cover line 231-235 (empty config data)."""
 
     @pytest.mark.asyncio
-    async def test_invalid_config_data(self):
+    async def test_invalid_config_data(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
@@ -5407,7 +5457,7 @@ class TestGetOauthCredentialsInvalidConfigData:
             await get_oauth_credentials_for_toolset(config, cs)
 
     @pytest.mark.asyncio
-    async def test_missing_client_secret_in_config(self):
+    async def test_missing_client_secret_in_config(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
@@ -5422,7 +5472,7 @@ class TestGetOauthCredentialsInvalidConfigData:
             await get_oauth_credentials_for_toolset(config, cs)
 
     @pytest.mark.asyncio
-    async def test_deleted_oauth_config(self):
+    async def test_deleted_oauth_config(self) -> None:
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
 
@@ -5481,7 +5531,7 @@ class TestCreateToolsetInstanceRoute:
     """Cover create_toolset_instance handler (lines 1197-1395)."""
 
     @pytest.mark.asyncio
-    async def test_create_instance_api_token(self):
+    async def test_create_instance_api_token(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -5503,7 +5553,7 @@ class TestCreateToolsetInstanceRoute:
         assert result["instance"]["instanceName"] == "My Jira"
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_no_base_url_resolves_from_config(self):
+    async def test_create_instance_oauth_no_base_url_resolves_from_config(self) -> None:
         """Cover lines 1260-1273 (resolve base_url from config service)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5545,7 +5595,7 @@ class TestCreateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_no_credentials_logs_warning(self):
+    async def test_create_instance_oauth_no_credentials_logs_warning(self) -> None:
         """Cover lines 1330-1335 (no OAuth credentials provided)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5569,7 +5619,7 @@ class TestCreateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_existing_config_id(self):
+    async def test_create_instance_oauth_existing_config_id(self) -> None:
         """Cover line 1280 (use existing OAuth config by ID)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5594,7 +5644,7 @@ class TestCreateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_missing_config_id_raises(self):
+    async def test_create_instance_oauth_missing_config_id_raises(self) -> None:
         """Cover line 1280 (referenced OAuth config not found)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5619,7 +5669,7 @@ class TestCreateToolsetInstanceRoute:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_name_conflict(self):
+    async def test_create_instance_oauth_name_conflict(self) -> None:
         """Cover line 1295 (OAuth config name conflict)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5645,7 +5695,7 @@ class TestCreateToolsetInstanceRoute:
             assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_create_config_fails(self):
+    async def test_create_instance_oauth_create_config_fails(self) -> None:
         """Cover lines 1330-1335 (OAuth config creation fails)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5673,7 +5723,7 @@ class TestCreateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_create_instance_oauth_config_no_auth_config(self):
+    async def test_create_instance_oauth_config_no_auth_config(self) -> None:
         """Cover line 1302 (build auth_config from body fields)."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
@@ -5701,7 +5751,7 @@ class TestCreateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_create_instance_not_admin(self):
+    async def test_create_instance_not_admin(self) -> None:
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
         req = _make_request(body_dict={"instanceName": "x", "toolsetType": "jira", "authType": "NONE"})
@@ -5715,7 +5765,7 @@ class TestUpdateToolsetInstanceRoute:
     """Cover update_toolset_instance handler (lines 1542-1670)."""
 
     @pytest.mark.asyncio
-    async def test_rename_instance(self):
+    async def test_rename_instance(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
@@ -5732,7 +5782,7 @@ class TestUpdateToolsetInstanceRoute:
         assert result["instance"]["instanceName"] == "New Name"
 
     @pytest.mark.asyncio
-    async def test_rename_conflict(self):
+    async def test_rename_conflict(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
 
@@ -5750,7 +5800,7 @@ class TestUpdateToolsetInstanceRoute:
             assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_update_oauth_switch_config_id(self):
+    async def test_update_oauth_switch_config_id(self) -> None:
         """Cover lines 1615-1623 (switch to a different OAuth config)."""
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
@@ -5770,7 +5820,7 @@ class TestUpdateToolsetInstanceRoute:
         assert "2 user(s)" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_update_oauth_switch_config_not_found(self):
+    async def test_update_oauth_switch_config_not_found(self) -> None:
         """Cover line 1618 (switch to non-existent OAuth config)."""
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
@@ -5787,7 +5837,7 @@ class TestUpdateToolsetInstanceRoute:
             assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_update_oauth_new_credentials(self):
+    async def test_update_oauth_new_credentials(self) -> None:
         """Cover lines 1628-1646 (update OAuth credentials)."""
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
@@ -5810,7 +5860,7 @@ class TestUpdateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_update_set_config_fails(self):
+    async def test_update_set_config_fails(self) -> None:
         """Cover lines 1654-1656."""
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
@@ -5827,7 +5877,7 @@ class TestUpdateToolsetInstanceRoute:
             assert exc.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_update_base_url_resolution(self):
+    async def test_update_base_url_resolution(self) -> None:
         """Cover lines 1599-1612 (base_url resolution from config for OAuth update)."""
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
@@ -5859,7 +5909,7 @@ class TestUpdateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_update_base_url_resolution_exception(self):
+    async def test_update_base_url_resolution_exception(self) -> None:
         """Cover lines 1610-1612 (base_url resolution exception)."""
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
@@ -5892,7 +5942,7 @@ class TestDeleteToolsetInstanceRoute:
     """Cover delete_toolset_instance handler (lines 1680-1818)."""
 
     @pytest.mark.asyncio
-    async def test_delete_instance_success(self):
+    async def test_delete_instance_success(self) -> None:
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
@@ -5914,7 +5964,7 @@ class TestDeleteToolsetInstanceRoute:
         assert result["instanceId"] == "i1"
 
     @pytest.mark.asyncio
-    async def test_delete_instance_with_credential_cleanup(self):
+    async def test_delete_instance_with_credential_cleanup(self) -> None:
         """Cover lines 1747-1806 (credential cleanup)."""
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
@@ -5945,7 +5995,7 @@ class TestDeleteToolsetInstanceRoute:
         assert result["deletedCredentialsCount"] == 2
 
     @pytest.mark.asyncio
-    async def test_delete_instance_invalid_key_skipped(self):
+    async def test_delete_instance_invalid_key_skipped(self) -> None:
         """Cover lines 1774/1776 (invalid key format warnings)."""
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
@@ -5972,7 +6022,7 @@ class TestDeleteToolsetInstanceRoute:
         assert result["deletedCredentialsCount"] == 1  # Only the valid key
 
     @pytest.mark.asyncio
-    async def test_delete_instance_save_fails(self):
+    async def test_delete_instance_save_fails(self) -> None:
         """Cover lines 1804-1806."""
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
@@ -5994,7 +6044,7 @@ class TestDeleteToolsetInstanceRoute:
             assert exc.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_delete_credential_failure_counted(self):
+    async def test_delete_credential_failure_counted(self) -> None:
         """Cover line 1786 (credential deletion exception)."""
         from app.api.routes.toolsets import delete_toolset_instance
         cs = AsyncMock()
@@ -6021,7 +6071,7 @@ class TestGetMyToolsetsRoute:
     """Cover get_my_toolsets handler."""
 
     @pytest.mark.asyncio
-    async def test_no_instances(self):
+    async def test_no_instances(self) -> None:
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
         req = _make_request()
@@ -6034,7 +6084,7 @@ class TestGetMyToolsetsRoute:
         assert result["toolsets"] == []
 
     @pytest.mark.asyncio
-    async def test_with_search_filter(self):
+    async def test_with_search_filter(self) -> None:
         """Cover lines 1865-1866 (search filter)."""
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
@@ -6055,7 +6105,7 @@ class TestGetMyToolsetsRoute:
         assert result["toolsets"][0]["instanceName"] == "Jira Main"
 
     @pytest.mark.asyncio
-    async def test_with_auth_status_filter(self):
+    async def test_with_auth_status_filter(self) -> None:
         """Cover lines 1997-2000 (auth_status filter)."""
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
@@ -6075,7 +6125,7 @@ class TestGetMyToolsetsRoute:
         assert result["filterCounts"]["authenticated"] == 1
 
     @pytest.mark.asyncio
-    async def test_include_registry(self):
+    async def test_include_registry(self) -> None:
         """Cover lines 1938-1986 (includeRegistry)."""
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
@@ -6108,7 +6158,7 @@ class TestGetMyToolsetsRoute:
         assert "slack" in types
 
     @pytest.mark.asyncio
-    async def test_include_registry_exception_skips(self):
+    async def test_include_registry_exception_skips(self) -> None:
         """Cover lines 1945-1949 (registry metadata exception or internal)."""
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
@@ -6131,7 +6181,7 @@ class TestGetMyToolsetsRoute:
         assert result["toolsets"] == []
 
     @pytest.mark.asyncio
-    async def test_non_oauth_with_auth_stored(self):
+    async def test_non_oauth_with_auth_stored(self) -> None:
         """Cover line 1906 (auth stored for non-OAuth type)."""
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
@@ -6152,7 +6202,7 @@ class TestAuthenticateToolsetInstanceRoute:
     """Cover authenticate_toolset_instance handler."""
 
     @pytest.mark.asyncio
-    async def test_authenticate_api_token(self):
+    async def test_authenticate_api_token(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
         cs = AsyncMock()
         cs.set_config = AsyncMock()
@@ -6167,7 +6217,7 @@ class TestAuthenticateToolsetInstanceRoute:
         cs.set_config.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_authenticate_oauth_rejected(self):
+    async def test_authenticate_oauth_rejected(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
         cs = AsyncMock()
 
@@ -6180,7 +6230,7 @@ class TestAuthenticateToolsetInstanceRoute:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_authenticate_no_auth(self):
+    async def test_authenticate_no_auth(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
         cs = AsyncMock()
 
@@ -6193,7 +6243,7 @@ class TestAuthenticateToolsetInstanceRoute:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_authenticate_save_fails(self):
+    async def test_authenticate_save_fails(self) -> None:
         """Cover lines 2091-2093 (save failure)."""
         from app.api.routes.toolsets import authenticate_toolset_instance
         cs = AsyncMock()
@@ -6212,7 +6262,7 @@ class TestUpdateToolsetCredentialsRoute:
     """Cover update_toolset_credentials handler."""
 
     @pytest.mark.asyncio
-    async def test_update_credentials(self):
+    async def test_update_credentials(self) -> None:
         from app.api.routes.toolsets import update_toolset_credentials
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"isAuthenticated": True, "auth": {"apiToken": "old"}})
@@ -6224,7 +6274,7 @@ class TestUpdateToolsetCredentialsRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_update_credentials_not_found(self):
+    async def test_update_credentials_not_found(self) -> None:
         from app.api.routes.toolsets import update_toolset_credentials
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=None)
@@ -6236,7 +6286,7 @@ class TestUpdateToolsetCredentialsRoute:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_update_credentials_save_fails(self):
+    async def test_update_credentials_save_fails(self) -> None:
         """Cover lines 2133-2135."""
         from app.api.routes.toolsets import update_toolset_credentials
         cs = AsyncMock()
@@ -6254,7 +6304,7 @@ class TestRemoveToolsetCredentialsRoute:
     """Cover remove_toolset_credentials handler."""
 
     @pytest.mark.asyncio
-    async def test_remove_credentials(self):
+    async def test_remove_credentials(self) -> None:
         from app.api.routes.toolsets import remove_toolset_credentials
         cs = AsyncMock()
         cs.delete_config = AsyncMock()
@@ -6268,7 +6318,7 @@ class TestRemoveToolsetCredentialsRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_remove_credentials_delete_fails(self):
+    async def test_remove_credentials_delete_fails(self) -> None:
         """Cover lines 2165-2166."""
         from app.api.routes.toolsets import remove_toolset_credentials
         cs = AsyncMock()
@@ -6287,7 +6337,7 @@ class TestReauthenticateToolsetInstanceRoute:
     """Cover reauthenticate_toolset_instance handler."""
 
     @pytest.mark.asyncio
-    async def test_reauthenticate(self):
+    async def test_reauthenticate(self) -> None:
         from app.api.routes.toolsets import reauthenticate_toolset_instance
         cs = AsyncMock()
         cs.delete_config = AsyncMock()
@@ -6303,7 +6353,7 @@ class TestReauthenticateToolsetInstanceRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_reauthenticate_delete_fails(self):
+    async def test_reauthenticate_delete_fails(self) -> None:
         """Cover lines 2208-2210."""
         from app.api.routes.toolsets import reauthenticate_toolset_instance
         cs = AsyncMock()
@@ -6324,7 +6374,7 @@ class TestGetInstanceStatusRoute:
     """Cover get_instance_status handler (lines 2617-2649)."""
 
     @pytest.mark.asyncio
-    async def test_get_status_authenticated(self):
+    async def test_get_status_authenticated(self) -> None:
         from app.api.routes.toolsets import get_instance_status
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"isAuthenticated": True})
@@ -6338,7 +6388,7 @@ class TestGetInstanceStatusRoute:
         assert result["isAuthenticated"] is True
 
     @pytest.mark.asyncio
-    async def test_get_status_exception_returns_false(self):
+    async def test_get_status_exception_returns_false(self) -> None:
         """Cover lines 2639-2640 (config exception)."""
         from app.api.routes.toolsets import get_instance_status
         cs = AsyncMock()
@@ -6357,7 +6407,7 @@ class TestGetInstanceDetailRoute:
     """Cover get_toolset_instance handler (lines 1420-1500)."""
 
     @pytest.mark.asyncio
-    async def test_get_instance_admin_with_oauth(self):
+    async def test_get_instance_admin_with_oauth(self) -> None:
         """Cover lines 1471-1498 (admin OAuth config and user count)."""
         from app.api.routes.toolsets import get_toolset_instance
         cs = AsyncMock()
@@ -6382,7 +6432,7 @@ class TestGetInstanceDetailRoute:
         assert result["instance"]["oauthConfig"]["clientId"] == "cid"
 
     @pytest.mark.asyncio
-    async def test_get_instance_admin_oauth_config_exception(self):
+    async def test_get_instance_admin_oauth_config_exception(self) -> None:
         """Cover line 1488-1489 (OAuth config fetch exception)."""
         from app.api.routes.toolsets import get_toolset_instance
         cs = AsyncMock()
@@ -6405,7 +6455,7 @@ class TestListToolsetOauthConfigs:
     """Cover list_toolset_oauth_configs handler."""
 
     @pytest.mark.asyncio
-    async def test_admin_sees_full_config(self):
+    async def test_admin_sees_full_config(self) -> None:
         """Cover line 2451-2461."""
         from app.api.routes.toolsets import list_toolset_oauth_configs
         cs = AsyncMock()
@@ -6426,7 +6476,7 @@ class TestUpdateToolsetOauthConfig:
     """Cover update_toolset_oauth_config handler."""
 
     @pytest.mark.asyncio
-    async def test_update_oauth_config(self):
+    async def test_update_oauth_config(self) -> None:
         """Cover lines 2466-2537."""
         from app.api.routes.toolsets import update_toolset_oauth_config
         cs = AsyncMock()
@@ -6453,7 +6503,7 @@ class TestUpdateToolsetOauthConfig:
         assert result["deauthenticatedUserCount"] == 3
 
     @pytest.mark.asyncio
-    async def test_update_oauth_config_not_admin(self):
+    async def test_update_oauth_config_not_admin(self) -> None:
         from app.api.routes.toolsets import update_toolset_oauth_config
         cs = AsyncMock()
         req = _make_request(body_dict={})
@@ -6464,7 +6514,7 @@ class TestUpdateToolsetOauthConfig:
             assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_update_oauth_config_base_url_fallback(self):
+    async def test_update_oauth_config_base_url_fallback(self) -> None:
         """Cover lines 2495-2500 (base_url fallback from config)."""
         from app.api.routes.toolsets import update_toolset_oauth_config
         cs = AsyncMock()
@@ -6494,7 +6544,7 @@ class TestDeleteToolsetOauthConfig:
     """Cover delete_toolset_oauth_config handler."""
 
     @pytest.mark.asyncio
-    async def test_delete_config_success(self):
+    async def test_delete_config_success(self) -> None:
         """Cover lines 2540-2592."""
         from app.api.routes.toolsets import delete_toolset_oauth_config
         cs = AsyncMock()
@@ -6510,7 +6560,7 @@ class TestDeleteToolsetOauthConfig:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_delete_config_in_use(self):
+    async def test_delete_config_in_use(self) -> None:
         """Cover line 2573 (instances using config)."""
         from app.api.routes.toolsets import delete_toolset_oauth_config
         cs = AsyncMock()
@@ -6526,7 +6576,7 @@ class TestDeleteToolsetOauthConfig:
             assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_delete_config_save_fails(self):
+    async def test_delete_config_save_fails(self) -> None:
         """Cover lines 2588-2590."""
         from app.api.routes.toolsets import delete_toolset_oauth_config
         cs = AsyncMock()
@@ -6550,7 +6600,7 @@ class TestGetOauthCredentialsFetchFromInstance:
     """Cover lines 142->149, 176->191, 188->191 in get_oauth_credentials_for_toolset."""
 
     @pytest.mark.asyncio
-    async def test_fetch_oauth_config_id_from_instance_when_missing(self):
+    async def test_fetch_oauth_config_id_from_instance_when_missing(self) -> None:
         """Cover lines 164-189: missing oauthConfigId, fetched from instance."""
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
@@ -6576,7 +6626,7 @@ class TestGetOauthCredentialsFetchFromInstance:
         assert result["clientId"] == "cid"
 
     @pytest.mark.asyncio
-    async def test_fetch_oauth_config_id_from_instance_exception(self):
+    async def test_fetch_oauth_config_id_from_instance_exception(self) -> None:
         """Cover lines 187-189: exception when fetching instance."""
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
@@ -6596,7 +6646,7 @@ class TestGetOauthCredentialsFetchFromInstance:
             await get_oauth_credentials_for_toolset(config, cs, lg)
 
     @pytest.mark.asyncio
-    async def test_instances_not_list(self):
+    async def test_instances_not_list(self) -> None:
         """Cover line 176->191: instances returned is not a list."""
         from app.api.routes.toolsets import get_oauth_credentials_for_toolset
         cs = AsyncMock()
@@ -6616,8 +6666,11 @@ class TestGetOauthCredentialsFetchFromInstance:
 class TestEncodeStateException:
     """Cover lines 1015-1016: exception in _encode_state_with_instance."""
 
-    def test_encode_state_exception(self):
-        from app.api.routes.toolsets import _encode_state_with_instance, OAuthConfigError
+    def test_encode_state_exception(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _encode_state_with_instance,
+        )
         with patch("json.dumps", side_effect=TypeError("not serializable")):
             with pytest.raises(OAuthConfigError):
                 _encode_state_with_instance("state", "inst", "user")
@@ -6627,7 +6680,7 @@ class TestRegistryEndpointIncludeToolCountNotTools:
     """Cover line 1069: include_tool_count=True but include_tools=False."""
 
     @pytest.mark.asyncio
-    async def test_toolset_count_no_tools(self):
+    async def test_toolset_count_no_tools(self) -> None:
         from app.api.routes.toolsets import get_toolset_registry_endpoint
         registry = _make_registry("jira", tools=[{"name": "search"}])
         req = _make_request()
@@ -6647,7 +6700,7 @@ class TestGetAllToolsFilterByTag:
     """Cover line 1134, 1144: filter by tag and search in get_all_tools."""
 
     @pytest.mark.asyncio
-    async def test_filter_by_tag(self):
+    async def test_filter_by_tag(self) -> None:
         from app.api.routes.toolsets import get_all_tools
         registry = _make_registry("jira", tools=[
             {"name": "search", "tags": ["query"], "description": "Search issues"},
@@ -6661,7 +6714,7 @@ class TestGetAllToolsFilterByTag:
         assert result[0]["tool_name"] == "search"
 
     @pytest.mark.asyncio
-    async def test_filter_by_search(self):
+    async def test_filter_by_search(self) -> None:
         from app.api.routes.toolsets import get_all_tools
         registry = _make_registry("jira", tools=[
             {"name": "search_issues", "tags": [], "description": "Find issues"},
@@ -6675,7 +6728,7 @@ class TestGetAllToolsFilterByTag:
         assert result[0]["tool_name"] == "create_issue"
 
     @pytest.mark.asyncio
-    async def test_internal_toolset_skipped(self):
+    async def test_internal_toolset_skipped(self) -> None:
         from app.api.routes.toolsets import get_all_tools
         registry = _make_registry("jira", tools=[{"name": "t1"}], internal=True)
         req = _make_request()
@@ -6689,7 +6742,7 @@ class TestMyToolsetsFetchAuthException:
     """Cover lines 1893-1894: exception fetching user auth."""
 
     @pytest.mark.asyncio
-    async def test_auth_fetch_fails_gracefully(self):
+    async def test_auth_fetch_fails_gracefully(self) -> None:
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
 
@@ -6723,7 +6776,7 @@ class TestAuthenticateApiTokenEmpty:
     """Cover line 2069: API_TOKEN with empty apiToken."""
 
     @pytest.mark.asyncio
-    async def test_api_token_empty(self):
+    async def test_api_token_empty(self) -> None:
         from app.api.routes.toolsets import authenticate_toolset_instance
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -6740,7 +6793,7 @@ class TestRemoveCredentialsException:
     """Cover lines 2160-2161: exception canceling refresh task."""
 
     @pytest.mark.asyncio
-    async def test_cancel_refresh_task_fails(self):
+    async def test_cancel_refresh_task_fails(self) -> None:
         from app.api.routes.toolsets import remove_toolset_credentials
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -6762,7 +6815,7 @@ class TestReauthenticateRefreshTaskException:
     """Cover lines 2203-2204: exception canceling refresh task in reauthenticate."""
 
     @pytest.mark.asyncio
-    async def test_cancel_refresh_task_fails(self):
+    async def test_cancel_refresh_task_fails(self) -> None:
         from app.api.routes.toolsets import reauthenticate_toolset_instance
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -6785,7 +6838,7 @@ class TestDeleteToolsetOAuthConfigMoreThanMax:
     """Cover line 2573: more instances than MAX_AGENT_NAMES_DISPLAY."""
 
     @pytest.mark.asyncio
-    async def test_more_than_max_display(self):
+    async def test_more_than_max_display(self) -> None:
         from app.api.routes.toolsets import delete_toolset_oauth_config
         cs = AsyncMock()
 
@@ -6808,7 +6861,7 @@ class TestListToolsetOAuthConfigsNonAdmin:
     """Cover line 2451: non-admin listing OAuth configs."""
 
     @pytest.mark.asyncio
-    async def test_non_admin_sees_basic_metadata(self):
+    async def test_non_admin_sees_basic_metadata(self) -> None:
         from app.api.routes.toolsets import list_toolset_oauth_configs
         cs = AsyncMock()
         configs = [
@@ -6831,7 +6884,7 @@ class TestListToolsetOAuthConfigsNonAdmin:
                 assert "clientSecret" not in cfg
 
     @pytest.mark.asyncio
-    async def test_admin_sees_all_fields(self):
+    async def test_admin_sees_all_fields(self) -> None:
         from app.api.routes.toolsets import list_toolset_oauth_configs
         cs = AsyncMock()
         configs = [
@@ -6857,7 +6910,7 @@ class TestListToolsetOAuthConfigsNonAdmin:
 # =============================================================================
 
 class TestGetUserContextFullCoverage:
-    def test_from_state(self):
+    def test_from_state(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1", "orgId": "o1"}
@@ -6866,7 +6919,7 @@ class TestGetUserContextFullCoverage:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_from_headers_fallback(self):
+    def test_from_headers_fallback(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -6875,7 +6928,7 @@ class TestGetUserContextFullCoverage:
         assert ctx["user_id"] == "u2"
         assert ctx["org_id"] == "o2"
 
-    def test_missing_user_id_raises(self):
+    def test_missing_user_id_raises(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -6886,14 +6939,14 @@ class TestGetUserContextFullCoverage:
 
 
 class TestGetRegistryFullCoverage:
-    def test_success(self):
+    def test_success(self) -> None:
         from app.api.routes.toolsets import _get_registry
         request = MagicMock()
         request.app.state.toolset_registry = MagicMock()
         result = _get_registry(request)
         assert result is not None
 
-    def test_not_initialized_raises(self):
+    def test_not_initialized_raises(self) -> None:
         from app.api.routes.toolsets import _get_registry
         request = MagicMock()
         request.app.state.toolset_registry = None
@@ -6903,14 +6956,14 @@ class TestGetRegistryFullCoverage:
 
 
 class TestGetGraphProviderFullCoverage:
-    def test_success(self):
+    def test_success(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         request = MagicMock()
         request.app.state.graph_provider = MagicMock()
         result = _get_graph_provider(request)
         assert result is not None
 
-    def test_not_initialized_raises(self):
+    def test_not_initialized_raises(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         request = MagicMock()
         request.app.state.graph_provider = None
@@ -6920,29 +6973,29 @@ class TestGetGraphProviderFullCoverage:
 
 
 class TestGetToolsetMetadataFullCoverage:
-    def test_success(self):
+    def test_success(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"display_name": "Jira", "isInternal": False}
         result = _get_toolset_metadata(registry, "jira")
         assert result["display_name"] == "Jira"
 
-    def test_empty_type_raises(self):
+    def test_empty_type_raises(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
         with pytest.raises(HTTPException) as exc:
             _get_toolset_metadata(registry, "")
         assert exc.value.status_code == 400
 
-    def test_not_found_raises(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_not_found_raises(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_toolset_metadata(registry, "nonexistent")
 
-    def test_internal_toolset_raises(self):
-        from app.api.routes.toolsets import _get_toolset_metadata, ToolsetNotFoundError
+    def test_internal_toolset_raises(self) -> None:
+        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"isInternal": True}
         with pytest.raises(ToolsetNotFoundError):
@@ -6950,33 +7003,33 @@ class TestGetToolsetMetadataFullCoverage:
 
 
 class TestPathHelpers:
-    def test_get_instances_path(self):
+    def test_get_instances_path(self) -> None:
         from app.api.routes.toolsets import _get_instances_path
         result = _get_instances_path("org1")
         assert isinstance(result, str)
 
-    def test_get_user_auth_path(self):
+    def test_get_user_auth_path(self) -> None:
         from app.api.routes.toolsets import _get_user_auth_path
         result = _get_user_auth_path("inst1", "user1")
         assert "inst1" in result
         assert "user1" in result
 
-    def test_get_instance_users_prefix(self):
+    def test_get_instance_users_prefix(self) -> None:
         from app.api.routes.toolsets import _get_instance_users_prefix
         result = _get_instance_users_prefix("inst1")
         assert result.endswith("/")
 
-    def test_get_toolset_oauth_config_path(self):
+    def test_get_toolset_oauth_config_path(self) -> None:
         from app.api.routes.toolsets import _get_toolset_oauth_config_path
         result = _get_toolset_oauth_config_path("JIRA")
         assert "jira" in result
 
-    def test_generate_instance_id(self):
+    def test_generate_instance_id(self) -> None:
         from app.api.routes.toolsets import _generate_instance_id
         result = _generate_instance_id()
         uuid.UUID(result)
 
-    def test_generate_oauth_config_id(self):
+    def test_generate_oauth_config_id(self) -> None:
         from app.api.routes.toolsets import _generate_oauth_config_id
         result = _generate_oauth_config_id()
         uuid.UUID(result)
@@ -6984,7 +7037,7 @@ class TestPathHelpers:
 
 class TestLoadToolsetInstancesFullCoverage:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "i1", "orgId": "org1"}])
@@ -6992,7 +7045,7 @@ class TestLoadToolsetInstancesFullCoverage:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_exception_raises(self):
+    async def test_exception_raises(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
@@ -7002,26 +7055,26 @@ class TestLoadToolsetInstancesFullCoverage:
 
 
 class TestApplyTenantToMicrosoftOAuthUrlFullCoverage:
-    def test_non_microsoft_url_unchanged(self):
+    def test_non_microsoft_url_unchanged(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://accounts.google.com/oauth2/authorize"
         assert _apply_tenant_to_microsoft_oauth_url(url, "tenant1") == url
 
-    def test_empty_url(self):
+    def test_empty_url(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         assert _apply_tenant_to_microsoft_oauth_url("", "tenant1") == ""
 
-    def test_common_tenant_no_change(self):
+    def test_common_tenant_no_change(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         assert _apply_tenant_to_microsoft_oauth_url(url, "common") == url
 
-    def test_blank_tenant_no_change(self):
+    def test_blank_tenant_no_change(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         assert _apply_tenant_to_microsoft_oauth_url(url, "") == url
 
-    def test_replaces_tenant(self):
+    def test_replaces_tenant(self) -> None:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         result = _apply_tenant_to_microsoft_oauth_url(url, "my-tenant-id")
@@ -7030,7 +7083,7 @@ class TestApplyTenantToMicrosoftOAuthUrlFullCoverage:
 
 
 class TestGetOAuthConfigFromRegistryFullCoverage:
-    def test_success(self):
+    def test_success(self) -> None:
         from app.api.routes.toolsets import _get_oauth_config_from_registry
         registry = MagicMock()
         mock_config = MagicMock()
@@ -7042,22 +7095,31 @@ class TestGetOAuthConfigFromRegistryFullCoverage:
         result = _get_oauth_config_from_registry("jira", registry)
         assert result is mock_config
 
-    def test_not_found(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, ToolsetNotFoundError
+    def test_not_found(self) -> None:
+        from app.api.routes.toolsets import (
+            ToolsetNotFoundError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = None
         with pytest.raises(ToolsetNotFoundError):
             _get_oauth_config_from_registry("jira", registry)
 
-    def test_no_oauth_config(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, OAuthConfigError
+    def test_no_oauth_config(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         registry.get_toolset_metadata.return_value = {"config": {"_oauth_configs": {}}}
         with pytest.raises(OAuthConfigError):
             _get_oauth_config_from_registry("jira", registry)
 
-    def test_incomplete_oauth_config(self):
-        from app.api.routes.toolsets import _get_oauth_config_from_registry, OAuthConfigError
+    def test_incomplete_oauth_config(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            _get_oauth_config_from_registry,
+        )
         registry = MagicMock()
         mock_config = MagicMock(spec=[])
         registry.get_toolset_metadata.return_value = {
@@ -7068,7 +7130,7 @@ class TestGetOAuthConfigFromRegistryFullCoverage:
 
 
 class TestFormatToolsetDataFullCoverage:
-    def test_without_tools(self):
+    def test_without_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {"display_name": "Jira", "description": "Track issues", "tools": [{"name": "search"}]}
         result = _format_toolset_data("jira", metadata)
@@ -7076,7 +7138,7 @@ class TestFormatToolsetDataFullCoverage:
         assert result["toolCount"] == 1
         assert "tools" not in result
 
-    def test_with_tools(self):
+    def test_with_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
             "display_name": "Jira",
@@ -7089,18 +7151,18 @@ class TestFormatToolsetDataFullCoverage:
 
 
 class TestParseRequestJsonFullCoverage:
-    def test_valid(self):
+    def test_valid(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         result = _parse_request_json(MagicMock(), b'{"name": "test"}')
         assert result == {"name": "test"}
 
-    def test_empty_body(self):
+    def test_empty_body(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"")
         assert exc.value.status_code == 400
 
-    def test_invalid_json(self):
+    def test_invalid_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"not json")
@@ -7109,7 +7171,7 @@ class TestParseRequestJsonFullCoverage:
 
 class TestGetOAuthConfigsForTypeFullCoverage:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "cfg1"}])
@@ -7117,7 +7179,7 @@ class TestGetOAuthConfigsForTypeFullCoverage:
         assert len(result) == 1
 
     @pytest.mark.asyncio
-    async def test_non_list_returns_empty(self):
+    async def test_non_list_returns_empty(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="not a list")
@@ -7125,7 +7187,7 @@ class TestGetOAuthConfigsForTypeFullCoverage:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_empty(self) -> None:
         from app.api.routes.toolsets import _get_oauth_configs_for_type
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=Exception("fail"))
@@ -7135,13 +7197,13 @@ class TestGetOAuthConfigsForTypeFullCoverage:
 
 class TestBuildOAuthConfigFullCoverage:
     @pytest.mark.asyncio
-    async def test_missing_client_id_raises(self):
-        from app.api.routes.toolsets import _build_oauth_config, InvalidAuthConfigError
+    async def test_missing_client_id_raises(self) -> None:
+        from app.api.routes.toolsets import InvalidAuthConfigError, _build_oauth_config
         with pytest.raises(InvalidAuthConfigError):
             await _build_oauth_config({}, "jira", MagicMock())
 
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
         registry = MagicMock()
         mock_oauth = MagicMock()
@@ -7165,7 +7227,7 @@ class TestBuildOAuthConfigFullCoverage:
         assert result["clientSecret"] == "cs"
 
     @pytest.mark.asyncio
-    async def test_with_tenant_id(self):
+    async def test_with_tenant_id(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
         registry = MagicMock()
         mock_oauth = MagicMock()
@@ -7189,7 +7251,7 @@ class TestBuildOAuthConfigFullCoverage:
         assert "my-tenant" in result["authorizeUrl"]
 
     @pytest.mark.asyncio
-    async def test_with_additional_params(self):
+    async def test_with_additional_params(self) -> None:
         from app.api.routes.toolsets import _build_oauth_config
         registry = MagicMock()
         mock_oauth = MagicMock()
@@ -7216,7 +7278,7 @@ class TestBuildOAuthConfigFullCoverage:
 
 class TestCreateOrUpdateToolsetOAuthConfigFullCoverage:
     @pytest.mark.asyncio
-    async def test_update_existing(self):
+    async def test_update_existing(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[
@@ -7232,7 +7294,7 @@ class TestCreateOrUpdateToolsetOAuthConfigFullCoverage:
             assert result == "cfg-1"
 
     @pytest.mark.asyncio
-    async def test_create_new(self):
+    async def test_create_new(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -7246,7 +7308,7 @@ class TestCreateOrUpdateToolsetOAuthConfigFullCoverage:
             assert result is not None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_returns_none(self) -> None:
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -7260,7 +7322,7 @@ class TestCreateOrUpdateToolsetOAuthConfigFullCoverage:
 
 class TestPrepareToolsetAuthConfigFullCoverage:
     @pytest.mark.asyncio
-    async def test_non_oauth_returns_as_is(self):
+    async def test_non_oauth_returns_as_is(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
         result = await _prepare_toolset_auth_config(
             {"type": "API_KEY", "key": "abc"}, "jira", MagicMock(), MagicMock()
@@ -7268,7 +7330,7 @@ class TestPrepareToolsetAuthConfigFullCoverage:
         assert result["type"] == "API_KEY"
 
     @pytest.mark.asyncio
-    async def test_oauth_enriches(self):
+    async def test_oauth_enriches(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
         registry = MagicMock()
         mock_oauth = MagicMock()
@@ -7294,7 +7356,7 @@ class TestPrepareToolsetAuthConfigFullCoverage:
         assert "redirectUri" in result
 
     @pytest.mark.asyncio
-    async def test_oauth_without_base_url_uses_fallback(self):
+    async def test_oauth_without_base_url_uses_fallback(self) -> None:
         from app.api.routes.toolsets import _prepare_toolset_auth_config
         registry = MagicMock()
         mock_oauth = MagicMock()
@@ -7317,16 +7379,19 @@ class TestPrepareToolsetAuthConfigFullCoverage:
         result = await _prepare_toolset_auth_config(
             {"type": "OAUTH"}, "jira", registry, cs
         )
-        assert "app.example.com" in result["redirectUri"]
+        assert urlparse(result["redirectUri"]).hostname == "app.example.com"
 
 
 class TestAgentScopedToolsets:
-    def test_get_agent_auth_path(self):
+    def test_get_agent_auth_path(self) -> None:
         from app.api.routes.toolsets import _get_agent_auth_path
         assert _get_agent_auth_path("inst-1", "agent-1") == "/services/toolsets/inst-1/agent-1"
 
-    def test_encode_decode_state_with_instance_for_agent_flow(self):
-        from app.api.routes.toolsets import _decode_state_with_instance, _encode_state_with_instance
+    def test_encode_decode_state_with_instance_for_agent_flow(self) -> None:
+        from app.api.routes.toolsets import (
+            _decode_state_with_instance,
+            _encode_state_with_instance,
+        )
 
         encoded = _encode_state_with_instance("orig-state", "inst-1", "agent-1", is_agent=True)
         decoded = _decode_state_with_instance(encoded)
@@ -7337,7 +7402,7 @@ class TestAgentScopedToolsets:
         assert decoded["is_agent"] is True
 
     @pytest.mark.asyncio
-    async def test_get_agent_toolsets_builds_response_with_agent_auth_fetcher(self):
+    async def test_get_agent_toolsets_builds_response_with_agent_auth_fetcher(self) -> None:
         from app.api.routes.toolsets import get_agent_toolsets
 
         request = _make_request()
@@ -7357,7 +7422,7 @@ class TestAgentScopedToolsets:
         config_service.get_config.assert_awaited_with("/services/toolsets/inst-99/a1", default=None)
 
     @pytest.mark.asyncio
-    async def test_authenticate_agent_toolset_rejects_oauth_instances(self):
+    async def test_authenticate_agent_toolset_rejects_oauth_instances(self) -> None:
         from app.api.routes.toolsets import authenticate_agent_toolset
 
         request = _make_request(body_dict={"auth": {"apiToken": "x"}})
@@ -7375,7 +7440,7 @@ class TestAgentScopedToolsets:
     # _resolve_agent_with_permission
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_resolve_agent_user_not_found_raises_401(self):
+    async def test_resolve_agent_user_not_found_raises_401(self) -> None:
         from app.api.routes.toolsets import _resolve_agent_with_permission
 
         request = _make_request()
@@ -7389,7 +7454,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_resolve_agent_malformed_user_raises_401(self):
+    async def test_resolve_agent_malformed_user_raises_401(self) -> None:
         from app.api.routes.toolsets import _resolve_agent_with_permission
 
         request = _make_request()
@@ -7403,7 +7468,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_resolve_agent_no_permission_raises_404(self):
+    async def test_resolve_agent_no_permission_raises_404(self) -> None:
         from app.api.routes.toolsets import _resolve_agent_with_permission
 
         request = _make_request()
@@ -7418,7 +7483,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_resolve_agent_agent_doc_not_found_raises_404(self):
+    async def test_resolve_agent_agent_doc_not_found_raises_404(self) -> None:
         from app.api.routes.toolsets import _resolve_agent_with_permission
 
         request = _make_request()
@@ -7434,7 +7499,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_resolve_agent_unexpected_exception_raises_500(self):
+    async def test_resolve_agent_unexpected_exception_raises_500(self) -> None:
         from app.api.routes.toolsets import _resolve_agent_with_permission
 
         request = _make_request()
@@ -7448,7 +7513,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_resolve_agent_success_merges_perm(self):
+    async def test_resolve_agent_success_merges_perm(self) -> None:
         from app.api.routes.toolsets import _resolve_agent_with_permission
 
         request = _make_request()
@@ -7468,7 +7533,7 @@ class TestAgentScopedToolsets:
     # _require_agent_edit_access
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_require_agent_edit_access_no_edit_raises_403(self):
+    async def test_require_agent_edit_access_no_edit_raises_403(self) -> None:
         from app.api.routes.toolsets import _require_agent_edit_access
 
         request = _make_request()
@@ -7482,7 +7547,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_require_agent_edit_access_not_sa_raises_400(self):
+    async def test_require_agent_edit_access_not_sa_raises_400(self) -> None:
         from app.api.routes.toolsets import _require_agent_edit_access
 
         request = _make_request()
@@ -7496,7 +7561,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_require_agent_edit_access_success_returns_agent(self):
+    async def test_require_agent_edit_access_success_returns_agent(self) -> None:
         from app.api.routes.toolsets import _require_agent_edit_access
 
         request = _make_request()
@@ -7513,7 +7578,7 @@ class TestAgentScopedToolsets:
     # authenticate_agent_toolset – additional branches
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_authenticate_agent_toolset_instance_not_found(self):
+    async def test_authenticate_agent_toolset_instance_not_found(self) -> None:
         from app.api.routes.toolsets import authenticate_agent_toolset
 
         request = _make_request(body_dict={"auth": {"apiToken": "tok"}})
@@ -7527,7 +7592,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_authenticate_agent_toolset_missing_credentials_raises_400(self):
+    async def test_authenticate_agent_toolset_missing_credentials_raises_400(self) -> None:
         from app.api.routes.toolsets import authenticate_agent_toolset
 
         request = _make_request(body_dict={})
@@ -7542,7 +7607,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_authenticate_agent_toolset_api_token_success(self):
+    async def test_authenticate_agent_toolset_api_token_success(self) -> None:
         from app.api.routes.toolsets import authenticate_agent_toolset
 
         request = _make_request(body_dict={"auth": {"apiToken": "my-token"}})
@@ -7563,8 +7628,11 @@ class TestAgentScopedToolsets:
         assert saved_val["agentKey"] == "a1"
 
     @pytest.mark.asyncio
-    async def test_authenticate_agent_toolset_missing_api_token_field_raises(self):
-        from app.api.routes.toolsets import authenticate_agent_toolset, InvalidAuthConfigError
+    async def test_authenticate_agent_toolset_missing_api_token_field_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            InvalidAuthConfigError,
+            authenticate_agent_toolset,
+        )
 
         request = _make_request(body_dict={"auth": {"apiToken": ""}})
         config_service = AsyncMock()
@@ -7577,8 +7645,11 @@ class TestAgentScopedToolsets:
                 await authenticate_agent_toolset("a1", "i1", request, config_service=config_service)
 
     @pytest.mark.asyncio
-    async def test_authenticate_agent_toolset_missing_basic_auth_fields_raises(self):
-        from app.api.routes.toolsets import authenticate_agent_toolset, InvalidAuthConfigError
+    async def test_authenticate_agent_toolset_missing_basic_auth_fields_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            InvalidAuthConfigError,
+            authenticate_agent_toolset,
+        )
 
         request = _make_request(body_dict={"auth": {"username": "user", "password": ""}})
         config_service = AsyncMock()
@@ -7594,7 +7665,7 @@ class TestAgentScopedToolsets:
     # update_agent_toolset_credentials
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_update_agent_toolset_credentials_missing_auth_raises_400(self):
+    async def test_update_agent_toolset_credentials_missing_auth_raises_400(self) -> None:
         from app.api.routes.toolsets import update_agent_toolset_credentials
 
         request = _make_request(body_dict={})
@@ -7606,7 +7677,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_update_agent_toolset_credentials_no_existing_raises_404(self):
+    async def test_update_agent_toolset_credentials_no_existing_raises_404(self) -> None:
         from app.api.routes.toolsets import update_agent_toolset_credentials
 
         request = _make_request(body_dict={"auth": {"apiToken": "new-tok"}})
@@ -7619,7 +7690,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_update_agent_toolset_credentials_success(self):
+    async def test_update_agent_toolset_credentials_success(self) -> None:
         from app.api.routes.toolsets import update_agent_toolset_credentials
 
         request = _make_request(body_dict={"auth": {"apiToken": "new-tok"}})
@@ -7641,7 +7712,7 @@ class TestAgentScopedToolsets:
     # remove_agent_toolset_credentials
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_remove_agent_toolset_credentials_success(self):
+    async def test_remove_agent_toolset_credentials_success(self) -> None:
         from app.api.routes.toolsets import remove_agent_toolset_credentials
 
         request = _make_request()
@@ -7659,7 +7730,7 @@ class TestAgentScopedToolsets:
     # reauthenticate_agent_toolset
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_reauthenticate_agent_toolset_instance_not_found_raises_404(self):
+    async def test_reauthenticate_agent_toolset_instance_not_found_raises_404(self) -> None:
         from app.api.routes.toolsets import reauthenticate_agent_toolset
 
         request = _make_request()
@@ -7673,7 +7744,7 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_reauthenticate_agent_toolset_success(self):
+    async def test_reauthenticate_agent_toolset_success(self) -> None:
         from app.api.routes.toolsets import reauthenticate_agent_toolset
 
         request = _make_request()
@@ -7693,7 +7764,7 @@ class TestAgentScopedToolsets:
     # get_agent_toolset_oauth_url
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_get_agent_toolset_oauth_url_instance_not_found_raises_404(self):
+    async def test_get_agent_toolset_oauth_url_instance_not_found_raises_404(self) -> None:
         from app.api.routes.toolsets import get_agent_toolset_oauth_url
 
         request = _make_request()
@@ -7707,8 +7778,11 @@ class TestAgentScopedToolsets:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_get_agent_toolset_oauth_url_non_oauth_instance_raises(self):
-        from app.api.routes.toolsets import get_agent_toolset_oauth_url, OAuthConfigError
+    async def test_get_agent_toolset_oauth_url_non_oauth_instance_raises(self) -> None:
+        from app.api.routes.toolsets import (
+            OAuthConfigError,
+            get_agent_toolset_oauth_url,
+        )
 
         request = _make_request()
         config_service = AsyncMock()
@@ -7724,7 +7798,7 @@ class TestAgentScopedToolsets:
     # _build_toolsets_list_response — empty-instances fast path
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_build_toolsets_list_response_no_instances_no_registry(self):
+    async def test_build_toolsets_list_response_no_instances_no_registry(self) -> None:
         from app.api.routes.toolsets import _build_toolsets_list_response
 
         request = _make_request()
@@ -7747,7 +7821,7 @@ class TestAgentScopedToolsets:
         assert result["toolsets"] == []
 
     @pytest.mark.asyncio
-    async def test_build_toolsets_list_response_with_authenticated_instance(self):
+    async def test_build_toolsets_list_response_with_authenticated_instance(self) -> None:
         from app.api.routes.toolsets import _build_toolsets_list_response
 
         request = _make_request()
@@ -7780,3 +7854,209 @@ class TestAgentScopedToolsets:
         assert "hasCredentials" in ts
         assert result["filterCounts"]["authenticated"] == 1
         assert result["filterCounts"]["notAuthenticated"] == 0
+
+
+class TestGetAuthenticatedToolsets:
+    """Tests for get_authenticated_toolsets helper method."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_instances(self) -> None:
+        """Should return empty list when no toolset instances exist."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        config_service.get_config.return_value = []
+        registry = MagicMock()
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_instances_load_fails(self) -> None:
+        """Should return empty list when loading instances raises exception."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        config_service.get_config.side_effect = Exception("etcd error")
+        registry = MagicMock()
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_filters_by_org_id(self) -> None:
+        """Should only return instances matching the org_id."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "inst1", "orgId": "o1", "toolsetType": "jira"},
+            {"_id": "inst2", "orgId": "o2", "toolsetType": "confluence"},
+        ]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            # Auth path - only inst1 is authenticated
+            if "inst1" in path:
+                return {"isAuthenticated": True}
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Jira",
+            "description": "Issue tracker",
+            "icon_path": "/icons/jira.png",
+            "category": "app",
+            "tools": []
+        }
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 1
+        assert result[0]["instanceId"] == "inst1"
+
+    @pytest.mark.asyncio
+    async def test_only_includes_authenticated_toolsets(self) -> None:
+        """Should only return toolsets where user has authenticated."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "inst1", "orgId": "o1", "toolsetType": "jira"},
+            {"_id": "inst2", "orgId": "o1", "toolsetType": "confluence"},
+            {"_id": "inst3", "orgId": "o1", "toolsetType": "slack"},
+        ]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            # Only inst1 and inst3 are authenticated
+            if "inst1" in path:
+                return {"isAuthenticated": True}
+            if "inst2" in path:
+                return {"isAuthenticated": False}
+            if "inst3" in path:
+                return {"isAuthenticated": True}
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Test",
+            "tools": []
+        }
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 2
+        instance_ids = [t["instanceId"] for t in result]
+        assert "inst1" in instance_ids
+        assert "inst3" in instance_ids
+        assert "inst2" not in instance_ids
+
+    @pytest.mark.asyncio
+    async def test_includes_tools_metadata(self) -> None:
+        """Should include full tool metadata from registry."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [{"_id": "inst1", "orgId": "o1", "toolsetType": "jira"}]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            if "inst1" in path:
+                return {"isAuthenticated": True}
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Jira",
+            "description": "Issue tracking",
+            "icon_path": "/icons/jira.png",
+            "category": "productivity",
+            "tools": [
+                {"name": "search", "description": "Search issues"},
+                {"name": "create", "description": "Create issue"},
+            ]
+        }
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 1
+        assert result[0]["toolCount"] == 2
+        assert len(result[0]["tools"]) == 2
+        assert result[0]["tools"][0]["fullName"] == "jira.search"
+        assert result[0]["tools"][1]["fullName"] == "jira.create"
+        assert result[0]["tools"][0]["toolsetName"] == "jira"
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_metadata_gracefully(self) -> None:
+        """Should handle missing metadata without crashing."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [{"_id": "inst1", "orgId": "o1", "toolsetType": "unknown"}]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            if "inst1" in path:
+                return {"isAuthenticated": True}
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = None
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 1
+        assert result[0]["displayName"] == "unknown"
+        assert result[0]["tools"] == []
+
+    @pytest.mark.asyncio
+    async def test_returns_all_required_fields(self) -> None:
+        """Should return all required fields in response."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [{
+            "_id": "inst1",
+            "orgId": "o1",
+            "toolsetType": "jira",
+            "instanceName": "My Jira",
+            "authType": "OAUTH",
+            "createdAtTimestamp": 1234567890,
+            "updatedAtTimestamp": 1234567900,
+        }]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            return {"isAuthenticated": True}
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Jira App",
+            "description": "Issue tracker",
+            "icon_path": "/icons/jira.png",
+            "category": "productivity",
+            "tools": [{"name": "search", "description": "Search"}]
+        }
+
+        result = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 1
+        toolset = result[0]
+        assert toolset["instanceId"] == "inst1"
+        assert toolset["name"] == "My Jira"
+        assert toolset["toolsetType"] == "jira"
+        assert toolset["authType"] == "OAUTH"
+        assert toolset["displayName"] == "Jira App"
+        assert toolset["description"] == "Issue tracker"
+        assert toolset["iconPath"] == "/icons/jira.png"
+        assert toolset["category"] == "productivity"
+        assert toolset["toolCount"] == 1
+        assert toolset["isAuthenticated"] is True
+        assert toolset["createdAtTimestamp"] == 1234567890
+        assert toolset["updatedAtTimestamp"] == 1234567900
