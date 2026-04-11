@@ -728,8 +728,9 @@ class BlobStorage(Transformer):
             tuple[str | None, int | None]: (document_id, file_size_bytes) if found, else (None, None).
         """
         if not self.graph_provider:
-            self.logger.exception("❌ GraphProvider not initialized, cannot get document ID by virtual record ID.")
+            self.logger.error("❌ GraphProvider not initialized, cannot get document ID by virtual record ID.")
             raise Exception("GraphProvider not initialized, cannot get document ID by virtual record ID.")
+
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
