@@ -71,8 +71,14 @@ export interface AgentBuilderCanvasWrapperProps {
   loadMoreToolsets: () => Promise<void>;
   toolsetsHasMore: boolean;
   toolsetsLoadingMore: boolean;
+  mcpServers: any[];
+  refreshMcpServers: (agentKey?: string, isServiceAccount?: boolean, search?: string) => Promise<void>;
+  loadMoreMcpServers: () => Promise<void>;
+  mcpServersHasMore: boolean;
+  mcpServersLoadingMore: boolean;
   isBusiness: boolean;
   activeToolsetTypes?: string[];
+  activeMcpServerTypes?: string[];
   nodes: any[];
   edges: any[];
   onNodesChange: (changes: any) => void;
@@ -134,6 +140,7 @@ export interface UseAgentBuilderDataReturn {
   configuredConnectors: Connector[];
   connectorRegistry: any[];
   toolsets: any[]; // Toolsets with status (isConfigured, isAuthenticated)
+  mcpServers: any[]; // MCP servers with status (isConfigured, isAuthenticated)
   loading: boolean;
   loadedAgent: Agent | null;
   error: string | AgentBuilderError | null;
@@ -157,6 +164,14 @@ export interface UseAgentBuilderDataReturn {
   toolsetsHasMore: boolean;
   /** Whether a load-more request is in flight. */
   toolsetsLoadingMore: boolean;
+  /** Refresh MCP servers list (resets to page 1). */
+  refreshMcpServers: (agentKey?: string, isServiceAccount?: boolean, search?: string) => Promise<void>;
+  /** Load the next page of MCP servers and append to the current list. */
+  loadMoreMcpServers: () => Promise<void>;
+  /** Whether there are more MCP server pages to load. */
+  mcpServersHasMore: boolean;
+  /** Whether a load-more request is in flight. */
+  mcpServersLoadingMore: boolean;
 }
 
 export interface UseAgentBuilderStateReturn {

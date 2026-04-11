@@ -69,6 +69,10 @@ class Neo4jLabel(Enum):
     AGENT_TOOLSETS = "AgentToolset"
     AGENT_TOOLS = "AgentTool"
 
+    # Agent Builder MCP Server collections
+    AGENT_MCP_SERVERS = "AgentMcpServer"
+    AGENT_MCP_TOOLS = "AgentMcpTool"
+
     # Sales
     DEALS = "Deals"
     PRODUCTS = "Products"
@@ -93,6 +97,10 @@ class Neo4jRelationshipType(Enum):
     AGENT_HAS_KNOWLEDGE = "AGENT_HAS_KNOWLEDGE"
     AGENT_HAS_TOOLSET = "AGENT_HAS_TOOLSET"
     TOOLSET_HAS_TOOL = "TOOLSET_HAS_TOOL"
+
+    # Agent Builder MCP Server relationships
+    AGENT_HAS_MCP_SERVER = "AGENT_HAS_MCP_SERVER"
+    MCP_SERVER_HAS_TOOL = "MCP_SERVER_HAS_TOOL"
 
     # Sales relationships
     SOLD_IN = "SOLD_IN"
@@ -149,6 +157,9 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.AGENT_KNOWLEDGE.value: Neo4jLabel.AGENT_KNOWLEDGE.value,
     CollectionNames.AGENT_TOOLSETS.value: Neo4jLabel.AGENT_TOOLSETS.value,
     CollectionNames.AGENT_TOOLS.value: Neo4jLabel.AGENT_TOOLS.value,
+    # Agent Builder MCP Server collections
+    CollectionNames.AGENT_MCP_SERVERS.value: Neo4jLabel.AGENT_MCP_SERVERS.value,
+    CollectionNames.AGENT_MCP_TOOLS.value: Neo4jLabel.AGENT_MCP_TOOLS.value,
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types
@@ -169,6 +180,9 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.AGENT_HAS_KNOWLEDGE.value: Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value,
     CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,
     CollectionNames.TOOLSET_HAS_TOOL.value: Neo4jRelationshipType.TOOLSET_HAS_TOOL.value,
+    # Agent Builder MCP Server relationships
+    CollectionNames.AGENT_HAS_MCP_SERVER.value: Neo4jRelationshipType.AGENT_HAS_MCP_SERVER.value,
+    CollectionNames.MCP_SERVER_HAS_TOOL.value: Neo4jRelationshipType.MCP_SERVER_HAS_TOOL.value,
     CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
     CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,
     CollectionNames.MEMBER_OF.value: Neo4jRelationshipType.MEMBER_OF.value,

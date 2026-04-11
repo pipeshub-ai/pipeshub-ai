@@ -563,6 +563,102 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
         return;
       }
       
+      // Handle MCP server drops (both full server and individual MCP tool)
+      if (type.startsWith('mcp-server-')) {
+        try {
+          const mcpName = event.dataTransfer.getData('name') || type.replace('mcp-server-', '');
+          const mcpDisplayName = event.dataTransfer.getData('displayName') || mcpName;
+          const mcpInstanceId = event.dataTransfer.getData('instanceId') || '';
+          const mcpInstanceName = event.dataTransfer.getData('instanceName') || '';
+          const mcpServerType = event.dataTransfer.getData('serverType') || 'custom';
+          const mcpIconPath = event.dataTransfer.getData('iconPath') || '';
+          const isSingleToolDrop = event.dataTransfer.getData('type') === 'mcp-tool';
+          const singleToolName = event.dataTransfer.getData('mcpToolName') || '';
+
+          let allMcpTools: any[] = [];
+          const toolsStr = event.dataTransfer.getData('tools');
+          if (toolsStr) {
+            try { allMcpTools = JSON.parse(toolsStr); } catch { /* keep empty */ }
+          }
+
+          // For single tool drops, start with only that tool; for server drops, include all
+          let initialTools = allMcpTools;
+          if (isSingleToolDrop && singleToolName) {
+            const droppedTool = allMcpTools.find(
+              (t: any) => t.name === singleToolName || t.namespacedName === singleToolName
+            );
+            initialTools = droppedTool ? [droppedTool] : allMcpTools;
+          }
+
+          const existingMcpNode = nodes.find(
+            (n) => n.data.type.startsWith('mcp-server-') &&
+                   n.data.config?.mcpServerName === mcpName
+          );
+
+          if (existingMcpNode) {
+            const existingTools = existingMcpNode.data.config?.tools || [];
+            const existingNames = new Set(existingTools.map((t: any) => t.namespacedName || t.name));
+            const newTools = initialTools.filter((t: any) => !existingNames.has(t.namespacedName || t.name));
+            if (newTools.length > 0) {
+              setNodes((nds) =>
+                nds.map((node) =>
+                  node.id === existingMcpNode.id
+                    ? {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          config: {
+                            ...node.data.config,
+                            tools: [...existingTools, ...newTools],
+                            availableTools: allMcpTools.length > 0 ? allMcpTools : (node.data.config?.availableTools || []),
+                          },
+                        },
+                      }
+                    : node
+                )
+              );
+            }
+            return;
+          }
+
+          const position = {
+            x: event.clientX - reactFlowBounds.left - 130,
+            y: event.clientY - reactFlowBounds.top - 40,
+          };
+
+          const newNode: Node<FlowNodeData> = {
+            id: `mcp-server-${mcpName}-${Date.now()}`,
+            type: 'flowNode',
+            position,
+            data: {
+              id: `mcp-server-${mcpName}-${Date.now()}`,
+              type: `mcp-server-${mcpName}`,
+              label: mcpDisplayName,
+              description: `MCP Server: ${mcpDisplayName}`,
+              icon: mcpIconPath || '/assets/icons/mcp-servers/server.svg',
+              category: 'mcp-server',
+              config: {
+                instanceId: mcpInstanceId,
+                instanceName: mcpInstanceName,
+                mcpServerName: mcpName,
+                displayName: mcpDisplayName,
+                iconPath: mcpIconPath || '',
+                serverType: mcpServerType,
+                tools: initialTools,
+                availableTools: allMcpTools,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          setNodes((nds) => [...nds, newNode]);
+          return;
+        } catch (e) {
+          console.error('Failed to parse MCP server data:', e);
+        }
+      }
+
       // For non-toolset drops, find the template
 
       const template = nodeTemplates.find((t) => t.type === type);

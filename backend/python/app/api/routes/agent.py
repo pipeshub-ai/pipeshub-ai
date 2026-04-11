@@ -643,6 +643,68 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     return toolsets_with_tools
 
 
+def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
+    """Parse MCP servers with their tools.
+
+    The key of the returned dict is a generated unique name (lowercase server name).
+    Each value carries the parsed fields including instanceId.
+    """
+    mcp_servers = {}
+
+    if not raw_mcp_servers or not isinstance(raw_mcp_servers, list):
+        return mcp_servers
+
+    for server_data in raw_mcp_servers:
+        if not isinstance(server_data, dict):
+            continue
+
+        server_name = server_data.get("name", "").lower().strip()
+        if not server_name:
+            continue
+
+        display_name = server_data.get("displayName", server_name.replace("_", " ").title())
+        server_type = server_data.get("type", "custom")
+        tools_list = server_data.get("tools", [])
+        instance_id = server_data.get("instanceId", None)
+        instance_name = server_data.get("instanceName", None)
+
+        if server_name not in mcp_servers:
+            mcp_servers[server_name] = {
+                "displayName": display_name,
+                "type": server_type,
+                "tools": [],
+                "instanceId": instance_id,
+                "instanceName": instance_name,
+            }
+        elif instance_id and not mcp_servers[server_name].get("instanceId"):
+            mcp_servers[server_name]["instanceId"] = instance_id
+            mcp_servers[server_name]["instanceName"] = instance_name
+
+        for tool in tools_list:
+            if isinstance(tool, dict):
+                tool_name = tool.get("name", "")
+                if tool_name:
+                    input_schema = tool.get("inputSchema")
+                    if input_schema is None:
+                        input_schema = tool.get("input_schema")
+                    mcp_servers[server_name]["tools"].append({
+                        "name": tool_name,
+                        "namespacedName": (
+                            tool.get("namespacedName")
+                            or tool.get("namespaced_name")
+                            or f"mcp_{server_name}_{tool_name}"
+                        ),
+                        "description": tool.get("description", ""),
+                        "inputSchema": (
+                            input_schema
+                            if isinstance(input_schema, dict)
+                            else {"type": "object", "properties": {}}
+                        ),
+                    })
+
+    return mcp_servers
+
+
 def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse knowledge sources"""
     knowledge_sources = {}
@@ -878,6 +940,162 @@ async def _create_toolset_edges(
         })
 
     return created_toolsets, failed_toolsets
+
+
+async def _create_mcp_server_edges(
+    agent_key: str,
+    mcp_servers: dict[str, dict[str, Any]],
+    user_info: dict[str, Any],
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    transaction: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create MCP server nodes and edges for agent using batch operations."""
+    created = []
+    failed = []
+    time = get_epoch_timestamp_in_ms()
+
+    if not mcp_servers:
+        return created, failed
+
+    server_nodes = []
+    server_mapping: dict[str, dict[str, Any]] = {}
+
+    for server_name, server_data in mcp_servers.items():
+        server_key = str(uuid.uuid4())
+        display_name = server_data["displayName"]
+        server_type = server_data["type"]
+        instance_id = server_data.get("instanceId")
+        instance_name = server_data.get("instanceName")
+
+        server_node: dict[str, Any] = {
+            "_key": server_key,
+            "name": server_name,
+            "displayName": display_name,
+            "type": server_type,
+            "userId": user_info["userId"],
+            "createdBy": user_key,
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        }
+        if instance_id:
+            server_node["instanceId"] = instance_id
+        if instance_name:
+            server_node["instanceName"] = instance_name
+
+        server_nodes.append(server_node)
+        server_mapping[server_name] = {
+            "key": server_key,
+            "displayName": display_name,
+            "tools": server_data.get("tools", []),
+        }
+
+    try:
+        result = await graph_provider.batch_upsert_nodes(
+            server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
+        )
+        if not result:
+            return created, [{"name": "all", "error": "Failed to create MCP server nodes"}]
+    except Exception as e:
+        logger.error(f"Failed to batch create MCP server nodes: {e}")
+        return created, [{"name": "all", "error": str(e)}]
+
+    agent_server_edges = [
+        {
+            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+            "_to": f"{CollectionNames.AGENT_MCP_SERVERS.value}/{info['key']}",
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        }
+        for info in server_mapping.values()
+    ]
+    try:
+        await graph_provider.batch_create_edges(
+            agent_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
+        )
+    except Exception as e:
+        logger.error(f"Failed to create agent->mcp_server edges: {e}")
+
+    tool_nodes = []
+    server_tool_edges = []
+    tool_mapping: dict[str, dict[str, str]] = {}
+
+    for info in server_mapping.values():
+        for tool_data in info["tools"]:
+            tool_name = tool_data["name"]
+            namespaced = (
+                tool_data.get("namespacedName")
+                or tool_data.get("namespaced_name")
+                or tool_name
+            )
+            description = tool_data.get("description", "")
+            tool_key = str(uuid.uuid4())
+
+            tool_nodes.append({
+                "_key": tool_key,
+                "name": tool_name,
+                "namespacedName": namespaced,
+                "description": description,
+                "inputSchema": (
+                    tool_data.get("inputSchema")
+                    if isinstance(tool_data.get("inputSchema"), dict)
+                    else (
+                        tool_data.get("input_schema")
+                        if isinstance(tool_data.get("input_schema"), dict)
+                        else {"type": "object", "properties": {}}
+                    )
+                ),
+                "createdBy": user_key,
+                "createdAtTimestamp": time,
+                "updatedAtTimestamp": time,
+            })
+            tool_mapping[namespaced] = {"key": tool_key, "name": tool_name}
+            server_tool_edges.append({
+                "_from": f"{CollectionNames.AGENT_MCP_SERVERS.value}/{info['key']}",
+                "_to": f"{CollectionNames.AGENT_MCP_TOOLS.value}/{tool_key}",
+                "createdAtTimestamp": time,
+                "updatedAtTimestamp": time,
+            })
+
+    if tool_nodes:
+        try:
+            await graph_provider.batch_upsert_nodes(
+                tool_nodes, CollectionNames.AGENT_MCP_TOOLS.value, transaction=transaction
+            )
+        except Exception as e:
+            logger.error(f"Failed to batch create MCP tool nodes: {e}")
+
+    if server_tool_edges:
+        try:
+            await graph_provider.batch_create_edges(
+                server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
+            )
+        except Exception as e:
+            logger.error(f"Failed to create mcp_server->tool edges: {e}")
+
+    for info in server_mapping.values():
+        created_tools = []
+        for tool_data in info["tools"]:
+            ns = (
+                tool_data.get("namespacedName")
+                or tool_data.get("namespaced_name")
+                or tool_data["name"]
+            )
+            if ns in tool_mapping:
+                created_tools.append({
+                    "name": tool_mapping[ns]["name"],
+                    "namespacedName": ns,
+                    "key": tool_mapping[ns]["key"],
+                })
+        created.append({
+            "name": server_name,
+            "displayName": info["displayName"],
+            "key": info["key"],
+            "tools": created_tools,
+        })
+
+    return created, failed
 
 
 async def _create_knowledge_edges(
@@ -1523,8 +1741,9 @@ async def create_agent(request: Request) -> JSONResponse:
                 "At least one reasoning model is required. Please add a reasoning model to your configuration."
             )
 
-        # Parse toolsets and knowledge BEFORE starting transaction
+        # Parse toolsets, MCP servers and knowledge BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        mcp_servers_parsed = _parse_mcp_servers(body.get("mcpServers", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
@@ -1572,6 +1791,10 @@ async def create_agent(request: Request) -> JSONResponse:
                     CollectionNames.TOOLSET_HAS_TOOL.value,
                     CollectionNames.AGENT_KNOWLEDGE.value,
                     CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                    CollectionNames.AGENT_MCP_SERVERS.value,
+                    CollectionNames.AGENT_MCP_TOOLS.value,
+                    CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                    CollectionNames.MCP_SERVER_HAS_TOOL.value,
                 ]
             )
             logger.debug(f"Started transaction for agent creation: {agent_key}")
@@ -1732,6 +1955,15 @@ async def create_agent(request: Request) -> JSONResponse:
                     })
 
                 logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
+
+            # Step 3b: Create MCP servers and their tools (within same transaction)
+            created_mcp_servers = []
+            if mcp_servers_parsed:
+                created_mcp_servers, failed_mcp = await _create_mcp_server_edges(
+                    agent_key, mcp_servers_parsed, user_context, user_key,
+                    graph_provider, logger, transaction=transaction_id
+                )
+                logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
 
             # Step 4: Create knowledge sources (within same transaction)
             if knowledge_sources:
@@ -2253,6 +2485,118 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     ) from e
             else:
                 logger.info(f"All toolsets removed for agent {agent_id}")
+
+        # Update MCP servers if provided in request (even if empty array - means delete all)
+        if "mcpServers" in body:
+            mcp_servers_parsed = _parse_mcp_servers(body.get("mcpServers", []))
+
+            graph_provider = services["graph_provider"]
+            transaction_id = None
+            try:
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                        CollectionNames.AGENT_MCP_SERVERS.value,
+                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                        CollectionNames.AGENT_MCP_TOOLS.value,
+                    ]
+                )
+                logger.debug(f"Started transaction for MCP server update on agent {agent_id}")
+
+                agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+
+                # Get all MCP server edges from agent
+                mcp_server_edges = await graph_provider.get_edges_from_node(
+                    agent_full_id,
+                    CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                    transaction=transaction_id
+                )
+
+                mcp_server_keys = []
+                mcp_server_full_ids = []
+                for edge in mcp_server_edges:
+                    full_id = edge.get("_to")
+                    if full_id:
+                        mcp_server_full_ids.append(full_id)
+                        parts = full_id.split("/", 1)
+                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                            mcp_server_keys.append(parts[1])
+
+                # Get all MCP tool edges
+                all_mcp_tool_keys = []
+                all_mcp_tool_full_ids = []
+                for server_full_id in mcp_server_full_ids:
+                    tool_edges = await graph_provider.get_edges_from_node(
+                        server_full_id,
+                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                        transaction=transaction_id
+                    )
+                    for edge in tool_edges:
+                        tool_full_id = edge.get("_to")
+                        if tool_full_id:
+                            all_mcp_tool_full_ids.append(tool_full_id)
+                            parts = tool_full_id.split("/", 1)
+                            if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                                all_mcp_tool_keys.append(parts[1])
+
+                # Delete from leaves to root
+                total_tool_edges_deleted = 0
+                for tool_full_id in all_mcp_tool_full_ids:
+                    count = await graph_provider.delete_all_edges_for_node(
+                        tool_full_id,
+                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                        transaction=transaction_id
+                    )
+                    total_tool_edges_deleted += count
+
+                if all_mcp_tool_keys:
+                    await graph_provider.delete_nodes(
+                        all_mcp_tool_keys,
+                        CollectionNames.AGENT_MCP_TOOLS.value,
+                        transaction=transaction_id
+                    )
+
+                total_server_edges_deleted = 0
+                for server_full_id in mcp_server_full_ids:
+                    count = await graph_provider.delete_all_edges_for_node(
+                        server_full_id,
+                        CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                        transaction=transaction_id
+                    )
+                    total_server_edges_deleted += count
+
+                if mcp_server_keys:
+                    await graph_provider.delete_nodes(
+                        mcp_server_keys,
+                        CollectionNames.AGENT_MCP_SERVERS.value,
+                        transaction=transaction_id
+                    )
+
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
+
+            except Exception as e:
+                if transaction_id:
+                    try:
+                        await graph_provider.rollback_transaction(transaction_id)
+                    except Exception as abort_error:
+                        logger.error(f"Failed to abort transaction: {abort_error}")
+                logger.error(f"Failed to delete MCP server nodes for agent {agent_id}: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Failed to delete MCP server nodes: {str(e)}") from e
+
+            if mcp_servers_parsed:
+                try:
+                    created_mcp, failed_mcp = await _create_mcp_server_edges(
+                        agent_id, mcp_servers_parsed, user_context, user_key,
+                        services["graph_provider"], logger
+                    )
+                    logger.info(f"Created {len(created_mcp)} MCP server(s) for agent {agent_id}")
+                except Exception as e:
+                    logger.error(f"Failed to create MCP server edges for agent {agent_id}: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"Failed to create MCP server edges: {str(e)}") from e
+            else:
+                logger.info(f"All MCP servers removed for agent {agent_id}")
 
         # Update knowledge if provided in request (even if empty array - means delete all)
         if "knowledge" in body:
@@ -3041,6 +3385,103 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
             agent_toolsets = configured_toolsets
 
+        # ============================================================================
+        # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
+        # ============================================================================
+        agent_mcp_servers = agent.get("mcpServers", [])
+        mcp_server_configs: dict = {}
+
+        logger.info(
+            "MCP servers from graph: count=%d, servers=%s",
+            len(agent_mcp_servers),
+            [
+                {
+                    "name": s.get("name"),
+                    "instanceId": s.get("instanceId"),
+                    "tools_count": len(s.get("tools", [])),
+                    "tool_names": [t.get("name") for t in s.get("tools", [])[:5]],
+                }
+                for s in agent_mcp_servers
+            ],
+        )
+
+        named_mcp_servers = [s for s in agent_mcp_servers if s.get("instanceId") or s.get("name")]
+
+        if named_mcp_servers:
+            import asyncio as _mcp_asyncio
+            from app.agents.constants.mcp_server_constants import get_mcp_server_config_path
+
+            mcp_credential_lookup_id = agent_id if is_service_account else executing_user_id
+
+            async def _fetch_mcp_config(server: dict) -> tuple[dict, Any]:
+                instance_id = server.get("instanceId")
+                if not instance_id:
+                    return server, None
+                try:
+                    etcd_path = get_mcp_server_config_path(instance_id, mcp_credential_lookup_id)
+                    config = await services["config_service"].get_config(etcd_path)
+                    return server, config
+                except Exception as exc:
+                    logger.warning(f"Failed to load MCP server config for '{server.get('name', '')}': {exc}")
+                    return server, None
+
+            mcp_fetch_results = await _mcp_asyncio.gather(*[_fetch_mcp_config(s) for s in named_mcp_servers])
+
+            configured_mcp_servers = []
+            missing_mcp_display_names: list[str] = []
+            unauthenticated_mcp_display_names: list[str] = []
+
+            for server, config in mcp_fetch_results:
+                instance_id = server.get("instanceId")
+                display_name = server.get("displayName") or server.get("name", "")
+
+                if config and config.get("isAuthenticated", False):
+                    mcp_server_configs[instance_id] = config
+                    configured_mcp_servers.append(server)
+                elif config:
+                    unauthenticated_mcp_display_names.append(display_name)
+                else:
+                    auth_mode = server.get("authMode", "none")
+                    if auth_mode == "none":
+                        configured_mcp_servers.append(server)
+                    else:
+                        missing_mcp_display_names.append(display_name)
+
+            if missing_mcp_display_names or unauthenticated_mcp_display_names:
+                problem_parts = []
+                if missing_mcp_display_names:
+                    problem_parts.append(f"not configured: {', '.join(repr(n) for n in missing_mcp_display_names)}")
+                if unauthenticated_mcp_display_names:
+                    problem_parts.append(f"not authenticated: {', '.join(repr(n) for n in unauthenticated_mcp_display_names)}")
+
+                error_message = (
+                    f"This agent requires the following MCP server(s) to be set up — "
+                    f"{'; '.join(problem_parts)}. "
+                    "Please configure credentials in Settings → MCP Servers."
+                )
+                logger.info(f"Blocking agent {agent_id}: MCP server issue(s) — {'; '.join(problem_parts)}")
+
+                async def _mcp_config_error_stream() -> AsyncGenerator[str, None]:
+                    yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'mcp_server_config_missing'})}\n\n"
+
+                return StreamingResponse(_mcp_config_error_stream(), media_type="text/event-stream")
+
+            agent_mcp_servers = configured_mcp_servers
+
+        logger.info(
+            "MCP servers after credential gating: count=%d, configs_count=%d, servers=%s",
+            len(agent_mcp_servers),
+            len(mcp_server_configs),
+            [
+                {
+                    "name": s.get("name"),
+                    "instanceId": s.get("instanceId"),
+                    "tools_count": len(s.get("tools", [])),
+                }
+                for s in agent_mcp_servers
+            ],
+        )
+
         # Build filters and knowledge from agent's knowledge sources
         agent_knowledge = agent.get("knowledge", [])
         filters = chat_query.filters.copy() if chat_query.filters else {}
@@ -3134,6 +3575,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "knowledge": agent_knowledge,
             "connector_configs": connector_configs,
             "toolsetConfigs": toolset_configs,
+            "mcpServers": agent_mcp_servers,
+            "mcpServerConfigs": mcp_server_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
         }

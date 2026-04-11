@@ -4,6 +4,7 @@ import type { Agent } from 'src/types/agent';
 import type { Connector } from 'src/sections/accountdetails/connectors/types/types';
 import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import ToolsetApiService from 'src/services/toolset-api';
+import * as McpServerApi from 'src/services/mcp-server-api';
 import type { UseAgentBuilderDataReturn, AgentBuilderError } from '../../types/agent';
 import AgentApiService from '../../services/api';
 
@@ -34,8 +35,47 @@ const toSidebarToolset = (inst: any) => ({
   toolsetType: inst.toolsetType,
 });
 
+/** Map a raw MCP server item from the API into the sidebar-compatible format. */
+const toSidebarMcpServer = (inst: any) => ({
+  ...inst,
+  name: inst.serverType || inst.instanceName || '',
+  displayName: inst.instanceName || inst.displayName || inst.serverType || '',
+  description: inst.description || '',
+  iconPath: inst.iconPath || '/assets/icons/mcp-servers/server.svg',
+  serverType: inst.serverType || 'custom',
+  supportedAuthTypes: inst.supportedAuthTypes || [],
+  toolCount: inst.toolCount || (inst.tools || []).length,
+  tools: (inst.tools || []).map((t: any) => ({
+    name: t.name || '',
+    namespacedName: t.namespacedName || `mcp_${inst.serverType}_${t.name}`,
+    description: t.description || '',
+  })),
+  isConfigured: inst.isConfigured,
+  isAuthenticated: inst.isAuthenticated ?? false,
+  isFromRegistry: !!inst.isFromRegistry,
+  instanceId: inst.instanceId,
+  instanceName: inst.instanceName,
+});
+
 /** Page size used for all toolset API calls. */
 const TOOLSETS_PAGE_SIZE = 20;
+const MCP_SERVERS_PAGE_SIZE = 20;
+
+/**
+ * Fetch MCP servers page (agent-scoped or user-scoped).
+ */
+const fetchMcpServersPage = async (
+  agentKey: string | undefined,
+  isServiceAccount: boolean,
+  page: number,
+  search: string
+) => {
+  const params = { includeRegistry: true, page, limit: MCP_SERVERS_PAGE_SIZE, search: search || undefined };
+  if (isServiceAccount && agentKey) {
+    return McpServerApi.getAgentMcpServers(agentKey, params);
+  }
+  return McpServerApi.getMyMcpServers(params);
+};
 
 /**
  * Fetch the right toolsets based on whether the agent is a service account.
@@ -67,6 +107,7 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
   const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [connectorRegistry, setConnectorRegistry] = useState<any[]>([]);
   const [toolsets, setToolsets] = useState<any[]>([]);
+  const [mcpServers, setMcpServers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | AgentBuilderError | null>(null);
@@ -75,11 +116,20 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
   const [toolsetsHasMore, setToolsetsHasMore] = useState(false);
   const [toolsetsLoadingMore, setToolsetsLoadingMore] = useState(false);
 
+  // Pagination / search state for MCP servers
+  const [mcpServersHasMore, setMcpServersHasMore] = useState(false);
+  const [mcpServersLoadingMore, setMcpServersLoadingMore] = useState(false);
+
   // Internal refs for pagination tracking (not needed in render so kept as refs)
   const toolsetsPageRef = useRef(1);
   const toolsetsSearchRef = useRef('');
   const toolsetsAgentKeyRef = useRef<string | undefined>(undefined);
   const toolsetsIsServiceAccountRef = useRef(false);
+
+  const mcpServersPageRef = useRef(1);
+  const mcpServersSearchRef = useRef('');
+  const mcpServersAgentKeyRef = useRef<string | undefined>(undefined);
+  const mcpServersIsServiceAccountRef = useRef(false);
 
   // Use refs to prevent duplicate API calls (React StrictMode, re-renders)
   const isLoadingRef = useRef(false);
@@ -154,10 +204,24 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
         toolsetsPageRef.current = 1;
         toolsetsSearchRef.current = '';
 
-        const toolsetsResponse = await fetchToolsetsPage(agentKey, isServiceAccount, 1, '');
+        mcpServersAgentKeyRef.current = agentKey;
+        mcpServersIsServiceAccountRef.current = isServiceAccount;
+        mcpServersPageRef.current = 1;
+        mcpServersSearchRef.current = '';
+
+        const [toolsetsResponse, mcpServersResponse] = await Promise.all([
+          fetchToolsetsPage(agentKey, isServiceAccount, 1, ''),
+          fetchMcpServersPage(agentKey, isServiceAccount, 1, '').catch(() => null),
+        ]);
+
         const items = (toolsetsResponse?.toolsets || []).map(toSidebarToolset);
         setToolsets(items);
         setToolsetsHasMore(toolsetsResponse?.pagination?.hasNext ?? false);
+
+        if (mcpServersResponse) {
+          setMcpServers((mcpServersResponse?.mcpServers || []).map(toSidebarMcpServer));
+          setMcpServersHasMore(mcpServersResponse?.pagination?.hasNext ?? false);
+        }
 
         hasLoadedRef.current = true;
       } catch (err) {
@@ -193,10 +257,22 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
       toolsetsPageRef.current = 1;
       toolsetsSearchRef.current = '';
 
+      mcpServersAgentKeyRef.current = undefined;
+      mcpServersIsServiceAccountRef.current = false;
+      mcpServersPageRef.current = 1;
+      mcpServersSearchRef.current = '';
+
       ToolsetApiService.getMyToolsets({ includeRegistry: true, page: 1, limit: TOOLSETS_PAGE_SIZE })
         .then((res: any) => {
           setToolsets((res?.toolsets || []).map(toSidebarToolset));
           setToolsetsHasMore(res?.pagination?.hasNext ?? false);
+        })
+        .catch(() => {});
+
+      McpServerApi.getMyMcpServers({ includeRegistry: true, page: 1, limit: MCP_SERVERS_PAGE_SIZE })
+        .then((res: any) => {
+          setMcpServers((res?.mcpServers || []).map(toSidebarMcpServer));
+          setMcpServersHasMore(res?.pagination?.hasNext ?? false);
         })
         .catch(() => {});
       return;
@@ -218,9 +294,22 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
         toolsetsPageRef.current = 1;
         toolsetsSearchRef.current = '';
 
-        const toolsetsResponse = await fetchToolsetsPage(editingAgent._key, isServiceAccount, 1, '');
+        mcpServersAgentKeyRef.current = editingAgent._key;
+        mcpServersIsServiceAccountRef.current = isServiceAccount;
+        mcpServersPageRef.current = 1;
+        mcpServersSearchRef.current = '';
+
+        const [toolsetsResponse, mcpServersResponse] = await Promise.all([
+          fetchToolsetsPage(editingAgent._key, isServiceAccount, 1, ''),
+          fetchMcpServersPage(editingAgent._key, isServiceAccount, 1, '').catch(() => null),
+        ]);
         setToolsets((toolsetsResponse?.toolsets || []).map(toSidebarToolset));
         setToolsetsHasMore(toolsetsResponse?.pagination?.hasNext ?? false);
+
+        if (mcpServersResponse) {
+          setMcpServers((mcpServersResponse?.mcpServers || []).map(toSidebarMcpServer));
+          setMcpServersHasMore(mcpServersResponse?.pagination?.hasNext ?? false);
+        }
       })
       .catch((err) => {
         console.error('Error reloading agent on key change:', err);
@@ -289,11 +378,51 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
       toolsetsPageRef.current = 1;
       toolsetsSearchRef.current = '';
 
-      const toolsetsResponse = await fetchToolsetsPage(agentKey, isSvcAcct, 1, '');
+      mcpServersAgentKeyRef.current = agentKey;
+      mcpServersIsServiceAccountRef.current = isSvcAcct;
+      mcpServersPageRef.current = 1;
+      mcpServersSearchRef.current = '';
+
+      const [toolsetsResponse, mcpServersResponse] = await Promise.all([
+        fetchToolsetsPage(agentKey, isSvcAcct, 1, ''),
+        fetchMcpServersPage(agentKey, isSvcAcct, 1, '').catch(() => null),
+      ]);
       setToolsets((toolsetsResponse?.toolsets || []).map(toSidebarToolset));
       setToolsetsHasMore(toolsetsResponse?.pagination?.hasNext ?? false);
+
+      if (mcpServersResponse) {
+        setMcpServers((mcpServersResponse?.mcpServers || []).map(toSidebarMcpServer));
+        setMcpServersHasMore(mcpServersResponse?.pagination?.hasNext ?? false);
+      }
     } catch (err) {
       console.error('Error refreshing agent:', err);
+    }
+  }, []);
+
+  // ── refreshMcpServers ────────────────────────────────────────────────────
+  const refreshMcpServers = useCallback(async (
+    agentKey?: string,
+    isServiceAccount?: boolean,
+    search?: string,
+  ) => {
+    try {
+      if (agentKey !== undefined) mcpServersAgentKeyRef.current = agentKey;
+      if (isServiceAccount !== undefined) mcpServersIsServiceAccountRef.current = isServiceAccount;
+
+      const effectiveSearch = search !== undefined ? search : mcpServersSearchRef.current;
+      mcpServersSearchRef.current = effectiveSearch;
+      mcpServersPageRef.current = 1;
+
+      const res = await fetchMcpServersPage(
+        mcpServersAgentKeyRef.current,
+        mcpServersIsServiceAccountRef.current,
+        1,
+        effectiveSearch,
+      );
+      setMcpServers((res?.mcpServers || []).map(toSidebarMcpServer));
+      setMcpServersHasMore(res?.pagination?.hasNext ?? false);
+    } catch (err) {
+      console.error('Error refreshing MCP servers:', err);
     }
   }, []);
 
@@ -325,6 +454,30 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     }
   }, [toolsetsLoadingMore, toolsetsHasMore]);
 
+  // ── loadMoreMcpServers ───────────────────────────────────────────────────
+  const loadMoreMcpServers = useCallback(async () => {
+    if (mcpServersLoadingMore || !mcpServersHasMore) return;
+
+    setMcpServersLoadingMore(true);
+    try {
+      const nextPage = mcpServersPageRef.current + 1;
+      const res = await fetchMcpServersPage(
+        mcpServersAgentKeyRef.current,
+        mcpServersIsServiceAccountRef.current,
+        nextPage,
+        mcpServersSearchRef.current,
+      );
+      const newItems = (res?.mcpServers || []).map(toSidebarMcpServer);
+      setMcpServers((prev) => [...prev, ...newItems]);
+      setMcpServersHasMore(res?.pagination?.hasNext ?? false);
+      mcpServersPageRef.current = nextPage;
+    } catch (err) {
+      console.error('Error loading more MCP servers:', err);
+    } finally {
+      setMcpServersLoadingMore(false);
+    }
+  }, [mcpServersLoadingMore, mcpServersHasMore]);
+
   return {
     availableTools,
     availableModels,
@@ -333,14 +486,19 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     configuredConnectors,
     connectorRegistry,
     toolsets,
+    mcpServers,
     loading,
     loadedAgent,
     error,
     setError,
     refreshToolsets,
+    refreshMcpServers,
     refreshAgent,
     toolsetsHasMore,
     toolsetsLoadingMore,
     loadMoreToolsets,
+    mcpServersHasMore,
+    mcpServersLoadingMore,
+    loadMoreMcpServers,
   };
 };

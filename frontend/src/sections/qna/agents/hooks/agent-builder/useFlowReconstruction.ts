@@ -72,10 +72,12 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         toolsetsCount = uniqueApps.size;
       }
       
+      const mcpServersCount = agent.mcpServers?.length || 0;
+
       const counts = {
         llm: agent.models?.length || (models.length > 0 ? 1 : 0),
         tools: 0,
-        toolsets: toolsetsCount,
+        toolsets: toolsetsCount + mcpServersCount,
         knowledge: agent.knowledge?.length || 0,
       };
 
@@ -535,6 +537,60 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         });
       }
 
+      // 4b. Create MCP Server nodes
+      const mcpServerNodes: Node<NodeData>[] = [];
+      if (agent.mcpServers && agent.mcpServers.length > 0) {
+        agent.mcpServers.forEach((mcpServer: any, index: number) => {
+          const serverName = mcpServer.name || '';
+          const serverDisplayName = mcpServer.displayName || mcpServer.name || 'MCP Server';
+          const serverType = mcpServer.type || 'custom';
+          const instanceId = mcpServer.instanceId as string | undefined;
+          const instanceName = mcpServer.instanceName as string | undefined;
+          const iconPath = '/assets/icons/mcp-servers/server.svg';
+
+          const serverTools = (mcpServer.tools || []).map((tool: any) => ({
+            name: tool.name || '',
+            namespacedName: tool.namespacedName || `mcp_${serverName}_${tool.name}`,
+            description: tool.description || `${serverDisplayName} tool`,
+          }));
+
+          nodeCounter += 1;
+          const nodeId = `mcp-server-${serverName}-${nodeCounter}`;
+          const positionIndex = toolsetNodes.length + index;
+          const mcpServerNode: Node<NodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('tools', positionIndex, counts.toolsets),
+            data: {
+              id: nodeId,
+              type: `mcp-server-${serverName}`,
+              label: normalizeDisplayName(serverDisplayName),
+              description: `${serverDisplayName} with ${serverTools.length} tools`,
+              icon: iconPath,
+              category: 'mcp-server',
+              config: {
+                instanceId,
+                instanceName,
+                mcpServerName: serverName,
+                displayName: serverDisplayName,
+                iconPath,
+                serverType,
+                tools: serverTools,
+                availableTools: serverTools,
+                selectedTools: serverTools.map((t: any) => t.name),
+                isConfigured: true,
+                isAuthenticated: true,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(mcpServerNode);
+          mcpServerNodes.push(mcpServerNode);
+        });
+      }
+
       // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<NodeData> = {
@@ -648,6 +704,24 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           type: 'smoothstep',
           style: {
             stroke: theme.palette.warning.main,
+            strokeWidth: 2,
+            strokeDasharray: '0',
+          },
+          animated: false,
+        });
+      });
+
+      // MCP Server → Agent connections
+      mcpServerNodes.forEach((mcpNode) => {
+        edges.push({
+          id: `e-mcp-agent-${(edgeCounter += 1)}`,
+          source: mcpNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'mcpServers',
+          type: 'smoothstep',
+          style: {
+            stroke: '#8b5cf6',
             strokeWidth: 2,
             strokeDasharray: '0',
           },

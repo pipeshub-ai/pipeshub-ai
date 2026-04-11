@@ -3481,6 +3481,42 @@ class TestToolExecutorFormatArgsPreview:
 
 
 # ============================================================================
+# 37b. ToolExecutor._normalize_nested_kwargs
+# ============================================================================
+
+class TestToolExecutorNormalizeNestedKwargs:
+    """MCP / LangChain sometimes nest real parameters under ``kwargs``."""
+
+    def test_merges_kwargs_with_sibling_keys(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+
+        out = ToolExecutor._normalize_nested_kwargs({
+            "kwargs": {"cloudId": None, "jql": "assignee = currentUser()"},
+            "maxResults": 50,
+        })
+        assert out == {
+            "cloudId": None,
+            "jql": "assignee = currentUser()",
+            "maxResults": 50,
+        }
+
+    def test_double_nested_kwargs(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+
+        out = ToolExecutor._normalize_nested_kwargs({"kwargs": {"kwargs": {"a": 1}}})
+        assert out == {"a": 1}
+
+    def test_sibling_overrides_inner_kwargs(self):
+        from app.modules.agents.qna.nodes import ToolExecutor
+
+        out = ToolExecutor._normalize_nested_kwargs({
+            "kwargs": {"jql": "inner"},
+            "jql": "outer",
+        })
+        assert out["jql"] == "outer"
+
+
+# ============================================================================
 # 38. _extract_urls_for_reference_data
 # ============================================================================
 
@@ -5442,11 +5478,28 @@ class TestPlaceholderResolverExtractSourceToolName:
         )
         assert result == "jira.search_users"
 
+    def test_mcp_tool_placeholder_heuristic(self):
+        result = PlaceholderResolver._extract_source_tool_name(
+            "mcp_jira_getAccessibleAtlassianResources.data[0].id"
+        )
+        assert result == "mcp_jira_getAccessibleAtlassianResources"
+
+    def test_known_tools_longest_prefix(self):
+        known = {
+            "mcp_jira_getAccessibleAtlassianResources",
+            "mcp_jira_searchJiraIssuesUsingJql",
+        }
+        result = PlaceholderResolver._extract_source_tool_name(
+            "mcp_jira_getAccessibleAtlassianResources.data[0].id",
+            known,
+        )
+        assert result == "mcp_jira_getAccessibleAtlassianResources"
+
     def test_underscore_tool_name(self):
         result = PlaceholderResolver._extract_source_tool_name(
             "jira_search_users.data.results[0].accountId"
         )
-        assert result == "jira_search_users.data"
+        assert result == "jira_search_users"
 
     def test_single_segment(self):
         result = PlaceholderResolver._extract_source_tool_name("retrieval")

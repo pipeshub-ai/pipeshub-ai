@@ -213,6 +213,14 @@ class CollectionNames(Enum):
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
 
+    # Agent Builder MCP Server collections
+    AGENT_MCP_SERVERS = "agentMcpServers"
+    AGENT_MCP_TOOLS = "agentMcpTools"
+
+    # Agent Builder MCP Server edges
+    AGENT_HAS_MCP_SERVER = "agentHasMcpServer"
+    MCP_SERVER_HAS_TOOL = "mcpServerHasTool"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

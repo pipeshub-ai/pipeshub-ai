@@ -66,6 +66,12 @@ const ToolsetOAuthCallback = lazy(
   () => import('src/pages/dashboard/account/toolsets/oauth-callback')
 );
 
+// MCP Servers Pages
+const McpServersSettingsPage = lazy(() => import('src/pages/dashboard/account/mcp-servers'));
+const McpServersOAuthCallback = lazy(
+  () => import('src/pages/dashboard/account/mcp-servers-oauth-callback')
+);
+
 // Knowledge Base Pages
 const Collections = lazy(() => import('src/pages/dashboard/knowledgebase/collections'));
 const RecordDetails = lazy(() => import('src/pages/dashboard/knowledgebase/record-details'));
@@ -272,6 +278,10 @@ export const dashboardRoutes = [
         path: 'toolsets/oauth/callback/:toolsetType',
         element: <ToolsetOAuthCallback />,
       },
+      {
+        path: 'mcp-servers/oauth/callback/:serverType',
+        element: <McpServersOAuthCallback />,
+      },
 
       // ----------------------------------------------------------------------
       // QNA Routes
@@ -434,6 +444,12 @@ export const dashboardRoutes = [
                     element: <BusinessOnlyRoute component={ToolsetsSettingsPage} />,
                   },
 
+                  // MCP Servers Settings
+                  {
+                    path: 'mcp-servers',
+                    element: <BusinessOnlyRoute component={McpServersSettingsPage} />,
+                  },
+
                   // OAuth Configuration (connector OAuth configs)
                   {
                     path: 'oauth-config',
@@ -549,6 +565,12 @@ export const dashboardRoutes = [
                   {
                     path: 'toolsets',
                     element: <IndividualOnlyRoute component={ToolsetsSettingsPage} />,
+                  },
+
+                  // MCP Servers Settings
+                  {
+                    path: 'mcp-servers',
+                    element: <IndividualOnlyRoute component={McpServersSettingsPage} />,
                   },
 
                   // OAuth Configuration (connector OAuth configs)

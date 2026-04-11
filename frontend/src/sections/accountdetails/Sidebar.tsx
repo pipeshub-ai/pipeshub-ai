@@ -10,6 +10,7 @@ import downIcon from '@iconify-icons/mdi/chevron-down';
 import codeTagsIcon from '@iconify-icons/mdi/code-tags';
 import { useLocation, useNavigate } from 'react-router';
 import shieldLockIcon from '@iconify-icons/mdi/shield-lock';
+import serverIcon from '@iconify-icons/mdi/server';
 import linkVariantIcon from '@iconify-icons/mdi/link-variant';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
@@ -103,6 +104,12 @@ export default function Sidebar() {
       icon: toolsIcon,
       path: `${baseUrl}/settings/toolsets`,
       adminOnly: false, // Available to all business users
+    },
+    {
+      name: 'MCP Servers',
+      icon: serverIcon,
+      path: `${baseUrl}/settings/mcp-servers`,
+      adminOnly: false,
     },
     {
       name: 'AI Models',

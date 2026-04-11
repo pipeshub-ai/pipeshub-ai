@@ -85,6 +85,11 @@ class ChatState(TypedDict):
     toolset_configs: dict[str, dict] | None  # SENSITIVE: Auth configs keyed by instanceId (contains credentials)
     agent_toolsets: list[dict] | None  # Toolset metadata from graph (instanceId, name, tools) - NO userId stored
 
+    # MCP server tool execution
+    agent_mcp_servers: list[dict] | None  # MCP server metadata from graph (instanceId, name, tools)
+    mcp_server_configs: dict[str, dict] | None  # SENSITIVE: Auth configs keyed by instanceId (contains credentials)
+    tool_to_mcp_server_map: dict[str, str] | None  # Maps namespaced tool name -> instanceId
+
     # Planner-based execution fields
     execution_plan: dict[str, Any] | None  # Planned execution from planner node
     planned_tool_calls: list[dict[str, Any]] | None  # List of planned tool calls to execute
@@ -480,6 +485,11 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "tool_to_toolset_map": tool_to_toolset_map,
         "toolset_configs": toolset_configs,
         "agent_toolsets": toolsets,
+
+        # MCP server tool execution
+        "agent_mcp_servers": chat_query.get("mcpServers", []),
+        "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
+        "tool_to_mcp_server_map": {},
 
         # Service account flag
         "is_service_account": bool(chat_query.get("is_service_account", False)),
