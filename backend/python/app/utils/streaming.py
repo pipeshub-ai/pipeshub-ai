@@ -10,6 +10,7 @@ from typing import (
 )
 
 import aiohttp
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
@@ -412,7 +413,6 @@ async def execute_tool_calls(
     llm,
     messages: list[dict],
     tools: list,
-    tool_runtime_kwargs: dict[str, Any],
     final_results: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, dict[str, Any]],
     blob_store: BlobStorage,
@@ -423,12 +423,13 @@ async def execute_tool_calls(
     context_length:int|None,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: bool | None = False,
-    max_hops: int = 1,
+    max_hops: int = 2,
     is_agent: bool = False,  # Use is_agent flag instead of schema
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,
     mode: str = "json",  # "json" for structured output, "simple" for raw text
     ref_mapper: CitationRefMapper | None = None,
+    graph_provider: IGraphDBProvider | None = None,
 ) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -562,7 +563,13 @@ async def execute_tool_calls(
                     call_id,
                     list(args.keys()),
                 )
-                tool_result = await tool.arun(args, **tool_runtime_kwargs)
+                tool_runtime_kwargs = {
+                    "virtual_record_id_to_result": virtual_record_id_to_result,
+                    "messages": messages,
+                    "org_id": org_id,
+                    "graph_provider": graph_provider,
+                }
+                tool_result = await tool.arun({**args, **tool_runtime_kwargs})
                 tool_result["tool_name"] = tool_name
                 tool_result["call_id"] = call_id
                 return tool_result
@@ -707,14 +714,17 @@ async def execute_tool_calls(
 
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name")
+            call_id = tool_result.get("call_id")
+
+
             if tool_result.get("ok"):
-                if tool_name == "fetch_full_record":
+                if tool_name == "fetch_full_records":
                     flattened_contents = [item for sublist in message_contents for item in sublist]
                     not_available = tool_result.get("not_available_ids", {})
                     if not_available:
                         ids_str = ", ".join(f"'{rid}'" for rid in not_available)
                         flattened_contents.append({"type": "text", "text": f"\nNote: The following record(s) are not available: {ids_str}"})
-                    tool_msgs.append(ToolMessage(content=flattened_contents, tool_call_id=tool_result["call_id"]))
+                    tool_msgs.append(ToolMessage(content=flattened_contents, tool_call_id=call_id))
                 else:
                     tool_msg = {
                         "ok": True,
@@ -725,13 +735,16 @@ async def execute_tool_calls(
                         "column_count": tool_result.get("column_count", None),
                         "not_found": tool_result.get("not_found", None),
                     }
-                    tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
+                    tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=call_id))
             else:
-                tool_msg = {
-                    "ok": False,
-                    "error": tool_result.get("error", "Unknown error"),
-                }
-                tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
+                message = tool_result.get("message")
+                error = tool_result.get("error","Unknown error")
+                tool_msg = f"ok: false\n"
+                if message:
+                    tool_msg += f"message: {message}\n"
+                elif error:
+                    tool_msg += f"error: {error}\n"
+                tool_msgs.append(ToolMessage(content=tool_msg, tool_call_id=call_id))
 
         # Add messages for next iteration
         logger.debug(
@@ -1288,7 +1301,6 @@ async def stream_llm_response_with_tools(
     is_multimodal_llm,
     context_length:int|None,
     tools: list | None = None,
-    tool_runtime_kwargs: dict[str, Any] | None = None,
     target_words_per_chunk: int = 1,
     mode: str | None = "simple",
     is_agent: bool = False,  # Use is_agent flag instead of schema
@@ -1296,6 +1308,7 @@ async def stream_llm_response_with_tools(
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,
     ref_mapper: CitationRefMapper | None = None,
+    graph_provider: IGraphDBProvider | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1321,7 +1334,7 @@ async def stream_llm_response_with_tools(
     )
     records = []
 
-    if tools and tool_runtime_kwargs and mode != "no_tools":
+    if tools and mode != "no_tools":
         # Execute tools and get updated messages
         final_messages = messages.copy()
         tools_were_called = False
@@ -1333,7 +1346,6 @@ async def stream_llm_response_with_tools(
                 llm=llm,
                 messages=final_messages,
                 tools=tools,
-                tool_runtime_kwargs=tool_runtime_kwargs,
                 final_results=final_results,
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 blob_store=blob_store,
@@ -1348,6 +1360,7 @@ async def stream_llm_response_with_tools(
                 filter_groups=filter_groups,
                 mode=mode,
                 ref_mapper=ref_mapper,
+                graph_provider=graph_provider,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":

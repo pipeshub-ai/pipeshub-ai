@@ -415,14 +415,8 @@ async def askAIStream(
                 )
 
                 # Prepare tools
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool()
                 tools = [fetch_tool]
-
-                tool_runtime_kwargs = {
-                    "blob_store": blob_store,
-                    "graph_provider": graph_provider,
-                    "org_id": org_id,
-                }
 
             except HTTPException as e:
                 logger.error(f"HTTPException: {str(e)}", exc_info=True)
@@ -461,10 +455,10 @@ async def askAIStream(
                     is_multimodal_llm=is_multimodal_llm,
                     context_length=context_length,
                     tools=tools,
-                    tool_runtime_kwargs=tool_runtime_kwargs,
                     target_words_per_chunk=1,
                     mode=query_info.mode,
                     ref_mapper=ref_mapper,
+                    graph_provider=graph_provider,
                 ):
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]

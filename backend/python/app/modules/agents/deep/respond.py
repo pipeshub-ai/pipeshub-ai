@@ -346,11 +346,7 @@ async def _deep_respond_impl(
         from app.utils.fetch_full_record import (
             create_fetch_full_record_tool,
         )
-        fetch_tool = create_fetch_full_record_tool(
-            virtual_record_map,
-            org_id=state.get("org_id", ""),
-            graph_provider=state.get("graph_provider"),
-        )
+        fetch_tool = create_fetch_full_record_tool()
         tools = [fetch_tool]
         log.debug(
             "Added agent fetch_full_record tool (%d records, %d labels)",
@@ -373,13 +369,6 @@ async def _deep_respond_impl(
             state["blob_store"] = blob_store
         except Exception as _bs_err:
             log.warning("Could not initialise BlobStorage: %s", _bs_err)
-
-    tool_runtime_kwargs = {
-        "blob_store": blob_store,
-        "graph_provider": graph_provider,
-        "org_id": state.get("org_id", ""),
-        "conversation_id": state.get("conversation_id"),
-    }
 
     # Construct all_queries — prefer decomposed_queries from planner,
     # fall back to task descriptions from the orchestrator plan, then
@@ -432,12 +421,12 @@ async def _deep_respond_impl(
             is_multimodal_llm=state.get("is_multimodal_llm", False),
             context_length=DEFAULT_CONTEXT_LENGTH,
             tools=tools,
-            tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
             is_agent=True,
             conversation_id=state.get("conversation_id"),
             ref_mapper=state.get("citation_ref_mapper"),
+            graph_provider=graph_provider,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
