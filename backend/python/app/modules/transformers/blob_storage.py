@@ -237,9 +237,10 @@ class BlobStorage(Transformer):
                         "❌ Chunk %d download failed after %d attempts: %s",
                         chunk_index,
                         max_retries,
-                        str(e),
+                        e,
                     )
-                    raise e
+                    raise
+
 
     async def _download_with_range_requests(
         self,
