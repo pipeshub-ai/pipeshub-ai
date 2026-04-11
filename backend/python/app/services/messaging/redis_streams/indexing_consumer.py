@@ -218,12 +218,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     async def _drain_pending(self) -> None:
         """Re-process messages left in the Pending Entries List (PEL).
 
-        Uses XAUTOCLAIM to steal idle messages from any consumer in the group
-        (including crashed ones), then processes them through the worker thread.
+        Phase 1: XAUTOCLAIM to steal idle messages from other (crashed) consumers.
+        Phase 2: XREADGROUP with id "0" to recover messages already owned by THIS
+        consumer (e.g. delivered before a crash/restart but never ACK-ed). Without
+        Phase 2, on a same-client_id restart those messages would sit in the PEL
+        forever — XAUTOCLAIM won't touch them (same consumer name) and XREADGROUP
+        with ">" only delivers brand-new messages.
         """
         self.logger.info("Draining pending messages from PEL")
 
         for topic in self.config.topics:
+            # Phase 1: claim idle messages from other (possibly crashed) consumers
             start_id = "0-0"
             while self.running:
                 try:
@@ -261,7 +266,52 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
                     break
 
-        self.logger.info("PEL drained, switching to new messages")
+            # Phase 2: read messages already in THIS consumer's PEL.
+            # Using id "0" tells Redis to redeliver everything in our own PEL —
+            # the only way a same-client_id restart can resume in-flight work.
+            while self.running:
+                try:
+                    results = await self.redis.xreadgroup(  # type: ignore
+                        groupname=self.config.group_id,
+                        consumername=self.config.client_id,
+                        streams={topic: "0"},
+                        count=self.config.batch_size,
+                    )
+
+                    if not results:
+                        break
+
+                    drained_any = False
+                    for _stream_name, messages in results:
+                        if not messages:
+                            continue
+                        for message_id, fields in messages:
+                            if not self.running:
+                                return
+                            drained_any = True
+                            try:
+                                self.logger.info(
+                                    "Recovering own pending message: stream=%s, id=%s",
+                                    topic, message_id,
+                                )
+                                await self._start_processing_task(
+                                    topic, message_id, fields
+                                )
+                            except Exception as e:
+                                self.logger.error(
+                                    "Error recovering own pending message %s: %s",
+                                    message_id, e,
+                                )
+
+                    if not drained_any:
+                        break
+                except Exception as e:
+                    self.logger.error(
+                        "Error draining own PEL on %s: %s", topic, e,
+                    )
+                    break
+
+        self.logger.info("PEL fully drained, switching to new messages")
 
     async def _consume_loop(self) -> None:
         try:
