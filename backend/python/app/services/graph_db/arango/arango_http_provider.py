@@ -2510,8 +2510,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
-        transaction: str | None = None
+        path: list[str],
+        record_group_id: str,
+        transaction: str | None = None,
     ) -> dict | None:
         """
         Get a record from the FILES collection using its path.
@@ -2525,33 +2526,61 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[Dict]: The file record if found, otherwise None.
         """
         try:
-            self.logger.info(
-                f"🚀 Retrieving record by path for connector {connector_id} and path {path}"
+            # based on external id
+            # assumed full path from record group next level is as list in param
+            query = """
+            LET appId = CONCAT("apps/", @connectorId)
+            LET rawParts = @rawParts
+            LET recordGroupId = @recordGroupId
+
+            LET parts = (
+                LENGTH(rawParts) == 1 AND rawParts[0] == ""
+                    ? []
+                    : rawParts
             )
 
-            query = f"""
-            FOR fileRecord IN {CollectionNames.FILES.value}
-                FILTER fileRecord.path == @path
-                RETURN fileRecord
-            """
+            LET rg = FIRST(
+                FOR g IN 1..100 INBOUND appId belongsTo
+                FILTER g.externalGroupId == recordGroupId
+                RETURN g
+            )
+            FILTER rg != null
+            LET rec0 = FIRST(
+                FOR r IN INBOUND rg._id belongsTo
+                FILTER r.recordName == parts[0]
+                FILTER r.externalParentId == null
+                RETURN r
+            )
+            FILTER rec0 != null
+            LET depth = LENGTH(parts) <= 1 ? 0 :length(parts) - 1
 
-            results = await self.http_client.execute_aql(
+            LET result_1  = depth == 0 ? rec0 :
+                (FOR v, e, p IN 1..100 OUTBOUND rec0
+                    recordRelations
+                    //OPTIONS { uniqueVertices: "path" }
+
+                    FILTER e.relationshipType == "PARENT_CHILD"
+
+                    FILTER v.recordName == parts[LENGTH(p.vertices)-1]
+
+                    RETURN v
+                    )
+
+            LET result = depth == 0 ? rec0 : LAST(result_1)
+
+            return result
+            """
+            result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"path": path},
+                bind_vars={
+                    "rawParts":path,
+                    "connectorId":connector_id,
+                    "recordGroupId":record_group_id,
+                },
                 txn_id=transaction
             )
-
-            if results:
-                self.logger.info(
-                    f"✅ Successfully retrieved file record for path: {path}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No record found for path: {path}"
-                )
-                return None
-
+            if result:
+                return result[0]
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"

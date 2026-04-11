@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from gitlab import Gitlab
 from typing import Dict, List, Optional, Tuple, Union, cast
-
+from datetime import datetime
 from app.sources.client.gitlab.gitlab import GitLabResponse
+from collections.abc import AsyncGenerator
+import httpx
 
 
 class GitLabDataSource:
@@ -17,10 +19,23 @@ class GitLabDataSource:
     def __init__(self, client_or_sdk: Union[Gitlab, object]) -> None:
         # Support a raw SDK or a wrapper that exposes `.get_sdk()`
         if hasattr(client_or_sdk, "get_sdk"):
-            sdk_obj = getattr(client_or_sdk, "get_sdk")()
-            self._sdk: Gitlab = cast(Gitlab, sdk_obj)
+            sdk_obj = getattr(client_or_sdk, "get_sdk")
+            self._sdk: Gitlab = cast(Gitlab, sdk_obj())
+            token = getattr(client_or_sdk, "get_token", None)
+            if token:
+                self.token = token()
         else:
             self._sdk = cast(Gitlab, client_or_sdk)
+            self.token = None
+
+    def get_user(self) -> GitLabResponse:
+        """Fetching GitLab user info."""
+        try:
+            self._sdk.auth()
+            user = self._sdk.user
+            return GitLabResponse(success=True, data=user)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     # ---- helpers ----
     def _project(self, project_id: Union[int, str]) -> object:
@@ -50,15 +65,18 @@ class GitLabDataSource:
         get_all: bool = True,
     ) -> GitLabResponse:
         """List accessible projects (optionally filtered).  [projects]"""
-        params = self._params(
-            search=search,
-            membership=membership,
-            owned=owned,
-            starred=starred,
-            simple=simple,
-        )
-        projects = self._sdk.projects.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=projects)
+        try:
+            params = self._params(
+                search=search,
+                membership=membership,
+                owned=owned,
+                starred=starred,
+                simple=simple,
+            )
+            projects = self._sdk.projects.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=projects)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_project(self, project_id: Union[int, str]) -> GitLabResponse:
         """Get a single project by ID or path.  [projects]"""
@@ -131,25 +149,37 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
+        updated_after: datetime | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List project issues with filters.  [issues]"""
-        p = self._project(project_id)
-        params = self._params(
-            state=state,
-            labels=labels,
-            search=search,
-            author_id=author_id,
-            assignee_id=assignee_id,
-        )
-        items = p.issues.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=items)
+        try:
+            p = self._sdk.projects.get(project_id)
+            params = self._params(
+                state=state,
+                labels=labels,
+                search=search,
+                author_id=author_id,
+                assignee_id=assignee_id,
+                updated_after=updated_after,
+                order_by=order_by,
+                sort=sort,
+            )
+            items = p.issues.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_issue(self, project_id: Union[int, str], issue_iid: int) -> GitLabResponse:
         """Get a single issue by IID.  [issues]"""
-        p = self._project(project_id)
-        issue = p.issues.get(issue_iid)
-        return GitLabResponse(success=True, data=issue)
+        try:
+            p = self._project(project_id)
+            issue = p.issues.get(issue_iid)
+            return GitLabResponse(success=True, data=issue)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_issue(
         self,
@@ -217,27 +247,76 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+        updated_after: datetime | None = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
-        p = self._project(project_id)
-        params = self._params(
-            state=state,
-            labels=labels,
-            search=search,
-            author_id=author_id,
-            assignee_id=assignee_id,
-        )
-        mrs = p.mergerequests.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=mrs)
+        try:
+            # p = self._project(project_id)
+            p = self._sdk.projects.get(project_id)
+            params = self._params(
+                state=state,
+                labels=labels,
+                search=search,
+                author_id=author_id,
+                assignee_id=assignee_id,
+                order_by=order_by,
+                sort=sort,
+                updated_after=updated_after,
+            )
+            mrs = p.mergerequests.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=mrs)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_merge_request(
         self, project_id: Union[int, str], mr_iid: int
     ) -> GitLabResponse:
         """Get a single merge request by IID.  [mrs]"""
-        p = self._project(project_id)
-        mr = p.mergerequests.get(mr_iid)
-        return GitLabResponse(success=True, data=mr)
+        try:
+            p = self._project(project_id)
+            mr = p.mergerequests.get(id=mr_iid)
+            return GitLabResponse(success=True, data=mr)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_merge_request_notes(
+        self, project_id: Union[int, str], mr_iid: int, get_all: bool = True
+    ) -> GitLabResponse:
+        """List merge request notes.  [mrs]"""
+        try:
+            p = self._sdk.projects.get(project_id, lazy=True)
+            mr = p.mergerequests.get(id=mr_iid, lazy=True)
+            notes = mr.notes.list(get_all=get_all)
+            return GitLabResponse(success=True, data=notes)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_merge_request_changes(
+        self, project_id: Union[int, str], mr_iid: int
+    ) -> GitLabResponse:
+        """List merge request changes."""
+        try:
+            p = self._sdk.projects.get(project_id, lazy=True)
+            mr = p.mergerequests.get(id=mr_iid, lazy=True)
+            changes = mr.changes(get_all=True)
+            return GitLabResponse(success=True, data=changes)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_merge_requests_commits(
+        self, project_id: Union[int, str], mr_iid: int
+    ) -> GitLabResponse:
+        """List commits of a merge request."""
+        try:
+            p = self._sdk.projects.get(project_id, lazy=True)
+            mr = p.mergerequests.get(id=mr_iid, lazy=True)
+            commits = mr.commits(get_all=True)
+            return GitLabResponse(success=True, data=commits)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_merge_request(
         self,
@@ -647,9 +726,23 @@ class GitLabDataSource:
         self, project_id: Union[int, str], get_all: bool = True
     ) -> GitLabResponse:
         """List project members."""
-        p = self._project(project_id)
-        items = p.members.list(get_all=get_all)
-        return GitLabResponse(success=True, data=items)
+        try:
+            p = self._project(project_id)
+            items = p.members.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_project_members_all(
+        self, project_id: Union[str, int], get_all: bool = True
+    ) -> GitLabResponse:
+        """List project members including inherited ones"""
+        try:
+            p = self._project(project_id)
+            items = p.members_all.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def add_project_member(
         self,
@@ -696,12 +789,40 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=True)
 
     def list_groups(
-        self, search: Optional[str] = None, get_all: bool = True
+        self,
+        search: Optional[str] = None,
+        get_all: bool = True,
+        owned: Optional[bool] = None,
     ) -> GitLabResponse:
         """List groups."""
-        params = self._params(search=search)
-        groups = self._sdk.groups.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=groups)
+        try:
+            params = self._params(search=search, owned=owned)
+            groups = self._sdk.groups.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=groups)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_group_members(
+        self, group_id: Union[int, str], get_all: bool = True
+    ) -> GitLabResponse:
+        """List group members."""
+        try:
+            g = self._sdk.groups.get(group_id)
+            items = g.members.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_group_members_all(
+        self, group_id: Union[int, str], get_all: bool = True
+    ) -> GitLabResponse:
+        """List all group members including inherited ones."""
+        try:
+            g = self._sdk.groups.get(group_id)
+            items = g.members_all.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_group(self, group_id: Union[int, str]) -> GitLabResponse:
         """Get a group by ID or full path."""
@@ -755,3 +876,219 @@ class GitLabDataSource:
         g = self._sdk.groups.get(group_id)
         g.delete()
         return GitLabResponse(success=True, data=True)
+
+    def list_issue_notes(
+        self, project_id: Union[int, str], issue_iid: int, get_all: bool = True
+    ) -> GitLabResponse:
+        try:
+            # p = self._project(project_id)
+            p = self._sdk.projects.get(project_id)
+            issue = p.issues.get(issue_iid)
+            notes = issue.notes.list(get_all=get_all)
+            return GitLabResponse(success=True, data=notes)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_repo_tree(
+        self,
+        project_id: Union[int, str],
+        ref: Optional[str] = None,
+        recursive: Optional[bool] = None,
+        get_all: bool = True,
+    ) -> GitLabResponse:
+        """List repository tree."""
+        try:
+            p = self._sdk.projects.get(project_id)
+            payload = self._params(
+                ref=ref,
+                recursive=recursive,
+                get_all=get_all,
+            )
+            items = p.repository_tree(**payload)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def get_file_content(
+        self, project_id: Union[int, str], file_path: str, ref: str = "HEAD"
+    ) -> GitLabResponse:
+        """Get code file content."""
+        try:
+            # p = self._project(project_id)
+            p = self._sdk.projects.get(project_id)
+            payload = self._params(
+                ref=ref,
+                file_path=file_path,
+            )
+            items = p.files.get(**payload)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    # -----------------------GraphQL API--------------------------------#
+    async def get_repo_tree_g(
+        self, project_id: str, ref: str | None = "HEAD", after_cursor: str = ""
+    ) -> GitLabResponse:
+        """Get repository tree using GraphQL API."""
+        # take cursors as input and return the tree with pagination
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            }
+            url = f"https://gitlab.com/api/graphql"
+            query = """
+            query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
+            project(fullPath: $fullPath) {
+                name
+                repository {
+                rootRef
+                paginatedTree(recursive: true, ref: $branch, after: $afterCursor) {
+                    nodes {
+                    trees {
+                        nodes {
+                        name
+                        path
+                        sha
+                        type
+                        webPath
+                        webUrl
+                        }
+                    }
+                    }
+                    pageInfo {
+                    endCursor
+                    hasNextPage
+                    }
+                }
+                }
+            }
+            }
+            """
+            variables = {
+                "fullPath": project_id,
+                "branch": ref,
+                "afterCursor": after_cursor,
+            }
+            payload = {
+                "query": query,
+                "variables": variables,
+            }
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=30.0
+                ) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    tree_data = resp.content
+                    return GitLabResponse(success=True, data=(tree_data))
+            except Exception as e:
+                return GitLabResponse(success=False, error=str(e))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    async def get_file_tree_g(
+        self,
+        project_id: Union[int, str],
+        ref: Optional[str] = None,
+        after_cursor: str = "",
+    ) -> GitLabResponse:
+        """Get file tree using GraphQL API."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            }
+            url = f"https://gitlab.com/api/graphql"
+            query = """
+            query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
+            project(fullPath: $fullPath) {
+                name
+                repository {
+                rootRef
+                paginatedTree(recursive: true, ref: $branch, after: $afterCursor) {
+                    nodes {
+                    blobs {
+                        nodes {
+                        name
+                        path
+                        sha
+                        type
+                        webPath
+                        webUrl
+                        }
+                    }
+                    }
+                    pageInfo {
+                    endCursor
+                    hasNextPage
+                    }
+                }
+                }
+            }
+            }
+            """
+            variables = {
+                "fullPath": project_id,
+                "branch": ref,
+                "afterCursor": after_cursor,
+            }
+            payload = {
+                "query": query,
+                "variables": variables,
+            }
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=30.0
+                ) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    tree_data = resp.content
+                    return GitLabResponse(success=True, data=(tree_data))
+            except Exception as e:
+                return GitLabResponse(success=False, error=str(e))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    # ----------------------Other than SDK calls--------------------------------#
+
+    async def get_img_bytes(self, image_url: str) -> GitLabResponse[bytes] | None:
+        GITLAB_TOKEN = self.token
+        # self.logger.info(f"Fetching image from URL: {image_url}")
+        headers = {
+            "Authorization": f"Bearer {GITLAB_TOKEN}",
+            "Accept": "*/*",
+        }
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                resp = await client.get(image_url, headers=headers)
+                resp.raise_for_status()
+                img_data = resp.content
+                return GitLabResponse(success=True, data=img_data)
+        except httpx.HTTPStatusError as e:
+            return GitLabResponse(
+                success=False,
+                error=f"HTTP {e.response.status_code} fetching image from {image_url}",
+            )
+        except Exception as e:
+            return GitLabResponse(
+                success=False, error=f"Error fetching image from {image_url}: {e}"
+            )
+
+    async def get_attachment_files_content(
+        self, weburl: str
+    ) -> AsyncGenerator[bytes, None]:
+        """Getting file content from weburl for attachments in bytes."""
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/octet-stream",
+        }
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            async with client.stream(
+                "GET",
+                weburl,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=65536):
+                    yield chunk
