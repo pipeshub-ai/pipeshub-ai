@@ -80,7 +80,7 @@ class BlobStorage(Transformer):
 
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
-        self.logger.info("📦 Compressed record (msgspec): %d -> %d bytes (%.1f%% reduction)",
+        self.logger.debug("📦 Compressed record (msgspec): %d -> %d bytes (%.1f%% reduction)",
                         original_size, compressed_size, ratio)
 
         return base64.b64encode(compressed).decode('utf-8')
@@ -108,7 +108,7 @@ class BlobStorage(Transformer):
 
         # NEW FORMAT: Check for isCompressed flag
         if data.get("isCompressed"):
-            self.logger.info("🔍 Decompressing compressed record (msgspec format)")
+            self.logger.debug("🔍 Decompressing compressed record (msgspec format)")
             compressed_base64 = data.get("record")
             if not compressed_base64:
                 self.logger.error("❌ isCompressed is true but no record found")
@@ -121,22 +121,22 @@ class BlobStorage(Transformer):
                 base64_start = time.time()
                 compressed_bytes = base64.b64decode(compressed_base64)
                 base64_duration_ms = (time.time() - base64_start) * 1000
-                self.logger.info("⏱️ Base64 decode completed in %.2fms (decoded size: %d bytes)", base64_duration_ms, len(compressed_bytes))
+                self.logger.debug("⏱️ Base64 decode completed in %.2fms (decoded size: %d bytes)", base64_duration_ms, len(compressed_bytes))
 
                 # Step 2: Decompress
                 decompress_start = time.time()
                 decompressed_bytes = self._decompress_bytes(compressed_bytes)
                 decompress_duration_ms = (time.time() - decompress_start) * 1000
-                self.logger.info("⏱️ Decompression completed in %.2fms (decompressed size: %d bytes)", decompress_duration_ms, len(decompressed_bytes))
+                self.logger.debug("⏱️ Decompression completed in %.2fms (decompressed size: %d bytes)", decompress_duration_ms, len(decompressed_bytes))
 
                 # Step 3: Ultra-fast msgspec parse (no UTF-8 decode needed - direct bytes to dict)
                 msgpack_parse_start = time.time()
                 record = msgspec.msgpack.decode(decompressed_bytes)
                 msgpack_parse_duration_ms = (time.time() - msgpack_parse_start) * 1000
-                self.logger.info("⏱️ msgspec parsing completed in %.2fms", msgpack_parse_duration_ms)
+                self.logger.debug("⏱️ msgspec parsing completed in %.2fms", msgpack_parse_duration_ms)
 
                 overall_processing_ms = (time.time() - overall_processing_start) * 1000
-                self.logger.info("📦 Total record processing completed in %.2fms (base64: %.2fms, decompress: %.2fms, msgspec: %.2fms)",
+                self.logger.debug("📦 Total record processing completed in %.2fms (base64: %.2fms, decompress: %.2fms, msgspec: %.2fms)",
                                 overall_processing_ms, base64_duration_ms, decompress_duration_ms, msgpack_parse_duration_ms)
                 return record
 
@@ -146,7 +146,7 @@ class BlobStorage(Transformer):
 
         # OLD FORMAT: Uncompressed record
         elif data.get("record"):
-            self.logger.info("📄 Processing uncompressed record (no decompression needed)")
+            self.logger.debug("📄 Processing uncompressed record (no decompression needed)")
             return data.get("record")
 
         else:
@@ -264,7 +264,7 @@ class BlobStorage(Transformer):
         size_check_start = time.time()
         total_size = await self._get_content_length(session, signed_url)
         size_check_duration_ms = (time.time() - size_check_start) * 1000
-        self.logger.info("⏱️ File size check completed in %.0fms: %.2f MB",
+        self.logger.debug("⏱️ File size check completed in %.0fms: %.2f MB",
                         size_check_duration_ms, total_size / (1024 * 1024))
 
         if total_size is None or total_size == 0:
@@ -279,7 +279,7 @@ class BlobStorage(Transformer):
             chunks.append((start, end))
 
         num_chunks = len(chunks)
-        self.logger.info(
+        self.logger.debug(
             "📦 Splitting %.2f MB file into %d chunks of ~%.2f MB each (max %d parallel connections)",
             total_size / (1024 * 1024), num_chunks, chunk_size_mb, max_connections
         )
@@ -304,7 +304,7 @@ class BlobStorage(Transformer):
         try:
             results = await asyncio.gather(*tasks, return_exceptions=False)
             parallel_download_duration_ms = (time.time() - parallel_download_start) * 1000
-            self.logger.info("⏱️ Parallel download completed in %.0fms", parallel_download_duration_ms)
+            self.logger.debug("⏱️ Parallel download completed in %.0fms", parallel_download_duration_ms)
         except Exception as e:
             self.logger.error("❌ Parallel download failed: %s", str(e))
             raise
@@ -314,7 +314,7 @@ class BlobStorage(Transformer):
         results.sort(key=lambda x: x[0])  # Sort by chunk index
         file_bytes = b''.join(chunk_data for _, chunk_data in results)
         reassembly_duration_ms = (time.time() - reassembly_start) * 1000
-        self.logger.info("⏱️ Chunk reassembly completed in %.0fms", reassembly_duration_ms)
+        self.logger.debug("⏱️ Chunk reassembly completed in %.0fms", reassembly_duration_ms)
 
         # Calculate and log overall performance
         total_download_duration_ms = (time.time() - download_start_time) * 1000
@@ -542,7 +542,7 @@ class BlobStorage(Transformer):
                 storage_type = storage.get("storageType")
                 if not storage_type:
                     raise ValueError("Missing storage type configuration")
-                self.logger.info("🚀 Storage type: %s", storage_type)
+                self.logger.debug("🚀 Storage type: %s", storage_type)
             except Exception as e:
                 self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
                 raise e
@@ -552,7 +552,7 @@ class BlobStorage(Transformer):
                 start_time = time.time()
                 compressed_record = self._compress_record(record)
                 compression_time_ms = (time.time() - start_time) * 1000
-                self.logger.info("⏱️ Compression completed in %.0fms", compression_time_ms)
+                self.logger.debug("⏱️ Compression completed in %.0fms", compression_time_ms)
 
                 use_compression = True
             except Exception as e:
@@ -560,7 +560,7 @@ class BlobStorage(Transformer):
                 compressed_record = None
                 use_compression = False
 
-            self.logger.info("Used compression: %s", use_compression)
+            self.logger.debug("Used compression: %s", use_compression)
 
             if storage_type == "local":
                 try:
@@ -575,7 +575,7 @@ class BlobStorage(Transformer):
                         json_data = json.dumps(upload_data).encode('utf-8')
                         file_size_bytes = len(json_data)
 
-                        self.logger.info("📏 Calculated local storage file size: %d bytes (%.2f MB)",file_size_bytes, file_size_bytes / (1024 * 1024))
+                        self.logger.debug("📏 Calculated local storage file size: %d bytes (%.2f MB)",file_size_bytes, file_size_bytes / (1024 * 1024))
 
                         # Create form data
                         form_data = aiohttp.FormData()
@@ -621,7 +621,6 @@ class BlobStorage(Transformer):
                     raise e
                 except Exception as e:
                     self.logger.error("❌ Unexpected error during upload process: %s", str(e))
-                    self.logger.exception("Detailed error trace:")
                     raise e
             else:
                 # Prepare placeholder for S3 storage
@@ -659,7 +658,7 @@ class BlobStorage(Transformer):
                 try:
                     async with aiohttp.ClientSession() as session:
                         # Step 1: Create placeholder
-                        self.logger.info("📝 Creating placeholder for record: %s", record_id)
+                        self.logger.debug("📝 Creating placeholder for record: %s", record_id)
                         placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                         document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
 
@@ -668,10 +667,10 @@ class BlobStorage(Transformer):
                             self.logger.error("❌ No document ID in placeholder response")
                             raise Exception("No document ID in placeholder response")
 
-                        self.logger.info("📄 Created placeholder with ID: %s", document_id)
+                        self.logger.debug("📄 Created placeholder with ID: %s", document_id)
 
                         # Step 2: Get signed URL (only send metadata, not the full record)
-                        self.logger.info("🔑 Getting signed URL for document: %s", document_id)
+                        self.logger.debug("🔑 Getting signed URL for document: %s", document_id)
 
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
                         upload_result = await self._get_signed_url(session, upload_url, {}, headers)
@@ -682,7 +681,7 @@ class BlobStorage(Transformer):
                             raise Exception("No signed URL in response for document")
 
                         # Step 3: Upload to signed URL with new format
-                        self.logger.info("📤 Uploading record to storage for document: %s", document_id)
+                        self.logger.debug("📤 Uploading record to storage for document: %s", document_id)
 
                         # Upload with isCompressed flag format
                         if compressed_record:
@@ -710,12 +709,10 @@ class BlobStorage(Transformer):
                     raise e
                 except Exception as e:
                     self.logger.error("❌ Unexpected error during storage process: %s", str(e))
-                    self.logger.exception("Detailed error trace:")
                     raise e
 
         except Exception as e:
             self.logger.error("❌ Critical error in saving record to storage: %s", str(e))
-            self.logger.exception("Detailed error trace:")
             raise e
 
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> tuple[str | None, int | None]:
@@ -754,10 +751,10 @@ class BlobStorage(Transformer):
                 if document_id:
                     return document_id, file_size_bytes
                 else:
-                    self.logger.warning("Found mapping document but no documentId field for virtual record ID: %s", virtual_record_id)
+                    self.logger.warning("⚠️ Found mapping document but no documentId field for virtual record ID: %s", virtual_record_id)
                     return None, None
             else:
-                self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
+                self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None, None
         except Exception as e:
             self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
@@ -784,7 +781,7 @@ class BlobStorage(Transformer):
                     config_node_constants.SECRET_KEYS.value
                 )
                 config_duration_ms = (time.time() - config_start_time) * 1000
-                self.logger.info("⏱️ Secret keys config retrieval completed in %.0fms", config_duration_ms)
+                self.logger.debug("⏱️ Secret keys config retrieval completed in %.0fms", config_duration_ms)
 
                 scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
                 if not scoped_jwt_secret:
@@ -793,13 +790,13 @@ class BlobStorage(Transformer):
                 jwt_start_time = time.time()
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
                 jwt_duration_ms = (time.time() - jwt_start_time) * 1000
-                self.logger.info("⏱️ JWT token generation completed in %.0fms", jwt_duration_ms)
+                self.logger.debug("⏱️ JWT token generation completed in %.0fms", jwt_duration_ms)
 
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
                 auth_duration_ms = (time.time() - auth_start_time) * 1000
-                self.logger.info("⏱️ Total authorization setup completed in %.0fms", auth_duration_ms)
+                self.logger.debug("⏱️ Total authorization setup completed in %.0fms", auth_duration_ms)
 
                 # Get endpoint configuration
                 endpoint_config_start_time = time.time()
@@ -807,7 +804,7 @@ class BlobStorage(Transformer):
                     config_node_constants.ENDPOINTS.value
                 )
                 endpoint_config_duration_ms = (time.time() - endpoint_config_start_time) * 1000
-                self.logger.info("⏱️ Endpoints config retrieval completed in %.0fms", endpoint_config_duration_ms)
+                self.logger.debug("⏱️ Endpoints config retrieval completed in %.0fms", endpoint_config_duration_ms)
 
                 nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
@@ -818,14 +815,14 @@ class BlobStorage(Transformer):
                 document_id, file_size_bytes = await self.get_document_id_by_virtual_record_id(virtual_record_id)
                 lookup_duration_ms = (time.time() - lookup_start_time) * 1000
                 if file_size_bytes is not None:
-                    self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s (size: %d bytes)",
+                    self.logger.debug("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s (size: %d bytes)",
                                     lookup_duration_ms, virtual_record_id, file_size_bytes)
                 else:
-                    self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s (size: unknown)",
+                    self.logger.debug("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s (size: unknown)",
                                     lookup_duration_ms, virtual_record_id)
 
                 if not document_id:
-                    self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
+                    self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                     return None
 
                 # Build the download URL
@@ -835,33 +832,32 @@ class BlobStorage(Transformer):
                     http_request_start_time = time.time()
                     async with session.get(download_url, headers=headers) as resp:
                         http_request_duration_ms = (time.time() - http_request_start_time) * 1000
-                        self.logger.info("⏱️ HTTP request completed in %.0fms for document_id: %s", http_request_duration_ms, document_id)
+                        self.logger.debug("⏱️ HTTP request completed in %.0fms for document_id: %s", http_request_duration_ms, document_id)
 
                         if resp.status == HttpStatusCode.SUCCESS.value:
                             json_parse_start_time = time.time()
                             data = await resp.json()
                             json_parse_duration_ms = (time.time() - json_parse_start_time) * 1000
-                            self.logger.info("⏱️ JSON response parsing completed in %.0fms", json_parse_duration_ms)
+                            self.logger.debug("⏱️ JSON response parsing completed in %.0fms", json_parse_duration_ms)
 
                             download_duration_ms = (time.time() - download_start_time) * 1000
                             if data.get("record"):
-                                self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", download_duration_ms, document_id)
+                                self.logger.debug("⏱️ Record download completed in %.0fms for document_id: %s", download_duration_ms, document_id)
 
-                                # Process record (handle decompression if needed)
                                 process_start_time = time.time()
                                 record = self._process_downloaded_record(data)
                                 process_duration_ms = (time.time() - process_start_time) * 1000
-                                self.logger.info("⏱️ Record processing/decompression completed in %.0fms", process_duration_ms)
+                                self.logger.debug("⏱️ Record processing/decompression completed in %.0fms", process_duration_ms)
 
                                 overall_duration_ms = (time.time() - overall_start_time) * 1000
-                                self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
+                                self.logger.debug("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
                                 self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
                                 record_name = record.get("record_name")
-                                self.logger.info("🔍 Record name: %s", record_name)
+                                self.logger.debug("🔍 Record name: %s", record_name)
                                 return record
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
-                                self.logger.info("⏱️ Received signed URL, initiating secondary fetch")
+                                self.logger.debug("⏱️ Received signed URL, initiating secondary fetch")
 
                                 # Reuse the same session for signed URL fetch
                                 signed_url_start_time = time.time()
@@ -884,17 +880,17 @@ class BlobStorage(Transformer):
                                         json_parse_start = time.time()
                                         data = json.loads(file_bytes.decode('utf-8'))
                                         json_parse_duration_ms = (time.time() - json_parse_start) * 1000
-                                        self.logger.info("⏱️ JSON parsing completed in %.0fms", json_parse_duration_ms)
+                                        self.logger.debug("⏱️ JSON parsing completed in %.0fms", json_parse_duration_ms)
                                     else:
                                         signed_url_http_start_time = time.time()
                                         async with session.get(signed_url) as res:
                                             signed_url_http_duration_ms = (time.time() - signed_url_http_start_time) * 1000
-                                            self.logger.info("⏱️ Signed URL HTTP request completed in %.0fms", signed_url_http_duration_ms)
+                                            self.logger.debug("⏱️ Signed URL HTTP request completed in %.0fms", signed_url_http_duration_ms)
                                             if res.status == HttpStatusCode.SUCCESS.value:
                                                 signed_url_json_start_time = time.time()
                                                 data = await res.json()
                                                 signed_url_json_duration_ms = (time.time() - signed_url_json_start_time) * 1000
-                                                self.logger.info("⏱️ Signed URL JSON parsing completed in %.0fms", signed_url_json_duration_ms)
+                                                self.logger.debug("⏱️ Signed URL JSON parsing completed in %.0fms", signed_url_json_duration_ms)
                                             else:
                                                 raise Exception(f"Failed to retrieve record: status {res.status}")
                                 except Exception as e:
@@ -906,7 +902,7 @@ class BlobStorage(Transformer):
                                                 if res.status == HttpStatusCode.SUCCESS.value:
                                                     data = await res.json()
                                                     fallback_duration_ms = (time.time() - fallback_start) * 1000
-                                                    self.logger.info("⏱️ Fallback single download completed in %.0fms", fallback_duration_ms)
+                                                    self.logger.debug("⏱️ Fallback single download completed in %.0fms", fallback_duration_ms)
                                                 else:
                                                     raise Exception(f"Fallback download failed with status {res.status}")
                                         except Exception as fallback_error:
@@ -920,17 +916,17 @@ class BlobStorage(Transformer):
                                 signed_url_duration_ms = (time.time() - signed_url_start_time) * 1000
                                 total_download_duration_ms = (time.time() - download_start_time) * 1000
                                 if data.get("record"):
-                                    self.logger.info("⏱️ Signed URL fetch completed in %.0fms for document_id: %s", signed_url_duration_ms, document_id)
-                                    self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", total_download_duration_ms, document_id)
+                                    self.logger.debug("⏱️ Signed URL fetch completed in %.0fms for document_id: %s", signed_url_duration_ms, document_id)
+                                    self.logger.debug("⏱️ Record download completed in %.0fms for document_id: %s", total_download_duration_ms, document_id)
                                     signed_url_process_start_time = time.time()
                                     record = self._process_downloaded_record(data)
                                     signed_url_process_duration_ms = (time.time() - signed_url_process_start_time) * 1000
-                                    self.logger.info("⏱️ Record processing/decompression completed in %.0fms", signed_url_process_duration_ms)
+                                    self.logger.debug("⏱️ Record processing/decompression completed in %.0fms", signed_url_process_duration_ms)
                                     overall_duration_ms = (time.time() - overall_start_time) * 1000
-                                    self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
-                                    self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
+                                    self.logger.debug("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
                                     record_name = record.get("record_name")
-                                    self.logger.info("🔍 Record name: %s", record_name)
+                                    self.logger.info("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+
                                     return record
                                 else:
                                     self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
@@ -943,7 +939,6 @@ class BlobStorage(Transformer):
                             raise Exception("Failed to retrieve record from storage")
             except Exception as e:
                 self.logger.error("❌ Error retrieving record from storage: %s", str(e))
-                self.logger.exception("Detailed error trace:")
                 raise e
 
     async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
@@ -988,7 +983,6 @@ class BlobStorage(Transformer):
 
         except Exception as e:
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))
-            self.logger.exception("Detailed error trace:")
             raise e
 
                 
