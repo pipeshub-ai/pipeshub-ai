@@ -1330,11 +1330,14 @@ const ChatInterface = () => {
             query: trimmedInput,
             modelKey: currentModel?.modelKey,
             modelName: currentModel?.modelName,
-            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
-              ? currentModel.modelFriendlyName.trim() 
+            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim()
+              ? currentModel.modelFriendlyName.trim()
               : undefined,
             chatMode: chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
+            // Timezone and current time for LLM context
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            currentTime: new Date().toISOString(),
           },
           wasCreatingNewConversation
         );

@@ -7,8 +7,8 @@ _LLM_TIME_CONTEXT_HEADING = "## Time context"
 
 # One subtle line under the heading (tools + relative dates).
 _LLM_TIME_CONTEXT_SUBLINE = (
-    "_Use this when the user asks about the current date, time, day of week, "
-    "or time-relative wording (today, tomorrow, this week, etc.)."
+    "Use this when the user asks about the current date, time, day of week, "
+    "or time-relative wording (today, tomorrow, this week, etc.). "
     "In replies to the user, use **Time zone** (when shown) for calendar dates and "
     "timezone-aware times (am/pm). For tools, keep each API's datetime format as required._"
 )
