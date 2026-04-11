@@ -957,6 +957,7 @@ class TestDrainPending:
                 ("0-0", [], []),
             ]
         )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -971,6 +972,7 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -985,6 +987,7 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -1002,6 +1005,7 @@ class TestDrainPending:
         consumer.redis.xautoclaim = AsyncMock(
             return_value=("0-0", [("1-0", _valid_fields())], [])
         )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         async def stop_on_process(stream, mid, fields):
             consumer.running = False
@@ -1024,6 +1028,7 @@ class TestDrainPending:
                 ("0-0", [], []),
             ]
         )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         process_count = 0
 
@@ -1054,6 +1059,7 @@ class TestDrainPending:
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
             consumer, "_start_processing_task", new_callable=AsyncMock
@@ -1061,6 +1067,41 @@ class TestDrainPending:
             await consumer._drain_pending()
 
         mock_process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drain_phase2_recovers_own_pel(self, consumer):
+        """Phase 2: XREADGROUP id="0" recovers messages already owned by this consumer.
+
+        Same-client_id restart scenario — XAUTOCLAIM cannot help.
+        """
+        # The test fixture configures two topics; Phase 2 runs once per topic.
+        first_topic = consumer.config.topics[0]
+
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        # Phase 2 call sequence (in order):
+        #   1. topic[0]: returns one message
+        #   2. topic[0]: drained, return None
+        #   3. topic[1]: empty, return None
+        consumer.redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [(first_topic, [("9-0", _valid_fields())])],
+                None,
+                None,
+            ]
+        )
+
+        with patch.object(
+            consumer, "_start_processing_task", new_callable=AsyncMock
+        ) as mock_process:
+            await consumer._drain_pending()
+
+        mock_process.assert_awaited_once()
+        first_call = consumer.redis.xreadgroup.call_args_list[0]
+        # Phase 2 must use id "0", not ">"
+        assert first_call.kwargs["streams"][first_topic] == "0"
+        assert first_call.kwargs["consumername"] == consumer.config.client_id
 
 
 # ===================================================================
