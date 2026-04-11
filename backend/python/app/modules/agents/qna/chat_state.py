@@ -9,6 +9,7 @@ from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.chat_helpers import CitationRefMapper
 
 
 class Document(TypedDict):
@@ -66,6 +67,7 @@ class ChatState(TypedDict):
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB record group IDs to search in (extracted from knowledge array filters)
     agent_knowledge: list[dict[str, Any]] | None
+    connector_configs: dict[str, Any] | None  # Per-connector sync/indexing filter values from etcd (route pre-fetch)
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
@@ -135,6 +137,7 @@ class ChatState(TypedDict):
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
+    citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
 
     # Reflection and retry fields (for intelligent error recovery)
     reflection: dict[str, Any] | None  # Reflection analysis result from reflect_node
@@ -436,6 +439,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
+        "connector_configs": chat_query.get("connector_configs") or {},
         "has_knowledge": has_knowledge,
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
@@ -486,6 +490,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "qna_message_content": None,
         "blob_store": None,
         "is_multimodal_llm": False,
+        "citation_ref_mapper": None,
 
         # Reflection and retry fields (for intelligent error recovery)
         "reflection": None,

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Pydantic schemas for Confluence tools
 class CreatePageInput(BaseModel):
     """Schema for creating Confluence pages"""
-    space_id: str = Field(description="Space ID or key")
+    space_id: str = Field(description="Space ID or key (e.g. '~abc123', 'SD', '12345'). IMPORTANT: Resolve via confluence.get_spaces if not already known from Reference Data or conversation history.")
     page_title: str = Field(description="Page title")
     page_content: str = Field(description="Page content in storage format")
 
@@ -303,6 +303,7 @@ class Confluence:
         app_name="confluence",
         tool_name="create_page",
         description="Create a page in Confluence",
+        llm_description="Create a page in Confluence. Requires space_id (numeric ID or key), page_title, and page_content (HTML storage format). Call confluence.get_spaces first if the space is not yet resolved.",
         args_schema=CreatePageInput,  # NEW: Pydantic schema
         returns="JSON with success status and page details",
         when_to_use=[
@@ -320,7 +321,9 @@ class Confluence:
         typical_queries=[
             "Create a Confluence page",
             "Add a new page to Confluence",
-            "Create documentation page"
+            "Create documentation page",
+            "Create a page in X space",
+            "Create a wiki page about X and add the Jira ticket link"
         ],
         category=ToolCategory.DOCUMENTATION
     )
@@ -1000,24 +1003,28 @@ class Confluence:
         app_name="confluence",
         tool_name="get_spaces",
         description="Get all spaces with permissions in Confluence",
+        llm_description="Get all spaces with permissions in Confluence. Also used to resolve space names/types (e.g., personal space) before creating pages.",
         # No args_schema needed (no parameters)
-        returns="JSON with list of spaces",
+        returns="JSON with list of spaces including id, key, name, and type fields",
         when_to_use=[
             "User wants to list all Confluence spaces",
             "User mentions 'Confluence' + wants spaces",
-            "User asks for available spaces"
+            "User asks for available spaces",
+            "Need to resolve 'my personal space' or any named space to get its ID before creating/updating a page",
+            "User refers to a space by name and you need the space key or numeric ID"
         ],
         when_not_to_use=[
-            "User wants specific space (use get_space)",
+            "Space ID is already known from conversation history",
             "User wants pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)",
-            "No Confluence mention"
+            "User wants info ABOUT Confluence (use retrieval)"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "List all Confluence spaces",
             "Show me available spaces",
-            "What spaces are in Confluence?"
+            "What spaces are in Confluence?",
+            "Create a page in my personal space",
+            "Create a page in the Engineering space"
         ],
         category=ToolCategory.DOCUMENTATION
     )

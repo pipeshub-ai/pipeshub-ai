@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -164,7 +164,7 @@ class TestStringifyContent:
         assert _stringify_content(content) == "prefix:body42"
 
     def test_dict_returns_json(self):
-        content: Dict[str, Any] = {"key": "value"}
+        content: dict[str, Any] = {"key": "value"}
         result = _stringify_content(content)
         # dict falls through to str() which gives repr-like output
         assert "key" in result
@@ -608,21 +608,22 @@ class TestInitializeAnswerParserRegex:
 
     def test_cite_block_regex_matches(self):
         _, cite_block_re, _, _ = _initialize_answer_parser_regex()
-        assert cite_block_re.match("[1]") is not None
-        assert cite_block_re.match("[1][2]") is not None
-        # Chinese brackets
-        assert cite_block_re.match("\u30101\u3011") is not None
+        # Matches markdown-style citation links [text](url)
+        assert cite_block_re.match("[1](http://example.com)") is not None
+        assert cite_block_re.match("[1](url1) [2](url2)") is not None
+        assert cite_block_re.match(" [ref](http://link)") is not None
 
     def test_incomplete_cite_regex_matches(self):
         _, _, incomplete_cite_re, _ = _initialize_answer_parser_regex()
+        # Matches incomplete markdown links at end of text
         assert incomplete_cite_re.search("text [") is not None
         assert incomplete_cite_re.search("text [12") is not None
-        assert incomplete_cite_re.search("text \u3010") is not None
+        assert incomplete_cite_re.search("text [ref](partial") is not None
 
     def test_incomplete_cite_regex_no_match_on_complete(self):
         _, _, incomplete_cite_re, _ = _initialize_answer_parser_regex()
-        assert incomplete_cite_re.search("text [1]") is None
-        assert incomplete_cite_re.search("text \u30101\u3011") is None
+        # Complete markdown links should NOT match
+        assert incomplete_cite_re.search("text [1](http://example.com)") is None
 
     def test_word_iter_callable(self):
         _, _, _, word_iter = _initialize_answer_parser_regex()
@@ -1519,7 +1520,7 @@ class TestStreamLlmResponse:
     """Tests for stream_llm_response."""
 
     async def test_json_mode_with_existing_ai_message(self):
-        """Fast path: existing AI message in JSON mode."""
+        """JSON mode streams content via aiter_llm_stream and parses answer."""
         from app.utils.streaming import stream_llm_response
 
         ai_content = json.dumps({
@@ -1527,19 +1528,26 @@ class TestStreamLlmResponse:
             "reason": "test",
             "confidence": "High",
         })
-        messages = [AIMessage(content=ai_content)]
+
+        async def mock_aiter(llm, messages, parts=None):
+            for char in ai_content:
+                yield char
+
+        messages = [HumanMessage(content="question")]
         test_logger = logging.getLogger("test_stream")
 
-        events = []
-        async for event in stream_llm_response(
-            llm=MagicMock(),
-            messages=messages,
-            final_results=[],
-            logger=test_logger,
-            target_words_per_chunk=1,
-            mode="json",
-        ):
-            events.append(event)
+        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter), \
+             patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("Existing answer", [])):
+            events = []
+            async for event in stream_llm_response(
+                llm=MagicMock(),
+                messages=messages,
+                final_results=[],
+                logger=test_logger,
+                target_words_per_chunk=1,
+                mode="json",
+            ):
+                events.append(event)
 
         complete_events = [e for e in events if e.get("event") == "complete"]
         assert len(complete_events) == 1
@@ -1927,36 +1935,29 @@ class TestHandleSimpleMode:
         assert complete_events[0]["data"]["reason"] is None
 
     async def test_streaming_from_llm(self):
-        """Normal streaming from LLM."""
+        """Normal streaming from LLM via call_aiter_llm_stream_simple."""
         from app.utils.streaming import handle_simple_mode
 
-        async def mock_astream(messages, config=None):
-            for word in ["Hello ", "simple"]:
-                mock_chunk = MagicMock()
-                mock_chunk.content = word
-                yield mock_chunk
-
-        mock_llm = MagicMock()
-        mock_llm.astream = mock_astream
+        async def mock_call_simple(*args, **kwargs):
+            yield {"event": "answer_chunk", "data": {"chunk": "Hello simple"}}
+            yield {"event": "complete", "data": {"answer": "Hello simple", "citations": [], "reason": None, "confidence": None}}
 
         messages = [HumanMessage(content="question")]
         test_logger = logging.getLogger("test")
 
-        events = []
-        async for event in handle_simple_mode(
-            llm=mock_llm,
-            messages=messages,
-            final_results=[],
-            records=[],
-            logger=test_logger,
-        ):
-            events.append(event)
+        with patch("app.utils.streaming.call_aiter_llm_stream_simple", side_effect=mock_call_simple):
+            events = []
+            async for event in handle_simple_mode(
+                llm=MagicMock(),
+                messages=messages,
+                final_results=[],
+                records=[],
+                logger=test_logger,
+            ):
+                events.append(event)
 
         complete_events = [e for e in events if e.get("event") == "complete"]
         assert len(complete_events) == 1
-        # Simple mode sets reason and confidence to defaults
-        assert complete_events[0]["data"]["reason"] == "Not provided"
-        assert complete_events[0]["data"]["confidence"] == "Medium"
 
     async def test_streaming_error_yields_error_event(self):
         """Error during LLM streaming yields error event."""
@@ -2009,28 +2010,25 @@ class TestHandleSimpleMode:
         """Test chunking with target_words_per_chunk > 1."""
         from app.utils.streaming import handle_simple_mode
 
-        async def mock_astream(messages, config=None):
-            for word in ["word1 ", "word2 ", "word3 ", "word4"]:
-                mock_chunk = MagicMock()
-                mock_chunk.content = word
-                yield mock_chunk
-
-        mock_llm = MagicMock()
-        mock_llm.astream = mock_astream
+        async def mock_call_simple(*args, **kwargs):
+            yield {"event": "answer_chunk", "data": {"chunk": "word1 word2"}}
+            yield {"event": "answer_chunk", "data": {"chunk": "word3 word4"}}
+            yield {"event": "complete", "data": {"answer": "word1 word2 word3 word4", "citations": [], "reason": None, "confidence": None}}
 
         messages = [HumanMessage(content="q")]
         test_logger = logging.getLogger("test")
 
-        events = []
-        async for event in handle_simple_mode(
-            llm=mock_llm,
-            messages=messages,
-            final_results=[],
-            records=[],
-            logger=test_logger,
-            target_words_per_chunk=2,
-        ):
-            events.append(event)
+        with patch("app.utils.streaming.call_aiter_llm_stream_simple", side_effect=mock_call_simple):
+            events = []
+            async for event in handle_simple_mode(
+                llm=MagicMock(),
+                messages=messages,
+                final_results=[],
+                records=[],
+                logger=test_logger,
+                target_words_per_chunk=2,
+            ):
+                events.append(event)
 
         complete_events = [e for e in events if e.get("event") == "complete"]
         assert len(complete_events) == 1
@@ -3248,6 +3246,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_400_error(self):
         """400 Bad Request should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3271,6 +3270,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_403_error(self):
         """403 Forbidden should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3293,6 +3293,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_404_error(self):
         """404 Not Found should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3315,6 +3316,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_500_error(self):
         """Non-standard error code should raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3338,6 +3340,7 @@ class TestStreamContentCoverage:
         """aiohttp.ClientError should raise HTTPException."""
         import aiohttp
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_session = AsyncMock()
@@ -3353,7 +3356,6 @@ class TestStreamContentCoverage:
     @pytest.mark.asyncio
     async def test_stream_content_long_url_truncation(self):
         """Long URLs should be truncated in logging."""
-        from fastapi import HTTPException
         from app.utils.streaming import stream_content
 
         long_url = "https://example.com/" + "a" * 300
@@ -3384,6 +3386,7 @@ class TestStreamContentCoverage:
     async def test_stream_content_error_body_read_failure(self):
         """When error body text fails to read, should still raise HTTPException."""
         from fastapi import HTTPException
+
         from app.utils.streaming import stream_content
 
         mock_response = AsyncMock()
@@ -3838,7 +3841,7 @@ class TestHandleSimpleModeCoverage:
 
         async def failing_aiter(llm, msgs, parts=None):
             raise RuntimeError("stream broke")
-            yield  # noqa
+            yield
 
         with patch("app.utils.streaming.aiter_llm_stream", side_effect=failing_aiter):
             events = []
@@ -4006,8 +4009,8 @@ class TestStreamLlmResponseWithToolsCoverage:
     """Additional tests for stream_llm_response_with_tools."""
 
     @pytest.mark.asyncio
-    async def test_simple_mode_ignores_tools(self):
-        """In simple mode, tools should be ignored."""
+    async def test_no_tools_mode_skips_tool_execution(self):
+        """In no_tools mode, tool execution is skipped entirely."""
         from app.utils.streaming import stream_llm_response_with_tools
 
         async def mock_handle_simple(*args, **kwargs):
@@ -4029,7 +4032,7 @@ class TestStreamLlmResponseWithToolsCoverage:
                 context_length=128000,
                 tools=[MagicMock()],
                 tool_runtime_kwargs={"key": "val"},
-                mode="simple",
+                mode="no_tools",
             ):
                 events.append(event)
 
@@ -4043,7 +4046,7 @@ class TestStreamLlmResponseWithToolsCoverage:
 
         async def mock_execute(*args, **kwargs):
             raise RuntimeError("tool exec failed")
-            yield  # noqa
+            yield
 
         with patch("app.utils.streaming.execute_tool_calls", side_effect=mock_execute):
             events = []
@@ -4122,7 +4125,7 @@ class TestStreamLlmResponseWithToolsCoverage:
 
         async def mock_json_mode(*args, **kwargs):
             raise RuntimeError("json mode crashed")
-            yield  # noqa
+            yield
 
         with patch("app.utils.streaming.handle_json_mode", side_effect=mock_json_mode):
             events = []
@@ -4205,7 +4208,7 @@ class TestStreamLlmResponseDictLastMsg:
 
     @pytest.mark.asyncio
     async def test_dict_assistant_message_fast_path_json_mode(self):
-        """When last message is a dict with role='assistant', use fast path."""
+        """JSON mode streams content via aiter_llm_stream and parses answer."""
         from app.utils.streaming import stream_llm_response
 
         json_content = json.dumps({
@@ -4213,13 +4216,17 @@ class TestStreamLlmResponseDictLastMsg:
             "reason": "because",
             "confidence": "High",
         })
-        messages = [{"role": "assistant", "content": json_content}]
 
-        with patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("fast answer", [])):
+        async def mock_aiter(llm, messages, parts=None):
+            for char in json_content:
+                yield char
+
+        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter), \
+             patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("fast answer", [])):
             events = []
             async for event in stream_llm_response(
                 llm=MagicMock(),
-                messages=messages,
+                messages=[HumanMessage(content="q")],
                 final_results=[],
                 logger=logging.getLogger("test"),
                 target_words_per_chunk=1,
@@ -4243,8 +4250,9 @@ class TestStreamLlmResponseBaseMessageFastPath:
     @pytest.mark.asyncio
     async def test_base_message_fast_path_json_mode(self):
         """When last message is a BaseMessage (not AIMessage) with type='ai', use fast path in JSON mode."""
-        from app.utils.streaming import stream_llm_response
         from langchain_core.messages import ChatMessage
+
+        from app.utils.streaming import stream_llm_response
 
         json_content = json.dumps({
             "answer": "base answer",
@@ -4526,22 +4534,21 @@ class TestHandleSimpleModeFastPathException:
         ai_msg = AIMessage(content="ai text")
         messages = [ai_msg]
 
-        async def mock_aiter(llm, msgs, parts=None):
-            yield "streamed"
+        async def mock_call_simple(*args, **kwargs):
+            yield {"event": "complete", "data": {"answer": "streamed", "citations": [], "reason": None, "confidence": None}}
 
         with patch("app.utils.streaming.normalize_citations_and_chunks", side_effect=Exception("bad normalize")):
-            with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter):
-                with patch("app.utils.streaming.normalize_citations_and_chunks_for_agent", return_value=("streamed", [])):
-                    events = []
-                    async for event in handle_simple_mode(
-                        llm=MagicMock(),
-                        messages=messages,
-                        final_results=[],
-                        records=[],
-                        logger=logging.getLogger("test"),
-                        target_words_per_chunk=1,
-                    ):
-                        events.append(event)
+            with patch("app.utils.streaming.call_aiter_llm_stream_simple", side_effect=mock_call_simple):
+                events = []
+                async for event in handle_simple_mode(
+                    llm=MagicMock(),
+                    messages=messages,
+                    final_results=[],
+                    records=[],
+                    logger=logging.getLogger("test"),
+                    target_words_per_chunk=1,
+                ):
+                    events.append(event)
 
         assert any(e.get("event") == "complete" for e in events)
 
@@ -4875,10 +4882,7 @@ class TestExecuteToolCallsNoToolCalls:
         ai_mock.tool_calls = []  # No tool calls
 
         # Mock call_aiter_llm_stream to yield a tool_calls event with an ai that has empty tool_calls
-        async def mock_call_aiter(llm, messages, final_results, records=None,
-                                   target_words_per_chunk=1, reflection_retry_count=0,
-                                   max_reflection_retries=2, original_llm=None,
-                                   is_agent=False):
+        async def mock_call_aiter(*args, **kwargs):
             yield {"event": "tool_calls", "data": {"ai": ai_mock}}
 
         with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=mock_call_aiter):
@@ -4924,10 +4928,7 @@ class TestExecuteToolCallsInvalidTool:
         ai_mock.content = ""
         ai_mock.tool_calls = [{"name": "invalid_tool", "args": {}, "id": "c1"}]
 
-        async def mock_call_aiter(llm, messages, final_results, records=None,
-                                   target_words_per_chunk=1, reflection_retry_count=0,
-                                   max_reflection_retries=2, original_llm=None,
-                                   is_agent=False):
+        async def mock_call_aiter(*args, **kwargs):
             yield {"event": "tool_calls", "data": {"ai": ai_mock}}
 
         # The tool exists as an object but with name different than requested
@@ -4972,8 +4973,8 @@ class TestStreamContentUrlParseException:
         long_url = "https://example.com/" + "a" * 300
         # This just tests that the function initializes correctly with a long URL
         # It will fail at the HTTP request, but the URL parsing should succeed
-        from fastapi import HTTPException
         import aiohttp
+        from fastapi import HTTPException
 
         with pytest.raises((HTTPException, TypeError, aiohttp.ClientError, Exception)):
             async for _ in stream_content(long_url, record_id="r1", file_name="test.pdf"):
@@ -4985,7 +4986,7 @@ class TestExecuteToolCallsInvalidToolName:
 
     @pytest.mark.asyncio
     async def test_tool_name_mismatch(self):
-        from app.utils.streaming import execute_tool_calls, call_aiter_llm_stream
+        from app.utils.streaming import execute_tool_calls
 
         # Create a tool with name "real_tool"
         mock_tool = MagicMock()
@@ -5052,7 +5053,7 @@ class TestExecuteToolCallsTokenThreshold:
         # Make count_tokens return high values to trigger the threshold path
         with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=mock_call_aiter), \
              patch("app.utils.streaming.bind_tools_for_llm", return_value=MagicMock()), \
-             patch("app.utils.streaming.record_to_message_content", return_value="content"), \
+             patch("app.utils.streaming.record_to_message_content", return_value=([{"type": "text", "text": "content"}], MagicMock())), \
              patch("app.utils.streaming.count_tokens", return_value=(100000, 50000)), \
              patch("app.utils.streaming.get_vectorDb_limit", return_value=100):
 
@@ -5065,7 +5066,7 @@ class TestExecuteToolCallsTokenThreshold:
             with patch("app.utils.streaming.get_flattened_results", new_callable=AsyncMock, return_value=[
                 {"virtual_record_id": "vr1", "block_index": 0, "content": "test"}
             ]), \
-            patch("app.utils.streaming.get_message_content_for_tool", return_value=["content"]):
+            patch("app.utils.streaming.build_message_content_array", return_value=([["content"]], MagicMock())):
 
                 events = []
                 async for event in execute_tool_calls(

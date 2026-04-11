@@ -53,8 +53,8 @@ services:
       # Ensure we use the same password as configured for the ArangoDB service
 
       # Message broker config
-      - MESSAGE_BROKER=kafka
-      - REDIS_STREAMS_MAXLEN=10000
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config
       - KAFKA_BROKERS=kafka-1:9092

@@ -33,8 +33,9 @@ interface CitationData {
       departments: string[];
       categories: string[];
       webUrl?: string;
+      connector?: string;
     };
-    chunkIndex?: string;
+    chunkIndex?: string | number;
   }
 }
 
@@ -82,6 +83,8 @@ const STREAM_FAILURE_MESSAGE =
 const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
+const INLINE_RECORD_CITATION_LINK_PATTERN =
+  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?)\)/g;
 
 // User info cache to avoid redundant API calls
 interface CachedUserInfo {
@@ -1468,27 +1471,115 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
 }
 
-function buildCitationSources(citations?: CitationData[]): any[]  {
+function parseCitationNumber(rawValue: unknown): number | null {
+  if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue > 0) {
+    return rawValue;
+  }
 
-  let blocks: any[] = [];
-  let elements: any[] = [];
+  if (typeof rawValue !== "string") {
+    return null;
+  }
+
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function rewriteInlineRecordCitationsForSlack(
+  answerBody: string,
+  citations?: CitationData[],
+): string {
+  if (!answerBody) {
+    return "";
+  }
+
+  const citationNumberToFragmentWebUrl = new Map<number, string>();
   for (const citation of citations || []) {
-    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    if (!webUrl) {
+    const citationNumber =
+      parseCitationNumber(citation.citationData.chunkIndex);
+    if (!citationNumber || citationNumberToFragmentWebUrl.has(citationNumber)) {
       continue;
     }
 
-    const chunkIndex = citation.citationData.chunkIndex;
-    if (chunkIndex) {
-
-      elements.push({
-        "type": "link",
-        "url": webUrl,
-        "text": ` [${chunkIndex}]`,
-      });
+    let citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    const recordType = citation.citationData.metadata.recordType;
+    const connector = citation.citationData.metadata.connector;
+    if (recordType === "FILE" && connector !== "WEB") {
+      citationWebUrl = (process.env.FRONTEND_PUBLIC_URL || "http://localhost:3000") + "/record/" + citation.citationData.metadata.recordId;
+    }
+    if (!citationWebUrl) {
+      continue;
     }
 
-    if (elements.length == 10) {
+    citationNumberToFragmentWebUrl.set(citationNumber, citationWebUrl);
+  }
+  let citationCount = 1;
+  let webUrlToCitationNumber = new Map<string, number>();
+  
+  return answerBody.replace(
+    INLINE_RECORD_CITATION_LINK_PATTERN,
+    (_matchedCitationLink, citationNumberText: string) => {
+      const citationNumber = Number.parseInt(citationNumberText, 10);
+      if (!Number.isInteger(citationNumber) || citationNumber <= 0) {
+        return "";
+      }
+      const citationWebUrl = citationNumberToFragmentWebUrl.get(citationNumber);
+      let res = "";
+      if (citationWebUrl) {
+        let citationNumber = citationCount;
+        if (webUrlToCitationNumber.has(citationWebUrl)) {
+          citationNumber = webUrlToCitationNumber.get(citationWebUrl)!;
+        }
+        else {
+          webUrlToCitationNumber.set(citationWebUrl, citationCount);
+          citationCount++;
+        }
+        res = `[${citationNumber}](${citationWebUrl})`;
+      }
+      return res;
+    },
+  );
+}
+
+function buildCitationSources(citations?: CitationData[]): any[]  {
+
+  // Deduplicate by recordId, keeping the first occurrence per unique record
+  const seenRecordIds = new Set<string>();
+  const uniqueRecords: Array<{ name: string; url: string }> = [];
+
+  for (const citation of citations || []) {
+    const recordId = citation.citationData.metadata.recordId;
+    if (!recordId) continue;
+
+    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    if (!webUrl) continue;
+
+    if (seenRecordIds.has(recordId)) continue;
+    seenRecordIds.add(recordId);
+
+    const recordName = citation.citationData.metadata.recordName || "Source";
+    // Strip text fragment directive (#:~:text=...) but preserve other fragments
+    const recordUrl = webUrl.replace(/#:~:text=[^#]*/, '');
+    uniqueRecords.push({ name: recordName, url: recordUrl });
+  }
+
+  let blocks: any[] = [];
+  let elements: any[] = [];
+
+  for (const record of uniqueRecords) {
+    elements.push({
+      "type": "link",
+      "url": record.url,
+      "text": ` ${record.name}`,
+    });
+    elements.push({
+      "type": "text",
+      "text": `\n`,
+    });
+
+    if (elements.length === 20) {
       blocks.push({
         "type": "rich_text",
         "elements": [
@@ -1580,6 +1671,19 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
   }
 });
 
+export function removeContinuousDuplicateMarkdownLinks(text: string): string {
+  const linkPattern = /(\[[^\]]+\]\([^)]+\))(?:\s*\1)+/g;
+
+  return text.replace(linkPattern, "$1" + " ");
+}
+
+function addSpaceBetweenMarkdownLinks(input: string): string {
+  // Match a markdown link followed immediately by another markdown link
+  const pattern = /(\[[^\]]+\]\([^)]+\))(?=\[[^\]]+\]\([^)]+\))/g;
+
+  // Replace by adding a space after the first link
+  return input.replace(pattern, "$1 ");
+}
 
 async function processSlackMessage(
   typedMessage: SlackMessagePayload,
@@ -1786,7 +1890,7 @@ async function processSlackMessage(
       url,
       {
         query,
-        chatMode: "quick",
+        chatMode: "auto",
       },
       {
         headers: {
@@ -1817,6 +1921,11 @@ async function processSlackMessage(
         return;
       }
 
+      if (text.length === 0) {
+        return;
+      }
+
+      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, '');
       if (text.length === 0) {
         return;
       }
@@ -2127,7 +2236,12 @@ async function processSlackMessage(
 
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
-    const answerBody = botResponse.content || "" ;
+    let answerBody = rewriteInlineRecordCitationsForSlack(
+      botResponse.content || "",
+      botResponse.citations,
+    );
+    answerBody = removeContinuousDuplicateMarkdownLinks(answerBody);
+    answerBody = addSpaceBetweenMarkdownLinks(answerBody);
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;

@@ -6,6 +6,10 @@ import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStor
 import { RecordsEventProducer } from '../../../../src/modules/knowledge_base/services/records_events.service'
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
+import {
+  BaseKafkaConnection,
+  BaseKafkaProducerConnection,
+} from '../../../../src/libs/services/kafka.service'
 
 describe('KnowledgeBaseContainer - coverage', () => {
   let originalInstance: any
@@ -20,6 +24,10 @@ describe('KnowledgeBaseContainer - coverage', () => {
       isConnected: sinon.stub().returns(true), publish: sinon.stub().resolves(),
       publishBatch: sinon.stub().resolves(), healthCheck: sinon.stub().resolves(true),
     } as any)
+    // stub so that the actual instance is not called.
+    sinon.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
+    sinon.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
+    sinon.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
   })
 
   afterEach(() => {

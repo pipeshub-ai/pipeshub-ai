@@ -8,3 +8,6 @@ celerybeat-schedule.*
 .env
 cleanup.sh
 __pycache__/
+build/
+dist/
+*.egg-info/

@@ -98,7 +98,7 @@
     "morgan": "^1.10.1",
     "msal-node": "^0.0.1-security",
     "multer": "^2.0.2",
-    "nodemailer": "^8.0.4",
+    "nodemailer": "^8.0.5",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "prom-client": "^15.1.3",

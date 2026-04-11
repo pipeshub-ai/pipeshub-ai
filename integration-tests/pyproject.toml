@@ -18,11 +18,12 @@ dependencies = [
   "aiokafka>=0.9.0",
   "redis>=5.0.0",
   "pydantic>=2.12.5",
+  "pyyaml>=6.0",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["helper", "connectors", "connectors.*", "messaging*"]
+include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

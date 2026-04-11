@@ -12,6 +12,11 @@ from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
 from app.models.entities import AppUser, RecordType, WebpageRecord, FileRecord
+from app.sources.external.servicenow.models import (
+    ServiceNowAPIError,
+    TableAPIRecord,
+    TableAPIResponse,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -40,12 +45,8 @@ def _make_mock_data_store_provider(existing_record=None, app_users=None):
     return provider
 
 
-def _make_api_response(success=True, data=None, error=None):
-    resp = MagicMock()
-    resp.success = success
-    resp.data = data
-    resp.error = error
-    return resp
+def _table_api_response(records: list) -> TableAPIResponse:
+    return TableAPIResponse(result=[TableAPIRecord(**r) for r in records])
 
 
 @pytest.fixture()
@@ -55,8 +56,10 @@ def mock_logger():
 
 @pytest.fixture()
 def mock_data_entities_processor():
-    proc = MagicMock()
-    proc.org_id = "org-sn-1"
+    class _Proc:
+        org_id = "org-sn-1"
+
+    proc = _Proc()
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
@@ -158,8 +161,8 @@ class TestServiceNowInit:
                 "clientId": "cid",
                 "clientSecret": "cs",
                 "instanceUrl": "https://instance.service-now.com",
-                "redirectUri": "http://localhost/callback",
-            }
+            },
+            "redirectUri": "http://localhost/callback",
         }
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"oauthConfigId": "oauth-1"},
@@ -175,8 +178,8 @@ class TestServiceNowInit:
                 "clientId": "cid",
                 "clientSecret": "cs",
                 "instanceUrl": "https://instance.service-now.com",
-                "redirectUri": "http://localhost/callback",
-            }
+            },
+            "redirectUri": "http://localhost/callback",
         }
         connector.test_connection_and_access = AsyncMock(return_value=False)
         assert await connector.init() is False
@@ -236,7 +239,7 @@ class TestServiceNowTestConnection:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(True, {"result": [{"sys_id": "1"}]})
+            return_value=_table_api_response([{"sys_id": "1"}])
         )
         connector._get_fresh_datasource.return_value = mock_ds
         assert await connector.test_connection_and_access() is True
@@ -247,7 +250,7 @@ class TestServiceNowTestConnection:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(False, error="Unauthorized")
+            side_effect=ServiceNowAPIError(401, "Unauthorized", None)
         )
         connector._get_fresh_datasource.return_value = mock_ds
         assert await connector.test_connection_and_access() is False
@@ -318,9 +321,9 @@ class TestFetchArticleContent:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(True, {
-                "result": [{"sys_id": "1", "text": "<p>Hello</p>", "short_description": "Test"}]
-            })
+            return_value=_table_api_response([
+                {"sys_id": "sys-1", "text": "<p>Hello</p>", "short_description": "Test"},
+            ])
         )
         connector._get_fresh_datasource.return_value = mock_ds
         content = await connector._fetch_article_content("sys-1")
@@ -331,9 +334,7 @@ class TestFetchArticleContent:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(True, {
-                "result": [{"sys_id": "1", "text": ""}]
-            })
+            return_value=_table_api_response([{"sys_id": "sys-1", "text": ""}])
         )
         connector._get_fresh_datasource.return_value = mock_ds
         content = await connector._fetch_article_content("sys-1")
@@ -344,7 +345,7 @@ class TestFetchArticleContent:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(True, {"result": []})
+            return_value=_table_api_response([])
         )
         connector._get_fresh_datasource.return_value = mock_ds
         with pytest.raises(HTTPException) as exc_info:
@@ -356,7 +357,7 @@ class TestFetchArticleContent:
         connector._get_fresh_datasource = AsyncMock()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
-            return_value=_make_api_response(False)
+            side_effect=ServiceNowAPIError(404, "Not found", None)
         )
         connector._get_fresh_datasource.return_value = mock_ds
         with pytest.raises(HTTPException) as exc_info:

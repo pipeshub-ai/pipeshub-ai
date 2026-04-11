@@ -4,13 +4,12 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
-import uuid
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 
 class TestChatQueryModel:
-    def test_defaults(self):
+    def test_defaults(self) -> None:
         from app.api.routes.agent import ChatQuery
         q = ChatQuery(query="test")
         assert q.query == "test"
@@ -19,7 +18,7 @@ class TestChatQueryModel:
         assert q.quickMode is False
         assert q.chatMode == "auto"
 
-    def test_all_fields(self):
+    def test_all_fields(self) -> None:
         from app.api.routes.agent import ChatQuery
         q = ChatQuery(
             query="test", limit=10, quickMode=True, chatMode="deep",
@@ -29,24 +28,24 @@ class TestChatQueryModel:
         assert q.chatMode == "deep"
         assert q.conversationId == "c1"
 
-    def test_missing_query_fails(self):
+    def test_missing_query_fails(self) -> None:
         from app.api.routes.agent import ChatQuery
         with pytest.raises(ValidationError):
             ChatQuery()
 
 
 class TestRouteDecision:
-    def test_valid(self):
+    def test_valid(self) -> None:
         from app.api.routes.agent import RouteDecision
         rd = RouteDecision(reasoning="Simple query", route="quick")
         assert rd.route == "quick"
 
-    def test_invalid_route(self):
+    def test_invalid_route(self) -> None:
         from app.api.routes.agent import RouteDecision
         with pytest.raises(ValidationError):
             RouteDecision(reasoning="x", route="invalid")
 
-    def test_all_routes(self):
+    def test_all_routes(self) -> None:
         from app.api.routes.agent import RouteDecision
         for r in ["quick", "react", "deep"]:
             rd = RouteDecision(reasoning="x", route=r)
@@ -54,42 +53,42 @@ class TestRouteDecision:
 
 
 class TestExceptions:
-    def test_agent_error(self):
+    def test_agent_error(self) -> None:
         from app.api.routes.agent import AgentError
         e = AgentError("fail", 500)
         assert e.status_code == 500
         assert e.detail == "fail"
 
-    def test_agent_not_found(self):
+    def test_agent_not_found(self) -> None:
         from app.api.routes.agent import AgentNotFoundError
         e = AgentNotFoundError("a1")
         assert e.status_code == 404
 
-    def test_template_not_found(self):
+    def test_template_not_found(self) -> None:
         from app.api.routes.agent import AgentTemplateNotFoundError
         e = AgentTemplateNotFoundError("t1")
         assert e.status_code == 404
         assert "t1" in e.detail
 
-    def test_permission_denied(self):
+    def test_permission_denied(self) -> None:
         from app.api.routes.agent import PermissionDeniedError
         e = PermissionDeniedError("delete agent")
         assert e.status_code == 403
         assert "delete agent" in e.detail
 
-    def test_invalid_request(self):
+    def test_invalid_request(self) -> None:
         from app.api.routes.agent import InvalidRequestError
         e = InvalidRequestError("missing field")
         assert e.status_code == 400
 
-    def test_llm_init_error(self):
+    def test_llm_init_error(self) -> None:
         from app.api.routes.agent import LLMInitializationError
         e = LLMInitializationError()
         assert e.status_code == 500
 
 
 class TestGetUserContext:
-    def test_valid_user(self):
+    def test_valid_user(self) -> None:
         from app.api.routes.agent import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1", "orgId": "o1"}
@@ -98,8 +97,9 @@ class TestGetUserContext:
         assert ctx["userId"] == "u1"
         assert ctx["orgId"] == "o1"
 
-    def test_missing_user_id(self):
+    def test_missing_user_id(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_context
         request = MagicMock()
         request.state.user = {"orgId": "o1"}
@@ -107,8 +107,9 @@ class TestGetUserContext:
             _get_user_context(request)
         assert exc.value.status_code == 401
 
-    def test_missing_org_id(self):
+    def test_missing_org_id(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1"}
@@ -118,7 +119,7 @@ class TestGetUserContext:
 
 class TestSelectAgentGraph:
     @pytest.mark.asyncio
-    async def test_deep_mode(self):
+    async def test_deep_mode(self) -> None:
         from app.api.routes.agent import _select_agent_graph_for_query, deep_agent_graph
         log = logging.getLogger("test")
         result = await _select_agent_graph_for_query(
@@ -127,8 +128,11 @@ class TestSelectAgentGraph:
         assert result is deep_agent_graph
 
     @pytest.mark.asyncio
-    async def test_verification_mode(self):
-        from app.api.routes.agent import _select_agent_graph_for_query, modern_agent_graph
+    async def test_verification_mode(self) -> None:
+        from app.api.routes.agent import (
+            _select_agent_graph_for_query,
+            modern_agent_graph,
+        )
         log = logging.getLogger("test")
         result = await _select_agent_graph_for_query(
             {"chatMode": "verification"}, log, MagicMock()
@@ -136,7 +140,7 @@ class TestSelectAgentGraph:
         assert result is modern_agent_graph
 
     @pytest.mark.asyncio
-    async def test_unknown_mode_returns_legacy(self):
+    async def test_unknown_mode_returns_legacy(self) -> None:
         from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
         log = logging.getLogger("test")
         result = await _select_agent_graph_for_query(
@@ -145,13 +149,13 @@ class TestSelectAgentGraph:
         assert result is agent_graph
 
     @pytest.mark.asyncio
-    async def test_auto_mode_delegates(self):
+    async def test_auto_mode_delegates(self) -> None:
         from app.api.routes.agent import _select_agent_graph_for_query
         log = logging.getLogger("test")
         llm = MagicMock()
         with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
             mock_auto.return_value = MagicMock()
-            result = await _select_agent_graph_for_query(
+            await _select_agent_graph_for_query(
                 {"chatMode": "auto"}, log, llm
             )
             mock_auto.assert_called_once()
@@ -159,14 +163,14 @@ class TestSelectAgentGraph:
 
 class TestAutoSelectGraph:
     @pytest.mark.asyncio
-    async def test_empty_query_returns_modern(self):
+    async def test_empty_query_returns_modern(self) -> None:
         from app.api.routes.agent import _auto_select_graph, modern_agent_graph
         log = logging.getLogger("test")
         result = await _auto_select_graph({"query": ""}, log, MagicMock())
         assert result is modern_agent_graph
 
     @pytest.mark.asyncio
-    async def test_llm_returns_quick(self):
+    async def test_llm_returns_quick(self) -> None:
         from app.api.routes.agent import _auto_select_graph, agent_graph
         log = logging.getLogger("test")
         llm = MagicMock()
@@ -182,7 +186,7 @@ class TestAutoSelectGraph:
         assert result is agent_graph
 
     @pytest.mark.asyncio
-    async def test_llm_returns_deep(self):
+    async def test_llm_returns_deep(self) -> None:
         from app.api.routes.agent import _auto_select_graph, deep_agent_graph
         log = logging.getLogger("test")
         llm = MagicMock()
@@ -198,7 +202,7 @@ class TestAutoSelectGraph:
         assert result is deep_agent_graph
 
     @pytest.mark.asyncio
-    async def test_llm_error_falls_back(self):
+    async def test_llm_error_falls_back(self) -> None:
         from app.api.routes.agent import _auto_select_graph, modern_agent_graph
         log = logging.getLogger("test")
         llm = MagicMock()
@@ -212,7 +216,7 @@ class TestAutoSelectGraph:
 
 
 class TestBuildRoutingContext:
-    def test_returns_string(self):
+    def test_returns_string(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {"query": "follow up", "previousConversations": [
             {"role": "user_query", "content": "q1"},
@@ -220,7 +224,7 @@ class TestBuildRoutingContext:
         ctx = _build_routing_context(info)
         assert isinstance(ctx, str)
 
-    def test_no_conversations(self):
+    def test_no_conversations(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {"query": "hello"}
         ctx = _build_routing_context(info)
@@ -228,7 +232,7 @@ class TestBuildRoutingContext:
 
 
 class TestParseModels:
-    def test_valid_models(self):
+    def test_valid_models(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [
@@ -239,21 +243,21 @@ class TestParseModels:
         assert len(entries) == 2
         assert has_reasoning is True
 
-    def test_no_reasoning(self):
+    def test_no_reasoning(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelKey": "mk1", "modelName": "mn1"}]
         entries, has_reasoning = _parse_models(raw, log)
         assert has_reasoning is False
 
-    def test_empty_models(self):
+    def test_empty_models(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         entries, has_reasoning = _parse_models([], log)
         assert entries == []
         assert has_reasoning is False
 
-    def test_none_models(self):
+    def test_none_models(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         entries, has_reasoning = _parse_models(None, log)
@@ -261,7 +265,7 @@ class TestParseModels:
 
 
 class TestParseToolsets:
-    def test_valid_toolsets(self):
+    def test_valid_toolsets(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [
             {"displayName": "Jira", "type": "jira", "tools": [{"fullName": "jira.search"}],
@@ -270,30 +274,30 @@ class TestParseToolsets:
         result = _parse_toolsets(raw)
         assert isinstance(result, dict)
 
-    def test_empty(self):
+    def test_empty(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         assert _parse_toolsets([]) == {}
 
-    def test_none(self):
+    def test_none(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets(None)
         assert isinstance(result, dict)
 
 
 class TestValidateRequiredFields:
-    def test_all_present(self):
+    def test_all_present(self) -> None:
         from app.api.routes.agent import _validate_required_fields
         _validate_required_fields({"a": 1, "b": 2}, ["a", "b"])
 
-    def test_missing_field(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_missing_field(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"a": 1}, ["a", "b"])
 
 
 class TestEnrichUserInfo:
     @pytest.mark.asyncio
-    async def test_enriches(self):
+    async def test_enriches(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         user_info = {"userId": "u1"}
         user_doc = {"email": "a@b.com", "_key": "k1", "firstName": "A", "lastName": "B"}
@@ -301,7 +305,7 @@ class TestEnrichUserInfo:
         assert result["userEmail"] == "a@b.com"
 
     @pytest.mark.asyncio
-    async def test_missing_names(self):
+    async def test_missing_names(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         result = await _enrich_user_info({"userId": "u1"}, {"email": "a@b.com", "_key": "k1"})
         assert result["userEmail"] == "a@b.com"
@@ -315,7 +319,7 @@ class TestGetServices:
     """Tests for the get_services helper that extracts services from container."""
 
     @pytest.mark.asyncio
-    async def test_returns_all_services(self):
+    async def test_returns_all_services(self) -> None:
         from app.api.routes.agent import get_services
 
         mock_retrieval = MagicMock()
@@ -345,7 +349,7 @@ class TestGetServices:
         assert result["llm"] is mock_retrieval.llm
 
     @pytest.mark.asyncio
-    async def test_llm_none_falls_back_to_get_llm_instance(self):
+    async def test_llm_none_falls_back_to_get_llm_instance(self) -> None:
         from app.api.routes.agent import get_services
 
         mock_llm = MagicMock()
@@ -368,8 +372,8 @@ class TestGetServices:
         mock_retrieval.get_llm_instance.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_llm_none_and_fallback_none_raises(self):
-        from app.api.routes.agent import get_services, LLMInitializationError
+    async def test_llm_none_and_fallback_none_raises(self) -> None:
+        from app.api.routes.agent import LLMInitializationError, get_services
 
         mock_retrieval = MagicMock()
         mock_retrieval.llm = None
@@ -397,7 +401,7 @@ class TestGetUserDocument:
     """Tests for user document fetching with validation."""
 
     @pytest.mark.asyncio
-    async def test_valid_user(self):
+    async def test_valid_user(self) -> None:
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -413,8 +417,9 @@ class TestGetUserDocument:
         graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1")
 
     @pytest.mark.asyncio
-    async def test_user_not_found_none(self):
+    async def test_user_not_found_none(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -427,8 +432,9 @@ class TestGetUserDocument:
         assert "User not found" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_user_not_dict(self):
+    async def test_user_not_dict(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -440,8 +446,9 @@ class TestGetUserDocument:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_user_missing_email(self):
+    async def test_user_missing_email(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -457,8 +464,9 @@ class TestGetUserDocument:
         assert "email" in exc.value.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_user_whitespace_email(self):
+    async def test_user_whitespace_email(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -473,8 +481,9 @@ class TestGetUserDocument:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_user_no_email_field(self):
+    async def test_user_no_email_field(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -488,8 +497,9 @@ class TestGetUserDocument:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_graph_provider_exception(self):
+    async def test_graph_provider_exception(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -504,9 +514,10 @@ class TestGetUserDocument:
         assert "Failed to retrieve" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_http_exception_reraises(self):
+    async def test_http_exception_reraises(self) -> None:
         """HTTPException from inside should be re-raised, not wrapped."""
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
@@ -528,7 +539,7 @@ class TestGetOrgInfo:
     """Tests for organization lookup and validation."""
 
     @pytest.mark.asyncio
-    async def test_enterprise_org(self):
+    async def test_enterprise_org(self) -> None:
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -543,7 +554,7 @@ class TestGetOrgInfo:
         assert result["accountType"] == "enterprise"
 
     @pytest.mark.asyncio
-    async def test_individual_org(self):
+    async def test_individual_org(self) -> None:
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -556,8 +567,9 @@ class TestGetOrgInfo:
         assert result["accountType"] == "individual"
 
     @pytest.mark.asyncio
-    async def test_org_not_found_none(self):
+    async def test_org_not_found_none(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -570,8 +582,9 @@ class TestGetOrgInfo:
         assert "Organization not found" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_org_not_dict(self):
+    async def test_org_not_dict(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -583,8 +596,9 @@ class TestGetOrgInfo:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_invalid_account_type(self):
+    async def test_invalid_account_type(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -599,8 +613,9 @@ class TestGetOrgInfo:
         assert "Invalid organization account type" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_missing_account_type(self):
+    async def test_missing_account_type(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -614,7 +629,7 @@ class TestGetOrgInfo:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_account_type_case_insensitive(self):
+    async def test_account_type_case_insensitive(self) -> None:
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -627,8 +642,9 @@ class TestGetOrgInfo:
         assert result["accountType"] == "enterprise"
 
     @pytest.mark.asyncio
-    async def test_graph_provider_exception(self):
+    async def test_graph_provider_exception(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -643,8 +659,9 @@ class TestGetOrgInfo:
         assert "Failed to retrieve organization" in exc.value.detail
 
     @pytest.mark.asyncio
-    async def test_http_exception_reraises(self):
+    async def test_http_exception_reraises(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
@@ -658,7 +675,7 @@ class TestGetOrgInfo:
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_calls_get_document_with_correct_args(self):
+    async def test_calls_get_document_with_correct_args(self) -> None:
         from app.api.routes.agent import _get_org_info
         from app.config.constants.arangodb import CollectionNames
 
@@ -677,7 +694,7 @@ class TestGetOrgInfo:
 # ---------------------------------------------------------------------------
 
 class TestParseKnowledgeSources:
-    def test_valid_knowledge(self):
+    def test_valid_knowledge(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [
             {"connectorId": "google_drive", "filters": {"types": ["doc"]}},
@@ -687,36 +704,36 @@ class TestParseKnowledgeSources:
         assert "google_drive" in result
         assert "confluence" in result
 
-    def test_empty_list(self):
+    def test_empty_list(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         assert _parse_knowledge_sources([]) == {}
 
-    def test_none_input(self):
+    def test_none_input(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         assert _parse_knowledge_sources(None) == {}
 
-    def test_non_dict_entries_skipped(self):
+    def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = ["not a dict", 42, None]
         assert _parse_knowledge_sources(raw) == {}
 
-    def test_empty_connector_id_skipped(self):
+    def test_empty_connector_id_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "", "filters": {}}]
         assert _parse_knowledge_sources(raw) == {}
 
-    def test_whitespace_connector_id_skipped(self):
+    def test_whitespace_connector_id_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "   ", "filters": {}}]
         assert _parse_knowledge_sources(raw) == {}
 
-    def test_string_filters_parsed_as_json(self):
+    def test_string_filters_parsed_as_json(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "jira", "filters": '{"types": ["bug"]}'}]
         result = _parse_knowledge_sources(raw)
         assert result["jira"]["filters"] == {"types": ["bug"]}
 
-    def test_invalid_json_filters_default_to_empty(self):
+    def test_invalid_json_filters_default_to_empty(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "jira", "filters": "not json"}]
         result = _parse_knowledge_sources(raw)
@@ -728,19 +745,19 @@ class TestParseKnowledgeSources:
 # ---------------------------------------------------------------------------
 
 class TestFilterKnowledgeByEnabledSources:
-    def test_no_filters_returns_all(self):
+    def test_no_filters_returns_all(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "google"}, {"connectorId": "jira"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert result == knowledge
 
-    def test_empty_apps_and_kbs_returns_all(self):
+    def test_empty_apps_and_kbs_returns_all(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "google"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [], "kb": []})
         assert result == knowledge
 
-    def test_app_filter(self):
+    def test_app_filter(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "google"},
@@ -750,7 +767,7 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
         assert result[0]["connectorId"] == "google"
 
-    def test_kb_filter_with_record_groups(self):
+    def test_kb_filter_with_record_groups(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg-1", "rg-2"]}},
@@ -760,7 +777,7 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
         assert result[0]["connectorId"] == "knowledgeBase_1"
 
-    def test_kb_filter_with_string_filters(self):
+    def test_kb_filter_with_string_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": '{"recordGroups": ["rg-1"]}'},
@@ -768,7 +785,7 @@ class TestFilterKnowledgeByEnabledSources:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
         assert len(result) == 1
 
-    def test_kb_filter_with_invalid_json_filters(self):
+    def test_kb_filter_with_invalid_json_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": "not json"},
@@ -776,13 +793,13 @@ class TestFilterKnowledgeByEnabledSources:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
         assert len(result) == 0
 
-    def test_non_dict_entries_skipped(self):
+    def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = ["not a dict", None, {"connectorId": "google"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["google"]})
         assert len(result) == 1
 
-    def test_filtersParsed_fallback(self):
+    def test_filtersParsed_fallback(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filtersParsed": {"recordGroups": ["rg-1"]}},
@@ -796,12 +813,12 @@ class TestFilterKnowledgeByEnabledSources:
 # ---------------------------------------------------------------------------
 
 class TestBuildRoutingContextExtended:
-    def test_empty_previous_conversations(self):
+    def test_empty_previous_conversations(self) -> None:
         from app.api.routes.agent import _build_routing_context
         result = _build_routing_context({"previous_conversations": []})
         assert result == ""
 
-    def test_user_and_bot_turns(self):
+    def test_user_and_bot_turns(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {
             "previous_conversations": [
@@ -815,7 +832,7 @@ class TestBuildRoutingContextExtended:
         # Only first line of bot response
         assert "More details here." not in result
 
-    def test_truncates_to_last_6_entries(self):
+    def test_truncates_to_last_6_entries(self) -> None:
         from app.api.routes.agent import _build_routing_context
         entries = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
         info = {"previous_conversations": entries}
@@ -824,7 +841,7 @@ class TestBuildRoutingContextExtended:
         assert "q4" in result
         assert "q9" in result
 
-    def test_unknown_role_skipped(self):
+    def test_unknown_role_skipped(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {
             "previous_conversations": [
@@ -841,27 +858,27 @@ class TestBuildRoutingContextExtended:
 
 
 class TestParseRequestBody:
-    def test_valid_json(self):
+    def test_valid_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         result = _parse_request_body(b'{"name": "test"}')
         assert result == {"name": "test"}
 
-    def test_empty_body_raises(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_empty_body_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError, match="required"):
             _parse_request_body(b"")
 
-    def test_none_body_raises(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_none_body_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError, match="required"):
             _parse_request_body(b"")
 
-    def test_invalid_json_raises(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_invalid_json_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError, match="Invalid JSON"):
             _parse_request_body(b"not json")
 
-    def test_complex_json(self):
+    def test_complex_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         body = b'{"name": "test", "nested": {"key": [1, 2, 3]}}'
         result = _parse_request_body(body)
@@ -875,7 +892,7 @@ class TestParseRequestBody:
 
 class TestEnrichAgentModels:
     @pytest.mark.asyncio
-    async def test_enriches_matching_model(self):
+    async def test_enriches_matching_model(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {"models": ["mk1_gpt-4o"]}
@@ -901,7 +918,7 @@ class TestEnrichAgentModels:
         assert agent["models"][0]["isMultimodal"] is True
 
     @pytest.mark.asyncio
-    async def test_no_matching_config_fallback(self):
+    async def test_no_matching_config_fallback(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         # "unknown_model" splits on first "_" into ("unknown", "model")
@@ -916,7 +933,7 @@ class TestEnrichAgentModels:
         assert agent["models"][0]["modelName"] == "model"
 
     @pytest.mark.asyncio
-    async def test_no_model_name_uses_config(self):
+    async def test_no_model_name_uses_config(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {"models": ["mk1"]}  # no underscore -> no model_name
@@ -935,7 +952,7 @@ class TestEnrichAgentModels:
         assert agent["models"][0]["modelName"] == "gpt-4o"  # first from csv
 
     @pytest.mark.asyncio
-    async def test_empty_models_returns_early(self):
+    async def test_empty_models_returns_early(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {"models": []}
@@ -946,7 +963,7 @@ class TestEnrichAgentModels:
         config_service.get_config.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_no_models_key_returns_early(self):
+    async def test_no_models_key_returns_early(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {}
@@ -957,7 +974,7 @@ class TestEnrichAgentModels:
         config_service.get_config.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_config_exception_swallowed(self):
+    async def test_config_exception_swallowed(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {"models": ["mk1_mn1"]}
@@ -971,7 +988,7 @@ class TestEnrichAgentModels:
         assert agent["models"] == ["mk1_mn1"]
 
     @pytest.mark.asyncio
-    async def test_none_ai_models(self):
+    async def test_none_ai_models(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {"models": ["mk1_mn1"]}
@@ -990,22 +1007,22 @@ class TestEnrichAgentModels:
 
 
 class TestParseToolsetsExtended:
-    def test_non_dict_entries_skipped(self):
+    def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets(["not a dict", 42])
         assert result == {}
 
-    def test_empty_name_skipped(self):
+    def test_empty_name_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets([{"name": "", "tools": []}])
         assert result == {}
 
-    def test_whitespace_name_skipped(self):
+    def test_whitespace_name_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets([{"name": "   ", "tools": []}])
         assert result == {}
 
-    def test_tools_parsed(self):
+    def test_tools_parsed(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets([{
             "name": "jira",
@@ -1022,7 +1039,7 @@ class TestParseToolsetsExtended:
         assert result["jira"]["tools"][0]["name"] == "search"
         assert result["jira"]["instanceId"] == "i1"
 
-    def test_duplicate_toolset_merges(self):
+    def test_duplicate_toolset_merges(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets([
             {"name": "jira", "tools": [{"name": "t1", "fullName": "jira.t1", "description": ""}]},
@@ -1030,7 +1047,7 @@ class TestParseToolsetsExtended:
         ])
         assert len(result["jira"]["tools"]) == 2
 
-    def test_tool_without_name_skipped(self):
+    def test_tool_without_name_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets([{
             "name": "jira",
@@ -1049,27 +1066,27 @@ class TestParseToolsetsExtended:
 
 
 class TestValidateRequiredFieldsExtended:
-    def test_empty_string_value_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_empty_string_value_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": ""}, ["name"])
 
-    def test_whitespace_value_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_whitespace_value_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": "   "}, ["name"])
 
-    def test_none_value_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_none_value_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": None}, ["name"])
 
-    def test_zero_value_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_zero_value_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"count": 0}, ["count"])
 
-    def test_valid_numeric_value_passes(self):
+    def test_valid_numeric_value_passes(self) -> None:
         from app.api.routes.agent import _validate_required_fields
         _validate_required_fields({"count": 5}, ["count"])
 
@@ -1080,7 +1097,7 @@ class TestValidateRequiredFieldsExtended:
 
 
 class TestParseModelsExtended:
-    def test_string_entries(self):
+    def test_string_entries(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = ["mk1_mn1", "mk2"]
@@ -1089,28 +1106,28 @@ class TestParseModelsExtended:
         assert entries[0] == "mk1_mn1"
         assert entries[1] == "mk2"
 
-    def test_dict_without_model_key_skipped(self):
+    def test_dict_without_model_key_skipped(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelName": "mn1"}]  # no modelKey
         entries, _ = _parse_models(raw, log)
         assert entries == []
 
-    def test_dict_with_key_and_name(self):
+    def test_dict_with_key_and_name(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelKey": "mk1", "modelName": "mn1"}]
         entries, _ = _parse_models(raw, log)
         assert entries == ["mk1_mn1"]
 
-    def test_dict_with_key_only(self):
+    def test_dict_with_key_only(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelKey": "mk1"}]
         entries, _ = _parse_models(raw, log)
         assert entries == ["mk1"]
 
-    def test_non_list_input(self):
+    def test_non_list_input(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         entries, has_reasoning = _parse_models("not a list", log)
@@ -1124,7 +1141,7 @@ class TestParseModelsExtended:
 
 class TestEnrichUserInfoExtended:
     @pytest.mark.asyncio
-    async def test_adds_all_name_fields(self):
+    async def test_adds_all_name_fields(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         user_doc = {
             "email": "a@b.com",
@@ -1141,7 +1158,7 @@ class TestEnrichUserInfoExtended:
         assert result["displayName"] == "Display"
 
     @pytest.mark.asyncio
-    async def test_does_not_mutate_original(self):
+    async def test_does_not_mutate_original(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         original = {"userId": "u1"}
         user_doc = {"email": "a@b.com", "_key": "k1"}
@@ -1149,7 +1166,7 @@ class TestEnrichUserInfoExtended:
         assert "userEmail" not in original  # original unchanged
 
     @pytest.mark.asyncio
-    async def test_empty_email(self):
+    async def test_empty_email(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         result = await _enrich_user_info({"userId": "u1"}, {"email": "  ", "_key": "k1"})
         assert result["userEmail"] == ""
@@ -1162,7 +1179,7 @@ class TestEnrichUserInfoExtended:
 
 class TestSelectAgentGraphExtended:
     @pytest.mark.asyncio
-    async def test_explicit_react_falls_to_legacy(self):
+    async def test_explicit_react_falls_to_legacy(self) -> None:
         """'react' is not an explicit mode, so it falls to the default (legacy agent_graph)."""
         from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
         log = logging.getLogger("test")
@@ -1172,7 +1189,7 @@ class TestSelectAgentGraphExtended:
         assert result is agent_graph
 
     @pytest.mark.asyncio
-    async def test_quick_mode(self):
+    async def test_quick_mode(self) -> None:
         """'quick' is not an explicit mode, so it falls to the default (legacy agent_graph)."""
         from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
         log = logging.getLogger("test")
@@ -1182,7 +1199,7 @@ class TestSelectAgentGraphExtended:
         assert result is agent_graph
 
     @pytest.mark.asyncio
-    async def test_none_chatmode_defaults_to_auto(self):
+    async def test_none_chatmode_defaults_to_auto(self) -> None:
         from app.api.routes.agent import _select_agent_graph_for_query
         log = logging.getLogger("test")
         llm = MagicMock()
@@ -1201,7 +1218,7 @@ class TestSelectAgentGraphExtended:
 
 class TestAutoSelectGraphExtended:
     @pytest.mark.asyncio
-    async def test_react_route(self):
+    async def test_react_route(self) -> None:
         from app.api.routes.agent import _auto_select_graph, modern_agent_graph
         log = logging.getLogger("test")
         llm = MagicMock()
@@ -1217,7 +1234,7 @@ class TestAutoSelectGraphExtended:
         assert result is modern_agent_graph
 
     @pytest.mark.asyncio
-    async def test_missing_query_key(self):
+    async def test_missing_query_key(self) -> None:
         """When query key is missing entirely, defaults to empty string and returns modern_agent_graph."""
         from app.api.routes.agent import _auto_select_graph, modern_agent_graph
         log = logging.getLogger("test")
@@ -1233,8 +1250,9 @@ class TestAutoSelectGraphExtended:
 
 
 class TestGetUserContextExtended:
-    def test_no_user_state(self):
+    def test_no_user_state(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_user_context
         request = MagicMock()
         request.state.user = {}
@@ -1242,7 +1260,7 @@ class TestGetUserContextExtended:
             _get_user_context(request)
         assert exc.value.status_code == 401
 
-    def test_send_user_info_flag(self):
+    def test_send_user_info_flag(self) -> None:
         from app.api.routes.agent import _get_user_context
         request = MagicMock()
         request.state.user = {"userId": "u1", "orgId": "o1"}
@@ -1257,7 +1275,7 @@ class TestGetUserContextExtended:
 
 
 class TestFilterKnowledgeExtended:
-    def test_kb_with_no_record_groups_not_matched(self):
+    def test_kb_with_no_record_groups_not_matched(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": {}},
@@ -1268,7 +1286,7 @@ class TestFilterKnowledgeExtended:
         # KB with empty recordGroups should not match
         assert len(result) == 0
 
-    def test_combined_app_and_kb_filter(self):
+    def test_combined_app_and_kb_filter(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "google"},
@@ -1290,18 +1308,18 @@ class TestFilterKnowledgeExtended:
 
 
 class TestParseKnowledgeSourcesExtended:
-    def test_dict_filters_kept(self):
+    def test_dict_filters_kept(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": {"types": ["doc"]}}]
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_missing_connector_id(self):
+    def test_missing_connector_id(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"filters": {}}]
         assert _parse_knowledge_sources(raw) == {}
 
-    def test_duplicate_connector_ids(self):
+    def test_duplicate_connector_ids(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [
             {"connectorId": "c1", "filters": {"a": 1}},
@@ -1318,7 +1336,7 @@ class TestParseKnowledgeSourcesExtended:
 
 class TestGetOrgInfo:
     @pytest.mark.asyncio
-    async def test_valid_enterprise(self):
+    async def test_valid_enterprise(self) -> None:
         from app.api.routes.agent import _get_org_info
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"accountType": "enterprise"})
@@ -1327,7 +1345,7 @@ class TestGetOrgInfo:
         assert result["accountType"] == "enterprise"
 
     @pytest.mark.asyncio
-    async def test_valid_individual(self):
+    async def test_valid_individual(self) -> None:
         from app.api.routes.agent import _get_org_info
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"accountType": "Individual"})
@@ -1335,8 +1353,9 @@ class TestGetOrgInfo:
         assert result["accountType"] == "individual"
 
     @pytest.mark.asyncio
-    async def test_org_not_found(self):
+    async def test_org_not_found(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value=None)
@@ -1345,8 +1364,9 @@ class TestGetOrgInfo:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_invalid_account_type(self):
+    async def test_invalid_account_type(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"accountType": "invalid"})
@@ -1355,8 +1375,9 @@ class TestGetOrgInfo:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_graph_provider_error(self):
+    async def test_graph_provider_error(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import _get_org_info
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(side_effect=RuntimeError("db error"))
@@ -1370,22 +1391,22 @@ class TestGetOrgInfo:
 # ---------------------------------------------------------------------------
 
 class TestParseRequestBody:
-    def test_valid_json(self):
+    def test_valid_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         result = _parse_request_body(b'{"key": "value"}')
         assert result == {"key": "value"}
 
-    def test_empty_body_raises(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_empty_body_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError):
             _parse_request_body(b"")
 
-    def test_invalid_json_raises(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_invalid_json_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError):
             _parse_request_body(b"not json")
 
-    def test_nested_json(self):
+    def test_nested_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         body = b'{"a": {"b": [1, 2, 3]}}'
         result = _parse_request_body(body)
@@ -1398,7 +1419,7 @@ class TestParseRequestBody:
 
 class TestEnrichAgentModels:
     @pytest.mark.asyncio
-    async def test_enriches_models(self):
+    async def test_enriches_models(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["mk1_modelA"]}
         config_service = MagicMock()
@@ -1417,7 +1438,7 @@ class TestEnrichAgentModels:
         assert agent["models"][0]["isReasoning"] is True
 
     @pytest.mark.asyncio
-    async def test_enriches_model_no_underscore(self):
+    async def test_enriches_model_no_underscore(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["mk1"]}
         config_service = MagicMock()
@@ -1431,7 +1452,7 @@ class TestEnrichAgentModels:
         assert agent["models"][0]["modelName"] == "claude-3"
 
     @pytest.mark.asyncio
-    async def test_model_not_found_in_config(self):
+    async def test_model_not_found_in_config(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["unknown_key"]}
         config_service = MagicMock()
@@ -1440,7 +1461,7 @@ class TestEnrichAgentModels:
         assert agent["models"][0]["provider"] == "unknown"
 
     @pytest.mark.asyncio
-    async def test_empty_models(self):
+    async def test_empty_models(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": []}
         config_service = MagicMock()
@@ -1448,14 +1469,14 @@ class TestEnrichAgentModels:
         assert agent["models"] == []
 
     @pytest.mark.asyncio
-    async def test_none_models(self):
+    async def test_none_models(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {}
         config_service = MagicMock()
         await _enrich_agent_models(agent, config_service, logging.getLogger("test"))
 
     @pytest.mark.asyncio
-    async def test_config_error_handled(self):
+    async def test_config_error_handled(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["mk1_modelA"]}
         config_service = MagicMock()
@@ -1464,7 +1485,7 @@ class TestEnrichAgentModels:
         await _enrich_agent_models(agent, config_service, logging.getLogger("test"))
 
     @pytest.mark.asyncio
-    async def test_comma_separated_model_name(self):
+    async def test_comma_separated_model_name(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["mk1"]}
         config_service = MagicMock()
@@ -1483,35 +1504,35 @@ class TestEnrichAgentModels:
 # ---------------------------------------------------------------------------
 
 class TestParseModelsExtended:
-    def test_string_entries(self):
+    def test_string_entries(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = ["model_key_1", "model_key_2"]
         entries, _ = _parse_models(raw, log)
         assert entries == ["model_key_1", "model_key_2"]
 
-    def test_model_key_only_no_name(self):
+    def test_model_key_only_no_name(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelKey": "mk1"}]
         entries, _ = _parse_models(raw, log)
         assert entries == ["mk1"]
 
-    def test_model_key_with_name(self):
+    def test_model_key_with_name(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelKey": "mk1", "modelName": "gpt-4"}]
         entries, _ = _parse_models(raw, log)
         assert entries == ["mk1_gpt-4"]
 
-    def test_missing_model_key_skipped(self):
+    def test_missing_model_key_skipped(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [{"modelName": "name_only"}]
         entries, _ = _parse_models(raw, log)
         assert entries == []
 
-    def test_mixed_types(self):
+    def test_mixed_types(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         raw = [
@@ -1529,7 +1550,7 @@ class TestParseModelsExtended:
 # ---------------------------------------------------------------------------
 
 class TestParseToolsetsExtended:
-    def test_with_tools(self):
+    def test_with_tools(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{
             "name": "Jira",
@@ -1544,7 +1565,7 @@ class TestParseToolsetsExtended:
         assert len(result["jira"]["tools"]) == 1
         assert result["jira"]["tools"][0]["name"] == "search"
 
-    def test_tool_without_name_skipped(self):
+    def test_tool_without_name_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{
             "name": "test",
@@ -1553,19 +1574,19 @@ class TestParseToolsetsExtended:
         result = _parse_toolsets(raw)
         assert len(result["test"]["tools"]) == 0
 
-    def test_non_dict_toolset_skipped(self):
+    def test_non_dict_toolset_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = ["not_a_dict", {"name": "valid"}]
         result = _parse_toolsets(raw)
         assert "valid" in result
 
-    def test_empty_name_skipped(self):
+    def test_empty_name_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{"name": "", "tools": []}]
         result = _parse_toolsets(raw)
         assert len(result) == 0
 
-    def test_duplicate_toolset_merges_tools(self):
+    def test_duplicate_toolset_merges_tools(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [
             {"name": "jira", "tools": [{"name": "t1", "fullName": "jira.t1", "description": ""}]},
@@ -1574,7 +1595,7 @@ class TestParseToolsetsExtended:
         result = _parse_toolsets(raw)
         assert len(result["jira"]["tools"]) == 2
 
-    def test_instance_id_set(self):
+    def test_instance_id_set(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{
             "name": "jira",
@@ -1586,7 +1607,7 @@ class TestParseToolsetsExtended:
         assert result["jira"]["instanceId"] == "inst-123"
         assert result["jira"]["instanceName"] == "My Jira"
 
-    def test_instance_id_updated_from_second_entry(self):
+    def test_instance_id_updated_from_second_entry(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [
             {"name": "jira", "tools": []},
@@ -1595,13 +1616,13 @@ class TestParseToolsetsExtended:
         result = _parse_toolsets(raw)
         assert result["jira"]["instanceId"] == "inst-456"
 
-    def test_default_display_name(self):
+    def test_default_display_name(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{"name": "my_toolset", "tools": []}]
         result = _parse_toolsets(raw)
         assert result["my_toolset"]["displayName"] == "My Toolset"
 
-    def test_tool_fullname_default(self):
+    def test_tool_fullname_default(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{
             "name": "jira",
@@ -1616,25 +1637,25 @@ class TestParseToolsetsExtended:
 # ---------------------------------------------------------------------------
 
 class TestParseKnowledgeSourcesFull:
-    def test_json_string_filters(self):
+    def test_json_string_filters(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": '{"key": "val"}'}]
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"key": "val"}
 
-    def test_invalid_json_string_filters(self):
+    def test_invalid_json_string_filters(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {}
 
-    def test_non_dict_entry_skipped(self):
+    def test_non_dict_entry_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = ["not_a_dict", {"connectorId": "c1"}]
         result = _parse_knowledge_sources(raw)
         assert "c1" in result
 
-    def test_whitespace_connector_id_skipped(self):
+    def test_whitespace_connector_id_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "   "}]
         result = _parse_knowledge_sources(raw)
@@ -1646,19 +1667,19 @@ class TestParseKnowledgeSourcesFull:
 # ---------------------------------------------------------------------------
 
 class TestFilterKnowledgeFull:
-    def test_no_filters_returns_all(self):
+    def test_no_filters_returns_all(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "c1"}, {"connectorId": "c2"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert len(result) == 2
 
-    def test_empty_apps_and_kb_returns_all(self):
+    def test_empty_apps_and_kb_returns_all(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "c1"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [], "kb": []})
         assert len(result) == 1
 
-    def test_app_filter_only(self):
+    def test_app_filter_only(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "google"},
@@ -1668,7 +1689,7 @@ class TestFilterKnowledgeFull:
         assert len(result) == 1
         assert result[0]["connectorId"] == "google"
 
-    def test_kb_with_string_filters(self):
+    def test_kb_with_string_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": '{"recordGroups": ["rg1"]}'},
@@ -1676,7 +1697,7 @@ class TestFilterKnowledgeFull:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
         assert len(result) == 1
 
-    def test_kb_with_invalid_json_filters(self):
+    def test_kb_with_invalid_json_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": "not json"},
@@ -1684,13 +1705,13 @@ class TestFilterKnowledgeFull:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
         assert len(result) == 0
 
-    def test_non_dict_entry_skipped(self):
+    def test_non_dict_entry_skipped(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = ["not_a_dict", {"connectorId": "google"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["google"]})
         assert len(result) == 1
 
-    def test_kb_no_matching_record_groups(self):
+    def test_kb_no_matching_record_groups(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg1"]}},
@@ -1698,7 +1719,7 @@ class TestFilterKnowledgeFull:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg_other"]})
         assert len(result) == 0
 
-    def test_kb_with_filtersParsed(self):
+    def test_kb_with_filtersParsed(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filtersParsed": {"recordGroups": ["rg1"]}},
@@ -1712,7 +1733,7 @@ class TestFilterKnowledgeFull:
 # ---------------------------------------------------------------------------
 
 class TestBuildRoutingContextExtended:
-    def test_with_previous_conversations(self):
+    def test_with_previous_conversations(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {
             "previous_conversations": [
@@ -1724,7 +1745,7 @@ class TestBuildRoutingContextExtended:
         assert "User: Hello" in ctx
         assert "Assistant: Hi there!" in ctx
 
-    def test_long_conversations_trimmed(self):
+    def test_long_conversations_trimmed(self) -> None:
         from app.api.routes.agent import _build_routing_context
         convs = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
         info = {"previous_conversations": convs}
@@ -1732,7 +1753,7 @@ class TestBuildRoutingContextExtended:
         # Should only take last 6
         assert "q4" in ctx
 
-    def test_unknown_role_ignored(self):
+    def test_unknown_role_ignored(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {
             "previous_conversations": [
@@ -1742,7 +1763,7 @@ class TestBuildRoutingContextExtended:
         ctx = _build_routing_context(info)
         assert ctx == ""
 
-    def test_content_truncated(self):
+    def test_content_truncated(self) -> None:
         from app.api.routes.agent import _build_routing_context
         long_content = "a" * 500
         info = {
@@ -1760,14 +1781,14 @@ class TestBuildRoutingContextExtended:
 
 class TestEnrichUserInfoExtended:
     @pytest.mark.asyncio
-    async def test_with_display_name(self):
+    async def test_with_display_name(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         user_doc = {"email": "a@b.com", "_key": "k1", "displayName": "Test User"}
         result = await _enrich_user_info({"userId": "u1"}, user_doc)
         assert result["displayName"] == "Test User"
 
     @pytest.mark.asyncio
-    async def test_original_info_not_mutated(self):
+    async def test_original_info_not_mutated(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         original = {"userId": "u1"}
         user_doc = {"email": "a@b.com", "_key": "k1"}
@@ -1776,7 +1797,7 @@ class TestEnrichUserInfoExtended:
         assert "userEmail" in result
 
     @pytest.mark.asyncio
-    async def test_whitespace_email(self):
+    async def test_whitespace_email(self) -> None:
         from app.api.routes.agent import _enrich_user_info
         user_doc = {"email": "  a@b.com  ", "_key": "k1"}
         result = await _enrich_user_info({"userId": "u1"}, user_doc)
@@ -1788,22 +1809,22 @@ class TestEnrichUserInfoExtended:
 # ---------------------------------------------------------------------------
 
 class TestValidateRequiredFieldsExtended:
-    def test_whitespace_only_field_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_whitespace_only_field_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": "   "}, ["name"])
 
-    def test_none_value_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_none_value_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": None}, ["name"])
 
-    def test_zero_value_fails(self):
-        from app.api.routes.agent import _validate_required_fields, InvalidRequestError
+    def test_zero_value_fails(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"count": 0}, ["count"])
 
-    def test_empty_list_no_fields(self):
+    def test_empty_list_no_fields(self) -> None:
         from app.api.routes.agent import _validate_required_fields
         _validate_required_fields({"a": 1}, [])  # Should not raise
 
@@ -1814,7 +1835,7 @@ class TestValidateRequiredFieldsExtended:
 
 class TestCreateToolsetEdges:
     @pytest.mark.asyncio
-    async def test_empty_toolsets(self):
+    async def test_empty_toolsets(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         created, failed = await _create_toolset_edges(
             "agent1", {}, {"userId": "u1"}, "uk1", AsyncMock(), logging.getLogger("test")
@@ -1823,7 +1844,7 @@ class TestCreateToolsetEdges:
         assert failed == []
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_failure(self):
+    async def test_batch_upsert_failure(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=None)
@@ -1844,7 +1865,7 @@ class TestCreateToolsetEdges:
         assert len(failed) == 1
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_exception(self):
+    async def test_batch_upsert_exception(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(side_effect=Exception("db error"))
@@ -1871,7 +1892,7 @@ class TestCreateToolsetEdges:
 
 class TestCreateKnowledgeEdges:
     @pytest.mark.asyncio
-    async def test_empty_sources(self):
+    async def test_empty_sources(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         result = await _create_knowledge_edges(
             "agent1", {}, "uk1", AsyncMock(), logging.getLogger("test")
@@ -1879,7 +1900,7 @@ class TestCreateKnowledgeEdges:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_failure(self):
+    async def test_batch_upsert_failure(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=None)
@@ -1890,7 +1911,7 @@ class TestCreateKnowledgeEdges:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_successful_creation(self):
+    async def test_successful_creation(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
@@ -1915,7 +1936,7 @@ class TestAskAI:
         """Create a mock services dict suitable for get_services return."""
         mock_retrieval = MagicMock()
         mock_retrieval.llm = MagicMock()
-        services = {
+        return {
             "retrieval_service": mock_retrieval,
             "graph_provider": AsyncMock(),
             "reranker_service": MagicMock(),
@@ -1923,7 +1944,6 @@ class TestAskAI:
             "logger": MagicMock(),
             "llm": MagicMock(),
         }
-        return services
 
     def _make_request(self, services, user=None):
         request = MagicMock()
@@ -1933,8 +1953,8 @@ class TestAskAI:
         return request
 
     @pytest.mark.asyncio
-    async def test_askAI_success_dict_response(self):
-        from app.api.routes.agent import askAI, ChatQuery
+    async def test_askAI_success_dict_response(self) -> None:
+        from app.api.routes.agent import ChatQuery, askAI
 
         services = self._make_services()
         services["graph_provider"].get_user_by_user_id = AsyncMock(
@@ -1975,8 +1995,8 @@ class TestAskAI:
             assert result == {"status": "success", "message": "hi"}
 
     @pytest.mark.asyncio
-    async def test_askAI_cache_hit(self):
-        from app.api.routes.agent import askAI, ChatQuery
+    async def test_askAI_cache_hit(self) -> None:
+        from app.api.routes.agent import ChatQuery, askAI
 
         services = self._make_services()
         query = ChatQuery(query="cached query")
@@ -1996,8 +2016,8 @@ class TestAskAI:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_askAI_error_in_final_state(self):
-        from app.api.routes.agent import askAI, ChatQuery
+    async def test_askAI_error_in_final_state(self) -> None:
+        from app.api.routes.agent import ChatQuery, askAI
 
         services = self._make_services()
         query = ChatQuery(query="bad query")
@@ -2029,9 +2049,10 @@ class TestAskAI:
             assert result.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_askAI_exception_raises_400(self):
+    async def test_askAI_exception_raises_400(self) -> None:
         from fastapi import HTTPException
-        from app.api.routes.agent import askAI, ChatQuery
+
+        from app.api.routes.agent import ChatQuery, askAI
 
         services = self._make_services()
         query = ChatQuery(query="fail")
@@ -2045,9 +2066,10 @@ class TestAskAI:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_askAI_http_exception_reraises(self):
+    async def test_askAI_http_exception_reraises(self) -> None:
         from fastapi import HTTPException
-        from app.api.routes.agent import askAI, ChatQuery
+
+        from app.api.routes.agent import ChatQuery, askAI
 
         services = self._make_services()
         query = ChatQuery(query="fail")
@@ -2061,8 +2083,8 @@ class TestAskAI:
             assert exc.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_askAI_deep_graph_selection(self):
-        from app.api.routes.agent import askAI, ChatQuery, deep_agent_graph
+    async def test_askAI_deep_graph_selection(self) -> None:
+        from app.api.routes.agent import ChatQuery, askAI, deep_agent_graph
 
         services = self._make_services()
         query = ChatQuery(query="analyze", chatMode="deep")
@@ -2091,8 +2113,8 @@ class TestAskAI:
             assert result == {"status": "success", "message": "deep"}
 
     @pytest.mark.asyncio
-    async def test_askAI_memory_unhealthy(self):
-        from app.api.routes.agent import askAI, ChatQuery
+    async def test_askAI_memory_unhealthy(self) -> None:
+        from app.api.routes.agent import ChatQuery, askAI
 
         services = self._make_services()
         query = ChatQuery(query="hello")
@@ -2129,9 +2151,10 @@ class TestAskAI:
 
 class TestAskAIStream:
     @pytest.mark.asyncio
-    async def test_returns_streaming_response(self):
+    async def test_returns_streaming_response(self) -> None:
         from fastapi.responses import StreamingResponse
-        from app.api.routes.agent import askAIStream, ChatQuery
+
+        from app.api.routes.agent import ChatQuery, askAIStream
 
         services = {
             "retrieval_service": MagicMock(),
@@ -2156,9 +2179,10 @@ class TestAskAIStream:
             assert isinstance(result, StreamingResponse)
 
     @pytest.mark.asyncio
-    async def test_http_exception_reraises(self):
+    async def test_http_exception_reraises(self) -> None:
         from fastapi import HTTPException
-        from app.api.routes.agent import askAIStream, ChatQuery
+
+        from app.api.routes.agent import ChatQuery, askAIStream
 
         services = {
             "retrieval_service": MagicMock(),
@@ -2180,9 +2204,10 @@ class TestAskAIStream:
             assert exc.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_generic_exception_raises_400(self):
+    async def test_generic_exception_raises_400(self) -> None:
         from fastapi import HTTPException
-        from app.api.routes.agent import askAIStream, ChatQuery
+
+        from app.api.routes.agent import ChatQuery, askAIStream
 
         services = {
             "retrieval_service": MagicMock(),
@@ -2211,7 +2236,7 @@ class TestAskAIStream:
 
 class TestStreamResponse:
     @pytest.mark.asyncio
-    async def test_yields_events(self):
+    async def test_yields_events(self) -> None:
         from app.api.routes.agent import stream_response
 
         mock_graph = AsyncMock()
@@ -2243,7 +2268,7 @@ class TestStreamResponse:
             assert "event: done" in chunks[1]
 
     @pytest.mark.asyncio
-    async def test_yields_error_on_exception(self):
+    async def test_yields_error_on_exception(self) -> None:
         from app.api.routes.agent import stream_response
 
         with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=RuntimeError("graph error")):
@@ -2265,7 +2290,7 @@ class TestStreamResponse:
             assert "event: error" in chunks[0]
 
     @pytest.mark.asyncio
-    async def test_unexpected_chunk_format(self):
+    async def test_unexpected_chunk_format(self) -> None:
         from app.api.routes.agent import stream_response
 
         mock_graph = AsyncMock()
@@ -2301,7 +2326,7 @@ class TestStreamResponse:
 
 class TestCreateAgentTemplate:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import create_agent_template
 
         services = {
@@ -2323,8 +2348,9 @@ class TestCreateAgentTemplate:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_failure(self):
+    async def test_batch_upsert_failure(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import create_agent_template
 
         services = {
@@ -2345,8 +2371,9 @@ class TestCreateAgentTemplate:
             assert exc.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_generic_exception(self):
+    async def test_generic_exception(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import create_agent_template
 
         services = {
@@ -2369,7 +2396,7 @@ class TestCreateAgentTemplate:
 
 class TestGetAgentTemplates:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import get_agent_templates
 
         services = {
@@ -2388,7 +2415,7 @@ class TestGetAgentTemplates:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_none(self):
+    async def test_returns_empty_on_none(self) -> None:
         from app.api.routes.agent import get_agent_templates
 
         services = {
@@ -2409,7 +2436,7 @@ class TestGetAgentTemplates:
 
 class TestGetAgentTemplate:
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.agent import get_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2425,8 +2452,8 @@ class TestGetAgentTemplate:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
-        from app.api.routes.agent import get_agent_template, AgentTemplateNotFoundError
+    async def test_not_found(self) -> None:
+        from app.api.routes.agent import AgentTemplateNotFoundError, get_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].get_template = AsyncMock(return_value=None)
@@ -2443,7 +2470,7 @@ class TestGetAgentTemplate:
 
 class TestCloneAgentTemplate:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2456,8 +2483,9 @@ class TestCloneAgentTemplate:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_failure(self):
+    async def test_failure(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2473,7 +2501,7 @@ class TestCloneAgentTemplate:
 
 class TestDeleteAgentTemplate:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import delete_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2489,8 +2517,9 @@ class TestDeleteAgentTemplate:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_failure(self):
+    async def test_failure(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import delete_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2509,7 +2538,7 @@ class TestDeleteAgentTemplate:
 
 class TestUpdateAgentTemplate:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import update_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2528,7 +2557,7 @@ class TestUpdateAgentTemplate:
 
 class TestShareAgentTemplate:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import share_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2546,8 +2575,11 @@ class TestShareAgentTemplate:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_template_not_found(self):
-        from app.api.routes.agent import share_agent_template, AgentTemplateNotFoundError
+    async def test_template_not_found(self) -> None:
+        from app.api.routes.agent import (
+            AgentTemplateNotFoundError,
+            share_agent_template,
+        )
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].get_template = AsyncMock(return_value=None)
@@ -2570,7 +2602,7 @@ class TestShareAgentTemplate:
 
 class TestGetAgent:
     @pytest.mark.asyncio
-    async def test_found(self):
+    async def test_found(self) -> None:
         from app.api.routes.agent import get_agent
 
         services = {"graph_provider": AsyncMock(), "config_service": AsyncMock(), "logger": MagicMock()}
@@ -2588,8 +2620,8 @@ class TestGetAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
-        from app.api.routes.agent import get_agent, AgentNotFoundError
+    async def test_not_found(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, get_agent
 
         services = {"graph_provider": AsyncMock(), "config_service": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
@@ -2606,7 +2638,7 @@ class TestGetAgent:
 
 class TestGetAgents:
     @pytest.mark.asyncio
-    async def test_list_result(self):
+    async def test_list_result(self) -> None:
         from app.api.routes.agent import get_agents
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2622,7 +2654,7 @@ class TestGetAgents:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_dict_result(self):
+    async def test_dict_result(self) -> None:
         from app.api.routes.agent import get_agents
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2640,7 +2672,7 @@ class TestGetAgents:
 
 class TestDeleteAgent:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import delete_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2660,8 +2692,8 @@ class TestDeleteAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
-        from app.api.routes.agent import delete_agent, AgentNotFoundError
+    async def test_not_found(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, delete_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(return_value=None)
@@ -2677,8 +2709,8 @@ class TestDeleteAgent:
                 await delete_agent(request, "missing")
 
     @pytest.mark.asyncio
-    async def test_permission_denied(self):
-        from app.api.routes.agent import delete_agent, PermissionDeniedError
+    async def test_permission_denied(self) -> None:
+        from app.api.routes.agent import PermissionDeniedError, delete_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": False})
@@ -2694,8 +2726,9 @@ class TestDeleteAgent:
                 await delete_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_hard_delete_failure_rolls_back(self):
+    async def test_hard_delete_failure_rolls_back(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import delete_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2723,7 +2756,7 @@ class TestDeleteAgent:
 
 class TestShareAgent:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import share_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2742,8 +2775,8 @@ class TestShareAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_permission_denied(self):
-        from app.api.routes.agent import share_agent, PermissionDeniedError
+    async def test_permission_denied(self) -> None:
+        from app.api.routes.agent import PermissionDeniedError, share_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_share": False})
@@ -2762,7 +2795,7 @@ class TestShareAgent:
 
 class TestUnshareAgent:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import unshare_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2783,7 +2816,7 @@ class TestUnshareAgent:
 
 class TestGetAgentPermissions:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import get_agent_permissions
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2801,7 +2834,7 @@ class TestGetAgentPermissions:
 
 class TestUpdateAgentPermission:
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import update_agent_permission
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2818,8 +2851,8 @@ class TestUpdateAgentPermission:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_missing_role(self):
-        from app.api.routes.agent import update_agent_permission, InvalidRequestError
+    async def test_missing_role(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, update_agent_permission
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
 
@@ -2841,8 +2874,8 @@ class TestUpdateAgentPermission:
 
 class TestCreateAgent:
     @pytest.mark.asyncio
-    async def test_missing_models_raises(self):
-        from app.api.routes.agent import create_agent, InvalidRequestError
+    async def test_missing_models_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
 
@@ -2857,8 +2890,8 @@ class TestCreateAgent:
                 await create_agent(request)
 
     @pytest.mark.asyncio
-    async def test_no_reasoning_model_raises(self):
-        from app.api.routes.agent import create_agent, InvalidRequestError
+    async def test_no_reasoning_model_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
 
@@ -2873,7 +2906,7 @@ class TestCreateAgent:
                 await create_agent(request)
 
     @pytest.mark.asyncio
-    async def test_success_basic(self):
+    async def test_success_basic(self) -> None:
         from app.api.routes.agent import create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2901,7 +2934,7 @@ class TestCreateAgent:
 
 class TestUpdateAgent:
     @pytest.mark.asyncio
-    async def test_success_basic(self):
+    async def test_success_basic(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2920,8 +2953,8 @@ class TestUpdateAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_not_found(self):
-        from app.api.routes.agent import update_agent, AgentNotFoundError
+    async def test_not_found(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
@@ -2938,8 +2971,8 @@ class TestUpdateAgent:
                 await update_agent(request, "missing")
 
     @pytest.mark.asyncio
-    async def test_permission_denied(self):
-        from app.api.routes.agent import update_agent, PermissionDeniedError
+    async def test_permission_denied(self) -> None:
+        from app.api.routes.agent import PermissionDeniedError, update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": False})
@@ -2956,7 +2989,7 @@ class TestUpdateAgent:
                 await update_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_share_with_org_on(self):
+    async def test_share_with_org_on(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2977,7 +3010,7 @@ class TestUpdateAgent:
             services["graph_provider"].batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_share_with_org_off(self):
+    async def test_share_with_org_off(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -2998,7 +3031,7 @@ class TestUpdateAgent:
             services["graph_provider"].delete_edge.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_update_with_toolsets(self):
+    async def test_update_with_toolsets(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3022,7 +3055,7 @@ class TestUpdateAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_update_with_empty_toolsets(self):
+    async def test_update_with_empty_toolsets(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3044,7 +3077,7 @@ class TestUpdateAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_update_with_knowledge(self):
+    async def test_update_with_knowledge(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3068,8 +3101,8 @@ class TestUpdateAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_update_models_validation(self):
-        from app.api.routes.agent import update_agent, InvalidRequestError
+    async def test_update_models_validation(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
 
@@ -3091,8 +3124,8 @@ class TestUpdateAgent:
 
 class TestAgentChat:
     @pytest.mark.asyncio
-    async def test_chat_success(self):
-        from app.api.routes.agent import chat, ChatQuery
+    async def test_chat_success(self) -> None:
+        from app.api.routes.agent import ChatQuery, chat
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3131,8 +3164,8 @@ class TestAgentChat:
             assert result == {"status": "success", "message": "reply"}
 
     @pytest.mark.asyncio
-    async def test_chat_agent_not_found(self):
-        from app.api.routes.agent import chat, ChatQuery, AgentNotFoundError
+    async def test_chat_agent_not_found(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, ChatQuery, chat
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3158,8 +3191,8 @@ class TestAgentChat:
                 await chat(request, "missing", query)
 
     @pytest.mark.asyncio
-    async def test_chat_with_filters(self):
-        from app.api.routes.agent import chat, ChatQuery
+    async def test_chat_with_filters(self) -> None:
+        from app.api.routes.agent import ChatQuery, chat
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3195,8 +3228,8 @@ class TestAgentChat:
             assert result == {"status": "success"}
 
     @pytest.mark.asyncio
-    async def test_chat_with_knowledge_sources(self):
-        from app.api.routes.agent import chat, ChatQuery
+    async def test_chat_with_knowledge_sources(self) -> None:
+        from app.api.routes.agent import ChatQuery, chat
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3237,8 +3270,8 @@ class TestAgentChat:
             assert result == {"status": "success"}
 
     @pytest.mark.asyncio
-    async def test_chat_error_in_final_state(self):
-        from app.api.routes.agent import chat, ChatQuery
+    async def test_chat_error_in_final_state(self) -> None:
+        from app.api.routes.agent import ChatQuery, chat
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3281,7 +3314,7 @@ class TestAgentChat:
 
 class TestCreateAgentWithToolsetsAndKnowledge:
     @pytest.mark.asyncio
-    async def test_with_toolsets_and_knowledge(self):
+    async def test_with_toolsets_and_knowledge(self) -> None:
         from app.api.routes.agent import create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3309,8 +3342,9 @@ class TestCreateAgentWithToolsetsAndKnowledge:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_transaction_rollback_on_error(self):
+    async def test_transaction_rollback_on_error(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3342,7 +3376,7 @@ class TestCreateAgentWithToolsetsAndKnowledge:
 
 class TestCreateToolsetEdgesSuccess:
     @pytest.mark.asyncio
-    async def test_full_toolset_creation(self):
+    async def test_full_toolset_creation(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
 
         graph_provider = AsyncMock()
@@ -3382,9 +3416,8 @@ class TestChatStream:
     """Tests for the /{agent_id}/chat/stream endpoint."""
 
     @pytest.mark.asyncio
-    async def test_chat_stream_agent_not_found(self):
-        from fastapi import HTTPException
-        from app.api.routes.agent import chat_stream, AgentNotFoundError
+    async def test_chat_stream_agent_not_found(self) -> None:
+        from app.api.routes.agent import AgentNotFoundError, chat_stream
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3411,8 +3444,9 @@ class TestChatStream:
                 await chat_stream(request, "missing")
 
     @pytest.mark.asyncio
-    async def test_chat_stream_success(self):
+    async def test_chat_stream_success(self) -> None:
         from fastapi.responses import StreamingResponse
+
         from app.api.routes.agent import chat_stream
 
         services = {
@@ -3438,14 +3472,19 @@ class TestChatStream:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
              patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), None)):
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ):
 
             result = await chat_stream(request, "a1")
             assert isinstance(result, StreamingResponse)
 
     @pytest.mark.asyncio
-    async def test_chat_stream_with_toolsets(self):
+    async def test_chat_stream_with_toolsets(self) -> None:
         from fastapi.responses import StreamingResponse
+
         from app.api.routes.agent import chat_stream
 
         services = {
@@ -3484,15 +3523,20 @@ class TestChatStream:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
              patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), None)), \
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ), \
              patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/services/toolsets/inst-1/u1"):
 
             result = await chat_stream(request, "a1")
             assert isinstance(result, StreamingResponse)
 
     @pytest.mark.asyncio
-    async def test_chat_stream_missing_toolset_config(self):
+    async def test_chat_stream_missing_toolset_config(self) -> None:
         from fastapi.responses import StreamingResponse
+
         from app.api.routes.agent import chat_stream
 
         services = {
@@ -3529,7 +3573,11 @@ class TestChatStream:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
              patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), None)), \
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ), \
              patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/services/toolsets/inst-1/u1"):
 
             result = await chat_stream(request, "a1")
@@ -3537,8 +3585,9 @@ class TestChatStream:
             assert isinstance(result, StreamingResponse)
 
     @pytest.mark.asyncio
-    async def test_chat_stream_with_explicit_filters(self):
+    async def test_chat_stream_with_explicit_filters(self) -> None:
         from fastapi.responses import StreamingResponse
+
         from app.api.routes.agent import chat_stream
 
         services = {
@@ -3567,14 +3616,18 @@ class TestChatStream:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
              patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), None)):
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ):
 
             result = await chat_stream(request, "a1")
             assert isinstance(result, StreamingResponse)
 
     @pytest.mark.asyncio
-    async def test_chat_stream_llm_init_error(self):
-        from app.api.routes.agent import chat_stream, LLMInitializationError
+    async def test_chat_stream_llm_init_error(self) -> None:
+        from app.api.routes.agent import LLMInitializationError, chat_stream
 
         services = {
             "graph_provider": AsyncMock(),
@@ -3598,7 +3651,7 @@ class TestChatStream:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
              patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(None, None)):
+             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=None):
 
             with pytest.raises(LLMInitializationError):
                 await chat_stream(request, "a1")
@@ -3611,7 +3664,7 @@ class TestChatStream:
 
 class TestUpdateAgentToolsetDeletion:
     @pytest.mark.asyncio
-    async def test_deletes_existing_toolsets_before_creating_new(self):
+    async def test_deletes_existing_toolsets_before_creating_new(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3642,8 +3695,9 @@ class TestUpdateAgentToolsetDeletion:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_toolset_deletion_transaction_failure_rolls_back(self):
+    async def test_toolset_deletion_transaction_failure_rolls_back(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3667,7 +3721,7 @@ class TestUpdateAgentToolsetDeletion:
             services["graph_provider"].rollback_transaction.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_knowledge_deletion_with_existing_edges(self):
+    async def test_knowledge_deletion_with_existing_edges(self) -> None:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -3699,7 +3753,7 @@ class TestUpdateAgentToolsetDeletion:
 
 class TestToolsetEdgeCreationFailures:
     @pytest.mark.asyncio
-    async def test_agent_toolset_edges_exception(self):
+    async def test_agent_toolset_edges_exception(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
@@ -3710,7 +3764,7 @@ class TestToolsetEdgeCreationFailures:
         assert len(created) == 1
 
     @pytest.mark.asyncio
-    async def test_tool_nodes_upsert_none(self):
+    async def test_tool_nodes_upsert_none(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=[True, None])
@@ -3721,7 +3775,7 @@ class TestToolsetEdgeCreationFailures:
         assert len(created) == 1
 
     @pytest.mark.asyncio
-    async def test_tool_nodes_upsert_exception(self):
+    async def test_tool_nodes_upsert_exception(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=[True, Exception("fail")])
@@ -3732,7 +3786,7 @@ class TestToolsetEdgeCreationFailures:
         assert len(created) == 1
 
     @pytest.mark.asyncio
-    async def test_toolset_tool_edges_exception(self):
+    async def test_toolset_tool_edges_exception(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
@@ -3744,7 +3798,7 @@ class TestToolsetEdgeCreationFailures:
 
 class TestKnowledgeEdgeFailures2:
     @pytest.mark.asyncio
-    async def test_batch_upsert_exception(self):
+    async def test_batch_upsert_exception(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
@@ -3752,7 +3806,7 @@ class TestKnowledgeEdgeFailures2:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_batch_create_edges_exception(self):
+    async def test_batch_create_edges_exception(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
@@ -3762,9 +3816,10 @@ class TestKnowledgeEdgeFailures2:
 
 class TestAllErrorPaths:
     @pytest.mark.asyncio
-    async def test_json_response_cache(self):
+    async def test_json_response_cache(self) -> None:
         from fastapi.responses import JSONResponse as JR
-        from app.api.routes.agent import askAI, ChatQuery
+
+        from app.api.routes.agent import ChatQuery, askAI
         services = {"retrieval_service": MagicMock(llm=MagicMock()), "graph_provider": AsyncMock(), "reranker_service": MagicMock(), "config_service": AsyncMock(), "logger": MagicMock(), "llm": MagicMock()}
         jr = JR(content={"m": "c"})
         fs = {"completion_data": jr}
@@ -3786,8 +3841,8 @@ class TestAllErrorPaths:
             c.set_llm_response.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_perf_tracker(self):
-        from app.api.routes.agent import askAI, ChatQuery
+    async def test_perf_tracker(self) -> None:
+        from app.api.routes.agent import ChatQuery, askAI
         services = {"retrieval_service": MagicMock(llm=MagicMock()), "graph_provider": AsyncMock(), "reranker_service": MagicMock(), "config_service": AsyncMock(), "logger": MagicMock(), "llm": MagicMock()}
         fs = {"completion_data": {"s": "ok"}, "_performance_tracker": True, "performance_summary": {"ms": 1}}
         req = MagicMock(); req.state.user = {"userId": "u1", "orgId": "o1"}; req.query_params = {}
@@ -3807,8 +3862,9 @@ class TestAllErrorPaths:
             assert r["_performance"] == {"ms": 1}
 
     @pytest.mark.asyncio
-    async def test_template_edge_fail(self):
+    async def test_template_edge_fail(self) -> None:
         from fastapi import HTTPException
+
         from app.api.routes.agent import create_agent_template
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].batch_upsert_nodes = AsyncMock(return_value=True)
@@ -3826,25 +3882,25 @@ class TestAllErrorPaths:
 # =============================================================================
 
 class TestParseKnowledgeSourcesEdgeCases:
-    def test_filters_as_json_string(self):
+    def test_filters_as_json_string(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": '{"types": ["doc"]}'}]
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_filters_as_invalid_json_string(self):
+    def test_filters_as_invalid_json_string(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {}
 
-    def test_missing_connector_id(self):
+    def test_missing_connector_id(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"filters": {}}]
         result = _parse_knowledge_sources(raw)
         assert result == {}
 
-    def test_empty_connector_id(self):
+    def test_empty_connector_id(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
         raw = [{"connectorId": "  ", "filters": {}}]
         result = _parse_knowledge_sources(raw)
@@ -3852,13 +3908,13 @@ class TestParseKnowledgeSourcesEdgeCases:
 
 
 class TestFilterKnowledgeByEnabledSourcesFullCoverage:
-    def test_no_filters(self):
+    def test_no_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "c1"}, {"connectorId": "c2"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert len(result) == 2
 
-    def test_app_filter(self):
+    def test_app_filter(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "app1"},
@@ -3868,7 +3924,7 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         assert len(result) == 1
         assert result[0]["connectorId"] == "app1"
 
-    def test_kb_filter_with_matching_record_groups(self):
+    def test_kb_filter_with_matching_record_groups(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg1", "rg2"]}},
@@ -3876,7 +3932,7 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
         assert len(result) == 1
 
-    def test_kb_filter_no_matching_record_groups(self):
+    def test_kb_filter_no_matching_record_groups(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg3"]}},
@@ -3884,7 +3940,7 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
         assert len(result) == 0
 
-    def test_kb_filter_with_json_string_filters(self):
+    def test_kb_filter_with_json_string_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": '{"recordGroups": ["rg1"]}'},
@@ -3892,7 +3948,7 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
         assert len(result) == 1
 
-    def test_kb_filter_invalid_json_filters(self):
+    def test_kb_filter_invalid_json_filters(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [
             {"connectorId": "knowledgeBase_1", "filters": "not json"},
@@ -3900,7 +3956,7 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
         assert len(result) == 0
 
-    def test_non_dict_skipped(self):
+    def test_non_dict_skipped(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = ["not a dict", None, 42]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["a1"]})
@@ -3908,17 +3964,17 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
 
 
 class TestParseToolsetsEdgeCases:
-    def test_non_dict_entries_skipped(self):
+    def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets(["not dict", 42, None])
         assert result == {}
 
-    def test_missing_name(self):
+    def test_missing_name(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets([{"type": "app"}])
         assert result == {}
 
-    def test_duplicate_toolset_updates_instance_id(self):
+    def test_duplicate_toolset_updates_instance_id(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [
             {"name": "jira", "displayName": "Jira", "type": "app", "tools": []},
@@ -3927,13 +3983,13 @@ class TestParseToolsetsEdgeCases:
         result = _parse_toolsets(raw)
         assert result["jira"]["instanceId"] == "inst-1"
 
-    def test_tool_dict_with_name(self):
+    def test_tool_dict_with_name(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{"name": "jira", "tools": [{"name": "search", "fullName": "jira.search", "description": "Search"}]}]
         result = _parse_toolsets(raw)
         assert len(result["jira"]["tools"]) == 1
 
-    def test_tool_dict_without_name(self):
+    def test_tool_dict_without_name(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         raw = [{"name": "jira", "tools": [{"description": "No name"}]}]
         result = _parse_toolsets(raw)
@@ -3941,19 +3997,19 @@ class TestParseToolsetsEdgeCases:
 
 
 class TestParseModelsEdgeCases:
-    def test_string_model(self):
+    def test_string_model(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         entries, _ = _parse_models(["model_key_1"], log)
         assert "model_key_1" in entries
 
-    def test_dict_without_model_key(self):
+    def test_dict_without_model_key(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         entries, _ = _parse_models([{"modelName": "name"}], log)
         assert entries == []
 
-    def test_dict_with_key_no_name(self):
+    def test_dict_with_key_no_name(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
         entries, _ = _parse_models([{"modelKey": "mk1"}], log)
@@ -3962,7 +4018,7 @@ class TestParseModelsEdgeCases:
 
 class TestEnrichAgentModelsFullCoverage:
     @pytest.mark.asyncio
-    async def test_enriches_with_matching_config(self):
+    async def test_enriches_with_matching_config(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["key1_name1"]}
         config_service = AsyncMock()
@@ -3975,7 +4031,7 @@ class TestEnrichAgentModelsFullCoverage:
         assert agent["models"][0]["modelKey"] == "key1"
 
     @pytest.mark.asyncio
-    async def test_no_matching_config(self):
+    async def test_no_matching_config(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["unknown_model"]}
         config_service = AsyncMock()
@@ -3985,7 +4041,7 @@ class TestEnrichAgentModelsFullCoverage:
         assert agent["models"][0]["provider"] == "unknown"
 
     @pytest.mark.asyncio
-    async def test_empty_models(self):
+    async def test_empty_models(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": []}
         config_service = AsyncMock()
@@ -3994,7 +4050,7 @@ class TestEnrichAgentModelsFullCoverage:
         assert agent["models"] == []
 
     @pytest.mark.asyncio
-    async def test_none_models(self):
+    async def test_none_models(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {}
         config_service = AsyncMock()
@@ -4002,7 +4058,7 @@ class TestEnrichAgentModelsFullCoverage:
         await _enrich_agent_models(agent, config_service, log)
 
     @pytest.mark.asyncio
-    async def test_exception_caught(self):
+    async def test_exception_caught(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["key_name"]}
         config_service = AsyncMock()
@@ -4011,7 +4067,7 @@ class TestEnrichAgentModelsFullCoverage:
         await _enrich_agent_models(agent, config_service, log)
 
     @pytest.mark.asyncio
-    async def test_comma_separated_model_name(self):
+    async def test_comma_separated_model_name(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
         agent = {"models": ["key1"]}
         config_service = AsyncMock()
@@ -4024,25 +4080,25 @@ class TestEnrichAgentModelsFullCoverage:
 
 
 class TestParseRequestBodyFullCoverage:
-    def test_valid_json(self):
+    def test_valid_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         result = _parse_request_body(b'{"name": "test"}')
         assert result == {"name": "test"}
 
-    def test_empty_body(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_empty_body(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError):
             _parse_request_body(b"")
 
-    def test_invalid_json(self):
-        from app.api.routes.agent import _parse_request_body, InvalidRequestError
+    def test_invalid_json(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_request_body
         with pytest.raises(InvalidRequestError):
             _parse_request_body(b"not json")
 
 
 class TestCreateToolsetEdgesFullCoverage:
     @pytest.mark.asyncio
-    async def test_empty_toolsets(self):
+    async def test_empty_toolsets(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         log = logging.getLogger("test")
         created, failed = await _create_toolset_edges("ak1", {}, {}, "uk1", AsyncMock(), log)
@@ -4050,7 +4106,7 @@ class TestCreateToolsetEdgesFullCoverage:
         assert failed == []
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_fails(self):
+    async def test_batch_upsert_fails(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         log = logging.getLogger("test")
         gp = AsyncMock()
@@ -4061,7 +4117,7 @@ class TestCreateToolsetEdgesFullCoverage:
         assert len(failed) == 1
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_exception(self):
+    async def test_batch_upsert_exception(self) -> None:
         from app.api.routes.agent import _create_toolset_edges
         log = logging.getLogger("test")
         gp = AsyncMock()
@@ -4074,14 +4130,14 @@ class TestCreateToolsetEdgesFullCoverage:
 
 class TestCreateKnowledgeEdgesFullCoverage:
     @pytest.mark.asyncio
-    async def test_empty_knowledge(self):
+    async def test_empty_knowledge(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         log = logging.getLogger("test")
         result = await _create_knowledge_edges("ak1", {}, "uk1", AsyncMock(), log)
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_fails(self):
+    async def test_batch_upsert_fails(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         log = logging.getLogger("test")
         gp = AsyncMock()
@@ -4091,7 +4147,7 @@ class TestCreateKnowledgeEdgesFullCoverage:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         log = logging.getLogger("test")
         gp = AsyncMock()
@@ -4103,7 +4159,7 @@ class TestCreateKnowledgeEdgesFullCoverage:
         assert result[0]["connectorId"] == "c1"
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_exception(self):
+    async def test_batch_upsert_exception(self) -> None:
         from app.api.routes.agent import _create_knowledge_edges
         log = logging.getLogger("test")
         gp = AsyncMock()
@@ -4114,7 +4170,7 @@ class TestCreateKnowledgeEdgesFullCoverage:
 
 
 class TestBuildRoutingContextEdgeCases:
-    def test_with_bot_response(self):
+    def test_with_bot_response(self) -> None:
         from app.api.routes.agent import _build_routing_context
         info = {
             "query": "follow up",
@@ -4127,7 +4183,7 @@ class TestBuildRoutingContextEdgeCases:
         assert "User:" in ctx
         assert "Assistant:" in ctx
 
-    def test_long_conversation_trimmed(self):
+    def test_long_conversation_trimmed(self) -> None:
         from app.api.routes.agent import _build_routing_context
         convos = [{"role": "user_query", "content": f"msg{i}"} for i in range(20)]
         info = {"query": "test", "previous_conversations": convos}
@@ -4137,7 +4193,7 @@ class TestBuildRoutingContextEdgeCases:
 
 class TestStreamResponseFullCoverage:
     @pytest.mark.asyncio
-    async def test_stream_yields_events(self):
+    async def test_stream_yields_events(self) -> None:
         from app.api.routes.agent import stream_response
 
         mock_llm = MagicMock()
@@ -4164,7 +4220,7 @@ class TestStreamResponseFullCoverage:
                 assert "event: token" in chunks[0]
 
     @pytest.mark.asyncio
-    async def test_stream_error(self):
+    async def test_stream_error(self) -> None:
         from app.api.routes.agent import stream_response
 
         mock_llm = MagicMock()
@@ -4182,7 +4238,7 @@ class TestStreamResponseFullCoverage:
 
 class TestServiceAccountAgentRoutes:
     @pytest.mark.asyncio
-    async def test_create_agent_service_account_forces_org_permission(self):
+    async def test_create_agent_service_account_forces_org_permission(self) -> None:
         from app.api.routes.agent import create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -4209,7 +4265,7 @@ class TestServiceAccountAgentRoutes:
         assert any(edge.get("type") == "ORG" for edge in permission_edges)
 
     @pytest.mark.asyncio
-    async def test_get_agent_internal_requires_service_account_agent(self):
+    async def test_get_agent_internal_requires_service_account_agent(self) -> None:
         from app.api.routes.agent import get_agent_internal
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
@@ -4221,7 +4277,7 @@ class TestServiceAccountAgentRoutes:
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_update_agent_rejects_disabling_org_sharing_for_service_account(self):
+    async def test_update_agent_rejects_disabling_org_sharing_for_service_account(self) -> None:
         from app.api.routes.agent import InvalidRequestError, update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
@@ -4240,8 +4296,9 @@ class TestServiceAccountAgentRoutes:
                 await update_agent(request, "a1")
 
     @pytest.mark.asyncio
-    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self):
+    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self) -> None:
         from fastapi.responses import StreamingResponse
+
         from app.api.routes.agent import chat_stream
 
         services = {
@@ -4276,7 +4333,11 @@ class TestServiceAccountAgentRoutes:
                  return_value={"userId": "slack-bot@x", "orgId": "o1", "isServiceAccount": True, "email": "slack-bot@x"},
              ), \
              patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), None)), \
+             patch(
+                 "app.api.routes.agent.get_llm_for_chat",
+                 new_callable=AsyncMock,
+                 return_value=(MagicMock(), {"isReasoning": True}, {}),
+             ), \
              patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/services/toolsets/inst-1/a1") as mock_cfg_path, \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock) as mock_user_doc:
             result = await chat_stream(request, "a1")
@@ -4286,7 +4347,7 @@ class TestServiceAccountAgentRoutes:
         mock_cfg_path.assert_called_with("inst-1", "a1")
 
     @pytest.mark.asyncio
-    async def test_get_agent_internal_success(self):
+    async def test_get_agent_internal_success(self) -> None:
         """get_agent_internal returns 200 with isServiceAccount=True for a SA agent."""
         from app.api.routes.agent import get_agent_internal
 
@@ -4310,7 +4371,7 @@ class TestServiceAccountAgentRoutes:
         assert body["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_get_agent_internal_agent_not_found(self):
+    async def test_get_agent_internal_agent_not_found(self) -> None:
         """get_agent_internal raises when agent does not exist."""
         from app.api.routes.agent import get_agent_internal
 
@@ -4323,7 +4384,7 @@ class TestServiceAccountAgentRoutes:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_get_agent_no_permission_raises_404(self):
+    async def test_get_agent_no_permission_raises_404(self) -> None:
         """get_agent raises AgentNotFoundError when user has no permission."""
         from app.api.routes.agent import get_agent
 
@@ -4338,7 +4399,7 @@ class TestServiceAccountAgentRoutes:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_get_agent_success_returns_enriched_agent(self):
+    async def test_get_agent_success_returns_enriched_agent(self) -> None:
         """get_agent returns 200 with the enriched agent dict."""
         from app.api.routes.agent import get_agent
 
@@ -4368,7 +4429,7 @@ class TestServiceAccountAgentRoutes:
         assert body["agent"]["can_edit"] is True
 
     @pytest.mark.asyncio
-    async def test_update_agent_no_permission_raises(self):
+    async def test_update_agent_no_permission_raises(self) -> None:
         """update_agent raises when check_agent_permission returns None."""
         from app.api.routes.agent import update_agent
 
@@ -4386,7 +4447,7 @@ class TestServiceAccountAgentRoutes:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_update_agent_no_edit_permission_raises_403(self):
+    async def test_update_agent_no_edit_permission_raises_403(self) -> None:
         """update_agent raises 403 when user has view-only access."""
         from app.api.routes.agent import update_agent
 
@@ -4406,7 +4467,7 @@ class TestServiceAccountAgentRoutes:
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_update_agent_converting_to_sa_forces_org_share(self):
+    async def test_update_agent_converting_to_sa_forces_org_share(self) -> None:
         """update_agent sets shareWithOrg=True when upgrading a regular agent to SA."""
         from app.api.routes.agent import update_agent
 
@@ -4434,7 +4495,7 @@ class TestServiceAccountAgentRoutes:
         assert update_call_body.get("shareWithOrg") is True
 
     @pytest.mark.asyncio
-    async def test_get_agents_returns_paginated_response(self):
+    async def test_get_agents_returns_paginated_response(self) -> None:
         """get_agents returns success with pagination envelope."""
         from app.api.routes.agent import get_agents
 
@@ -4456,7 +4517,7 @@ class TestServiceAccountAgentRoutes:
         assert body["pagination"]["currentPage"] == 1
 
     @pytest.mark.asyncio
-    async def test_get_agents_returns_list_backward_compat(self):
+    async def test_get_agents_returns_list_backward_compat(self) -> None:
         """get_agents handles plain list response from older graph providers."""
         from app.api.routes.agent import get_agents
 
