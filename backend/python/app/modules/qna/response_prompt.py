@@ -15,8 +15,11 @@ Flow:
 This approach ensures the agent sees the exact same block format as the chatbot.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+
+from app.modules.agents.deep.state import DeepAgentState
+from app.modules.agents.qna.chat_state import ChatState
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -306,6 +309,39 @@ def build_user_context(user_info, org_info) -> str:
     if org_info.get("accountType"):
         parts.append(f"- **Account Type**: {org_info['accountType']}")
     return "\n".join(parts)
+
+
+# ============================================================================
+# TIME CONTEXT (direct / lightweight prompts)
+# ============================================================================
+
+
+def build_direct_answer_time_context(state: ChatState | DeepAgentState) -> str:
+    """Date/time lines for prompts that bypass ``build_response_prompt``.
+
+    Used when the planner sets ``can_answer_directly`` and the answer is streamed
+    via ``stream_llm_response`` (QnA ``_generate_direct_response`` and Deep ``_handle_direct_answer``)
+    ``_handle_direct_answer``). Those paths must still see the same clock context
+    as the full response pipeline.
+    """
+    provided_current_time = state.get("current_time")
+    provided_timezone = state.get("timezone")
+    current_datetime = (
+        provided_current_time
+        if provided_current_time
+        else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
+    lines = [
+        "## Time context",
+        f"**Current date/time (reference)**: {current_datetime}",
+    ]
+    if provided_timezone:
+        lines.append(f"**User timezone**: {provided_timezone}")
+    lines.append(
+        "Use this when the user asks about the current date, time, day of week, "
+        "or time-relative wording (today, tomorrow, this week)."
+    )
+    return "\n".join(lines)
 
 
 # ============================================================================
