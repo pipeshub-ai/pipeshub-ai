@@ -258,7 +258,7 @@ def _delete_instance(client: PipeshubClient, instance_id: str) -> None:
     try:
         _delete(client, f"/api/v1/toolsets/instances/{instance_id}")
     except Exception:
-        pass
+        logger.error("Failed to delete instance %s", instance_id)
 
 
 # ------------------------------------------------------------------ #
@@ -667,32 +667,28 @@ class TestCreateAndDeleteToolsetInstance:
         auth_type = auth_types[0]
 
         # Create instance
-        create_resp = requests.post(
-            f"{self.client.base_url}/api/v1/toolsets/instances",
-            headers=self.client._headers(),
+        create_resp = _post(
+            self.client,
+            "/api/v1/toolsets/instances",
             json={
-                "instanceName": "integration-test-instance",
+                "instanceName": f"integration-test-instance-{uuid.uuid4().hex[:8]}",
                 "toolsetType": toolset_type,
                 "authType": auth_type,
-            },
-            timeout=self.client.timeout_seconds,
+            }
         )
         assert create_resp.status_code in (200, 201), (
             f"Expected 200/201, got {create_resp.status_code}: {create_resp.text}"
         )
         create_body = create_resp.json()
 
-        print("create_body: ", create_body)
-        print("schema: ", _SCHEMA_CREATE_INSTANCE)
         assert_response_matches_schema(create_body, _SCHEMA_CREATE_INSTANCE)
 
         instance_id = create_body["instance"]["_id"]
 
         # Delete instance (cleanup)
-        delete_resp = requests.delete(
-            f"{self.client.base_url}/api/v1/toolsets/instances/{instance_id}",
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
+        delete_resp = _delete(
+            self.client,
+            f"/api/v1/toolsets/instances/{instance_id}",
         )
         assert delete_resp.status_code == 200, (
             f"Cleanup failed: {delete_resp.status_code}: {delete_resp.text}"
