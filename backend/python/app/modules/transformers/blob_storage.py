@@ -233,8 +233,13 @@ class BlobStorage(Transformer):
                     )
                     await asyncio.sleep(wait_time)
                 else:
-                    self.logger.error("❌ Chunk %d download failed after %d attempts: %s", chunk_index, max_retries, str(e))
-                    raise
+                    self.logger.exception(
+                        "❌ Chunk %d download failed after %d attempts: %s",
+                        chunk_index,
+                        max_retries,
+                        str(e),
+                    )
+                    raise e
 
     async def _download_with_range_requests(
         self,
@@ -306,8 +311,8 @@ class BlobStorage(Transformer):
             parallel_download_duration_ms = (time.time() - parallel_download_start) * 1000
             self.logger.debug("⏱️ Parallel download completed in %.0fms", parallel_download_duration_ms)
         except Exception as e:
-            self.logger.error("❌ Parallel download failed: %s", str(e))
-            raise
+            self.logger.exception("❌ Parallel download failed: %s", str(e))
+            raise e
 
         # Reassemble chunks in correct order
         reassembly_start = time.time()
@@ -524,7 +529,7 @@ class BlobStorage(Transformer):
                     "Authorization": f"Bearer {jwt_token}"
                 }
             except Exception as e:
-                self.logger.error("❌ Failed to generate JWT token: %s", str(e))
+                self.logger.exception("❌ Failed to generate JWT token: %s", str(e))
                 raise e
 
             # Get endpoint configuration
@@ -544,7 +549,7 @@ class BlobStorage(Transformer):
                     raise ValueError("Missing storage type configuration")
                 self.logger.debug("🚀 Storage type: %s", storage_type)
             except Exception as e:
-                self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
+                self.logger.exception("❌ Failed to get endpoint configuration: %s", str(e))
                 raise e
 
             # Compress record for both local and S3 storage
@@ -617,10 +622,10 @@ class BlobStorage(Transformer):
                             self.logger.info("✅ Successfully uploaded record for document: %s", document_id)
                             return document_id, file_size_bytes
                 except aiohttp.ClientError as e:
-                    self.logger.error("❌ Network error during upload process: %s", str(e))
+                    self.logger.exception("❌ Network error during upload process: %s", str(e))
                     raise e
                 except Exception as e:
-                    self.logger.error("❌ Unexpected error during upload process: %s", str(e))
+                    self.logger.exception("❌ Unexpected error during upload process: %s", str(e))
                     raise e
             else:
                 # Prepare placeholder for S3 storage
@@ -664,8 +669,8 @@ class BlobStorage(Transformer):
 
                         document_id = document.get("_id")
                         if not document_id:
-                            self.logger.error("❌ No document ID in placeholder response")
-                            raise Exception("No document ID in placeholder response")
+                            self.logger.error("❌ No document ID %s in placeholder response", document_id)
+                            raise Exception(f"No document ID {document_id} in placeholder response")
 
                         self.logger.debug("📄 Created placeholder with ID: %s", document_id)
 
@@ -705,14 +710,14 @@ class BlobStorage(Transformer):
                         return document_id, file_size_bytes
 
                 except aiohttp.ClientError as e:
-                    self.logger.error("❌ Network error during storage process: %s", str(e))
+                    self.logger.exception("❌ Network error during storage process: %s", str(e))
                     raise e
                 except Exception as e:
-                    self.logger.error("❌ Unexpected error during storage process: %s", str(e))
+                    self.logger.exception("❌ Unexpected error during storage process: %s", str(e))
                     raise e
 
         except Exception as e:
-            self.logger.error("❌ Critical error in saving record to storage: %s", str(e))
+            self.logger.exception("❌ Critical error in saving record to storage: %s", str(e))
             raise e
 
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> tuple[str | None, int | None]:
@@ -722,7 +727,7 @@ class BlobStorage(Transformer):
             tuple[str | None, int | None]: (document_id, file_size_bytes) if found, else (None, None).
         """
         if not self.graph_provider:
-            self.logger.error("❌ GraphProvider not initialized, cannot get document ID by virtual record ID.")
+            self.logger.exception("❌ GraphProvider not initialized, cannot get document ID by virtual record ID.")
             raise Exception("GraphProvider not initialized, cannot get document ID by virtual record ID.")
 
         try:
@@ -757,7 +762,10 @@ class BlobStorage(Transformer):
                 self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None, None
         except Exception as e:
-            self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
+            self.logger.exception(
+                "❌ Error getting document ID by virtual record ID: %s",
+                virtual_record_id,
+            )
             raise e
 
     async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> dict | None:
@@ -851,9 +859,8 @@ class BlobStorage(Transformer):
 
                                 overall_duration_ms = (time.time() - overall_start_time) * 1000
                                 self.logger.debug("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
-                                self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
                                 record_name = record.get("record_name")
-                                self.logger.debug("🔍 Record name: %s", record_name)
+                                self.logger.info("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
                                 return record
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
@@ -938,7 +945,10 @@ class BlobStorage(Transformer):
                             self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
                             raise Exception("Failed to retrieve record from storage")
             except Exception as e:
-                self.logger.error("❌ Error retrieving record from storage: %s", str(e))
+                self.logger.exception(
+                    "❌ Error retrieving record from storage (virtual_record_id=%s)",
+                    virtual_record_id,
+                )
                 raise e
 
     async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
@@ -982,7 +992,10 @@ class BlobStorage(Transformer):
                 raise Exception("Failed to store virtual record mapping")
 
         except Exception as e:
-            self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))
+            self.logger.exception(
+                "❌ Failed to store virtual record mapping: %s",
+                virtual_record_id,
+            )
             raise e
 
                 
@@ -1124,6 +1137,9 @@ class BlobStorage(Transformer):
                         "fileName": file_name,
                     }
         except Exception as e:
-            self.logger.error("❌ Error saving conversation file: %s", str(e))
+            self.logger.exception(
+                "❌ Error saving conversation file: %s",
+                conversation_id,
+            )
             raise
 
