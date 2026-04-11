@@ -30,6 +30,7 @@ from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
 from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.qna.response_prompt import build_direct_answer_time_context
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -1029,6 +1030,7 @@ async def _handle_direct_answer(
     # Add capability summary
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
+    system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
     messages = [SystemMessage(content=system_content)]
 

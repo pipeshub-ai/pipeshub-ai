@@ -37,7 +37,10 @@ from app.modules.agents.capability_summary import (
 )
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
-from app.modules.qna.response_prompt import create_response_messages
+from app.modules.qna.response_prompt import (
+    build_direct_answer_time_context,
+    create_response_messages,
+)
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 
 # ============================================================================
@@ -6718,6 +6721,7 @@ async def _generate_direct_response(
     # Add capability summary so direct responses can answer "what can you do?"
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
+    system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
     messages.append(SystemMessage(content=system_content))
 
