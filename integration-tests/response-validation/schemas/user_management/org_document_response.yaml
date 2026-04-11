@@ -1,0 +1,94 @@
+name: OrgDocumentResponse
+description: >
+  Serialized org document returned by GET /api/v1/org, POST /api/v1/org (create),
+  and nested as `data` in PUT/DELETE org responses.
+  Mirrors DocumentResponseSchema from org.schemas.ts.
+
+fields:
+  _id:
+    type: string
+    required: true
+    format: objectid
+
+  registeredName:
+    type: string
+    required: true
+
+  shortName:
+    type: string
+    required: false
+
+  domain:
+    type: string
+    required: true
+
+  contactEmail:
+    type: string
+    required: true
+    format: email
+
+  accountType:
+    type: string
+    required: true
+    enum:
+      - business
+
+  permanentAddress:
+    type: object
+    required: false
+    properties:
+      _id:
+        type: string
+        required: false
+        format: objectid
+      addressLine1:
+        type: string
+        required: false
+      city:
+        type: string
+        required: false
+      state:
+        type: string
+        required: false
+      country:
+        type: string
+        required: false
+      postCode:
+        type: string
+        required: false
+
+  onBoardingStatus:
+    type: string
+    required: true
+    enum:
+      - configured
+      - notConfigured
+      - skipped
+
+  isDeleted:
+    type: boolean
+    required: true
+
+  createdAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+
+  updatedAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+
+  slug:
+    type: string
+    required: true
+
+  __v:
+    type: integer
+    required: true

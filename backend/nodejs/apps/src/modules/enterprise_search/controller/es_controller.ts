@@ -16,6 +16,7 @@ import {
   handleRegenerationSuccess,
   handleRegenerationError,
 } from './../utils/utils';
+import * as crypto from 'crypto';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
 import {
@@ -82,20 +83,53 @@ import {
   IAgentConversationDocument,
 } from '../schema/agent.conversation.schema';
 import { Users } from '../../user_management/schema/users.schema';
+import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import {
   validateNoXSS,
   validateNoFormatSpecifiers,
 } from '../../../utils/xss-sanitization';
+import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
+import { Org } from '../../user_management/schema/org.schema';
+import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
+
+/**
+ * Parses the chatMode from request body and determines if agent mode is enabled.
+ * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
+ * 
+ * @param requestChatMode - The chatMode value from request body
+ * @returns Object containing the parsed chatMode and agentMode flag
+ */
+const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
+  let chatMode: string = requestChatMode || 'quick';
+  let agentMode: boolean = false;
+  
+  if (chatMode.includes('agent')) {
+    chatMode = chatMode.split(':')[1] || 'auto';
+    agentMode = true;
+  }
+  
+  return { chatMode, agentMode };
+};
+
+
+/** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
+const stableObjectIdHexForExternalEmail = (email: string): string =>
+  crypto
+    .createHash('sha256')
+    .update(`slack-service-account:${email.toLowerCase().trim()}`)
+    .digest('hex')
+    .slice(0, 24);
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
 const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
   appConfig: AppConfig,
+  keyValueStoreService?: KeyValueStoreService,
 ): Promise<void> => {
   const existingUser = (req as AuthenticatedUserRequest).user as
     | Record<string, any>
@@ -114,15 +148,48 @@ const hydrateScopedRequestAsUser = async (
     isDeleted: false,
   });
   
-  
-  if (!user) {
-    throw new NotFoundError('User not found, create an account on the Pipeshub platform first.');
-  }
-
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,
     appConfig.scopedJwtSecret,
   );
+
+
+  if (!user) {
+    const { agentKey } = req.params;
+    if (agentKey && keyValueStoreService) {
+      const store = await getSlackBotStore(keyValueStoreService);
+      const configs = store.configs;
+      for (const config of configs) {
+        if (config.agentId === agentKey) {
+          const isServiceAccount = await checkServiceAccountAccess(req, appConfig);
+          if (isServiceAccount) {
+            const org = await Org.findOne({ isDeleted: false });
+            if (!org?._id) {
+              throw new NotFoundError('Organization not found');
+            }
+            const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
+            const scopedJwtToken = authTokenService.generateScopedToken({
+              userId: stableUserIdHex,
+              orgId: org._id,
+              email: email,
+              scopes: [TokenScopes.CONVERSATION_CREATE],
+              isServiceAccount: true,
+            }, '1h');
+            (req as AuthenticatedServiceRequest).headers.authorization = `Bearer ${scopedJwtToken}`;
+            (req as AuthenticatedServiceRequest).user = {
+              userId: new Types.ObjectId(stableUserIdHex),
+              orgId: org._id,
+              email: email,
+              scopes: [TokenScopes.CONVERSATION_CREATE],
+              isServiceAccount: true,
+            };
+            return;
+          }
+        }
+      }
+    }
+    throw new NotFoundError('User not found, create an account on the Pipeshub platform first.');
+  }
 
   const jwtToken = authTokenService.generateToken({
     userId: user._id,
@@ -289,6 +356,7 @@ export const streamChat =
         userId,
       });
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
@@ -299,12 +367,12 @@ export const streamChat =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: chatMode,
         conversationId: savedConversation._id?.toString() || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -1330,6 +1398,7 @@ export const addMessageStream =
         ) as IMessage[],
       );
 
+      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
       // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
@@ -1339,12 +1408,12 @@ export const addMessageStream =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: chatMode,
         conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -4400,6 +4469,39 @@ export const getAgent =
     }
   };
 
+export const checkServiceAccountAccess =
+  async (req: AuthenticatedServiceRequest, appConfig: AppConfig): Promise<boolean> => {
+    const requestId = req.context?.requestId;
+    try {
+
+      const agentKey = req.params.agentKey;
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/internal/service-account`,
+        method: HttpMethod.GET,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse.data, 'Check Service Account Access');
+      }
+      const response = aiResponse.data as { isServiceAccount: boolean };
+      const serviceAccountResponse = response.isServiceAccount;
+      return serviceAccountResponse;
+    } catch (error: any) {
+      logger.error('Error checking service account access', {
+        requestId,
+        message: 'Error checking service account access',
+        error: error.message,
+      });
+      return false;
+    }
+  };
+
 export const listAgents =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -4657,11 +4759,27 @@ export const unshareAgent =
 
   export const streamAgentConversation =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response) => {
+  async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    let userId: Types.ObjectId | undefined;
+    let orgId: Types.ObjectId | undefined;
+    if('user' in req) {
+      const auth_req = req as AuthenticatedUserRequest;
+      userId = auth_req.user?.userId;
+      orgId = auth_req.user?.orgId;
+    } else {
+      const auth_req = req as AuthenticatedServiceRequest;
+      userId = auth_req.tokenPayload?.userId;
+      orgId = auth_req.tokenPayload?.orgId;
+    }
+
+    if (!userId) {
+      throw new BadRequestError('User ID is required');
+    }
+    if (!orgId) {
+      throw new BadRequestError('Organization ID is required');
+    }
     const { agentKey } = req.params;
 
     let session: ClientSession | null = null;
@@ -4846,7 +4964,7 @@ export const unshareAgent =
             const conversation = await saveCompleteAgentConversation(
               savedConversation,
               completeData,
-              orgId,
+              orgId?.toString(),
               session,
               modelInfo,
             );
@@ -4974,16 +5092,16 @@ export const unshareAgent =
   };
 
 export const streamAgentConversationInternal =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, keyValueStoreService?: KeyValueStoreService) =>
   async (
     req: AuthenticatedServiceRequest,
     res: Response,
     next: NextFunction,
   ) => {
     try {
-      await hydrateScopedRequestAsUser(req, appConfig);
+      await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
       await streamAgentConversation(appConfig)(
-        req as AuthenticatedUserRequest,
+        req as AuthenticatedUserRequest | AuthenticatedServiceRequest,
         res,
       );
     } catch (error) {
@@ -5542,11 +5660,27 @@ export const createAgentConversation =
 
 export const addMessageStreamToAgentConversation =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response) => {
+  async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    let userId: Types.ObjectId | undefined;
+    let orgId: Types.ObjectId | undefined;
+    if('user' in req) {
+      const auth_req = req as AuthenticatedUserRequest;
+      userId = auth_req.user?.userId;
+      orgId = auth_req.user?.orgId;
+    } else {
+      const auth_req = req as AuthenticatedServiceRequest;
+      userId = auth_req.tokenPayload?.userId;
+      orgId = auth_req.tokenPayload?.orgId;
+    }
+
+    if (!userId) {
+      throw new BadRequestError('User ID is required');
+    }
+    if (!orgId) {
+      throw new BadRequestError('Organization ID is required');
+    }
     const { conversationId, agentKey } = req.params;
 
     let session: ClientSession | null = null;
@@ -6052,16 +6186,16 @@ export const addMessageStreamToAgentConversation =
   };
 
 export const addMessageStreamToAgentConversationInternal =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, keyValueStoreService?: KeyValueStoreService) =>
   async (
     req: AuthenticatedServiceRequest,
     res: Response,
     next: NextFunction,
   ) => {
     try {
-      await hydrateScopedRequestAsUser(req, appConfig);
+      await hydrateScopedRequestAsUser(req, appConfig, keyValueStoreService);
       await addMessageStreamToAgentConversation(appConfig)(
-        req as AuthenticatedUserRequest,
+        req as AuthenticatedUserRequest | AuthenticatedServiceRequest,
         res,
       );
     } catch (error) {

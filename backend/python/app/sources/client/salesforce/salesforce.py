@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
@@ -35,13 +36,13 @@ class SalesforceRESTClient(HTTPClient):
         api_version: The Salesforce API version (default: '59.0')
     """
 
-    def __init__(self, instance_url: str, access_token: str, api_version: str = "59.0") -> None:
+    def __init__(self, instance_url: str, access_token: str, api_version: str = "59.0", refresh_token: str = None) -> None:
         super().__init__(access_token, "Bearer")
 
         # Ensure instance_url doesn't end with a slash
         self.instance_url = instance_url.rstrip('/')
         self.api_version = api_version
-
+        self.refresh_token = refresh_token
         # Construct the base API URL
         # Format: https://instance.salesforce.com/services/data/vXX.X
         self.base_url = self.instance_url
@@ -72,6 +73,9 @@ class SalesforceConfig(BaseModel):
     instance_url: str = Field(..., description="The Salesforce instance URL")
     access_token: str = Field(..., description="The OAuth access token")
     api_version: str = Field(default="59.0", description="The Salesforce API version")
+    refresh_token: str | None = Field(
+        default=None, description="The OAuth refresh token"
+    )
 
     @field_validator('instance_url')
     @classmethod
@@ -88,7 +92,8 @@ class SalesforceConfig(BaseModel):
         return SalesforceRESTClient(
             instance_url=self.instance_url,
             access_token=self.access_token,
-            api_version=self.api_version
+            api_version=self.api_version,
+            refresh_token=self.refresh_token,
         )
 
     def to_dict(self) -> dict:
@@ -172,6 +177,73 @@ class SalesforceClient(IClient):
 
         except Exception as e:
             logger.error(f"Failed to build Salesforce client from services: {str(e)}")
+            raise
+
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        logger: logging.Logger,
+        config_service: Optional["ConfigurationService"] = None,
+    ) -> "SalesforceClient":
+        """Build SalesforceClient from toolset configuration (agent architecture).
+
+        The access_token and refresh_token come from per-user credentials.
+        The instance_url is a CONFIGURE-level field: read from the linked OAuth app
+        config (/services/oauths/toolsets/...), with fallback to instance.auth for
+        legacy instances without oauthConfigId.
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+            config_service: Required; used to resolve OAuth app config and instance record
+
+        Returns:
+            SalesforceClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for Salesforce client")
+
+            if not config_service:
+                raise ValueError(
+                    "ConfigurationService is required to resolve Salesforce instance URL for toolsets."
+                )
+
+            credentials_config = toolset_config.get("credentials", {}) or {}
+            access_token = credentials_config.get("access_token")
+            if not access_token:
+                raise ValueError("Access token required for Salesforce client (OAuth)")
+
+            refresh_token = credentials_config.get("refresh_token")
+
+            oauth_config = await get_oauth_credentials_for_toolset(
+                toolset_config=toolset_config,
+                config_service=config_service,
+                logger=logger,
+            )
+            instance_url = oauth_config.get("instance_url")
+            if isinstance(instance_url, str):
+                instance_url = instance_url.strip()
+
+            if not instance_url:
+                raise ValueError(
+                    "Instance URL required for Salesforce client. "
+                    "Admin must configure the Salesforce Instance URL in toolset settings."
+                )
+
+            config = SalesforceConfig(
+                instance_url=instance_url,
+                access_token=access_token,
+                api_version=toolset_config.get("api_version", "59.0"),
+                refresh_token=refresh_token,
+            )
+
+            logger.info("Built Salesforce client from toolset config")
+            return cls.build_with_config(config)
+
+        except Exception as e:
+            logger.error(f"Failed to build Salesforce client from toolset config: {str(e)}")
             raise
 
     @staticmethod

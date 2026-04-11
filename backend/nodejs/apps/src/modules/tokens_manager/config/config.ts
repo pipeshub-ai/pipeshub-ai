@@ -1,4 +1,5 @@
 import { ConfigService, OpenSearchConfig, QdrantConfig } from '../services/cm.service';
+import { RedisConfig } from '../../../libs/types/messaging.types';
 
 export interface AppConfig {
   jwtSecret: string;
@@ -28,14 +29,7 @@ export interface AppConfig {
       password: string;
     };
   };
-  redis: {
-    host: string;
-    port: number;
-    username?: string;
-    password?: string;
-    tls?: boolean;
-    db?: number;
-  };
+  redis: RedisConfig;
   mongo: {
     uri: string;
     db: string;

@@ -42,292 +42,293 @@ services:
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
 
-   # Public endpoints
-   - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
-   - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
+      # Public endpoints
+      - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
 
-   # Internal service URLs
-   - QUERY_BACKEND=http://localhost:8000
-   - CONNECTOR_BACKEND=http://localhost:8088
-   - INDEXING_BACKEND=http://localhost:8091
+      # Internal service URLs
+      - QUERY_BACKEND=http://localhost:8000
+      - CONNECTOR_BACKEND=http://localhost:8088
+      - INDEXING_BACKEND=http://localhost:8091
 
-   # Key-Value Store Configuration
-   - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
+      # Key-Value Store Configuration
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
 
-   # ETCD config
-   - ETCD_URL=http://etcd:2379
-   - ETCD_HOST=etcd
-   - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
+      # ETCD config
+      - ETCD_URL=http://etcd:2379
+      - ETCD_HOST=etcd
+      - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
 
-   # ArangoDB config
-   - ARANGO_URL=http://arango:8529
-   - ARANGO_DB_NAME=es
-   - ARANGO_USERNAME=root
-   - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
-   # Ensure we use the same password as configured for the ArangoDB service
+      # ArangoDB config
+      - ARANGO_URL=http://arango:8529
+      - ARANGO_DB_NAME=es
+      - ARANGO_USERNAME=root
+      - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
 
-   # Kafka config
-   - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
-   - KAFKA_SSL=${KAFKA_SSL:-false}
-   - KAFKA_USERNAME=${KAFKA_USERNAME:-}
-   - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
-   - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
-   # Redis config
-   - REDIS_HOST=redis
-   - REDIS_PORT=6379
-   - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-   - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
-   - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
-   - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
-   - REDIS_DB=${REDIS_DB:-0}
+      # Kafka config
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
+      - KAFKA_SSL=${KAFKA_SSL:-false}
+      - KAFKA_USERNAME=${KAFKA_USERNAME:-}
+      - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
+      - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
 
-   # MongoDB config
-   - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
-   - MONGO_DB_NAME=es
+      # Redis config
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
+      - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
+      - REDIS_DB=${REDIS_DB:-0}
 
-   # Qdrant config
-   - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
-   - QDRANT_HOST=qdrant
-   - QDRANT_GRPC_PORT=6334
-   - QDRANT_PORT=6333
+      # MongoDB config
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=es
 
-   - OLLAMA_API_URL=http://host.docker.internal:11434
+      # Qdrant config
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT_HOST=qdrant
+      - QDRANT_GRPC_PORT=6334
+      - QDRANT_PORT=6333
 
-   # Rate limit config
-   - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
-   - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+      - OLLAMA_API_URL=http://host.docker.internal:11434
 
-   # MCP OAuth scopes
-   - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,connector:read,connector:write,semantic:read,semantic:write,conversation:read,conversation:write,conversation:chat}
+      # Rate limit config
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
+      - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
-   # Token config
-   - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
-   - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # MCP OAuth scopes
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,connector:read,connector:write,semantic:read,semantic:write,conversation:read,conversation:write,conversation:chat}
 
-   # Indexing service config
-   - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
-   - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
-   - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
-   - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
-   - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
-   - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
-   - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
-   - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
-   - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
-   - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      # Token config
+      - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
+      - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
 
-   - OPIK_API_KEY=${OPIK_API_KEY:-}
-   - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
+      # Indexing service config
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
+      - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
+      - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
 
-   # AWS credentials (for Bedrock IAM role access from inside the container)
-   - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-   - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-   - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+      - OPIK_API_KEY=${OPIK_API_KEY:-}
+      - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
-   # Slack Bot config
-   - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
-   - BOT_TOKEN=${BOT_TOKEN:-}
-   - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+      # AWS credentials (for Bedrock IAM role access from inside the container)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
 
-   - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
+      # Slack Bot config
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      - BOT_TOKEN=${BOT_TOKEN:-}
+      - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-  depends_on:
-   qdrant:
-    condition: service_healthy
-   kafka-1:
-    condition: service_healthy
-   redis:
-    condition: service_healthy
-   mongodb:
-    condition: service_healthy
-   etcd:
-    condition: service_healthy
-   arango:
-    condition: service_healthy
+      - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
 
-  volumes:
-   - pipeshub_data:/data/pipeshub
-   - pipeshub_root_local:/root/.local
-  extra_hosts:
-   - "host.docker.internal:host-gateway"
-  healthcheck:
-   test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/health/services || exit 1"]
-   interval: 30s
-   timeout: 10s
-   retries: 3
-   start_period: 60s
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+      arango:
+        condition: service_healthy
 
- mongodb:
-  image: mongo:8.0.17
-  restart: always
-  ports:
-   - "27017:27017"
-  environment:
-   - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
-   - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
-  volumes:
-   - mongodb_data:/data/db
-  healthcheck:
-   test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-   interval: 5s
-   timeout: 3s
-   retries: 5
+    volumes:
+      - pipeshub_data:/data/pipeshub
+      - pipeshub_root_local:/root/.local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/health/services || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
- redis:
-  image: redis:bookworm
-  restart: always
-  ports:
-   - "6379:6379"
-  environment:
-   - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-  command: >
-   sh -c "redis-server
-   --appendonly yes
-   --appendfsync everysec
-   ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
-  volumes:
-   - redis_data:/data
-  healthcheck:
-   test: ["CMD", "redis-cli", "ping"]
-   interval: 5s
-   timeout: 3s
-   retries: 5
+  mongodb:
+    image: mongo:8.0.17
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
- arango:
-  image: arangodb:3.12.4
-  restart: always
-  ports:
-   - "8529:8529"
-  environment:
-   - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
-  volumes:
-   - arango_data:/var/lib/arangodb3
-  healthcheck:
-   test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
-   interval: 5s
-   timeout: 3s
-   retries: 5
+  redis:
+    image: redis:bookworm
+    restart: always
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >
+      sh -c "redis-server
+      --appendonly yes
+      --appendfsync everysec
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
- etcd:
-  image: quay.io/coreos/etcd:v3.5.17
-  restart: always
-  ports:
-   - "2379:2379"
-   - "2380:2380"
-  command: >
-   etcd
-   --name etcd-node
-   --data-dir /etcd-data
-   --listen-client-urls http://0.0.0.0:2379
-   --advertise-client-urls http://0.0.0.0:2379
-   --listen-peer-urls http://0.0.0.0:2380
-   --initial-advertise-peer-urls http://0.0.0.0:2380
-   --initial-cluster etcd-node=http://0.0.0.0:2380
-  volumes:
-   - etcd_data:/etcd-data
-  healthcheck:
-   test: ["CMD", "etcdctl", "endpoint", "health"]
-   interval: 10s
-   timeout: 5s
-   retries: 5
+  arango:
+    image: arangodb:3.12.4
+    restart: always
+    ports:
+      - "8529:8529"
+    environment:
+      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
+    volumes:
+      - arango_data:/var/lib/arangodb3
+    healthcheck:
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
- zookeeper:
-  image: confluentinc/cp-zookeeper:7.9.0
-  restart: always
-  ports:
-   - "2181:2181"
-  environment:
-   - ZOOKEEPER_CLIENT_PORT=2181
-   - ZOOKEEPER_TICK_TIME=2000
-  healthcheck:
-   test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
-   interval: 10s
-   timeout: 5s
-   retries: 5
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    restart: always
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    command: >
+      etcd
+      --name etcd-node
+      --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://0.0.0.0:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://0.0.0.0:2380
+      --initial-cluster etcd-node=http://0.0.0.0:2380
+    volumes:
+      - etcd_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
- kafka-1:
-  image: confluentinc/cp-kafka:7.9.0
-  restart: always
-  depends_on:
-   zookeeper:
-    condition: service_healthy
-  ports:
-   - "9092:9092"
-  environment:
-   - KAFKA_BROKER_ID=1
-   - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-   - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT
-   - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092
-   - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
-   - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
-   - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-   - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
-   - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
-   - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-   - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
-   - KAFKA_LOG_RETENTION_HOURS=24
-   - KAFKA_NUM_NETWORK_THREADS=3
-   - KAFKA_NUM_IO_THREADS=8
-  healthcheck:
-   test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
-   interval: 10s
-   timeout: 10s
-   retries: 5
-   start_period: 30s
+  zookeeper:
+    profiles: ["kafka"]
+    image: confluentinc/cp-zookeeper:7.9.0
+    restart: always
+    ports:
+      - "2181:2181"
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
- qdrant:
-  image: qdrant/qdrant:v1.15
-  ports:
-   - "6333:6333"
-   - "6334:6334"
-  environment:
-   - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
-   # Performance optimizations
-   - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
-   - QDRANT__SERVICE__GRPC_PORT=6334
-   - QDRANT__SERVICE__HTTP_PORT=6333
-   - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0 # Use all available CPUs
-   - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
-   - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
-   - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256
-   - QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE=1000
-  volumes:
-   - qdrant_storage:/qdrant/storage
-  deploy:
-   resources:
-    limits:
-     cpus: '4'
-     memory: 4G
-    reservations:
-     cpus: '2'
-     memory: 2G
-  ulimits:
-   nofile:
-    soft: 50000
-    hard: 50000
-  restart: always
-  healthcheck:
-   test:
-    - CMD-SHELL
-    - bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1
-   interval: 10s
-   timeout: 5s
-   retries: 5
-   start_period: 30s
+  kafka-1:
+    profiles: ["kafka"]
+    image: confluentinc/cp-kafka:7.9.0
+    restart: always
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT
+      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
+      - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      - KAFKA_LOG_RETENTION_HOURS=24
+      - KAFKA_NUM_NETWORK_THREADS=3
+      - KAFKA_NUM_IO_THREADS=8
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:v1.15
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
+      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256
+      - QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE=1000
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+    ulimits:
+      nofile:
+        soft: 50000
+        hard: 50000
+    restart: always
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
- mongodb_data:
-  driver: local
- redis_data:
-  driver: local
- arango_data:
-  driver: local
- etcd_data:
-  driver: local
- qdrant_storage:
-  driver: local
- pipeshub_data:
-  driver: local
- pipeshub_root_local:
-  driver: local
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  arango_data:
+    driver: local
+  etcd_data:
+    driver: local
+  qdrant_storage:
+    driver: local
+  pipeshub_data:
+    driver: local
+  pipeshub_root_local:
+    driver: local

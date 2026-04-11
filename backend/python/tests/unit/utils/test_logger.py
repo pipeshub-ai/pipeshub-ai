@@ -185,3 +185,73 @@ class TestCreateLogger:
         assert len(file_handlers) >= 1
         assert "test_service_path.log" in file_handlers[0].baseFilename
         logger.handlers.clear()
+
+
+# ---------------------------------------------------------------------------
+# Module-level code: neo4j data_store branch
+# ---------------------------------------------------------------------------
+class TestModuleLevelNeo4jBranch:
+    """Cover the neo4j logger suppression at module import time (lines 48-50)."""
+
+    def test_neo4j_data_store_suppresses_notifications(self):
+        """When DATA_STORE=neo4j, the neo4j.notifications logger is set to ERROR."""
+        import importlib
+        import app.utils.logger as logger_mod
+
+        with patch.dict(os.environ, {"DATA_STORE": "neo4j"}, clear=False):
+            importlib.reload(logger_mod)
+
+        neo4j_logger = logging.getLogger("neo4j.notifications")
+        assert neo4j_logger.level == logging.ERROR
+
+        # Reload with default to restore original state
+        with patch.dict(os.environ, {"DATA_STORE": "arangodb"}, clear=False):
+            importlib.reload(logger_mod)
+
+    def test_non_neo4j_data_store_skips_suppression(self):
+        """When DATA_STORE is not neo4j, neo4j logger is not touched."""
+        import importlib
+        import app.utils.logger as logger_mod
+
+        # Reset the neo4j logger to INFO before reloading
+        neo4j_logger = logging.getLogger("neo4j.notifications")
+        neo4j_logger.setLevel(logging.INFO)
+
+        with patch.dict(os.environ, {"DATA_STORE": "arangodb"}, clear=False):
+            importlib.reload(logger_mod)
+
+        # The level should remain INFO since it was not changed by the module
+        assert neo4j_logger.level == logging.INFO
+
+
+# ---------------------------------------------------------------------------
+# Module-level code: Windows platform branch
+# ---------------------------------------------------------------------------
+class TestModuleLevelWindowsBranch:
+    """Cover the Windows-specific console setup (lines 32-37)."""
+
+    def test_windows_platform_branch(self):
+        """When sys.platform is win32, ctypes and reconfigure are called."""
+        import importlib
+        import app.utils.logger as logger_mod
+
+        mock_ctypes = MagicMock()
+        mock_kernel32 = MagicMock()
+        mock_ctypes.windll.kernel32 = mock_kernel32
+        mock_kernel32.GetStdHandle.return_value = -11
+
+        mock_stdout = MagicMock()
+        mock_stderr = MagicMock()
+
+        with patch.object(sys, "platform", "win32"), \
+             patch.dict("sys.modules", {"ctypes": mock_ctypes}), \
+             patch.object(sys, "stdout", mock_stdout), \
+             patch.object(sys, "stderr", mock_stderr):
+            importlib.reload(logger_mod)
+
+        mock_kernel32.SetConsoleMode.assert_called_once()
+        mock_stdout.reconfigure.assert_called_once_with(encoding="utf-8")
+        mock_stderr.reconfigure.assert_called_once_with(encoding="utf-8")
+
+        # Reload to restore normal state
+        importlib.reload(logger_mod)

@@ -4,16 +4,22 @@ import hashlib
 import os
 import threading
 import time
-from typing import List, Optional, Union
+from typing import Optional
 
 import dotenv
 from cachetools import LRUCache
 
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import (
+    KVStoreType,
+    RedisDefaults,
+    RedisEnv,
+    config_node_constants,
+)
 from app.config.key_value_store import KeyValueStore
+from app.services.messaging.config import RedisConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
-dotenv.load_dotenv()
+_ = dotenv.load_dotenv()
 
 
 
@@ -46,7 +52,7 @@ class ConfigurationService:
         self.store = key_value_store
 
         # Determine store type from environment
-        self._kv_store_type = os.getenv("KV_STORE_TYPE", "etcd").lower()
+        self._kv_store_type = os.getenv(RedisEnv.KV_STORE_TYPE, KVStoreType.ETCD).lower()
         self.logger.debug("📋 KV store type: %s", self._kv_store_type)
 
         # Redis Pub/Sub subscription task (for Redis store)
@@ -57,7 +63,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = True) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first
@@ -87,7 +93,7 @@ class ConfigurationService:
                 return env_fallback
             return default
 
-    def _get_env_fallback(self, key: str) -> Union[dict, None]:
+    def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
         if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
@@ -123,12 +129,12 @@ class ConfigurationService:
                 }
         elif key == config_node_constants.REDIS.value:
             # Redis configuration fallback
-            redis_host = os.getenv("REDIS_HOST")
+            redis_host = os.getenv(RedisEnv.HOST)
             if redis_host:
-                redis_password = os.getenv("REDIS_PASSWORD", "")
+                redis_password = os.getenv(RedisEnv.PASSWORD, "")
                 return {
                     "host": redis_host,
-                    "port": int(os.getenv("REDIS_PORT", "6379")),
+                    "port": int(os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
                     "password": redis_password if redis_password and redis_password.strip() else None
                 }
         elif key == config_node_constants.QDRANT.value:
@@ -161,7 +167,7 @@ class ConfigurationService:
         For etcd: Uses etcd's native watch mechanism with prefix callback.
         For Redis: Uses Redis Pub/Sub for cross-process cache invalidation.
         """
-        if self._kv_store_type == "redis":
+        if self._kv_store_type == KVStoreType.REDIS:
             self._start_redis_pubsub()
         else:
             # TODO: Remove etcd watch when all deployments migrate to Redis KV store
@@ -300,7 +306,7 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Failed to clear cache: %s", str(e))
 
-    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def set_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Set configuration value with optional encryption"""
         try:
             self.logger.info("📝 set_config called for key: %s (store type: %s)", key, type(self.store).__name__)
@@ -328,7 +334,7 @@ class ConfigurationService:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
 
-    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def update_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Update configuration value with optional encryption"""
         try:
             # Check if key exists
@@ -388,7 +394,7 @@ class ConfigurationService:
         Only publishes when using Redis as the KV store.
         For etcd, the watch mechanism handles cross-process invalidation.
         """
-        if self._kv_store_type != "redis":
+        if self._kv_store_type != KVStoreType.REDIS:
             self.logger.debug("⏭️ Skipping cache invalidation publish: KV store type is '%s', not 'redis'", self._kv_store_type)
             return
 
@@ -429,6 +435,16 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def get_redis_config(self) -> RedisConfig:
+        """Get typed Redis connection configuration."""
+        raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        return RedisConfig(
+            host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
+            port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
+            db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
+        )
+
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         """List all keys in a directory"""
         return await self.store.list_keys_in_directory(directory)

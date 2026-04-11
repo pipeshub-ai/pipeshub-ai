@@ -180,6 +180,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_parent_child_edge_to_record(self, record_id):
         return 0
 
+    async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
+        pass
+
 
 class TestDataStoreProvider:
     """Tests for DataStoreProvider base class."""
@@ -295,6 +298,28 @@ class TestTransactionStore:
         store = ConcreteTransactionStore()
         result = await store.delete_parent_child_edge_to_record("rec1")
         assert result == 0
+
+
+class TestDataStoreProviderTransaction:
+    """Tests for DataStoreProvider.transaction() method."""
+
+    @pytest.mark.asyncio
+    async def test_transaction_returns_context_manager(self):
+        logger = logging.getLogger("test")
+        provider = ConcreteDataStoreProvider(logger)
+        result = await provider.transaction()
+        assert result is provider._mock_tx
+
+    @pytest.mark.asyncio
+    async def test_execute_in_transaction_with_kwargs(self):
+        logger = logging.getLogger("test")
+        provider = ConcreteDataStoreProvider(logger)
+
+        async def my_func(x, y=10):
+            return x + y
+
+        result = await provider.execute_in_transaction(my_func, 5, y=20)
+        assert result == 25
 
 
 class TestBaseDataStoreCannotBeInstantiated:

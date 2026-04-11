@@ -49,6 +49,8 @@ export const configPaths = {
   },
   broker: {
     kafka: '/services/kafka',
+    redisStreams: '/services/redis-streams',
+    messageBroker: '/services/message-broker',
   },
   aiBackend: '/services/query',
   endpoint: '/services/endpoints',

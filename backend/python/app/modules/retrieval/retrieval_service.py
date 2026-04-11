@@ -49,6 +49,15 @@ USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 
 
+valid_group_labels = [
+        GroupType.LIST.value,
+        GroupType.ORDERED_LIST.value,
+        GroupType.FORM_AREA.value,
+        GroupType.INLINE.value,
+        GroupType.KEY_VALUE_AREA.value,
+        GroupType.TEXT_SECTION.value,
+    ]
+
 class RetrievalService:
     def __init__(
         self,
@@ -250,8 +259,13 @@ class RetrievalService:
         graph_provider: Optional[IGraphDBProvider] = None,
         knowledge_search:bool = False,
         is_agent:bool = False,
+        is_service_account: bool = False,
     ) -> dict[str, Any]:
-        """Perform semantic search on accessible records with multiple queries."""
+        """Perform semantic search on accessible records with multiple queries.
+
+        When is_service_account=True, bypasses per-user permission filtering and instead
+        fetches ALL records for the configured connectors/KBs (service account "all access").
+        """
 
         try:
             # Get accessible records
@@ -263,22 +277,52 @@ class RetrievalService:
             # Extract KB IDs for response metadata
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
 
-            # Convert filter_groups to format expected by get_accessible_virtual_record_ids
-            filters = {}
-            if filter_groups:  # Only process if filter_groups is not empty
-                for key, values in filter_groups.items():
-                    # Convert key to match collection naming
-                    metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
-                    filters[metadata_key] = values
+            if is_service_account:
+                # Service account: bypass user permission checks, use all records for
+                # the configured connectors and KBs.
+                connector_ids = filter_groups.get('apps', None) if filter_groups else None
+                kb_filter_ids = filter_groups.get('kb', None) if filter_groups else None
 
-            init_tasks = [
-                self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
-                self._get_user_cached(user_id)  # Get user info in parallel with caching
-            ]
+                # Remove sentinel values
+                if kb_filter_ids:
+                    kb_filter_ids = [k for k in kb_filter_ids if k and k != "NO_KB_SELECTED"]
 
-            accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
+                accessible_virtual_id_to_record_id = (
+                    await self.graph_provider.get_all_virtual_record_ids_for_knowledge(
+                        org_id,
+                        connector_ids=connector_ids or [],
+                        kb_ids=kb_filter_ids or [],
+                    )
+                )
+                # For URL substitution we still need the user doc, but non-critically
+                user = await self._get_user_cached(user_id)
+            else:
+                # Convert filter_groups to format expected by get_accessible_virtual_record_ids
+                filters = {}
+                if filter_groups:  # Only process if filter_groups is not empty
+                    for key, values in filter_groups.items():
+                        # Convert key to match collection naming
+                        metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
+                        filters[metadata_key] = values
+
+                init_tasks = [
+                    self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
+                    self._get_user_cached(user_id)  # Get user info in parallel with caching
+                ]
+
+                accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
 
             if not accessible_virtual_id_to_record_id:
+                if is_service_account:
+                    self.logger.error(
+                        f"No records found for service account agent in org {org_id}. "
+                        "Ensure the agent's knowledge sources are configured and indexed."
+                    )
+                    return self._create_empty_response(
+                        "No documents found for this agent's knowledge sources. "
+                        "Please ensure knowledge sources are configured and indexed.",
+                        Status.ACCESSIBLE_RECORDS_NOT_FOUND
+                    )
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
@@ -508,7 +552,7 @@ class RetrievalService:
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
-                    if block_type == GroupType.TABLE.value:
+                    if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
                         _, child_results = result.get("content")
                         for child in child_results:
                             final_search_results.append(child)

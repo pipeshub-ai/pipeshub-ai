@@ -1,45 +1,45 @@
-// consume the notification events from the kafka topic
-// and save them to the database
-
-import { BaseKafkaConsumerConnection } from '../../../libs/services/kafka.service';
-import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
+import { IMessageConsumer, StreamMessage } from '../../../libs/types/messaging.types';
 import { Logger } from '../../../libs/services/logger.service';
 import { injectable, inject } from 'inversify';
 import { Notifications } from '../schema/notification.schema';
 
 @injectable()
-export class NotificationConsumer extends BaseKafkaConsumerConnection {
-    constructor(@inject('KafkaConfig') config: KafkaConfig, @inject('Logger') logger: Logger) {
-    super(config, logger);
-  }
+export class NotificationConsumer {
+  constructor(
+    @inject('MessageConsumer') private readonly consumer: IMessageConsumer,
+    @inject('Logger') private readonly logger: Logger,
+  ) {}
 
   async start(): Promise<void> {
-    if (!this.isConnected()) {
-      await super.connect();
+    if (!this.consumer.isConnected()) {
+      await this.consumer.connect();
     }
   }
 
   async stop(): Promise<void> {
-    if (this.isConnected()) {
-      await super.disconnect();
+    if (this.consumer.isConnected()) {
+      await this.consumer.disconnect();
     }
   }
 
-  override async subscribe(
+  isConnected(): boolean {
+    return this.consumer.isConnected();
+  }
+
+  async subscribe(
     topics: string[],
     fromBeginning = false,
   ): Promise<void> {
-    if (this.isConnected()) {
-      await super.subscribe(topics, fromBeginning);
+    if (this.consumer.isConnected()) {
+      await this.consumer.subscribe(topics, fromBeginning);
     }
   }
 
-  override async consume<INotification>(
-    handler: (message: KafkaMessage<INotification>) => Promise<void>,
+  async consume<INotification>(
+    handler: (message: StreamMessage<INotification>) => Promise<void>,
   ): Promise<void> {
-    if (this.isConnected()) {
-      // write the logic to save the notification to the database and pass the handler to the kafka consumer
-      await super.consume(async (message: KafkaMessage<INotification>) => {
+    if (this.consumer.isConnected()) {
+      await this.consumer.consume(async (message: StreamMessage<INotification>) => {
         await handler(message);
         await Notifications.create(message.value);
         this.logger.info('Notification saved to the database', message.value);

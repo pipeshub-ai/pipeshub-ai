@@ -235,7 +235,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": ["jira.search"]}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
         assert "retrieval" in result.lower()
 
     def test_without_knowledge_with_tools(self):
@@ -261,7 +261,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
 
 
 # ============================================================================
@@ -1133,8 +1133,543 @@ class TestBuildKnowledgeContextExtra:
         assert "No Knowledge Base" in result
 
     def test_knowledge_true_tools_empty(self):
-        """has_knowledge True + no tools -> Knowledge Base Available."""
+        """has_knowledge True + no tools -> Knowledge Sources Available."""
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
+
+
+# ============================================================================
+# 15. orchestrator_node — additional branch coverage
+# ============================================================================
+
+class TestOrchestratorNodeAdditional:
+    """Additional tests covering uncovered branches in orchestrator_node."""
+
+    def _make_state(self, **overrides):
+        state = {
+            "logger": _mock_log(),
+            "llm": MagicMock(),
+            "query": "search for bugs",
+            "deep_iteration_count": 0,
+            "previous_conversations": [],
+            "has_knowledge": False,
+            "tools": [],
+            "system_prompt": "",
+            "instructions": "",
+            "current_time": None,
+            "timezone": None,
+            "user_info": {},
+            "user_email": "",
+            "completed_tasks": [],
+            "evaluation": {},
+            "conversation_summary": None,
+        }
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_conv_messages_extended(self):
+        """When build_conversation_messages returns messages, they are extended into messages list (line 118)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Simple"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        conv_msgs = [MagicMock(), MagicMock()]  # Non-empty messages
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=conv_msgs), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        # Messages should include system + conv_msgs + user query
+        call_args = llm.ainvoke.call_args[0][0]
+        assert len(call_args) >= 4  # system + 2 conv + user
+
+    @pytest.mark.asyncio
+    async def test_user_context_appended(self):
+        """When user context is available, it's appended to query (line 133)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Simple"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(
+            llm=llm,
+            user_info={"fullName": "John Doe"},
+            user_email="john@example.com",
+        )
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        # The last message should contain user context
+        last_msg = llm.ainvoke.call_args[0][0][-1]
+        assert "John Doe" in last_msg.content
+        assert "john@example.com" in last_msg.content
+
+    @pytest.mark.asyncio
+    async def test_time_context_appended(self):
+        """When time context is available, it's appended to query (line 137)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Simple"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(
+            llm=llm,
+            current_time="2026-03-24T10:00:00Z",
+            timezone="US/Pacific",
+        )
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        last_msg = llm.ainvoke.call_args[0][0][-1]
+        assert "2026-03-24" in last_msg.content
+        assert "US/Pacific" in last_msg.content
+
+    @pytest.mark.asyncio
+    async def test_reasoning_streamed_when_present(self):
+        """When plan has reasoning, it's streamed to user (line 159)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        mock_response = MagicMock()
+        mock_response.content = '{"can_answer_directly": true, "reasoning": "Analyzing the request carefully"}'
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write") as mock_write, \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
+            result = await orchestrator_node(state, config, writer)
+
+        # safe_stream_write should be called with the reasoning message
+        calls = mock_write.call_args_list
+        reasoning_calls = [c for c in calls if "Analyzing" in str(c)]
+        assert len(reasoning_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_knowledge_base_with_existing_retrieval_no_injection(self):
+        """When has_knowledge=True and LLM plan already has retrieval, no extra injection (line 191->199)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        plan_json = json.dumps({
+            "can_answer_directly": False,
+            "reasoning": "Need to search",
+            "tasks": [
+                {"task_id": "t1", "description": "Search Jira", "domains": ["jira"], "depends_on": []},
+                {"task_id": "t2", "description": "Search KB", "domains": ["retrieval"], "depends_on": []},
+            ]
+        })
+        mock_response = MagicMock()
+        mock_response.content = plan_json
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm, has_knowledge=True)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        def mock_assign(tasks, groups, st):
+            for t in tasks:
+                t["tools"] = [MagicMock()]
+            return tasks
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.tool_router.assign_tools_to_tasks", side_effect=mock_assign):
+            result = await orchestrator_node(state, config, writer)
+
+        # Should NOT have extra retrieval_search injected — t2 already has retrieval
+        task_ids = [t["task_id"] for t in result["sub_agent_tasks"]]
+        assert task_ids.count("retrieval_search") == 0
+        assert "t2" in task_ids  # Original retrieval task preserved
+
+    @pytest.mark.asyncio
+    async def test_retrieval_domain_task_kept_without_tools(self):
+        """Retrieval domain tasks are kept even without tools assigned (line 226)."""
+        from app.modules.agents.deep.orchestrator import orchestrator_node
+
+        plan_json = json.dumps({
+            "can_answer_directly": False,
+            "reasoning": "Need data",
+            "tasks": [
+                {"task_id": "t1", "description": "Search KB", "domains": ["retrieval"], "depends_on": []}
+            ]
+        })
+        mock_response = MagicMock()
+        mock_response.content = plan_json
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
+        state = self._make_state(llm=llm)
+        writer = MagicMock()
+        config = {"configurable": {}}
+
+        def mock_assign(tasks, groups, st):
+            # Don't assign any tools — retrieval tasks should still be kept
+            return tasks
+
+        with patch("app.modules.agents.deep.orchestrator.compact_conversation_history_async",
+                   new_callable=AsyncMock, return_value=("", [])), \
+             patch("app.modules.agents.deep.orchestrator.group_tools_by_domain", return_value={}), \
+             patch("app.modules.agents.deep.orchestrator.build_domain_description", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_capability_summary", return_value=""), \
+             patch("app.modules.agents.deep.orchestrator.build_conversation_messages", return_value=[]), \
+             patch("app.modules.agents.deep.orchestrator.safe_stream_write"), \
+             patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.tool_router.assign_tools_to_tasks", side_effect=mock_assign):
+            result = await orchestrator_node(state, config, writer)
+
+        # Retrieval task should be kept despite no tools
+        assert len(result["sub_agent_tasks"]) == 1
+        assert result["sub_agent_tasks"][0]["task_id"] == "t1"
+
+
+# ============================================================================
+# 16. _build_tool_guidance — additional branch coverage
+# ============================================================================
+
+class TestBuildToolGuidanceAdditional:
+    """Extra tests for _build_tool_guidance branches."""
+
+    def test_all_non_string_tools_returns_empty(self):
+        """When all tools are non-string, domain_tools is empty -> returns '' (line 481-482)."""
+        state = {"tools": [123, None, True]}
+        result = _build_tool_guidance(state)
+        assert result == ""
+
+
+# ============================================================================
+# 17. _build_iteration_context — continue without description
+# ============================================================================
+
+class TestBuildIterationContextContinue:
+    """Extra tests for _build_iteration_context continue/retry."""
+
+    def test_continue_without_description(self):
+        """Continue evaluation without continue_description uses reasoning (line 615-616)."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "success", "domains": ["jira"],
+                 "description": "Search", "result": {"response": "data"}},
+            ],
+            "evaluation": {
+                "decision": "continue",
+                "reasoning": "Need more data from different source",
+            },
+        }
+        result = _build_iteration_context(state, log)
+        assert "Next step needed" in result
+        assert "Need more data" in result
+
+    def test_retry_without_retry_fix_uses_reasoning(self):
+        """Retry evaluation without retry_fix uses reasoning."""
+        log = _mock_log()
+        state = {
+            "completed_tasks": [
+                {"task_id": "t1", "status": "error", "domains": ["jira"],
+                 "description": "Search", "error": "Timeout"},
+            ],
+            "evaluation": {
+                "decision": "retry",
+                "reasoning": "Timeout occurred, try again",
+            },
+        }
+        result = _build_iteration_context(state, log)
+        assert "Retry needed" in result
+        assert "Timeout occurred" in result
+
+
+# ============================================================================
+# 18. _build_user_context — email fallback order
+# ============================================================================
+
+class TestBuildUserContextAdditional:
+    """Extra tests for _build_user_context email/name resolution."""
+
+    def test_email_from_user_info_user_email(self):
+        """user_email from user_info.userEmail."""
+        state = {"user_info": {"userEmail": "info@example.com"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "info@example.com" in result
+
+    def test_email_from_user_info_email(self):
+        """user_email from user_info.email."""
+        state = {"user_info": {"email": "alt@example.com"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "alt@example.com" in result
+
+    def test_name_from_name_field(self):
+        """Name from user_info.name field."""
+        state = {"user_info": {"name": "Named User"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "Named User" in result
+
+    def test_only_first_name(self):
+        """Name constructed from firstName only (no lastName)."""
+        state = {"user_info": {"firstName": "Solo"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "Solo" in result
+
+    def test_only_last_name(self):
+        """Name constructed from lastName only (no firstName)."""
+        state = {"user_info": {"lastName": "OnlyLast"}, "user_email": ""}
+        result = _build_user_context(state)
+        assert "OnlyLast" in result
+
+
+# ============================================================================
+# 19. _build_knowledge_context — connector routing case matrix
+# ============================================================================
+
+class TestBuildKnowledgeContextRoutingMatrix:
+    """
+    Exhaustive case matrix for knowledge-base + connector routing guidance.
+
+    Config key:
+      KB   = Knowledge Base (no connector_id filter needed)
+      J    = Jira indexed connector
+      C    = Confluence indexed connector
+      S    = Slack indexed connector
+
+    Every case verifies WHAT the orchestrator's prompt tells the LLM to do,
+    not just that some keyword is present.
+    """
+
+    _KB  = {"displayName": "Company Wiki", "type": "KB"}
+    _KBI = {
+        "displayName": "Private Docs", "type": "KB",
+        "filters": {"recordGroups": ["rg-private-1"]},
+    }
+    _J   = {"displayName": "Jira Project", "type": "jira",       "connectorId": "jira-cid-1"}
+    _C   = {"displayName": "Confluence",   "type": "confluence", "connectorId": "conf-cid-2"}
+    _S   = {"displayName": "Slack WS",     "type": "slack",      "connectorId": "slack-cid-3"}
+
+    def _ctx(self, knowledge, has_knowledge=True, tools=None):
+        return _build_knowledge_context(
+            {
+                "has_knowledge": has_knowledge,
+                "agent_knowledge": knowledge,
+                "tools": tools or [],
+            },
+            _mock_log(),
+        )
+
+    # ── Case 1: KB-only ─────────────────────────────────────────────────────
+
+    def test_kb_only_shows_kb_label(self):
+        """KB-only: KB label appears in the context."""
+        result = self._ctx([self._KB])
+        assert "Company Wiki" in result
+
+    def test_kb_only_with_ids_shows_collection_ids(self):
+        """KB-only with filters: collection_ids must appear in routing block."""
+        result = self._ctx([self._KBI])
+        assert "rg-private-1" in result
+        assert "collection_ids" in result
+
+    def test_kb_only_routing_block_present(self):
+        """KB-only: routing block (Reason then Route) IS generated."""
+        result = self._ctx([self._KB])
+        assert "KB-only configuration" in result
+
+    def test_kb_only_omit_guidance_when_no_ids(self):
+        """KB-only without collection_ids: guidance says to omit filter."""
+        result = self._ctx([self._KB])
+        assert "omit" in result.lower() or "KB-only" in result
+
+    # ── Case 2: Single connector, no KB ─────────────────────────────────────
+
+    def test_single_connector_routing_block_present(self):
+        """Single connector: routing block must appear."""
+        result = self._ctx([self._J])
+        assert "How to route retrieval" in result
+
+    def test_single_connector_id_in_identity_table(self):
+        """Single connector: connector_id appears in the identity table."""
+        result = self._ctx([self._J])
+        assert "jira-cid-1" in result
+
+    def test_single_connector_routing_decision_shown(self):
+        """Single connector: routing decision block must appear."""
+        result = self._ctx([self._J])
+        assert "Step 2 — Route based on what Step 1 found" in result
+
+    def test_single_connector_count_is_one(self):
+        result = self._ctx([self._J])
+        assert "1 connector" in result
+
+    def test_single_connector_no_kb_only_note(self):
+        """Single connector without KB: KB-only note must NOT appear."""
+        result = self._ctx([self._J])
+        assert "KB-only configuration" not in result
+
+    # ── Case 3: Multiple connectors, no KB ──────────────────────────────────
+
+    def test_multi_connector_all_ids_in_routing_block(self):
+        """Multi-connector: every connector_id appears in routing guidance."""
+        result = self._ctx([self._J, self._C])
+        assert "jira-cid-1" in result
+        assert "conf-cid-2" in result
+
+    def test_multi_connector_count_correct(self):
+        result = self._ctx([self._J, self._C, self._S])
+        assert "3 connector" in result
+
+    def test_multi_connector_all_connectors_example(self):
+        """Multi-connector: 'All sources' example section present."""
+        result = self._ctx([self._J, self._C])
+        assert "All sources" in result
+
+    def test_multi_connector_specific_example(self):
+        """Multi-connector: 'Specific source' example section present."""
+        result = self._ctx([self._J, self._C])
+        assert "Specific source" in result
+
+    def test_multi_connector_default_search_all_rule(self):
+        """Multi-connector: guidance must say to search ALL when uncertain."""
+        result = self._ctx([self._J, self._C])
+        assert "ALL" in result or "all" in result.lower()
+
+    def test_multi_connector_all_labels_in_identity(self):
+        """Multi-connector: all connector labels appear."""
+        result = self._ctx([self._J, self._C, self._S])
+        assert "Jira Project" in result
+        assert "Confluence" in result
+        assert "Slack WS" in result
+
+    # ── Case 4: KB + single connector ───────────────────────────────────────
+
+    def test_kb_and_single_connector_kb_listed(self):
+        """KB + connector: KB name appears in the KB collections section."""
+        result = self._ctx([self._KB, self._J])
+        assert "Company Wiki" in result
+
+    def test_kb_and_single_connector_routing_block_present(self):
+        """KB + connector: connector routing block must appear."""
+        result = self._ctx([self._KB, self._J])
+        assert "How to route retrieval" in result
+
+    def test_kb_and_single_connector_connector_id_present(self):
+        result = self._ctx([self._KB, self._J])
+        assert "jira-cid-1" in result
+
+    def test_kb_and_single_connector_no_kb_only_note(self):
+        """KB + connector: KB-only note must NOT appear (connector IS present)."""
+        result = self._ctx([self._KB, self._J])
+        assert "KB-only configuration" not in result
+
+    # ── Case 5: KB + multiple connectors ────────────────────────────────────
+
+    def test_kb_and_multi_connector_kb_and_all_connectors_present(self):
+        """KB + multi-connector: KB AND all connector routing guidance shown."""
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "Company Wiki" in result
+        assert "jira-cid-1" in result
+        assert "conf-cid-2" in result
+
+    def test_kb_and_multi_connector_routing_block_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "How to route retrieval" in result
+
+    def test_kb_and_multi_connector_all_example_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "All sources" in result
+
+    def test_kb_and_multi_connector_specific_example_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "Specific source" in result
+
+    # ── Case 6: No knowledge at all (has_knowledge=False) ───────────────────
+
+    def test_no_knowledge_no_tools_early_return(self):
+        """has_knowledge=False, no tools → 'No Knowledge or Tools' message."""
+        result = self._ctx([], has_knowledge=False, tools=[])
+        assert "No Knowledge" in result
+
+    def test_no_knowledge_with_tools_early_return(self):
+        """has_knowledge=False, tools present → 'No Knowledge Base' message."""
+        result = self._ctx([], has_knowledge=False, tools=["jira.search"])
+        assert "No Knowledge Base" in result
+        assert "Do NOT create retrieval" in result
+
+    # ── Case 7: has_knowledge=True but no detailed knowledge entries ─────────
+
+    def test_has_knowledge_true_but_empty_list_fallback(self):
+        """has_knowledge=True but agent_knowledge=[] → generic fallback message."""
+        result = self._ctx([], has_knowledge=True)
+        # Should still mention knowledge and suggest a retrieval task
+        assert "Knowledge Sources Available" in result
+
+    # ── Case 8: Retrieval task quality guidance always present ───────────────
+
+    def test_retrieval_quality_guidance_present(self):
+        """The 'rich retrieval task descriptions' guidance must always appear."""
+        for knowledge in [
+            [self._KB],
+            [self._J],
+            [self._KB, self._J],
+            [self._J, self._C],
+        ]:
+            result = self._ctx(knowledge)
+            assert "rich retrieval task descriptions" in result, \
+                f"Quality guidance missing for knowledge config: {knowledge}"
+
+    # ── Case 9: Orchestrator task format in examples ─────────────────────────
+
+    def test_orchestrator_task_example_has_domains_retrieval(self):
+        """Generated task examples must include 'domains': ['retrieval']."""
+        result = self._ctx([self._J])
+        assert '"retrieval"' in result or "'retrieval'" in result
+
+    def test_orchestrator_task_example_connector_id_embedded(self):
+        """Connector_id must appear in the task description example."""
+        result = self._ctx([self._J])
+        assert "jira-cid-1" in result

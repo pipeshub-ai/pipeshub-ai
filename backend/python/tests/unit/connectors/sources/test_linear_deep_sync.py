@@ -70,6 +70,8 @@ def _make_connector():
         data_store_provider=dsp,
         config_service=cs,
         connector_id="linear-1",
+        scope="team",
+        created_by="test-user",
     )
     return connector
 

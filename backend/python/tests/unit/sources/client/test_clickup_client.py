@@ -425,6 +425,87 @@ class TestBuildFromToolset:
         )
         assert isinstance(cc, ClickUpClient)
 
+    @pytest.mark.asyncio
+    async def test_toolset_shared_oauth_no_matching_id(self, logger, mock_config_service):
+        """Cover for-loop in build_from_toolset without matching _id (branches 457->479, 459->457)."""
+        mock_config_service.get_config = AsyncMock(
+            return_value=[
+                {"_id": "oauth-111", "config": {"clientId": "cid1", "clientSecret": "csec1"}},
+                {"_id": "oauth-222", "config": {"clientId": "cid2", "clientSecret": "csec2"}},
+            ]
+        )
+        cc = await ClickUpClient.build_from_toolset(
+            {
+                "credentials": {"access_token": "tok"},
+                "auth": {"oauthConfigId": "oauth-999"},
+            },
+            logger,
+            mock_config_service,
+        )
+        assert isinstance(cc, ClickUpClient)
+        # No matching _id, client_id/secret remain empty
+        rest = cc.get_client()
+        assert rest.client_id == ""
+        assert rest.client_secret == ""
+
+    @pytest.mark.asyncio
+    async def test_toolset_shared_oauth_non_list_response(self, logger, mock_config_service):
+        """Cover isinstance check when oauth_configs_raw is not a list in build_from_toolset."""
+        mock_config_service.get_config = AsyncMock(return_value={"not": "a list"})
+        cc = await ClickUpClient.build_from_toolset(
+            {
+                "credentials": {"access_token": "tok"},
+                "auth": {"oauthConfigId": "oauth-123"},
+            },
+            logger,
+            mock_config_service,
+        )
+        assert isinstance(cc, ClickUpClient)
+
+    @pytest.mark.asyncio
+    async def test_toolset_shared_oauth_empty_list(self, logger, mock_config_service):
+        """Cover for-loop with empty list in build_from_toolset."""
+        mock_config_service.get_config = AsyncMock(return_value=[])
+        cc = await ClickUpClient.build_from_toolset(
+            {
+                "credentials": {"access_token": "tok"},
+                "auth": {"oauthConfigId": "oauth-123"},
+            },
+            logger,
+            mock_config_service,
+        )
+        assert isinstance(cc, ClickUpClient)
+
+    @pytest.mark.asyncio
+    async def test_toolset_with_client_id_and_secret_skips_shared(self, logger, mock_config_service):
+        """When clientId and clientSecret are already present, shared OAuth lookup is skipped."""
+        cc = await ClickUpClient.build_from_toolset(
+            {
+                "credentials": {"access_token": "tok"},
+                "auth": {
+                    "oauthConfigId": "oauth-123",
+                    "clientId": "existing-cid",
+                    "clientSecret": "existing-csec",
+                },
+            },
+            logger,
+            mock_config_service,
+        )
+        assert isinstance(cc, ClickUpClient)
+        rest = cc.get_client()
+        assert rest.client_id == "existing-cid"
+        assert rest.client_secret == "existing-csec"
+
+    @pytest.mark.asyncio
+    async def test_toolset_none_credentials_and_auth(self, logger):
+        """Cover the `or {}` fallback for None credentials and auth."""
+        with pytest.raises(ValueError, match="Access token not found"):
+            await ClickUpClient.build_from_toolset(
+                {"credentials": None, "auth": None},
+                logger,
+                None,
+            )
+
 
 # ---------------------------------------------------------------------------
 # build_from_services - additional auth type branches
@@ -446,6 +527,32 @@ class TestBuildFromServicesAdditional:
             await ClickUpClient.build_from_services(logger, mock_config_service, "inst-1")
 
     @pytest.mark.asyncio
+    async def test_invalid_auth_type_else_branch(self, logger, mock_config_service):
+        """Cover the else branch at line 397-400 by patching authType to a non-enum value."""
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "PERSONAL_TOKEN"},
+                "credentials": {},
+            }
+        )
+        # Patch model_validate to return a config with a fake authType that
+        # does not match OAUTH or PERSONAL_TOKEN
+        fake_auth = MagicMock()
+        fake_auth.authType = "UNKNOWN"
+        fake_config = MagicMock()
+        fake_config.auth = fake_auth
+        fake_config.credentials = MagicMock()
+        fake_config.version = "v2"
+
+        with patch.object(
+            ClickUpConnectorConfig, "model_validate", return_value=fake_config
+        ):
+            with pytest.raises(ValueError, match="Invalid auth type"):
+                await ClickUpClient.build_from_services(
+                    logger, mock_config_service, "inst-1"
+                )
+
+    @pytest.mark.asyncio
     async def test_oauth_with_inline_credentials(self, logger, mock_config_service):
         """OAuth with clientId/clientSecret directly in auth config."""
         mock_config_service.get_config = AsyncMock(
@@ -463,3 +570,83 @@ class TestBuildFromServicesAdditional:
         rest = cc.get_client()
         assert rest.client_id == "cid"
         assert rest.client_secret == "csec"
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_none_config_via_patched(self, logger, mock_config_service):
+        """Cover the `not raw_config` branch at line 325."""
+        with patch.object(
+            ClickUpClient, "_get_connector_config", new_callable=AsyncMock,
+            return_value=None
+        ):
+            with pytest.raises(ValueError, match="Failed to get ClickUp connector configuration"):
+                await ClickUpClient.build_from_services(
+                    logger, mock_config_service, "inst-1"
+                )
+
+    @pytest.mark.asyncio
+    async def test_oauth_shared_config_no_matching_id(self, logger, mock_config_service):
+        """Cover the for-loop exhausting without finding matching _id (branches 346->368, 348->346)."""
+
+        async def fake_get_config(path, default=None):
+            if "connectors" in path:
+                return {
+                    "auth": {"authType": "OAUTH", "oauthConfigId": "oauth-999"},
+                    "credentials": {"access_token": "tok"},
+                }
+            if "oauth" in path:
+                return [
+                    {
+                        "_id": "oauth-111",
+                        "config": {"clientId": "cid1", "clientSecret": "csec1"},
+                    },
+                    {
+                        "_id": "oauth-222",
+                        "config": {"clientId": "cid2", "clientSecret": "csec2"},
+                    },
+                ]
+            return default
+
+        mock_config_service.get_config = AsyncMock(side_effect=fake_get_config)
+        cc = await ClickUpClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert isinstance(cc, ClickUpClient)
+        # No matching _id found, so client_id/client_secret remain empty
+        rest = cc.get_client()
+        assert rest.client_id == ""
+        assert rest.client_secret == ""
+
+    @pytest.mark.asyncio
+    async def test_oauth_shared_config_non_list_response(self, logger, mock_config_service):
+        """Cover the isinstance check when oauth_configs_raw is not a list."""
+
+        async def fake_get_config(path, default=None):
+            if "connectors" in path:
+                return {
+                    "auth": {"authType": "OAUTH", "oauthConfigId": "oauth-123"},
+                    "credentials": {"access_token": "tok"},
+                }
+            if "oauth" in path:
+                # Return a non-list value
+                return {"not": "a list"}
+            return default
+
+        mock_config_service.get_config = AsyncMock(side_effect=fake_get_config)
+        cc = await ClickUpClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert isinstance(cc, ClickUpClient)
+
+    @pytest.mark.asyncio
+    async def test_oauth_shared_config_empty_list(self, logger, mock_config_service):
+        """Cover for-loop with empty list (branch 346->368 where loop body never executes)."""
+
+        async def fake_get_config(path, default=None):
+            if "connectors" in path:
+                return {
+                    "auth": {"authType": "OAUTH", "oauthConfigId": "oauth-123"},
+                    "credentials": {"access_token": "tok"},
+                }
+            if "oauth" in path:
+                return []
+            return default
+
+        mock_config_service.get_config = AsyncMock(side_effect=fake_get_config)
+        cc = await ClickUpClient.build_from_services(logger, mock_config_service, "inst-1")
+        assert isinstance(cc, ClickUpClient)

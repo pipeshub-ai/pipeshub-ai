@@ -24,7 +24,7 @@ export interface HealthStatus {
   timestamp: string;
   services: {
     redis: string;
-    kafka: string;
+    messageBroker: string;
     mongodb: string;
     KVStoreservice: string;
   };
@@ -36,7 +36,7 @@ export function createHealthRouter(
 ): Router {
   const router = Router();
   const redis = container.get<RedisService>(TYPES.RedisService);
-  const kafka = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
+  const tokenEventProducer = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
   const mongooseService = container.get<MongoService>(TYPES.MongoService);
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
     TYPES.KeyValueStoreService,
@@ -51,7 +51,7 @@ export function createHealthRouter(
         timestamp: new Date().toISOString(),
         services: {
           redis: 'unknown',
-          kafka: 'unknown',
+          messageBroker: 'unknown',
           mongodb: 'unknown',
           KVStoreservice: 'unknown',
         },
@@ -66,10 +66,10 @@ export function createHealthRouter(
       }
 
       try {
-        await kafka.healthCheck();
-        health.services.kafka = 'healthy';
+        await tokenEventProducer.healthCheck();
+        health.services.messageBroker = 'healthy';
       } catch (error) {
-        health.services.kafka = 'unhealthy';
+        health.services.messageBroker = 'unhealthy';
         health.status = 'unhealthy';
       }
 
@@ -85,8 +85,6 @@ export function createHealthRouter(
       }
 
       try {
-        // Health check for KV store (Redis or etcd based on KV_STORE_TYPE)
-        // TODO: Remove etcd health check support when all deployments migrate to Redis KV store
         const isKVServiceHealthy = await keyValueStoreService.healthCheck();
         health.services.KVStoreservice = isKVServiceHealthy ? 'healthy' : 'unhealthy';
         if (!isKVServiceHealthy) {

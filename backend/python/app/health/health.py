@@ -269,9 +269,53 @@ class Health:
 
     @staticmethod
     async def health_check_kafka(container) -> None:
-        """Health check method that verifies kafka service health"""
+        """Health check method that verifies message broker health (Kafka or Redis Streams)"""
+        from app.services.messaging.config import (
+            MessageBrokerType,
+            get_message_broker_type,
+        )
         logger = container.logger()
-        logger.info("🔍 Starting Kafka health check...")
+        broker_type = get_message_broker_type()
+        logger.info(f"🔍 Starting message broker health check (type: {broker_type.value})...")
+
+        if broker_type == MessageBrokerType.REDIS:
+            await Health._health_check_redis_streams(container)
+        else:
+            await Health._health_check_kafka(container)
+
+    @staticmethod
+    async def _health_check_redis_streams(container) -> None:
+        """Health check for Redis Streams message broker"""
+        from redis.asyncio import Redis as AsyncRedis
+        logger = container.logger()
+        redis_client = None
+        try:
+            config_service = container.config_service()
+            redis_config = await config_service.get_config(
+                config_node_constants.REDIS.value
+            )
+            host = redis_config.get("host", os.getenv("REDIS_HOST", "localhost"))
+            port = int(redis_config.get("port", os.getenv("REDIS_PORT", "6379")))
+            password = redis_config.get("password", os.getenv("REDIS_PASSWORD")) or None
+
+            redis_client = AsyncRedis(host=host, port=port, password=password, socket_timeout=5.0)
+            await redis_client.ping()
+            logger.info("✅ Redis Streams message broker health check passed")
+        except Exception as e:
+            error_msg = f"Redis Streams health check failed: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise Exception(error_msg)
+        finally:
+            if redis_client:
+                try:
+                    await redis_client.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    async def _health_check_kafka(container) -> None:
+        """Health check for Kafka message broker"""
+        logger = container.logger()
         consumer = None
         try:
             kafka_config = await container.config_service().get_config(
@@ -280,16 +324,14 @@ class Health:
             brokers = kafka_config["brokers"]
             logger.debug(f"Checking Kafka connection at: {brokers}")
 
-            # Try to create a consumer with aiokafka
             try:
                 config = {
-                    "bootstrap_servers": ",".join(brokers),  # aiokafka uses bootstrap_servers
+                    "bootstrap_servers": ",".join(brokers),
                     "group_id": "health_check_test",
                     "auto_offset_reset": "earliest",
                     "enable_auto_commit": True,
                 }
 
-                # Add SSL/SASL configuration for AWS MSK
                 if kafka_config.get("ssl"):
                     config["ssl_context"] = ssl.create_default_context()
                     sasl_config = kafka_config.get("sasl", {})
@@ -301,19 +343,15 @@ class Health:
                     else:
                         config["security_protocol"] = "SSL"
 
-                # Create and start consumer to test connection
                 consumer = AIOKafkaConsumer(**config)
                 await consumer.start()
 
-                # Try to get cluster metadata to verify connection
                 try:
-                    # TODO: remove this private access
                     cluster_metadata = consumer._client.cluster
                     available_topics = list(cluster_metadata.topics())
                     logger.debug(f"Available Kafka topics: {available_topics}")
                 except Exception as e:
                     logger.warning(f"Error getting Kafka cluster metadata: {str(e)}")
-                    # If metadata fails, just try basic connection test
                     logger.debug("Basic Kafka connection test passed")
 
                 logger.info("✅ Kafka health check passed")
@@ -328,7 +366,6 @@ class Health:
             logger.error(f"❌ {error_msg}")
             raise
         finally:
-            # Clean up consumer
             if consumer:
                 try:
                     await consumer.stop()

@@ -86,6 +86,8 @@ def _make_connector():
         data_store_provider=dsp,
         config_service=cs,
         connector_id="notion-ext-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
@@ -486,6 +488,8 @@ class TestCreateConnector:
                 data_store_provider=MagicMock(),
                 config_service=AsyncMock(),
                 connector_id="test-notion",
+                scope="personal",
+                created_by="test-user-id",
             )
             assert isinstance(connector, NotionConnector)
 

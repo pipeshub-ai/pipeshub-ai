@@ -52,7 +52,8 @@ class TestBaseConnectorAccessors:
         cs = MagicMock()
         return ConcreteConnector(
             app=app, logger=logger, data_entities_processor=dep,
-            data_store_provider=dep, config_service=cs, connector_id="conn-1"
+            data_store_provider=dep, config_service=cs, connector_id="conn-1",
+            scope="team", created_by="test-user-id",
         )
 
     def test_get_app(self):

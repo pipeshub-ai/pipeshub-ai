@@ -311,3 +311,41 @@ class TestMinIOClient:
             await MinIOClient._get_connector_config(
                 logger, mock_config_service, "inst-1"
             )
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    async def test_get_s3_client_via_wrapper(self, mock_session_cls, rest_client):
+        """Cover MinIOClient.get_s3_client (line 154)."""
+        mock_session = MagicMock()
+        mock_session.client.return_value = MagicMock()
+        mock_session_cls.return_value = mock_session
+        client = MinIOClient(rest_client)
+        result = await client.get_s3_client()
+        mock_session.client.assert_called_once_with(
+            "s3", endpoint_url="http://localhost:9000", verify=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_empty_config(self, logger, mock_config_service):
+        """Cover the `not config` branch at line 212 by returning empty dict."""
+        with patch.object(
+            MinIOClient, "_get_connector_config", new_callable=AsyncMock,
+            return_value={}
+        ):
+            # {} is falsy for `not {}`, so hits the "Failed to get" branch
+            with pytest.raises(ValueError, match="Failed to get MinIO connector configuration"):
+                await MinIOClient.build_from_services(
+                    logger, mock_config_service, "inst-1"
+                )
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_none_config_via_patched(self, logger, mock_config_service):
+        """Cover the `not config` branch at line 212 by patching to return None."""
+        with patch.object(
+            MinIOClient, "_get_connector_config", new_callable=AsyncMock,
+            return_value=None
+        ):
+            with pytest.raises(ValueError, match="Failed to get MinIO connector configuration"):
+                await MinIOClient.build_from_services(
+                    logger, mock_config_service, "inst-1"
+                )

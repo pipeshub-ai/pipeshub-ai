@@ -1,37 +1,24 @@
 import asyncio
 import json
-import os
 import ssl
 import threading
-from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any
+from typing import Any, Optional, override
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
-from typing_extensions import override
 
+from app.services.messaging.config import (
+    IndexingEvent,
+    IndexingMessageHandler,
+    StreamMessage,
+    messaging_env,
+)
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 
-# Concurrency control settings - read from environment variables
-MAX_CONCURRENT_PARSING = int(os.getenv('MAX_CONCURRENT_PARSING', '5'))
-MAX_CONCURRENT_INDEXING = int(os.getenv('MAX_CONCURRENT_INDEXING', '10'))
-SHUTDOWN_TASK_TIMEOUT = float(os.getenv('SHUTDOWN_TASK_TIMEOUT', '240.0'))
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
-MAX_PENDING_INDEXING_TASKS = int(
-    os.getenv(
-        'MAX_PENDING_INDEXING_TASKS',
-        str(max(MAX_CONCURRENT_PARSING, MAX_CONCURRENT_INDEXING) * 4),
-    )
-)
-
-
-class IndexingEvent:
-    """Event types for pipeline phase transitions"""
-    PARSING_COMPLETE = "parsing_complete"
-    INDEXING_COMPLETE = "indexing_complete"
 
 
 class IndexingKafkaConsumer(IMessagingConsumer):
@@ -62,9 +49,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Dual semaphores for parsing and indexing phases (created in worker thread)
         self.parsing_semaphore: asyncio.Semaphore | None = None
         self.indexing_semaphore: asyncio.Semaphore | None = None
-        self.message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]] | None = None
+        self.message_handler: Optional[IndexingMessageHandler] = None
         # Track active futures for proper cleanup
-        self._active_futures: set[Future[Any]] = set()
+        self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self._backpressure_logged = False
 
@@ -102,8 +89,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             asyncio.set_event_loop(self.worker_loop)
 
             # Create semaphores in the worker thread's event loop
-            self.parsing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSING)
-            self.indexing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INDEXING)
+            self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
+            self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
 
             self.logger.info("Worker thread event loop started with semaphores initialized")
 
@@ -203,7 +190,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info("No active futures to wait for during shutdown")
             return
 
-        self.logger.info(f"Waiting for {len(futures_to_wait)} active tasks to complete (timeout: {SHUTDOWN_TASK_TIMEOUT}s)")
+        self.logger.info(f"Waiting for {len(futures_to_wait)} active tasks to complete (timeout: {messaging_env.shutdown_task_timeout}s)")
 
         completed = 0
         timed_out = 0
@@ -211,7 +198,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         for future in futures_to_wait:
             try:
-                future.result(timeout=SHUTDOWN_TASK_TIMEOUT)
+                future.result(timeout=messaging_env.shutdown_task_timeout)
                 completed += 1
             except TimeoutError:
                 timed_out += 1
@@ -246,7 +233,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     @override
     async def start(  # type: ignore[override]
         self,
-        message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]
+        message_handler: IndexingMessageHandler,
     ) -> None:
         """Start consuming messages with the provided handler
 
@@ -263,15 +250,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             self.consume_task = asyncio.create_task(self.__consume_loop())
             self.logger.info(
-                f"Started Kafka consumer task with parsing_slots={MAX_CONCURRENT_PARSING}, "
-                f"indexing_slots={MAX_CONCURRENT_INDEXING}, max_pending_tasks={MAX_PENDING_INDEXING_TASKS}"
+                f"Started Kafka consumer task with parsing_slots={messaging_env.max_concurrent_parsing}, "
+                f"indexing_slots={messaging_env.max_concurrent_indexing}, max_pending_tasks={messaging_env.max_pending_indexing_tasks}"
             )
         except Exception as e:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
             raise
 
     @override
-    async def stop(self, message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]] | None = None) -> None:  # type: ignore[override]
+    async def stop(self, message_handler: Optional[IndexingMessageHandler] = None) -> None:  # type: ignore[override]
         """Stop consuming messages gracefully.
 
         Order of operations:
@@ -317,7 +304,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """
         active_count = self._get_active_task_count()
 
-        if active_count >= MAX_PENDING_INDEXING_TASKS:
+        if active_count >= messaging_env.max_pending_indexing_tasks:
             # Pause partitions that aren't already paused
             assigned = self.consumer.assignment()
             not_paused = assigned - self.consumer.paused()
@@ -326,7 +313,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not self._backpressure_logged:
                 self.logger.warning(
                     f"Backpressure engaged: {active_count} active tasks queued; "
-                    f"pausing Kafka partition reads at cap {MAX_PENDING_INDEXING_TASKS}"
+                    f"pausing Kafka partition reads at cap {messaging_env.max_pending_indexing_tasks}"
                 )
                 self._backpressure_logged = True
         else:
@@ -336,7 +323,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.consumer.resume(*paused)
             if self._backpressure_logged:
                 self.logger.info(
-                    f"Backpressure cleared: active tasks back to {active_count}/{MAX_PENDING_INDEXING_TASKS}"
+                    f"Backpressure cleared: active tasks back to {active_count}/{messaging_env.max_pending_indexing_tasks}"
                 )
                 self._backpressure_logged = False
 
@@ -384,13 +371,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
 
 
-    def __parse_message(self, message: ConsumerRecord) -> dict[str, Any] | None:
-        """Parse the Kafka message value into a dictionary.
+    def __parse_message(self, message: ConsumerRecord) -> StreamMessage | None:
+        """Parse the Kafka message value into a StreamMessage.
 
         Handles bytes decoding, JSON parsing, and double-encoded JSON.
 
         Returns:
-            Parsed message dictionary or None if parsing fails.
+            StreamMessage or None if parsing fails.
         """
         message_id = f"{message.topic}-{message.partition}-{message.offset}"
         message_value = message.value
@@ -402,16 +389,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             if isinstance(message_value, str):
                 try:
-                    parsed_message = json.loads(message_value)
+                    parsed = json.loads(message_value)
                     # Handle double-encoded JSON
-                    if isinstance(parsed_message, str):
-                        parsed_message = json.loads(parsed_message)
+                    if isinstance(parsed, str):
+                        parsed = json.loads(parsed)
                         self.logger.debug("Handled double-encoded JSON message")
 
                     self.logger.debug(
-                        f"Parsed message {message_id}: type={type(parsed_message)}"
+                        f"Parsed message {message_id}: type={type(parsed)}"
                     )
-                    return parsed_message
+                    return StreamMessage(**parsed)
                 except json.JSONDecodeError as e:
                     self.logger.error(
                         f"JSON parsing failed for message {message_id}: {str(e)}\n"
@@ -456,7 +443,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._active_futures.add(future)
 
         # Add callback to remove future from tracking when done
-        def on_future_done(f: Future[Any]) -> None:
+        def on_future_done(f: Future[bool]) -> None:
             with self._futures_lock:
                 self._active_futures.discard(f)
 
@@ -502,13 +489,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             if self.message_handler:
                 async for event in self.message_handler(parsed_message):
-                    event_type = event.get("event")
-
-                    if event_type == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
+                    if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
                         self.parsing_semaphore.release()
                         parsing_held = False
                         self.logger.debug(f"Released parsing semaphore for {message_id}")
-                    elif event_type == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
+                    elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
                         self.indexing_semaphore.release()
                         indexing_held = False
                         self.logger.debug(f"Released indexing semaphore for {message_id}")

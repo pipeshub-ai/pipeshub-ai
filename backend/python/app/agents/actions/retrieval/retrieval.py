@@ -1,11 +1,9 @@
 """
-Internal Knowledge Retrieval Tool — OPTION B IMPLEMENTATION
+Internal Knowledge Retrieval Tool
 
-OPTION B: Skip get_message_content() in individual retrieval calls.
-- Returns raw final_results without formatting
-- Block numbering happens ONCE after all parallel calls are merged
-- Prevents R-number collisions from multiple independent calls
-- Cleaner architecture for multi-call agent flow
+- Writes results directly to state (accumulates for parallel calls)
+- Returns properly formatted <record> tool messages (same as chatbot)
+- Block numbering (R-labels) happens ONCE after all parallel calls are merged
 """
 
 import json
@@ -22,9 +20,13 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import get_flattened_results
+from app.utils.chat_helpers import CitationRefMapper, build_message_content_array, get_flattened_results
 
 logger = logging.getLogger(__name__)
+
+# Cap the divisor to prevent excessively small per-source limits when many
+# knowledge sources are configured simultaneously.
+_MAX_RETRIEVAL_SOURCES_DIVISOR = 5
 
 
 def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
@@ -53,10 +55,8 @@ class RetrievalToolOutput(BaseModel):
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
     query: str = Field(description="The search query to find relevant information")
-    limit: int | None = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
     connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
     collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
-    top_k: int | None = Field(default=None, description="Alias for limit")
 
 
 @ToolsetBuilder("Retrieval")\
@@ -69,6 +69,7 @@ class SearchInternalKnowledgeInput(BaseModel):
     .as_internal()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
     .build_decorator()
+
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 
@@ -115,11 +116,8 @@ class Retrieval:
     async def search_internal_knowledge(
         self,
         query: str | None = None,
-        limit: int | None = None,
-        top_k: int | None = None,
         connector_ids: list[str] | None = None,
         collection_ids: list[str] | None = None,
-        **kwargs
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
         search_query = query
@@ -152,8 +150,6 @@ class Retrieval:
 
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
-            base_limit = limit or top_k or self.state.get("limit", 50)
-            adjusted_limit = min(base_limit, 100)
 
             # Normalize list inputs
             connector_ids = _normalize_list_param(connector_ids)
@@ -165,33 +161,66 @@ class Retrieval:
             agent_apps = set(agent_filters.get("apps") or [])
             agent_kbs = set(agent_filters.get("kb") or [])
 
-            # Start from agent scope (ensure it's a dict, not None)
-            filter_groups = dict(agent_filters) if agent_filters else {}
+            agent_connector_ids_count = len(agent_apps) if agent_apps else 0
+            agent_collection_ids_count = len(agent_kbs) if agent_kbs else 0
+            total_sources = agent_connector_ids_count + agent_collection_ids_count
+            if total_sources <= 1:
+                adjusted_limit = 50
+            else:
+                adjusted_limit = 100 // min(total_sources, _MAX_RETRIEVAL_SOURCES_DIVISOR)
 
-            # === RESOLVE CONNECTOR IDs ===
-            # Simple logic: if connector_id exists in agent scope, keep it; otherwise use all agent connectors
-            if connector_ids:
-                # Keep only connector IDs that exist in agent scope
+            # Start from an empty filter dict — we build it precisely below.
+            filter_groups: dict[str, list[str]] = {}
+
+            # === TARGETED vs BROAD FILTER LOGIC ===
+            #
+            # Rule: if the caller explicitly provides EITHER connector_ids OR
+            # collection_ids, treat that as a targeted search and do NOT add the
+            # other side from the agent scope. Mixing both would create an
+            # unnecessary union that defeats the purpose of the explicit filter.
+            #
+            # Only when NEITHER is provided do we fall back to the full agent
+            # scope (both connectors and KB collections).
+            #
+            explicit_connectors = bool(connector_ids)
+            explicit_collections = bool(collection_ids)
+            broad_search = not explicit_connectors and not explicit_collections
+
+            # --- App connectors ---
+            if explicit_connectors:
+                # Scope to the intersection with the agent's allowed connectors.
                 resolved_apps = [cid for cid in connector_ids if cid in agent_apps]
-                # If nothing matched, fall back to full agent scope
-                filter_groups["apps"] = resolved_apps if resolved_apps else (list(agent_apps) if agent_apps else [])
-            else:
-                # No LLM input — use full agent scope
+                # If the LLM hallucinated an ID not in scope, ignore it and use
+                # the full agent connector set as a safe fallback.
+                filter_groups["apps"] = resolved_apps if resolved_apps else list(agent_apps)
+            elif broad_search:
+                # No explicit filter — include all agent connectors.
                 filter_groups["apps"] = list(agent_apps) if agent_apps else []
-
-            # === RESOLVE COLLECTION IDs (KB record groups) ===
-            # Simple logic: if collection_id exists in agent scope, keep it; otherwise use all agent collections
-            if collection_ids:
-                # Keep only collection IDs that exist in agent scope
-                resolved_kbs = [cid for cid in collection_ids if cid in agent_kbs]
-                # If nothing matched, fall back to full agent scope
-                filter_groups["kb"] = resolved_kbs if resolved_kbs else (list(agent_kbs) if agent_kbs else [])
             else:
-                # No LLM input — use full agent scope
+                # collection_ids were given but connector_ids were not:
+                # exclude connectors entirely so the search is KB-only.
+                filter_groups["apps"] = []
+
+            # --- KB collections ---
+            if explicit_collections:
+                # Scope to the intersection with the agent's allowed KB groups.
+                resolved_kbs = [cid for cid in collection_ids if cid in agent_kbs]
+                # Fallback to full KB scope if IDs don't match.
+                filter_groups["kb"] = resolved_kbs if resolved_kbs else list(agent_kbs)
+            elif broad_search:
+                # No explicit filter — include all agent KB collections.
                 filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
+            else:
+                # connector_ids were given but collection_ids were not:
+                # exclude KB collections so the search is connector-only.
+                filter_groups["kb"] = ['NO_KB_SELECTED']
 
             # === SEARCH ===
-            logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
+            is_service_account = bool(self.state.get("is_service_account", False))
+            logger_instance.debug(
+                f"Executing retrieval with limit: {adjusted_limit} "
+                f"(service_account={is_service_account})"
+            )
             results = await retrieval_service.search_with_filters(
                 queries=[search_query],
                 org_id=org_id,
@@ -199,6 +228,7 @@ class Retrieval:
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
                 graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
 
             if results is None:
@@ -276,42 +306,65 @@ class Retrieval:
             final_results = final_results[:adjusted_limit]
 
             # ================================================================
-            # OPTION B: Return raw results without formatting.
+            # Write results directly to state (accumulate for parallel calls)
+            # and return properly formatted tool message like the chatbot.
             #
-            # Block numbering will happen ONCE after all parallel retrieval
+            # Block numbering (R-labels) still happens ONCE after all parallel
             # calls are merged in nodes.py (merge_and_number_retrieval_results()).
-            # This prevents R-number collisions from multiple independent calls.
-            #
-            # The content field is just a summary for the tool result display.
-            # Actual formatting happens in build_internal_context_for_response()
-            # after merge and numbering.
+            # But the ToolMessage content the LLM sees during planning/ReAct
+            # is now properly formatted with <record> XML blocks instead of
+            # raw JSON dumps.
             # ================================================================
 
-            # Simple summary for tool result (not used for LLM context)
-            agent_content = (
-                f"Retrieved {len(final_results)} knowledge blocks from "
-                f"{len(virtual_record_id_to_result)} documents. "
-                f"Results will be formatted and numbered after merge."
+            # --- Accumulate results in state (same pattern as _process_retrieval_output) ---
+            existing_final_results = self.state.get("final_results", [])
+            if not isinstance(existing_final_results, list):
+                existing_final_results = []
+            self.state["final_results"] = existing_final_results + final_results
+
+            existing_virtual_map = self.state.get("virtual_record_id_to_result", {})
+            if not isinstance(existing_virtual_map, dict):
+                existing_virtual_map = {}
+            self.state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
+
+            existing_tool_records = self.state.get("tool_records", [])
+            if not isinstance(existing_tool_records, list):
+                existing_tool_records = []
+            new_tool_records = list(virtual_record_id_to_result.values())
+            existing_record_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict) and "_id" in r}
+            unique_new = [r for r in new_tool_records if not (isinstance(r, dict) and r.get("_id") in existing_record_ids)]
+            self.state["tool_records"] = existing_tool_records + unique_new
+
+            # --- Format results like the chatbot does ---
+            sorted_results = sorted(
+                final_results,
+                key=lambda x: (x.get("virtual_record_id", ""), x.get("block_index", 0))
             )
+            ref_mapper = self.state.get("citation_ref_mapper") or CitationRefMapper()
+            message_content_array, ref_mapper = build_message_content_array(
+                sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True
+            )
+            self.state["citation_ref_mapper"] = ref_mapper
+
+            formatted_records = []
+            for content in message_content_array:
+                content_string = ""
+                for item in content:
+                    if item["type"] == "text":
+                        content_string += item["text"]
+                formatted_records.append(content_string)
 
             logger_instance.info(
-                f"✅ Retrieved {len(final_results)} raw blocks from "
+                f"✅ Retrieved {len(final_results)} blocks from "
                 f"{len(virtual_record_id_to_result)} documents "
-                f"(will be merged and numbered after all calls complete)"
+                f"(state updated, formatted as tool message)"
             )
 
-            output = RetrievalToolOutput(
-                content=agent_content,
-                final_results=final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                metadata={
-                    "query": search_query,
-                    "limit": limit,
-                    "result_count": len(final_results),
-                    "record_count": len(virtual_record_id_to_result)
-                }
+            summary = (
+                f"Retrieved {len(final_results)} knowledge blocks from "
+                f"{len(virtual_record_id_to_result)} documents.\n\n"
             )
-            return json.dumps(output.model_dump(), ensure_ascii=False)
+            return summary + "\n".join(formatted_records)
 
         except Exception as e:
             logger_instance = self.state.get("logger", logger) if self.state else logger

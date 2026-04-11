@@ -1,8 +1,8 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { envGuard } from '../../helpers/env-guard'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
-import { Logger } from '../../../src/libs/services/logger.service'
 import {
   BadRequestError,
   UnauthorizedError,
@@ -55,21 +55,32 @@ function createMockNext(): sinon.SinonStub {
 // ---------------------------------------------------------------------------
 
 describe('ErrorMiddleware', () => {
+  const env = envGuard()
   let handler: ReturnType<typeof ErrorMiddleware.handleError>
-  // The ErrorMiddleware class captures Logger.getInstance() in a static field at import time.
-  // We stub the methods on the actual singleton so the already-captured reference uses our stubs.
-  let loggerInstance: Logger
+  // Replace ErrorMiddleware's static logger with a fake to avoid stubbing the
+  // shared Logger singleton (which causes "already stubbed" errors when other
+  // test suites touch the same singleton).
   let loggerErrorStub: sinon.SinonStub
   let loggerWarnStub: sinon.SinonStub
+  let originalLogger: any
 
   beforeEach(() => {
-    loggerInstance = Logger.getInstance()
-    loggerErrorStub = sinon.stub(loggerInstance, 'error')
-    loggerWarnStub = sinon.stub(loggerInstance, 'warn')
+    env.snapshot()
+    loggerErrorStub = sinon.stub()
+    loggerWarnStub = sinon.stub()
+    originalLogger = (ErrorMiddleware as any).logger
+    ;(ErrorMiddleware as any).logger = {
+      error: loggerErrorStub,
+      warn: loggerWarnStub,
+      info: sinon.stub(),
+      debug: sinon.stub(),
+    }
     handler = ErrorMiddleware.handleError()
   })
 
   afterEach(() => {
+    env.restore()
+    ;(ErrorMiddleware as any).logger = originalLogger
     sinon.restore()
   })
 
@@ -175,7 +186,6 @@ describe('ErrorMiddleware', () => {
     })
 
     it('should include metadata in development mode', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       const error = new BadRequestError('test', { extra: 'info' })
@@ -187,12 +197,9 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.metadata).to.deep.equal({ extra: 'info' })
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should include metadata in dev mode (short alias)', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'dev'
 
       const error = new BadRequestError('test', { extra: 'dev-info' })
@@ -204,12 +211,9 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.metadata).to.deep.equal({ extra: 'dev-info' })
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should NOT include metadata in production mode', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'production'
 
       const error = new BadRequestError('test', { secret: 'data' })
@@ -221,8 +225,6 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.metadata).to.be.undefined
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should never include stack trace in response', () => {
@@ -257,7 +259,6 @@ describe('ErrorMiddleware', () => {
     })
 
     it('should hide error message in production for unknown errors', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'production'
 
       const error = new Error('Secret internal detail')
@@ -269,12 +270,9 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.message).to.equal('An unexpected error occurred')
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should show error message in non-production for unknown errors', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       const error = new Error('Detailed dev message')
@@ -286,8 +284,6 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.message).to.equal('Detailed dev message')
-
-      process.env.NODE_ENV = originalEnv
     })
   })
 
@@ -296,7 +292,6 @@ describe('ErrorMiddleware', () => {
   // -----------------------------------------------------------------------
   describe('Response sanitization', () => {
     it('should strip stack and stackTrace from error response', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       // Create an error with metadata that contains stack-like fields
@@ -318,12 +313,9 @@ describe('ErrorMiddleware', () => {
         expect(response.error.metadata.nested.stackTrace).to.be.undefined
         expect(response.error.metadata.nested.safe).to.equal('kept')
       }
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should handle circular references safely', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       const circularObj: any = { a: 1 }
@@ -339,12 +331,9 @@ describe('ErrorMiddleware', () => {
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.calledOnce).to.be.true
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should sanitize arrays in error metadata (remove stack/stackTrace from array items)', () => {
-      const originalEnv = process.env.NODE_ENV
       process.env.NODE_ENV = 'development'
 
       const error = new BadRequestError('test', {
@@ -366,8 +355,6 @@ describe('ErrorMiddleware', () => {
         expect(response.error.metadata.items[1].stackTrace).to.be.undefined
         expect(response.error.metadata.items[1].name).to.equal('test')
       }
-
-      process.env.NODE_ENV = originalEnv
     })
 
     it('should return non-object error response as-is', () => {

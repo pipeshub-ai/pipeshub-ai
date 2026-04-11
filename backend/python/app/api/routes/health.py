@@ -411,7 +411,7 @@ async def perform_llm_health_check(
         )
 
     except asyncio.TimeoutError:
-        logger.error(f"LLM health check timed out for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}")
+        logger.error(f"LLM health check timed out for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')})")
         return JSONResponse(
             status_code=500,
             content={
@@ -425,10 +425,10 @@ async def perform_llm_health_check(
             },
         )
     except HTTPException as he:
-        logger.error(f"LLM health check failed for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}: {str(he)}")
+        logger.error(f"LLM health check failed for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')}): {str(he)}")
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"LLM health check failed for {llm_config.get('provider')} with configuration {llm_config.get('configuration')}: {str(e)}")
+        logger.error(f"LLM health check failed for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')}): {str(e)}")
         return JSONResponse(
             status_code=500,
             content={
@@ -579,7 +579,7 @@ async def perform_embedding_health_check(
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with configuration {embedding_config.get('configuration')}: {str(e)}", exc_info=True)
+        logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={

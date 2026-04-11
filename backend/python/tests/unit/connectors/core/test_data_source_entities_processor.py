@@ -470,26 +470,34 @@ class TestOnNewRecordGroupsAdvanced:
         assert CollectionNames.INHERIT_PERMISSIONS.value in collections_used
 
     @pytest.mark.asyncio
-    async def test_parent_not_found_logs_warning(self):
-        """Logs warning when parent record group not found."""
+    async def test_parent_not_found_creates_placeholder_parent(self):
+        """When parent external id is missing in the store, upserts a placeholder RecordGroup."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         tx_store.get_record_group_by_external_id.return_value = None
 
+        parent_external = "parent-ext-nonexistent"
         rg = RecordGroup(
             external_group_id="ext-g1",
             name="Child Group",
             group_type="DRIVE",
             connector_name=ConnectorsEnum.GOOGLE_MAIL,
             connector_id="conn-1",
-            parent_external_group_id="parent-ext-nonexistent",
+            parent_external_group_id=parent_external,
         )
 
         await proc.on_new_record_groups([(rg, [])])
 
-        proc.logger.warning.assert_called()
+        upserted_groups = []
+        for call in tx_store.batch_upsert_record_groups.call_args_list:
+            args, _kwargs = call
+            upserted_groups.extend(args[0])
+        assert any(
+            getattr(g, "external_group_id", None) == parent_external
+            for g in upserted_groups
+        ), "Expected placeholder parent RecordGroup to be upserted"
 
     @pytest.mark.asyncio
     async def test_user_permission_in_record_group(self):

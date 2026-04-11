@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 from fastapi import HTTPException
+from jose import JWTError
 from pydantic import ValidationError
 
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler, TokenPayload
@@ -69,6 +70,16 @@ class TestSignedUrlConfig:
         with pytest.raises(ValueError, match="Private key"):
             await SignedUrlConfig.create(mock_config_service)
 
+    @pytest.mark.asyncio
+    async def test_create_factory_config_service_raises(self):
+        """When config_service.get_config raises, the exception propagates."""
+        mock_config_service = MagicMock()
+        mock_config_service.get_config = AsyncMock(
+            side_effect=RuntimeError("etcd down")
+        )
+        with pytest.raises(RuntimeError, match="etcd down"):
+            await SignedUrlConfig.create(mock_config_service)
+
 
 # ---------------------------------------------------------------------------
 # TokenPayload
@@ -112,6 +123,17 @@ class TestTokenPayload:
         # Verify json_encoders config exists
         assert datetime in tp.Config.json_encoders
 
+    def test_json_encoder_converts_to_timestamp(self):
+        """The json_encoder lambda should convert datetime to float timestamp."""
+        now = datetime.now(timezone.utc)
+        tp = TokenPayload(
+            record_id="r", user_id="u", exp=now, iat=now
+        )
+        encoder = tp.Config.json_encoders[datetime]
+        result = encoder(now)
+        assert isinstance(result, float)
+        assert result == now.timestamp()
+
 
 # ---------------------------------------------------------------------------
 # SignedUrlHandler
@@ -151,6 +173,16 @@ class TestSignedUrlHandler:
         config = SignedUrlConfig(private_key="key", expiration_minutes=1)
         config.expiration_minutes = -5
         with pytest.raises(ValueError, match="positive"):
+            SignedUrlHandler(
+                logger=MagicMock(), config=config, config_service=MagicMock()
+            )
+
+    def test_init_raises_when_private_key_is_none(self):
+        """_validate_config should raise when private_key is None (line 72)."""
+        config = SignedUrlConfig(private_key="temp-key", expiration_minutes=10)
+        # Bypass SignedUrlConfig.__init__ check by setting to None after creation
+        config.private_key = None
+        with pytest.raises(ValueError, match="Private key is required"):
             SignedUrlHandler(
                 logger=MagicMock(), config=config, config_service=MagicMock()
             )
@@ -249,6 +281,55 @@ class TestSignedUrlHandler:
                 record_id="rec1", org_id="org1", user_id="u1", connector="google"
             )
         assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_get_signed_url_validation_error(self):
+        """ValidationError during TokenPayload creation should raise 400 (lines 129-130)."""
+        handler = self._make_handler()
+        # Patch TokenPayload so it raises ValidationError when instantiated
+        with patch(
+            "app.core.signed_url.TokenPayload",
+            side_effect=ValidationError.from_exception_data(
+                title="TokenPayload",
+                line_errors=[
+                    {
+                        "type": "missing",
+                        "loc": ("record_id",),
+                        "msg": "Field required",
+                        "input": {},
+                    }
+                ],
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await handler.get_signed_url(
+                    record_id="rec1",
+                    org_id="org1",
+                    user_id="user1",
+                    connector="google",
+                )
+            assert exc_info.value.status_code == 400
+            assert "Invalid payload data" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_get_signed_url_uses_default_endpoint_when_missing(self):
+        """When connector endpoint key is absent, DefaultEndpoints value is used."""
+        config = SignedUrlConfig(private_key="key")
+        logger = MagicMock()
+        config_service = MagicMock()
+        # Return connectors dict without 'endpoint' key to trigger .get() default
+        config_service.get_config = AsyncMock(
+            return_value={
+                "connectors": {}
+            }
+        )
+        handler = SignedUrlHandler(
+            logger=logger, config=config, config_service=config_service
+        )
+        url = await handler.get_signed_url(
+            record_id="rec1", org_id="org1", user_id="u1", connector="google"
+        )
+        assert "http://localhost:8088" in url
 
     # ---- validate_token tests ----
 
@@ -379,3 +460,80 @@ class TestSignedUrlHandler:
         token = jwt.encode(payload, "secret", algorithm="HS256")
         result = handler.validate_token(token, required_claims=None)
         assert result.record_id == "rec1"
+
+    def test_validate_token_without_exp_field(self):
+        """Token payload missing 'exp' should skip datetime conversion for exp (line 149->151)."""
+        handler = self._make_handler(private_key="secret")
+        now = datetime.now(timezone.utc)
+        # Build a token without 'exp' and without 'iat' so we cover both branches.
+        # We need to bypass PyJWT's expiration check by mocking jwt.decode
+        payload_decoded = {
+            "record_id": "rec1",
+            "user_id": "user1",
+            "iat": now.timestamp(),
+            "additional_claims": {},
+        }
+        with patch("app.core.signed_url.jwt.decode", return_value=dict(payload_decoded)):
+            # TokenPayload requires exp, so this will fail with ValidationError -> 400
+            with pytest.raises(HTTPException) as exc_info:
+                handler.validate_token("dummy-token")
+            assert exc_info.value.status_code == 400
+
+    def test_validate_token_without_iat_field(self):
+        """Token payload missing 'iat' should skip datetime conversion for iat (line 151->154)."""
+        handler = self._make_handler(private_key="secret")
+        now = datetime.now(timezone.utc)
+        exp_time = now + timedelta(hours=1)
+        payload_decoded = {
+            "record_id": "rec1",
+            "user_id": "user1",
+            "exp": exp_time.timestamp(),
+            "additional_claims": {},
+        }
+        with patch("app.core.signed_url.jwt.decode", return_value=dict(payload_decoded)):
+            # TokenPayload requires iat, so this will fail with ValidationError -> 400
+            with pytest.raises(HTTPException) as exc_info:
+                handler.validate_token("dummy-token")
+            assert exc_info.value.status_code == 400
+
+    def test_validate_token_without_exp_and_iat(self):
+        """Token payload missing both 'exp' and 'iat' should skip both conversions."""
+        handler = self._make_handler(private_key="secret")
+        payload_decoded = {
+            "record_id": "rec1",
+            "user_id": "user1",
+            "additional_claims": {},
+        }
+        with patch("app.core.signed_url.jwt.decode", return_value=dict(payload_decoded)):
+            with pytest.raises(HTTPException) as exc_info:
+                handler.validate_token("dummy-token")
+            assert exc_info.value.status_code == 400
+
+    def test_validate_token_jose_jwt_error(self):
+        """JWTError from jose should raise 401 (lines 167-168)."""
+        handler = self._make_handler(private_key="secret")
+        with patch(
+            "app.core.signed_url.jwt.decode",
+            side_effect=JWTError("Invalid signature"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                handler.validate_token("some-token")
+            assert exc_info.value.status_code == 401
+            assert "Invalid or expired token" in exc_info.value.detail
+
+    def test_validate_token_validation_error_on_payload(self):
+        """ValidationError during TokenPayload construction should raise 400 (lines 169-171)."""
+        handler = self._make_handler(private_key="secret")
+        now = datetime.now(timezone.utc)
+        # Craft a payload that decodes fine and passes the timestamp conversion
+        # but fails TokenPayload validation due to missing required fields
+        payload_decoded = {
+            "exp": (now + timedelta(hours=1)).timestamp(),
+            "iat": now.timestamp(),
+            # missing record_id and user_id -> ValidationError in TokenPayload(**payload)
+        }
+        with patch("app.core.signed_url.jwt.decode", return_value=payload_decoded):
+            with pytest.raises(HTTPException) as exc_info:
+                handler.validate_token("some-token")
+            assert exc_info.value.status_code == 400
+            assert "Invalid token payload" in exc_info.value.detail

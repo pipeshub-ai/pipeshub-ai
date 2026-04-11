@@ -56,7 +56,9 @@ async def test_nextcloud_connector() -> None:
         data_entities_processor=data_entities_processor,
         data_store_provider=data_store_provider,
         config_service=config_service,
-        connector_id=connector_id
+        connector_id=connector_id,
+        scope="team",
+        created_by="example-user",
     )
 
     try:

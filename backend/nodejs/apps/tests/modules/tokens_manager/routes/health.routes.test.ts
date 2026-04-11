@@ -83,7 +83,7 @@ describe('tokens_manager/routes/health.routes', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('healthy')
       expect(jsonArg.services.redis).to.equal('healthy')
-      expect(jsonArg.services.kafka).to.equal('healthy')
+      expect(jsonArg.services.messageBroker).to.equal('healthy')
       expect(jsonArg.services.mongodb).to.equal('healthy')
       expect(jsonArg.services.KVStoreservice).to.equal('healthy')
       expect(jsonArg.timestamp).to.be.a('string')
@@ -113,7 +113,7 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('unhealthy')
-      expect(jsonArg.services.kafka).to.equal('unhealthy')
+      expect(jsonArg.services.messageBroker).to.equal('unhealthy')
     })
 
     it('should mark mongodb as unhealthy when mongo healthCheck returns false', async () => {
@@ -183,7 +183,7 @@ describe('tokens_manager/routes/health.routes', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.redis).to.equal('unhealthy')
-      expect(jsonArg.services.kafka).to.equal('unhealthy')
+      expect(jsonArg.services.messageBroker).to.equal('unhealthy')
       expect(jsonArg.services.mongodb).to.equal('unhealthy')
       expect(jsonArg.services.KVStoreservice).to.equal('unhealthy')
     })

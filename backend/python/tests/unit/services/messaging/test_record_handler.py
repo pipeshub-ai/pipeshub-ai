@@ -14,6 +14,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.exceptions.indexing_exceptions import IndexingError
+from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 
 # ---------------------------------------------------------------------------
@@ -95,10 +96,10 @@ class TestBulkDeleteEvent:
         events = await _collect_events(handler, EventTypes.BULK_DELETE_RECORDS.value, payload)
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[0]["data"]["record_id"] == "bulk_delete"
-        assert events[0]["data"]["count"] == 3
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[0].data.record_id == "bulk_delete"
+        assert events[0].data.count == 3
+        assert events[1].event == "indexing_complete"
         pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1", "vr2", "vr3"])
 
     @pytest.mark.asyncio
@@ -113,7 +114,7 @@ class TestBulkDeleteEvent:
         events = await _collect_events(handler, EventTypes.BULK_DELETE_RECORDS.value, payload)
 
         assert len(events) == 2
-        assert events[0]["data"]["count"] == 0
+        assert events[0].data.count == 0
 
 
 # ===================================================================
@@ -135,9 +136,9 @@ class TestDeleteRecordEvent:
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[0]["data"]["record_id"] == "r1"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[0].data.record_id == "r1"
+        assert events[1].event == "indexing_complete"
         pipeline.delete_embeddings.assert_awaited_once_with("r1", "vr1")
 
     @pytest.mark.asyncio
@@ -198,8 +199,8 @@ class TestAlreadyIndexed:
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_reindex_record_already_completed(self):
@@ -249,8 +250,8 @@ class TestConnectorActiveCheck:
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
     async def test_connector_inactive_skips_indexing(self):
@@ -480,7 +481,7 @@ class TestUnsupportedFileType:
 
         # Should have gotten to the processor, not the unsupported path
         assert len(events) == 1
-        assert events[0]["event"] == "parsing_complete"
+        assert events[0].event == "parsing_complete"
 
     @pytest.mark.asyncio
     async def test_supported_extension_with_unknown_mime(self):
@@ -1522,8 +1523,8 @@ class TestFullHappyPath:
             events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        assert events[0]["event"] == "parsing_complete"
-        assert events[1]["event"] == "indexing_complete"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
         gp.update_queued_duplicates_status.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1787,9 +1788,23 @@ class TestAdditionalCoverage:
 # ===================================================================
 
 async def _async_gen_events(events):
-    """Create an async generator that yields the given events."""
+    """Create an async generator that yields PipelineEvent objects.
+
+    Accepts dicts with 'event' and 'data' keys and converts them to
+    PipelineEvent instances so the handler sees the correct types.
+    """
     for event in events:
-        yield event
+        if isinstance(event, dict):
+            data = event.get("data", {})
+            yield PipelineEvent(
+                event=IndexingEvent(event["event"]),
+                data=PipelineEventData(
+                    record_id=data.get("record_id", "unknown"),
+                    count=data.get("count"),
+                ),
+            )
+        else:
+            yield event
 
 
 class _AsyncContextManager:

@@ -81,6 +81,20 @@ class TestSlackFactory:
             assert result is not None
 
 
+class TestSalesforceFactory:
+    @pytest.mark.asyncio
+    async def test_create_client(self):
+        from app.agents.tools.factories.salesforce import SalesforceClientFactory
+        factory = SalesforceClientFactory()
+        with patch("app.agents.tools.factories.salesforce.SalesforceClient") as MockClient:
+            MockClient.build_from_toolset = AsyncMock(return_value=MagicMock())
+            result = await factory.create_client(
+                config_service=MagicMock(), logger=MagicMock(),
+                toolset_config={"key": "val"}, state=None
+            )
+            assert result is not None
+
+
 class TestConfluenceFactory:
     @pytest.mark.asyncio
     async def test_create_client(self):

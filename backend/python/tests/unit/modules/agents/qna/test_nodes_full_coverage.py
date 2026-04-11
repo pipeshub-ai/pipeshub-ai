@@ -24,7 +24,6 @@ from app.modules.agents.qna.nodes import (
     check_for_error,
     clean_tool_result,
     format_result_for_llm,
-    merge_and_number_retrieval_results,
     route_after_reflect,
     should_execute_tools,
 )
@@ -549,3 +548,171 @@ class TestExtractFinalResponseEdge:
         msgs = [ToolMessage(content="tool output", tool_call_id="tc1")]
         result = _extract_final_response(msgs, _log())
         assert isinstance(result, str)
+
+
+# ============================================================================
+# PlaceholderResolver — unresolved placeholders (lines 1014-1040)
+# ============================================================================
+
+
+class TestUnresolvedPlaceholders:
+    """Cover lines 1014-1040: unresolved placeholders after stripping."""
+
+    def test_has_placeholders_detects_pattern(self):
+        args = {"page_id": "{{search_results[0].id}}"}
+        assert PlaceholderResolver.has_placeholders(args) is True
+
+    def test_has_placeholders_clean(self):
+        args = {"page_id": "12345"}
+        assert PlaceholderResolver.has_placeholders(args) is False
+
+
+# ============================================================================
+# _build_planner_messages — is_continue branch (lines 3932-3967)
+# ============================================================================
+
+
+class TestBuildPlannerMessagesContinue:
+    """Cover lines 3932-3967: is_continue with various tool name patterns."""
+
+    @pytest.mark.asyncio
+    async def test_continue_with_retrieval_tool(self):
+        from app.modules.agents.qna.nodes import _build_planner_messages
+        state = {
+            "query": "search for docs",
+            "is_continue": True,
+            "is_retry": False,
+            "executed_tool_names": ["retrieval_search"],
+            "iteration_count": 1,
+            "max_iterations": 5,
+            "tool_results": [{"tool_name": "retrieval_search", "status": "success", "result": "data"}],
+            "planned_tool_calls": [],
+            "conversation_history": [],
+            "agent_toolsets": [],
+            "logger": _log(),
+        }
+        with patch("app.modules.agents.qna.nodes._build_continue_context", return_value="Continue context"), \
+             patch("app.modules.agents.qna.nodes.safe_stream_write"):
+            msgs = _build_planner_messages(state, "search for docs", _log())
+        assert len(msgs) > 0
+
+    @pytest.mark.asyncio
+    async def test_continue_with_create_tool(self):
+        from app.modules.agents.qna.nodes import _build_planner_messages
+        state = {
+            "query": "create a page",
+            "is_continue": True,
+            "is_retry": False,
+            "executed_tool_names": ["confluence_create_page"],
+            "iteration_count": 0,
+            "max_iterations": 3,
+            "tool_results": [],
+            "planned_tool_calls": [],
+            "conversation_history": [],
+            "agent_toolsets": [],
+            "logger": _log(),
+        }
+        with patch("app.modules.agents.qna.nodes._build_continue_context", return_value="Continue"), \
+             patch("app.modules.agents.qna.nodes.safe_stream_write"):
+            msgs = _build_planner_messages(state, "create a page", _log())
+        assert len(msgs) > 0
+
+    @pytest.mark.asyncio
+    async def test_continue_with_empty_executed_tools(self):
+        from app.modules.agents.qna.nodes import _build_planner_messages
+        state = {
+            "query": "do something",
+            "is_continue": True,
+            "is_retry": False,
+            "executed_tool_names": [],
+            "iteration_count": 0,
+            "max_iterations": 3,
+            "tool_results": [],
+            "planned_tool_calls": [],
+            "conversation_history": [],
+            "agent_toolsets": [],
+            "logger": _log(),
+        }
+        with patch("app.modules.agents.qna.nodes._build_continue_context", return_value="Continue"), \
+             patch("app.modules.agents.qna.nodes.safe_stream_write"):
+            msgs = _build_planner_messages(state, "do something", _log())
+        assert len(msgs) > 0
+
+
+# ============================================================================
+# reflect_node — cascading chain and primary tool match (lines 5639-5679)
+# ============================================================================
+
+
+class TestReflectCascading:
+    """Cover lines 5639-5679: cascading chain and primary tool match."""
+
+    def test_cascading_chain_last_tool_success(self):
+        """Cascading chain where last tool succeeds."""
+        from app.modules.agents.qna.nodes import _check_primary_tool_success
+        successful = [
+            {"tool_name": "search", "status": "success", "result": "found"},
+            {"tool_name": "create", "status": "success", "result": "created page"},
+        ]
+        result = _check_primary_tool_success("create a page from search", successful, _log())
+        # Returns True because primary tool "create" succeeded
+        assert result is True
+
+    def test_non_cascading_primary_tool_match(self):
+        """Non-cascading: primary tool name matches with dot normalization."""
+        from app.modules.agents.qna.nodes import _check_primary_tool_success
+        successful = [
+            {"tool_name": "jira.create_issue", "status": "success", "result": "done"},
+        ]
+        result = _check_primary_tool_success("create an issue in jira", successful, _log())
+        assert result is True
+
+
+# ============================================================================
+# respond_node — conversation tasks (lines 6959-6965)
+# ============================================================================
+
+
+class TestRespondConversationTasks:
+    """Cover edge cases in respond_node, specifically for _is_semantically_empty."""
+
+    def test_task_markers_exception_handled(self):
+        """_is_semantically_empty handles various inputs correctly."""
+        from app.modules.agents.qna.nodes import _is_semantically_empty
+        # Strings (even empty) are not semantically empty — they pass through extract_data_from_result as-is
+        assert _is_semantically_empty("") is False
+        assert _is_semantically_empty("   ") is False
+        assert _is_semantically_empty("actual data") is False
+        # None and empty containers are semantically empty
+        assert _is_semantically_empty(None) is True
+        assert _is_semantically_empty({"data": {"results": []}}) is True
+        assert _is_semantically_empty([]) is True
+
+
+# ============================================================================
+# _detect_tool_result_status — edge cases
+# ============================================================================
+
+
+class TestDetectToolResultStatusEdge:
+    """Cover additional branches in _detect_tool_result_status."""
+
+    def test_dict_with_error_key(self):
+        from app.modules.agents.qna.nodes import _detect_tool_result_status
+        result = _detect_tool_result_status({"error": "something went wrong"})
+        assert result == "error"
+
+    def test_dict_with_success_status(self):
+        from app.modules.agents.qna.nodes import _detect_tool_result_status
+        result = _detect_tool_result_status({"status": "success", "data": "ok"})
+        assert result == "success"
+
+    def test_string_with_unauthorized(self):
+        from app.modules.agents.qna.nodes import _detect_tool_result_status
+        result = _detect_tool_result_status("Error: Unauthorized access")
+        assert result == "error"
+
+    def test_string_clean_result(self):
+        from app.modules.agents.qna.nodes import _detect_tool_result_status
+        result = _detect_tool_result_status("Page created successfully with ID 123")
+        assert result == "success"

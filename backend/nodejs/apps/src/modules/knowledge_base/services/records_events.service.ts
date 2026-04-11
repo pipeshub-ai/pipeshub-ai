@@ -1,7 +1,6 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
-import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
+import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
 export enum EventType {
   NewRecordEvent = 'newRecord',
@@ -73,30 +72,32 @@ export interface DeletedRecordEvent {
 }
 
 @injectable()
-export class RecordsEventProducer extends BaseKafkaProducerConnection {
+export class RecordsEventProducer {
   private readonly recordsTopic = 'record-events';
 
   constructor(
-    @inject('KafkaConfig') config: KafkaConfig,
-    @inject('Logger') logger: Logger,
-  ) {
-    super(config, logger);
-  }
+    @inject('MessageProducer') private readonly producer: IMessageProducer,
+    @inject('Logger') private readonly logger: Logger,
+  ) {}
 
   async start(): Promise<void> {
-    if (!this.isConnected) {
-      await this.connect();
+    if (!this.producer.isConnected()) {
+      await this.producer.connect();
     }
   }
 
   async stop(): Promise<void> {
-    if (this.isConnected()) {
-      await this.disconnect();
+    if (this.producer.isConnected()) {
+      await this.producer.disconnect();
     }
   }
 
+  isConnected(): boolean {
+    return this.producer.isConnected();
+  }
+
   async publishEvent(event: Event): Promise<void> {
-    const message: KafkaMessage<string> = {
+    const message: StreamMessage<string> = {
       key: event.eventType,
       value: JSON.stringify(event),
       headers: {
@@ -106,7 +107,7 @@ export class RecordsEventProducer extends BaseKafkaProducerConnection {
     };
 
     try {
-      await this.publish(this.recordsTopic, message);
+      await this.producer.publish(this.recordsTopic, message);
       this.logger.info(
         `Published event: ${event.eventType} to topic ${this.recordsTopic}`,
       );

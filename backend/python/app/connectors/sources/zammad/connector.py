@@ -205,7 +205,9 @@ class ZammadConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             ZammadApp(connector_id),
@@ -213,7 +215,9 @@ class ZammadConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )
         self.external_client: Optional[ZammadClient] = None
         self.data_source: Optional[ZammadDataSource] = None
@@ -3401,7 +3405,9 @@ class ZammadConnector(BaseConnector):
         logger: Logger,
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
-        connector_id: str
+        connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> "BaseConnector":
         """Factory method to create ZammadConnector instance"""
         data_entities_processor = DataSourceEntitiesProcessor(
@@ -3416,5 +3422,7 @@ class ZammadConnector(BaseConnector):
             data_entities_processor,
             data_store_provider,
             config_service,
-            connector_id
+            connector_id,
+            scope,
+            created_by,
         )

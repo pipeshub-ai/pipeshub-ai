@@ -169,6 +169,8 @@ def connector():
             data_store_provider=provider,
             config_service=config_svc,
             connector_id="drive-fc-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         c.admin_data_source = AsyncMock()
         c.drive_data_source = AsyncMock()
@@ -1735,6 +1737,8 @@ def connector():
             data_store_provider=provider,
             config_service=config_svc,
             connector_id="drive-fc-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         c.admin_data_source = AsyncMock()
         c.drive_data_source = AsyncMock()

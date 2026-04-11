@@ -2473,29 +2473,40 @@ class SalesforceDataSource:
         version: str,
         feedelementtype: str,
         subjectid: str,
-        text: str
+        text: str,
+        message_segments: Optional[list[Dict[str, Any]]] = None,
     ) -> SalesforceResponse:
-        """Feed item and comment bodies have a 10,000 character limit. Because this limit can change, we recommend that clients make a describeSObjects() call on the FeedItem or FeedComment object. To determi...
+        """Create a new Chatter feed element (e.g., a FeedItem post on a record).
+
+        Salesforce Connect API requires the fields in the JSON body, NOT query params.
 
         HTTP POST: /services/data/v{version}/chatter/feed-elements
 
         Args:
-            version: Path parameter: version
-            feedelementtype: Feed elements are the top-level objects that a feed contains. The feed element type describes the characteristics of that feed element. One of these values: Bundle—A container of feed elements. A b... (required)
-            subjectid: Query parameter: subjectId (required)
-            text: Query parameter: text (required)
+            version: API version
+            feedelementtype: Feed element type, typically "FeedItem"
+            subjectid: The parent subject ID (record, group, or user) the post is attached to
+            text: The post text (max 10,000 characters). Used only when message_segments is None.
+            message_segments: Pre-built Connect API messageSegments list for rich text
+                (Bold/Italic/Hyperlink/Paragraph etc.). Overrides `text` when provided.
 
         Returns:
             SalesforceResponse with success status and data/error
         """
         path = f"/services/data/v{version}/chatter/feed-elements"
-        params = self._build_params(**{"feedElementType": feedelementtype, "subjectId": subjectid, "text": text})
-        body = None
+        segments = message_segments if message_segments is not None else [
+            {"type": "Text", "text": text}
+        ]
+        body = {
+            "feedElementType": feedelementtype,
+            "subjectId": subjectid,
+            "body": {"messageSegments": segments},
+        }
 
         return await self._execute_request(
             method="POST",
             path=path,
-            params=params,
+            params=None,
             body=body,
             content_type="application/json"
         )
@@ -2576,28 +2587,35 @@ class SalesforceDataSource:
         self,
         feed_element_id: str,
         version: str,
-        text: str
+        text: str,
+        message_segments: Optional[list[Dict[str, Any]]] = None,
     ) -> SalesforceResponse:
-        """Access comments for a feed element, or add a comment to a feed element. To upload a binary file to attach to a comment, you must send it in a multipart/form-data request. To send the text of the co...
+        """Add a comment (reply) to an existing Chatter feed element.
+
+        Salesforce Connect API requires the comment text in the JSON body, NOT a query param.
 
         HTTP POST: /services/data/v{version}/chatter/feed-elements/{FEED_ELEMENT_ID}/capabilities/comments/items
 
         Args:
-            feed_element_id: Path parameter: FEED_ELEMENT_ID
-            version: Path parameter: version
-            text: Query parameter: text (required)
+            feed_element_id: The Chatter FeedElement (FeedItem) ID being commented on
+            version: API version
+            text: The comment text (max 10,000 characters). Used only when message_segments is None.
+            message_segments: Pre-built Connect API messageSegments list for rich text
+                (Bold/Italic/Hyperlink/Paragraph etc.). Overrides `text` when provided.
 
         Returns:
             SalesforceResponse with success status and data/error
         """
         path = f"/services/data/v{version}/chatter/feed-elements/{feed_element_id}/capabilities/comments/items"
-        params = self._build_params(**{"text": text})
-        body = None
+        segments = message_segments if message_segments is not None else [
+            {"type": "Text", "text": text}
+        ]
+        body = {"body": {"messageSegments": segments}}
 
         return await self._execute_request(
             method="POST",
             path=path,
-            params=params,
+            params=None,
             body=body,
             content_type="application/json"
         )
@@ -13761,6 +13779,25 @@ class SalesforceDataSource:
             path=path,
             params=params,
             body=body,
+            content_type="application/json"
+        )
+    
+    async def soql_query_next(self, next_url: str) -> SalesforceResponse:
+        """Fetch the next page of a paginated SOQL query via nextRecordsUrl.
+
+        HTTP GET: {nextRecordsUrl} (e.g. /services/data/v59.0/query/01g...)
+
+        Args:
+            next_url: The nextRecordsUrl from the previous SOQL query response
+
+        Returns:
+            SalesforceResponse with success status and data/error
+        """
+        return await self._execute_request(
+            method="GET",
+            path=next_url,
+            params=None,
+            body=None,
             content_type="application/json"
         )
 

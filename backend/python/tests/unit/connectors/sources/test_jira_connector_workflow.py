@@ -85,7 +85,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs, tx = _make_mock_deps()
-    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1")
+    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
     return connector, dep, dsp, cs, tx
 
 

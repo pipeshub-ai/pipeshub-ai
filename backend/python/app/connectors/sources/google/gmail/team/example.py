@@ -238,7 +238,12 @@ async def test_run() -> None:
     await config_service.set_config(f"/services/connectors/{connector_id}/config", config)
 
     connector: BaseConnector = await GoogleGmailTeamConnector.create_connector(
-        logger, data_store_provider, config_service, connector_id
+        logger,
+        data_store_provider,
+        config_service,
+        connector_id,
+        scope="team",
+        created_by="example",
     )
 
     try:

@@ -44,6 +44,13 @@ import {
   updateToolsetOAuthConfig,
   deleteToolsetOAuthConfig,
   updateUserToolsetInstance,
+  // Agent-scoped toolset management
+  getAgentToolsets,
+  authenticateAgentToolset,
+  updateAgentToolsetCredentials,
+  removeAgentToolsetCredentials,
+  reauthenticateAgentToolset,
+  getAgentToolsetOAuthUrl,
 } from '../controller/toolsets_controller';
 
 // ============================================================================
@@ -204,6 +211,27 @@ const getMyToolsetsSchema = z.object({
       .optional(),
     authStatus: z
       .enum(['authenticated', 'not-authenticated'])
+      .optional(),
+  }),
+});
+
+/**
+ * Schema for getting agent-scoped toolsets (service account agents).
+ * Same shape as getMyToolsetsSchema but without authStatus — agent endpoints
+ * return all instances merged with agent-level auth status without server-side
+ * filtering by auth state (the UI handles that client-side).
+ */
+const getAgentToolsetsSchema = z.object({
+  query: z.object({
+    page: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .optional(),
+    limit: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .optional(),
+    search: z.string().optional(),
+    includeRegistry: z
+      .preprocess((arg) => arg === 'true', z.boolean())
       .optional(),
   }),
 });
@@ -552,6 +580,80 @@ export function createToolsetsRouter(container: Container): Router {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     deleteToolsetOAuthConfig(config)
+  );
+
+  // ============================================================================
+  // Agent-Scoped Toolset Routes (Service Account Agents)
+  // ============================================================================
+
+  /**
+   * GET /agents/:agentKey
+   * Get all toolset instances with auth status for a service account agent.
+   * Requires the requesting user to have edit access to the agent.
+   */
+  router.get(
+    '/agents/:agentKey',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getAgentToolsetsSchema),
+    getAgentToolsets(config)
+  );
+
+  /**
+   * POST /agents/:agentKey/instances/:instanceId/authenticate
+   * Authenticate a toolset instance on behalf of a service account agent
+   * (non-OAuth: API token, bearer, username/password).
+   */
+  router.post(
+    '/agents/:agentKey/instances/:instanceId/authenticate',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    authenticateAgentToolset(config)
+  );
+
+  /**
+   * PUT /agents/:agentKey/instances/:instanceId/credentials
+   * Update credentials for a toolset instance on behalf of a service account agent.
+   */
+  router.put(
+    '/agents/:agentKey/instances/:instanceId/credentials',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateUserToolsetInstanceSchema),
+    updateAgentToolsetCredentials(config)
+  );
+
+  /**
+   * DELETE /agents/:agentKey/instances/:instanceId/credentials
+   * Remove credentials for a toolset instance on behalf of a service account agent.
+   */
+  router.delete(
+    '/agents/:agentKey/instances/:instanceId/credentials',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    removeAgentToolsetCredentials(config)
+  );
+
+  /**
+   * POST /agents/:agentKey/instances/:instanceId/reauthenticate
+   * Clear agent's OAuth tokens for an instance, forcing re-authentication.
+   */
+  router.post(
+    '/agents/:agentKey/instances/:instanceId/reauthenticate',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    reauthenticateAgentToolset(config)
+  );
+
+  /**
+   * GET /agents/:agentKey/instances/:instanceId/oauth/authorize
+   * Get OAuth authorization URL for a toolset instance scoped to a service account agent.
+   */
+  router.get(
+    '/agents/:agentKey/instances/:instanceId/oauth/authorize',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getAgentToolsetOAuthUrl(config)
   );
 
   return router;

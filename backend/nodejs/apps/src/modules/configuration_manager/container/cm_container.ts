@@ -9,6 +9,12 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
 import { SyncEventProducer } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
+import { IMessageProducer } from '../../../libs/types/messaging.types';
+import {
+  resolveMessageBrokerConfig,
+  createMessageProducer,
+} from '../../../libs/services/message-broker.factory';
+
 const loggerConfig = {
   service: 'Configuration Manager Service',
 };
@@ -54,8 +60,17 @@ export class ConfigurationManagerContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
 
+      // Create broker-agnostic message producer
+      const brokerConfig = resolveMessageBrokerConfig(appConfig);
+      const messageProducer = createMessageProducer(brokerConfig, container.get('Logger'));
+      await messageProducer.connect();
+
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
+
       const syncEventsService = new SyncEventProducer(
-        appConfig.kafka,
+        messageProducer,
         container.get('Logger'),
       );
       container
@@ -63,7 +78,7 @@ export class ConfigurationManagerContainer {
         .toConstantValue(syncEventsService);
 
       const entityEventsService = new EntitiesEventProducer(
-        appConfig.kafka,
+        messageProducer,
         container.get('Logger'),
       );
       container
@@ -109,37 +124,24 @@ export class ConfigurationManagerContainer {
   static async dispose(): Promise<void> {
     if (this.instance) {
       try {
-        // Get only services that need to be disconnected
         const keyValueStoreService = this.instance.isBound(
           'KeyValueStoreService',
         )
           ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
           : null;
 
-        const entityEventsService = this.instance.isBound(
-          'EntitiesEventProducer',
-        )
-          ? this.instance.get<EntitiesEventProducer>('EntitiesEventProducer')
+        const messageProducer = this.instance.isBound('MessageProducer')
+          ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
 
-        const syncEventsService = this.instance.isBound('SyncEventProducer')
-          ? this.instance.get<SyncEventProducer>('SyncEventProducer')
-          : null;
-
-        // Disconnect services if they have a disconnect method
         if (keyValueStoreService && keyValueStoreService.isConnected()) {
           await keyValueStoreService.disconnect();
           this.logger.info('KeyValueStoreService disconnected successfully');
         }
 
-        if (entityEventsService && entityEventsService.isConnected()) {
-          await entityEventsService.disconnect();
-          this.logger.info('EntitiesEventProducer disconnected successfully');
-        }
-
-        if (syncEventsService && syncEventsService.isConnected()) {
-          await syncEventsService.disconnect();
-          this.logger.info('SyncEventProducer disconnected successfully');
+        if (messageProducer && messageProducer.isConnected()) {
+          await messageProducer.disconnect();
+          this.logger.info('MessageProducer disconnected successfully');
         }
 
         this.logger.info(

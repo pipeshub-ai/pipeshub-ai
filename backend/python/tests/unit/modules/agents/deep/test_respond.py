@@ -38,7 +38,6 @@ from app.modules.agents.deep.respond import (
     _trim_analyses_to_budget,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -597,7 +596,10 @@ class TestExtractUrlsFromValue:
         assert len(links) == 2
 
     def test_depth_limit(self):
-        from app.modules.agents.deep.respond import _extract_urls_from_value, _MAX_URL_EXTRACT_DEPTH
+        from app.modules.agents.deep.respond import (
+            _MAX_URL_EXTRACT_DEPTH,
+            _extract_urls_from_value,
+        )
 
         seen: set = set()
         links: list = []
@@ -2259,7 +2261,7 @@ class TestDeepRespondImplExtended:
                  MagicMock(content="system prompt"),
                  MagicMock(content="user message"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2324,7 +2326,7 @@ class TestDeepRespondImplExtended:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2335,8 +2337,8 @@ class TestDeepRespondImplExtended:
     @pytest.mark.asyncio
     async def test_retrieval_path_with_qna_content(self):
         """When qna_message_content is set, uses simple retrieval messages."""
+
         from app.modules.agents.deep.respond import _deep_respond_impl
-        from langchain_core.messages import HumanMessage, SystemMessage
 
         state = {
             "logger": _mock_log(),
@@ -2384,13 +2386,13 @@ class TestDeepRespondImplExtended:
 
         with patch("app.modules.agents.deep.respond.safe_stream_write"), \
              patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
-             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content"), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"], create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "R1: content"}], MagicMock())), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}, create=True), \
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()):
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=MagicMock()):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
 
         assert result["response"] == "Based on R1..."
@@ -2503,7 +2505,7 @@ class TestDeepRespondImplFastPathRefData:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="system"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2518,8 +2520,8 @@ class TestDeepRespondImplUserDataBranches:
     @pytest.mark.asyncio
     async def test_non_enterprise_account_type_user_data(self):
         """Non-Enterprise/Business account type produces simpler user_data."""
+
         from app.modules.agents.deep.respond import _deep_respond_impl
-        from langchain_core.messages import HumanMessage
 
         state = {
             "logger": _mock_log(),
@@ -2566,13 +2568,13 @@ class TestDeepRespondImplUserDataBranches:
 
         with patch("app.modules.agents.deep.respond.safe_stream_write"), \
              patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
-             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content") as mock_gmc, \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"], create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "R1: content"}], MagicMock())) as mock_gmc, \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}, create=True), \
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()):
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=MagicMock()):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
             # Verify the user_data passed to get_message_content
             call_args = mock_gmc.call_args
@@ -2588,8 +2590,9 @@ class TestDeepRespondImplContextBuilding:
     @pytest.mark.asyncio
     async def test_analyses_with_has_api_results_no_retrieval(self):
         """Analyses + has_api_results but no retrieval produces correct context."""
-        from app.modules.agents.deep.respond import _deep_respond_impl
         from langchain_core.messages import HumanMessage
+
+        from app.modules.agents.deep.respond import _deep_respond_impl
 
         state = {
             "logger": _mock_log(),
@@ -2645,7 +2648,7 @@ class TestDeepRespondImplContextBuilding:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), HumanMessage(content="user msg"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="API results context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2656,8 +2659,9 @@ class TestDeepRespondImplContextBuilding:
     @pytest.mark.asyncio
     async def test_analyses_only_no_api_results(self):
         """Analyses without has_api_results — analyses-only context path (line 325/330)."""
-        from app.modules.agents.deep.respond import _deep_respond_impl
         from langchain_core.messages import HumanMessage
+
+        from app.modules.agents.deep.respond import _deep_respond_impl
 
         state = {
             "logger": _mock_log(),
@@ -2710,7 +2714,7 @@ class TestDeepRespondImplContextBuilding:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), HumanMessage(content="user message"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -2720,8 +2724,9 @@ class TestDeepRespondImplContextBuilding:
     @pytest.mark.asyncio
     async def test_context_appended_to_list_content_message(self):
         """When last message has list content, context is appended as text item (line 343)."""
-        from app.modules.agents.deep.respond import _deep_respond_impl
         from langchain_core.messages import HumanMessage
+
+        from app.modules.agents.deep.respond import _deep_respond_impl
 
         last_msg = HumanMessage(content=[{"type": "text", "text": "existing content"}])
 
@@ -2779,7 +2784,7 @@ class TestDeepRespondImplContextBuilding:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), last_msg,
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="API context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", side_effect=RuntimeError("no blob")):
@@ -2849,7 +2854,7 @@ class TestDeepRespondImplBlobStorage:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
              patch("app.modules.transformers.blob_storage.BlobStorage", return_value=mock_blob):
@@ -2919,7 +2924,7 @@ class TestDeepRespondImplDecomposedQueries:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream) as mock_slr:
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -2984,7 +2989,7 @@ class TestDeepRespondImplDecomposedQueries:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3049,7 +3054,7 @@ class TestDeepRespondImplDecomposedQueries:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3114,13 +3119,13 @@ class TestDeepRespondImplCitationEnrichment:
 
         with patch("app.modules.agents.deep.respond.safe_stream_write"), \
              patch("app.modules.agents.deep.respond._log_state_diagnostic"), \
-             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"]), \
-             patch("app.utils.chat_helpers.get_message_content", return_value="R1: content"), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}), \
+             patch("app.modules.agents.qna.nodes.merge_and_number_retrieval_results", return_value=state["final_results"], create=True), \
+             patch("app.utils.chat_helpers.get_message_content", return_value=([{"type": "text", "text": "R1: content"}], MagicMock())), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={"R1": "vr1"}, create=True), \
              patch("app.modules.agents.deep.respond.build_respond_conversation_context", return_value=[]), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream), \
-             patch("app.utils.agent_fetch_full_record.create_agent_fetch_full_record_tool", return_value=MagicMock()), \
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=MagicMock()), \
              patch("app.utils.citations.normalize_citations_and_chunks_for_agent",
                    return_value=("Based on R1...", enriched_citations)):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3188,7 +3193,7 @@ class TestDeepRespondImplEmptyResponse:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value=""), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3258,7 +3263,7 @@ class TestDeepRespondImplEmptyResponse:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3335,7 +3340,7 @@ class TestDeepRespondImplReferenceData:
              patch("app.modules.qna.response_prompt.create_response_messages", return_value=[
                  MagicMock(content="sys"), MagicMock(content="user"),
              ]), \
-             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}), \
+             patch("app.modules.qna.response_prompt.build_record_label_mapping", return_value={}, create=True), \
              patch("app.modules.agents.qna.nodes._build_tool_results_context", return_value="context"), \
              patch("app.utils.streaming.stream_llm_response_with_tools", side_effect=mock_stream):
             result = await _deep_respond_impl(state, config, writer, 0.0, log)
@@ -3429,8 +3434,9 @@ class TestHandleDirectAnswerWithConversation:
     @pytest.mark.asyncio
     async def test_direct_answer_with_previous_conversations(self):
         """Direct answer includes conversation context when previous conversations exist."""
-        from app.modules.agents.deep.respond import _handle_direct_answer
         from langchain_core.messages import HumanMessage as HM
+
+        from app.modules.agents.deep.respond import _handle_direct_answer
 
         async def mock_stream(*args, **kwargs):
             yield {"event": "complete", "data": {"answer": "Follow-up answer", "citations": []}}

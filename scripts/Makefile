@@ -1,11 +1,14 @@
 .PHONY: help install-deps-linux install-deps-mac install-deps-windows \
 	docker-redis docker-qdrant docker-etcd docker-arango docker-mongo \
-	docker-zookeeper docker-kafka docker-all docker-all-no-etcd \
+	docker-neo4j docker-zookeeper docker-kafka docker-all docker-all-no-etcd \
+	docker-all-neo4j docker-neo4j-alias \
 	docker-no-etcd start-containers start-containers-no-etcd \
-	stop-containers stop-containers-no-etcd clean-docker clean-docker-no-etcd \
-	stop-and-clean-volumes stop-and-clean-volumes-no-etcd \
+	start-containers-neo4j \
+	stop-containers stop-containers-no-etcd stop-containers-neo4j \
+	clean-docker clean-docker-no-etcd clean-docker-neo4j \
+	stop-and-clean-volumes stop-and-clean-volumes-no-etcd stop-and-clean-volumes-neo4j \
 	setup-nodejs implode-setup-nodejs nodejs setup-python setup-python-deps \
-	implode-setup-python connectors indexing query docling \
+	implode-setup-python connectors indexing query docling check-python-version \
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
@@ -71,6 +74,13 @@ help: ## Show this help message
 	@echo "  make stop-and-clean-volumes-no-etcd - Stop and clean (no etcd)"
 	@echo "  make clean-docker-no-etcd - Clean docker (no etcd)"
 	@echo ""
+	@echo "$(GREEN)Docker Containers (with Neo4j - replaces ArangoDB, no etcd):$(NC)"
+	@echo "  make docker-neo4j         - Start Neo4j container"
+	@echo "  make docker-all-neo4j     - Start all containers with Neo4j (no ArangoDB/etcd)"
+	@echo "  make stop-containers-neo4j - Stop all containers (Neo4j setup)"
+	@echo "  make stop-and-clean-volumes-neo4j - Stop and clean (Neo4j setup)"
+	@echo "  make clean-docker-neo4j   - Clean docker (Neo4j setup)"
+	@echo ""
 	@echo "$(GREEN)Node.js Backend:$(NC)"
 	@echo "  make setup-nodejs         - Setup Node.js backend (install deps)"
 	@echo "  make implode-setup-nodejs - Remove Node.js setup"
@@ -84,6 +94,7 @@ help: ## Show this help message
 	@echo "  make indexing             - Run indexing service (requires venv)"
 	@echo "  make query                - Run query service (requires venv)"
 	@echo "  make docling              - Run docling service (requires venv)"
+	@echo "  make check-python-version - Check Python version used by the venv"
 	@echo ""
 	@echo "$(GREEN)Frontend:$(NC)"
 	@echo "  make setup-frontend       - Setup frontend (install deps)"
@@ -124,7 +135,8 @@ help: ## Show this help message
 	@echo "$(YELLOW)Configuration:$(NC)"
 	@echo "  All docker-* commands read configuration from: $(PYTHON_ENV_FILE)"
 	@echo "  Supported variables: REDIS_PASSWORD, QDRANT_API_KEY, ARANGO_PASSWORD,"
-	@echo "  MONGO_URI, ETCD_USERNAME, ETCD_PASSWORD, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD"
+	@echo "  NEO4J_USERNAME, NEO4J_PASSWORD, MONGO_URI, ETCD_USERNAME, ETCD_PASSWORD,"
+	@echo "  KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD"
 
 # ==============================================================================
 # System Dependencies Installation
@@ -231,6 +243,24 @@ docker-arango: ## Start ArangoDB container (reads ARANGO_PASSWORD from .env)
 		arangodb:3.12.4 2>/dev/null || echo "$(YELLOW)ArangoDB container already exists or running$(NC)"
 	@echo "$(GREEN)ArangoDB container started on port 8529$(NC)"
 	@echo "$(YELLOW)NOTE: Make sure ARANGO_PASSWORD in .env matches the container$(NC)"
+
+docker-neo4j: ## Start Neo4j container (reads NEO4J_USERNAME, NEO4J_PASSWORD from .env)
+	@echo "$(BLUE)Starting Neo4j container...$(NC)"
+	@$(LOAD_ENV); \
+	NEO4J_USERNAME=$${NEO4J_USERNAME:-neo4j}; \
+	NEO4J_PASSWORD=$${NEO4J_PASSWORD:-}; \
+	if [ -n "$$NEO4J_PASSWORD" ]; then \
+		echo "$(YELLOW)Using NEO4J_USERNAME and NEO4J_PASSWORD from .env$(NC)"; \
+		docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+			-e NEO4J_AUTH="$$NEO4J_USERNAME/$$NEO4J_PASSWORD" \
+			neo4j:5.26.2-community 2>/dev/null || echo "$(YELLOW)Neo4j container already exists or running$(NC)"; \
+	else \
+		echo "$(YELLOW)No NEO4J_PASSWORD set, starting Neo4j with authentication disabled$(NC)"; \
+		docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+			-e NEO4J_AUTH=none \
+			neo4j:5.26.2-community 2>/dev/null || echo "$(YELLOW)Neo4j container already exists or running$(NC)"; \
+	fi
+	@echo "$(GREEN)Neo4j container started on ports 7474 (HTTP), 7687 (Bolt)$(NC)"
 
 docker-mongo: ## Start MongoDB container (reads MONGO_URI from .env to extract credentials)
 	@echo "$(BLUE)Starting MongoDB container...$(NC)"
@@ -366,6 +396,45 @@ clean-docker-no-etcd: ## Remove containers, prune volumes and images (no etcd)
 	@echo "$(GREEN)Docker cleanup complete!$(NC)"
 
 # ==============================================================================
+# Docker All Commands (with Neo4j - replaces ArangoDB, no etcd)
+# ==============================================================================
+
+docker-all-neo4j: docker-redis docker-qdrant docker-neo4j docker-mongo docker-zookeeper docker-kafka ## Start all Docker containers with Neo4j (replaces ArangoDB, no etcd)
+	@echo "$(GREEN)All Docker containers (with Neo4j) started successfully!$(NC)"
+	@echo "$(YELLOW)Check running containers with: docker ps$(NC)"
+	@echo "$(YELLOW)NOTE: Using Neo4j as graph database instead of ArangoDB$(NC)"
+
+docker-neo4j-alias: docker-all-neo4j ## Alias for docker-all-neo4j
+
+start-containers-neo4j: docker-all-neo4j ## Alias for docker-all-neo4j
+
+stop-containers-neo4j: ## Stop all containers (Neo4j setup, no etcd)
+	@echo "$(YELLOW)Stopping containers (Neo4j setup)...$(NC)"
+	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(GREEN)Containers stopped!$(NC)"
+
+stop-and-clean-volumes-neo4j: ## Stop containers and clean volumes (Neo4j setup, no etcd)
+	@echo "$(YELLOW)Stopping containers (Neo4j setup)...$(NC)"
+	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Removing containers...$(NC)"
+	@docker rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
+	@docker volume prune -f
+	@echo "$(GREEN)Containers stopped and volumes cleaned!$(NC)"
+
+clean-docker-neo4j: ## Remove containers, prune volumes and images (Neo4j setup, no etcd)
+	@echo "$(RED)Cleaning Docker (Neo4j setup)...$(NC)"
+	@echo "$(YELLOW)Stopping containers...$(NC)"
+	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Removing containers...$(NC)"
+	@docker rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
+	@docker volume prune -f
+	@echo "$(YELLOW)Pruning unused images...$(NC)"
+	@docker image prune -f
+	@echo "$(GREEN)Docker cleanup complete!$(NC)"
+
+# ==============================================================================
 # Node.js Backend Setup
 # ==============================================================================
 
@@ -417,8 +486,19 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 		fi; \
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
-		echo "$(BLUE)Creating Python virtual environment...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.12; \
+		echo "$(BLUE)Select Python version for virtual environment:$(NC)"; \
+		echo "  1) Python 3.10"; \
+		echo "  2) Python 3.11"; \
+		echo "  3) Python 3.12"; \
+		read -p "Enter choice [1-3] (default: 3): " pychoice; \
+		case "$$pychoice" in \
+			1) PYTHON_VERSION="3.10" ;; \
+			2) PYTHON_VERSION="3.11" ;; \
+			3|"") PYTHON_VERSION="3.12" ;; \
+			*) echo "$(RED)Invalid choice. Using Python 3.12$(NC)"; PYTHON_VERSION="3.12" ;; \
+		esac; \
+		echo "$(BLUE)Creating Python virtual environment with Python $$PYTHON_VERSION...$(NC)"; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python $$PYTHON_VERSION; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
@@ -467,6 +547,14 @@ docling: ## Run Python docling service
 	@echo "$(BLUE)Starting docling service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.docling_main
+
+check-python-version: ## Check Python version used by the venv
+	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
+		echo "$(RED)Error: Virtual environment not found. Run 'make setup-python' first$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Python version in venv:$(NC)"
+	@$(ROOT_DIR)/backend/python/venv/bin/python --version
 
 # ==============================================================================
 # Frontend Setup
@@ -660,12 +748,12 @@ test-nodejs-coverage: ## Run Node.js unit tests with coverage
 
 test-python: ## Run Python unit tests (parallel)
 	@echo "$(BLUE)Running Python unit tests (parallel)...$(NC)"
-	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e ".[dev]" --quiet && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
 	@echo "$(GREEN)Python unit tests complete!$(NC)"
 
 test-python-coverage: ## Run Python unit tests with coverage report (parallel)
 	@echo "$(BLUE)Running Python unit tests with coverage (parallel)...$(NC)"
-	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e ".[dev]" --quiet && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
 	@echo "$(GREEN)Python unit tests with coverage complete!$(NC)"
 	@echo "$(YELLOW)Coverage report available at: backend/python/coverage_html/$(NC)"
 

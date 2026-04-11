@@ -33,6 +33,7 @@ from app.migrations.permission_edge_migration import (
 from app.migrations.record_group_app_edge_migration import (
     run_record_group_app_edge_migration,
 )
+from app.migrations.all_team_migration import run_all_team_migration
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -338,8 +339,8 @@ async def initialize_container(container) -> bool:
         await Health.system_health_check(container)
 
         # Conditionally initialize ArangoDB service based on DATA_STORE
-        data_store = os.getenv("DATA_STORE", "arangodb").lower()
-        if data_store == "arangodb":
+        data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
+        if data_store_type == "arangodb":
             logger.info("Ensuring ArangoDB service is initialized")
             # Arango_service is needed for migrations
             arango_service = await container.arango_service()
@@ -347,7 +348,7 @@ async def initialize_container(container) -> bool:
                 raise Exception("Failed to initialize ArangoDB service")
             logger.info("✅ ArangoDB service initialized")
         else:
-            logger.info(f"⏭️ Skipping ArangoDB service init (DATA_STORE={data_store})")
+            logger.info(f"⏭️ Skipping ArangoDB service init (DATA_STORE={data_store_type})")
             arango_service = None
 
         logger.info("Ensuring graph database provider is initialized")
@@ -364,9 +365,35 @@ async def initialize_container(container) -> bool:
 
         migration_state = await get_migration_state()
 
-        # Skip all migrations if Neo4j is configured (migrations are ArangoDB-specific)
-        if data_store != "arangodb":
-            logger.info(f"⏭️ Skipping all migrations (DATA_STORE={data_store}, migrations are ArangoDB-specific)")
+        # Run All Team migration (DB-agnostic, runs for both ArangoDB and Neo4j)
+        try:
+            logger.info("🔄 Running All team migration...")
+            
+            migration_result = await run_all_team_migration(
+                graph_provider=data_store.graph_provider,
+                config_service=config_service,
+                logger=logger
+            )
+            
+            if migration_result.get("success"):
+                if migration_result.get("skipped"):
+                    logger.info("✅ All team migration already completed")
+                else:
+                    orgs_processed = migration_result.get("orgs_processed", 0)
+                    teams_created = migration_result.get("teams_created", 0)
+                    logger.info(
+                        f"✅ All team migration completed: "
+                        f"{orgs_processed} orgs processed, {teams_created} All teams ensured"
+                    )
+            else:
+                error_msg = migration_result.get("error", "Unknown error")
+                logger.error(f"❌ All team migration failed: {error_msg}")
+        except Exception as e:
+            logger.error(f"❌ All team migration error: {e}")
+
+        # Skip ArangoDB-specific migrations if Neo4j is configured
+        if data_store_type != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoDB-specific migrations (DATA_STORE={data_store_type})")
             return True
 
 

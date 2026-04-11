@@ -13,6 +13,7 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     SyncFilterKey,
 )
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.google_cloud_storage.connector import (
     GCSConnector,
     GCSDataSourceEntitiesProcessor,
@@ -34,6 +35,8 @@ def _make_mock_tx_store(existing_record=None):
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    tx.ensure_team_app_edge = AsyncMock()
     tx.remove_record_from_parent = AsyncMock()
     return tx
 
@@ -64,6 +67,15 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
+    proc.get_user_by_user_id = AsyncMock(
+        return_value=User(
+            email="user@test.com",
+            source_user_id="src-1",
+            org_id="org-gcs-1",
+            full_name="Test User",
+            title="Title",
+        )
+    )
     return proc
 
 
@@ -92,6 +104,8 @@ def connector(mock_logger, mock_data_entities_processor,
             data_store_provider=mock_data_store_provider,
             config_service=mock_config_service,
             connector_id="gcs-comp-1",
+            scope="personal",
+            created_by="test-user-id",
         )
     return c
 
@@ -370,7 +384,7 @@ class TestCreateRecordGroupsForBuckets:
 
     @pytest.mark.asyncio
     async def test_team_scope(self, connector):
-        connector.scope = "TEAM"
+        connector.scope = ConnectorScope.TEAM.value
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         await connector._create_record_groups_for_buckets(["bucket1", "bucket2"])
         connector.data_entities_processor.on_new_record_groups.assert_awaited()
@@ -380,7 +394,8 @@ class TestCreateRecordGroupsForBuckets:
 # Misc
 # ===========================================================================
 class TestMiscComprehensive:
-    def test_handle_webhook_notification(self, connector):
+    @pytest.mark.asyncio
+    async def test_handle_webhook_notification(self, connector):
         with pytest.raises(NotImplementedError):
             connector.handle_webhook_notification({})
 

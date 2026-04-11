@@ -76,6 +76,8 @@ def _make_connector():
         data_store_provider=data_store_provider,
         config_service=config_service,
         connector_id="linear-comp-1",
+        scope="personal",
+        created_by="test-user-id",
     )
     connector._tx_store = mock_tx_store
     return connector

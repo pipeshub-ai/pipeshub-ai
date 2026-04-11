@@ -75,6 +75,7 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
@@ -493,6 +494,9 @@ export function createAgentConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
+  const keyValueStoreService = container.isBound('KeyValueStoreService')
+    ? container.get<KeyValueStoreService>('KeyValueStoreService')
+    : undefined;
 
   router.post(
     '/:agentKey/conversations',
@@ -531,7 +535,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
-    addMessageStreamToAgentConversationInternal(appConfig),
+    addMessageStreamToAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
   router.post(
@@ -539,7 +543,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
-    streamAgentConversationInternal(appConfig),
+    streamAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
 

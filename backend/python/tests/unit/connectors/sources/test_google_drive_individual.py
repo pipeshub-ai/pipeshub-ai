@@ -132,6 +132,8 @@ def connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="drive-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
@@ -1428,7 +1430,7 @@ class TestCreateConnector:
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
         mock_dep.initialize.assert_awaited_once()
@@ -1760,6 +1762,8 @@ def connector():
             data_store_provider=ds_provider,
             config_service=config_service,
             connector_id="drive-conn-1",
+            scope="personal",
+            created_by="test-user-id",
         )
         conn.sync_filters = FilterCollection()
         conn.indexing_filters = FilterCollection()
@@ -3056,7 +3060,7 @@ class TestCreateConnectorFullCoverage:
         config_service = AsyncMock()
 
         result = await GoogleDriveIndividualConnector.create_connector(
-            logger, ds_provider, config_service, "conn-1"
+            logger, ds_provider, config_service, "conn-1", "team", "test-user-id"
         )
         assert isinstance(result, GoogleDriveIndividualConnector)
         mock_dep.initialize.assert_awaited_once()
