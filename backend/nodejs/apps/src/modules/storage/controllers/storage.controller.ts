@@ -19,7 +19,6 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   BadRequestError,
-  ForbiddenError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -31,14 +30,19 @@ import {
 } from '../types/storage.service.types';
 import { StorageService } from '../storage.service';
 import {
+  getCurrentFilePath,
   DocumentInfoResponse,
+  getDocumentRootPath,
   extractOrgId,
   extractUserId,
   getBaseUrl,
   getDocumentInfo,
+  getFullDocumentPath,
   getStorageVendor,
+  getVersionFilePath,
   hasExtension,
   isValidStorageVendor,
+  normalizeExtension,
   serveFileFromLocalStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
@@ -239,10 +243,7 @@ export class StorageController {
         );
       }
 
-      const fullDocumentPath = documentPath
-        ? `${orgId}/PipesHub/${documentPath}`
-        : `${orgId}/PipesHub`;
-
+      const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
       const { storageType } = JSON.parse(storageConfig);
@@ -477,6 +478,7 @@ export class StorageController {
       const currentVersionNote = req.body.currentVersionNote;
       const nextVersionNote = req.body.nextVersionNote;
       const userId = extractUserId(req);
+      const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
         next,
@@ -495,24 +497,28 @@ export class StorageController {
 
       const uploadedFileExtension = path.extname(originalname);
 
-      const norm = (e: string) => ((e = (e || '').trim().toLowerCase()) && (e.startsWith('.') ? e : '.' + e)) || '';
-      if (norm(document.extension) !== norm(uploadedFileExtension)) {
-        throw new ForbiddenError(`Uploaded file extension ${uploadedFileExtension} does not match the original document extension ${document.extension}`);
+      const normalizedDocumentExtension = normalizeExtension(
+        document.extension ?? '',
+      ).trim().toLowerCase();
+      const normalizedUploadedExtension = normalizeExtension(
+        uploadedFileExtension,
+      ).trim().toLowerCase();
+      if (normalizedDocumentExtension !== normalizedUploadedExtension) {
+        throw new BadRequestError(`Uploaded file extension ${uploadedFileExtension} does not match the original document extension ${document.extension}`);
       }
 
       const adapter = await this.initializeStorageAdapter(req);
-      const basePath = document.documentPath?.endsWith(String(document._id))
-        ? document.documentPath
-        : `${document.documentPath}/${document._id}`;
-      const ext = document.extension?.startsWith('.')
-        ? document.extension
-        : document.extension
-          ? `.${document.extension}`
-          : '';
+      const basePath = getDocumentRootPath(
+        String(orgId),
+        String(document._id),
+        "",
+        document.documentPath,
+      );
+      const ext = normalizeExtension(document.extension ?? '');
 
       // No versions yet (e.g. presigned upload): save current as v0 first so we don't overwrite it
       if (!document.versionHistory?.length) {
-        const versionFilePath = `${basePath}/versions/v0${ext}`;
+        const versionFilePath = getVersionFilePath(basePath, 0, ext);
         const bufferResponse = await adapter.getBufferFromStorageService(
           document,
           undefined,
@@ -572,7 +578,11 @@ export class StorageController {
         // If current document was modified since last version, save it as a new version first
         if (isDocumentChanged === true) {
         const versionToSave = document.versionHistory?.length ?? 0;
-        const versionFilePath = `${basePath}/versions/v${versionToSave}${ext}`;
+        const versionFilePath = getVersionFilePath(
+          basePath,
+          versionToSave,
+          ext,
+        );
         const bufferResponse = await adapter.getBufferFromStorageService(
           document,
           undefined,
@@ -619,8 +629,13 @@ export class StorageController {
 
       // Now upload the new file - parallelize version and current writes
       const nextVersion = document.versionHistory?.length ?? 0;
-      const versionFilePath = `${basePath}/versions/v${nextVersion}${ext}`;
-      const currentFilePath = `${basePath}/current/${document.documentName}${ext}`;
+      const versionFilePath = getVersionFilePath(basePath, nextVersion, ext);
+      const currentFilePath = getCurrentFilePath(
+        basePath,
+        document.documentName ?? '',
+        ext,
+        !!document.isVersionedFile,
+      );
 
       const nextVersionPayload: FilePayload = {
         buffer: buffer,
@@ -697,12 +712,13 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      // Version is validated in query by RollBackToPreviousVersionSchema (from GetBufferSchema)
+      // Version is validated by RollBackToPreviousVersionSchema and available as a number in query/body.
       const version =
         (req.query.version as number | undefined) ??
-        (req.body as { version?: string })?.version;
+        (req.body as { version?: number })?.version;
       const { note } = req.body as { note: string };
       const userId = extractUserId(req);
+      const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
         next,
@@ -719,32 +735,28 @@ export class StorageController {
         );
       }
 
-      await document.save();
-
-      const versionNum =
-        typeof version === 'number' ? version : Number(version);
-      if (version === undefined || version === null || Number.isNaN(versionNum)) {
+      if (version === undefined || version === null) {
         throw new BadRequestError(
-          'Rollback requires a valid version (e.g. query ?version=0 or body {"version": 0, "note": "..."})',
+          'version is required for rollback (body: { "version": 0, "note": "..." })',
         );
       }
-      const currentVersion = document.versionHistory
-        ? document.versionHistory.length
-        : 0;
+
+      const versionNum = version as number;
+      const currentVersion = document.versionHistory?.length ?? 0;
+
       if (versionNum >= currentVersion - 1) {
         throw new BadRequestError(
-          `Rollback version greater than current: ${currentVersion - 1}`,
+          `Cannot rollback to version ${versionNum}: current latest is version ${currentVersion - 1}`,
         );
       }
       const adapter = await this.initializeStorageAdapter(req);
-      const basePath = document.documentPath?.endsWith(String(document._id))
-        ? document.documentPath
-        : `${document.documentPath}/${document._id}`;
-      const ext = document.extension?.startsWith('.')
-        ? document.extension
-        : document.extension
-          ? `.${document.extension}`
-          : '';
+      const basePath = getDocumentRootPath(
+        String(orgId),
+        String(document._id),
+        "",
+        document.documentPath,
+      );
+      const ext = normalizeExtension(document.extension ?? '');
 
       const bufferResult = await adapter.getBufferFromStorageService(
         document,
@@ -760,7 +772,7 @@ export class StorageController {
       const currentFileResponse = await this.cloneDocument(
         document,
         bufferResult.data as Buffer,
-        `${basePath}/current/${document.documentName}${ext}`,
+        getCurrentFilePath(basePath, document.documentName ?? '', ext, true),
         next,
         adapter,
       );
@@ -774,7 +786,11 @@ export class StorageController {
       const nextVersion = document.versionHistory
         ? document.versionHistory.length
         : 0;
-      const newDocumentFilePath = `${basePath}/versions/v${nextVersion}${ext}`;
+      const newDocumentFilePath = getVersionFilePath(
+        basePath,
+        nextVersion,
+        ext,
+      );
       const response = await this.cloneDocument(
         document,
         bufferResult.data as Buffer,
@@ -843,14 +859,13 @@ export class StorageController {
       const basePath = document.documentPath.endsWith(String(documentId))
         ? document.documentPath
         : `${document.documentPath}/${documentId}`;
-      const ext = document.extension?.startsWith('.')
-        ? document.extension
-        : document.extension
-          ? `.${document.extension}`
-          : '';
-      const pathForUpload = document.isVersionedFile
-        ? `${basePath}/current/${document.documentName}${ext}`
-        : `${basePath}/${document.documentName}${ext}`;
+      const ext = normalizeExtension(document.extension ?? '');
+      const pathForUpload = getCurrentFilePath(
+        basePath,
+        document.documentName ?? '',
+        ext,
+        !!document.isVersionedFile,
+      );
       const presignedUrlResponse =
         await adapter.generatePresignedUrlForDirectUpload(pathForUpload);
 
@@ -922,13 +937,20 @@ export class StorageController {
       }
 
       const document = docResult.document;
+
+      // for not versioned files, mutationCount>1 means the file was changed
+      if (!document.isVersionedFile || !document.versionHistory?.length) {
+        res
+          .status(HTTP_STATUS.OK)
+          .json((document.mutationCount ?? 1) > 1);
+        return;
+      }
+
       const adapter = await this.initializeStorageAdapter(req);
       const isDocumentChanged = !(await this.compareDocuments(
         document,
         undefined,
-        document.versionHistory?.length
-          ? document.versionHistory.length - 1
-          : 0,
+        document.versionHistory.length - 1,
         adapter,
       ));
 
