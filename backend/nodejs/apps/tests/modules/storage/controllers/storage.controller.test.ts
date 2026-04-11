@@ -7,7 +7,6 @@ import {
   BadRequestError,
   NotFoundError,
   InternalServerError,
-  ForbiddenError,
 } from '../../../../src/libs/errors/http.errors'
 import * as utils from '../../../../src/modules/storage/utils/utils'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
@@ -764,7 +763,7 @@ describe('StorageController', () => {
       expect(error).to.be.instanceOf(BadRequestError)
     })
 
-    it('should throw ForbiddenError for file format mismatch', async () => {
+    it('should throw BadRequestError for file format mismatch', async () => {
       const mockDoc = { isVersionedFile: true, extension: '.docx' }
       sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
 
@@ -780,7 +779,8 @@ describe('StorageController', () => {
       await controller.uploadNextVersionDocument(req, mockRes, mockNext)
       expect(mockNext.calledOnce).to.be.true
       const error = mockNext.firstCall.args[0]
-      expect(error).to.be.instanceOf(ForbiddenError)
+      expect(error).to.be.instanceOf(BadRequestError)
+      expect(error.message).to.include('does not match the original document extension')
     })
   })
 
@@ -888,7 +888,7 @@ describe('StorageController', () => {
       expect(mockNext.calledOnce).to.be.true
     })
 
-    it('should return true when document has changed', async () => {
+    it('should return true when versioned document has changed', async () => {
       const mockAdapter = {
         getBufferFromStorageService: sinon.stub()
           .onFirstCall().resolves({ data: Buffer.from('new') })
@@ -896,6 +896,7 @@ describe('StorageController', () => {
       }
       sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
       const mockDoc = {
+        isVersionedFile: true,
         versionHistory: [{ version: 0 }],
       }
       sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
@@ -911,13 +912,14 @@ describe('StorageController', () => {
       expect(mockRes.json.calledWith(true)).to.be.true
     })
 
-    it('should return false when document has not changed', async () => {
+    it('should return false when versioned document has not changed', async () => {
       const buffer = Buffer.from('same')
       const mockAdapter = {
         getBufferFromStorageService: sinon.stub().resolves({ data: buffer }),
       }
       sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
       const mockDoc = {
+        isVersionedFile: true,
         versionHistory: [{ version: 0 }],
       }
       sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
@@ -931,6 +933,72 @@ describe('StorageController', () => {
       await controller.documentDiffChecker(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
       expect(mockRes.json.calledWith(false)).to.be.true
+    })
+
+    // Review-fix added a short-circuit for non-versioned documents that uses
+    // mutationCount as the change signal instead of the buffer comparison.
+    it('should return true for non-versioned doc when mutationCount > 1', async () => {
+      const mockDoc = {
+        isVersionedFile: false,
+        versionHistory: [],
+        mutationCount: 2,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      const initSpy = sinon.stub(controller, 'initializeStorageAdapter')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.documentDiffChecker(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockRes.json.calledWith(true)).to.be.true
+      // It must short-circuit before initializing the adapter / reading buffers
+      expect(initSpy.called).to.be.false
+    })
+
+    it('should return false for non-versioned doc when mutationCount <= 1', async () => {
+      const mockDoc = {
+        isVersionedFile: false,
+        versionHistory: [],
+        mutationCount: 1,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      const initSpy = sinon.stub(controller, 'initializeStorageAdapter')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.documentDiffChecker(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockRes.json.calledWith(false)).to.be.true
+      expect(initSpy.called).to.be.false
+    })
+
+    it('should short-circuit for versioned doc with empty versionHistory using mutationCount', async () => {
+      const mockDoc = {
+        isVersionedFile: true,
+        versionHistory: [],
+        mutationCount: 3,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      const initSpy = sinon.stub(controller, 'initializeStorageAdapter')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.documentDiffChecker(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockRes.json.calledWith(true)).to.be.true
+      expect(initSpy.called).to.be.false
     })
 
     it('should throw NotFoundError when document does not exist', async () => {
@@ -2263,7 +2331,8 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        query: { version: '0' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 0 },
         body: { note: 'rollback to v0' },
         user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
         headers: {},
@@ -2305,7 +2374,8 @@ describe('StorageController', () => {
       const req = {
         params: { documentId: 'doc-1' },
         query: {},
-        body: { version: '1', note: 'rollback to v1' },
+        // RollBackToPreviousVersionSchema requires body.version to be a number
+        body: { version: 1, note: 'rollback to v1' },
         user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
         headers: {},
       } as any
@@ -2338,31 +2408,7 @@ describe('StorageController', () => {
 
       expect(mockNext.calledOnce).to.be.true
       expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(mockNext.firstCall.args[0].message).to.include('valid version')
-    })
-
-    it('should throw BadRequestError when version is NaN', async () => {
-      const mockDoc = {
-        _id: 'doc-1',
-        isVersionedFile: true,
-        versionHistory: [{ version: 0 }],
-        save: sinon.stub().resolves(),
-      }
-      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
-
-      const req = {
-        params: { documentId: 'doc-1' },
-        query: { version: 'abc' },
-        body: { note: 'rollback' },
-        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
-        headers: {},
-      } as any
-
-      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
-
-      expect(mockNext.calledOnce).to.be.true
-      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(mockNext.firstCall.args[0].message).to.include('valid version')
+      expect(mockNext.firstCall.args[0].message).to.include('version is required for rollback')
     })
 
     it('should throw BadRequestError when version >= currentVersion - 1', async () => {
@@ -2376,7 +2422,8 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        query: { version: '1' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 1 },
         body: { note: 'rollback' },
         user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
         headers: {},
@@ -2386,7 +2433,9 @@ describe('StorageController', () => {
 
       expect(mockNext.calledOnce).to.be.true
       expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(mockNext.firstCall.args[0].message).to.include('Rollback version greater than current')
+      expect(mockNext.firstCall.args[0].message).to.include(
+        'Cannot rollback to version 1: current latest is version 1',
+      )
     })
   })
 
@@ -2451,7 +2500,8 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        query: { version: '0' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 0 },
         body: { note: 'rollback to v0' },
         user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
         headers: {},
@@ -2498,7 +2548,8 @@ describe('StorageController', () => {
 
       const req = {
         params: { documentId: 'doc-1' },
-        query: { version: '0' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 0 },
         body: { note: 'rollback' },
         user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
         headers: {},
