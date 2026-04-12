@@ -6142,6 +6142,37 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
+  /userAccount/validateEmailChange:
+    put:
+      tags:
+        - User Account
+      summary: Confirm email change from scoped token
+      description: |
+        Applies a pending email change. The new email address is read from a scoped JWT
+        (email validation flow); the request body is not used.
+      operationId: validateEmailChange
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Email updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Email updated successfully
+        '400':
+          description: Email already in use or invalid token payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+        '401':
+          description: Invalid or expired scoped token
+
   /userAccount/logout/manual:
     post:
       tags:
@@ -16179,6 +16210,225 @@ paths:
         '401':
           description: Unauthorized
 
+  /toolsets/agents/{agentKey}:
+    get:
+      tags:
+        - Toolset Instances
+      summary: List toolsets for a service account agent
+      description: |
+        Returns organization toolset instances merged with the agent's authentication status.
+        The caller must have edit access to the agent.
+      operationId: getAgentToolsets
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Toolsets retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/authenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Authenticate toolset instance for an agent
+      description: |
+        Authenticate a toolset instance on behalf of a service account agent using non-OAuth credentials
+        (API token, bearer, username/password).
+      operationId: authenticateAgentToolset
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Instance authenticated successfully
+        '400':
+          description: Invalid auth payload
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update agent toolset instance credentials
+      description: Update non-OAuth credentials for a toolset instance on behalf of a service account agent.
+      operationId: updateAgentToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+                      format: password
+      responses:
+        '200':
+          description: Credentials updated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+    delete:
+      tags:
+        - Toolset Instances
+      summary: Remove agent toolset instance credentials
+      description: Remove credentials for a toolset instance on behalf of a service account agent.
+      operationId: removeAgentToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Credentials removed successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/oauth/authorize:
+    get:
+      tags:
+        - Toolset OAuth
+      summary: Get OAuth authorization URL for an agent toolset instance
+      description: Returns an OAuth authorization URL for authenticating a toolset instance scoped to a service account agent.
+      operationId: getAgentToolsetOAuthUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authorization URL generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+
+  /toolsets/agents/{agentKey}/instances/{instanceId}/reauthenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Mark agent toolset instance for reauthentication
+      description: Clears the agent's OAuth tokens for the instance so the user must re-authenticate.
+      operationId: reauthenticateAgentToolset
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reauthentication required
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+
   /toolsets/instances:
     get:
       tags:
@@ -16347,6 +16597,50 @@ paths:
           description: Instance not found
 
   /toolsets/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update user toolset instance credentials
+      description: Update the current user's non-OAuth credentials for a toolset instance (API token, bearer, username/password).
+      operationId: updateUserToolsetInstanceCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+                      format: password
+      responses:
+        '200':
+          description: Credentials updated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
     delete:
       tags:
         - Toolset Instances
