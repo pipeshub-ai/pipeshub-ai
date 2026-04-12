@@ -112,7 +112,9 @@ class TestCompressRecord:
         logger = MagicMock()
         bs = _make_blob_storage(logger=logger)
         bs._compress_record({"data": "x" * 1000})
-        logger.info.assert_called()
+        logger.debug.assert_called()
+        fmt, *_ = logger.debug.call_args[0]
+        assert "Compressed record" in fmt and "reduction" in fmt
 
 
 # ===================================================================
