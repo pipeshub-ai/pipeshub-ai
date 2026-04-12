@@ -126,7 +126,9 @@ class TestSaveRecordS3ErrorBranches:
             "app.modules.transformers.blob_storage.aiohttp.ClientSession",
             return_value=mock_session,
         ):
-            with pytest.raises(Exception, match="No document ID in placeholder"):
+            with pytest.raises(
+                Exception, match="No document ID found in placeholder response"
+            ):
                 await bs.save_record_to_storage(
                     "org-1", "rec-1", "vr-1", {"key": "value"}
                 )
