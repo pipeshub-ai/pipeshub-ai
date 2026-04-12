@@ -53,19 +53,19 @@ def _extract_text_from_message_content(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        text = ""
+        parts: list[str] = []
         for item in content:
             if isinstance(item, str):
-                text += item
+                parts.append(item)
             elif isinstance(item, dict) and item.get("type") == "text":
-                text += item.get("text", "")
-        return text
+                parts.append(item.get("text", ""))
+        return "".join(parts)
     return ""
 
 
 def _extract_text_from_messages(messages: list) -> str:
     """Return concatenated text from HumanMessage, ToolMessage, and user-role dict messages."""
-    all_text = ""
+    segments: list[str] = []
     for msg in messages:
         if isinstance(msg, (HumanMessage, ToolMessage)):
             content = msg.content
@@ -74,8 +74,8 @@ def _extract_text_from_messages(messages: list) -> str:
         else:
             continue
         text = _extract_text_from_message_content(content)
-        all_text += f" {text}"
-    return all_text
+        segments.append(f" {text}")
+    return "".join(segments)
 
 async def _fetch_multiple_records_impl(
     record_ids: list[str],
