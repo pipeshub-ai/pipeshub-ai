@@ -152,6 +152,7 @@ interface SlackUserRecord {
   name?: string;
   real_name?: string;
   profile?: SlackUserProfile;
+  tz?: string;
 }
 
 interface TypedSlackClient {
@@ -1716,6 +1717,11 @@ async function processSlackMessage(
   }
 
   const email = lookupResult.user.profile.email;
+  // Slack returns the user's IANA timezone (e.g. "America/Los_Angeles") on
+  // users.info. Forward it to the AI backend so build_llm_time_context can
+  // localize the LLM's time-relative answers to the user's actual zone
+  // instead of falling back to the server clock.
+  const userTimezone = lookupResult.user.tz || undefined;
   const configService = ConfigService.getInstance();
   const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
@@ -1891,6 +1897,11 @@ async function processSlackMessage(
       {
         query,
         chatMode: "auto",
+        // Wall-clock context for the LLM. currentTime is UTC; timezone is the
+        // user's IANA zone from Slack users.info — together they let the
+        // backend project the correct local time for time-relative answers.
+        currentTime: new Date().toISOString(),
+        ...(userTimezone ? { timezone: userTimezone } : {}),
       },
       {
         headers: {

@@ -1731,7 +1731,7 @@ class TestBuildReactSystemPrompt:
         }
         log = _mock_log()
         prompt = _build_react_system_prompt(state, log)
-        assert "Temporal Context" in prompt
+        assert "## Time context" in prompt
         assert "America/New_York" in prompt
 
     def test_prompt_includes_jira_guidance_when_jira_tools(self):
