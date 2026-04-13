@@ -33,6 +33,11 @@ def _version_count(body: dict[str, Any]) -> int:
     return len(body.get("versionHistory") or [])
 
 
+def _expected_initial_version_count(storage_vendor: str) -> int:
+    """Local currently creates v0 eagerly; s3 keeps lazy v0 materialization."""
+    return 1 if storage_vendor == "local" else 0
+
+
 def _version_path(entry: dict[str, Any], vendor: str) -> str:
     """Return the path that identifies the stored version file.
 
@@ -298,9 +303,8 @@ class TestVersionHistoryPaths:
         body = resp.json()
         self.__class__.doc_id = _doc_id(body)
         self.__class__.vendor = body.get("storageVendor", "")
-        # Presigned direct upload: v0 is materialised lazily on the first
-        # uploadNextVersion call, so versionHistory is empty here.
-        assert _version_count(body) == 0
+        expected_initial = _expected_initial_version_count(self.vendor.lower())
+        assert _version_count(body) == expected_initial
 
     def test_02_first_upload_next_version(self):
         """C1: versionHistory[0] path contains versions/v0."""

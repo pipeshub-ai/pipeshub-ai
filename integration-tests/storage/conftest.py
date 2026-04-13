@@ -72,6 +72,7 @@ def _build_storage_payload(backend: str) -> dict:
             "s3AccessKeyId": os.environ["S3_ACCESS_KEY"],
             "s3SecretAccessKey": os.environ["S3_SECRET_KEY"],
             "s3Region": os.environ["S3_REGION"],
+            "s3BucketName": os.environ["S3_BUCKET"],
         }
     # default: local
     return {"storageType": "local"}

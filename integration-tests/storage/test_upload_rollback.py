@@ -40,6 +40,11 @@ def _version_count(body: dict[str, Any]) -> int:
     return len(body.get("versionHistory") or [])
 
 
+def _expected_initial_version_count(storage_vendor: str) -> int:
+    """Local currently creates v0 eagerly; s3 keeps lazy v0 materialization."""
+    return 1 if storage_vendor == "local" else 0
+
+
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------
@@ -60,12 +65,7 @@ class TestUploadAndRollback:
 
     # ------------------------------------------------------------------ step 1
     def test_01_upload_versioned_document(self) -> None:
-        """Upload a versioned .txt document; expect 200 and versionHistory len = 0.
-
-        With the presigned direct-upload flow the v0 entry is not yet
-        materialised — it gets created the first time ``uploadNextVersion``
-        is called.
-        """
+        """Upload a versioned .txt document; expect 200 and backend-specific initial version count."""
         resp = self._sc.upload(
             file_content=b"version zero content",
             file_name="test_doc.txt",
@@ -81,8 +81,11 @@ class TestUploadAndRollback:
         self.__class__.document_id = doc_id
 
         assert body.get("isVersionedFile") is True
-        assert _version_count(body) == 0, (
-            f"Expected 0 versions right after presigned upload, got {_version_count(body)}"
+        expected_initial = _expected_initial_version_count(
+            str(body.get("storageVendor", "")).lower()
+        )
+        assert _version_count(body) == expected_initial, (
+            f"Expected {expected_initial} versions right after upload, got {_version_count(body)}"
         )
         logger.info("Created document %s", doc_id)
 

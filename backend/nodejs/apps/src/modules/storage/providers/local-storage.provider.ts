@@ -166,7 +166,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
     document: Document,
   ): Promise<StorageServiceResponse<string>> {
     try {
-      const localPath = this.getLocalPathFromUrl(document.local?.url);
+      const localPath = this.getLocalPathFromUrl(document.local?.localPath || document.local?.url);
       if (!localPath) {
         throw new StorageNotFoundError('Local file path not found');
       }
@@ -227,11 +227,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         throw new StorageNotFoundError('Invalid file URL format');
       }
 
-      const fullPath = path.join(
-        this.mountPath,
-        version === undefined ? 'current' : 'versions',
-        localPath,
-      );
+      const fullPath = path.join(this.mountPath, localPath);
 
       // Read file content
       const buffer = await fs.readFile(fullPath);
@@ -409,11 +405,8 @@ class LocalStorageAdapter implements StorageServiceInterface {
         localPath = localPath.replace(/^\//, '');
       }
 
-      // Get the relative path by removing the mount path and 'current' or 'versions' directory
-      const relativePath = path.relative(
-        path.join(this.mountPath, 'current'),
-        localPath,
-      );
+      // Get the relative path by removing the mount path
+      const relativePath = path.relative(this.mountPath, localPath);
 
       return relativePath;
     } catch {

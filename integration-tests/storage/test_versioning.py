@@ -30,6 +30,11 @@ def _version_count(body: dict[str, Any]) -> int:
     return len(body.get("versionHistory") or [])
 
 
+def _expected_initial_version_count(storage_vendor: str) -> int:
+    """Local currently creates v0 eagerly; s3 keeps lazy v0 materialization."""
+    return 1 if storage_vendor == "local" else 0
+
+
 # ---------------------------------------------------------------------------
 # Test 16 — Rollback + content verification
 # ---------------------------------------------------------------------------
@@ -54,10 +59,12 @@ class TestRollbackContentVerification:
             is_versioned=True,
         )
         assert resp.status_code == 200
-        self.__class__.doc_id = _doc_id(resp.json())
-        # Presigned direct upload: versionHistory stays empty until
-        # uploadNextVersion materialises the v0 entry.
-        assert _version_count(resp.json()) == 0
+        body = resp.json()
+        self.__class__.doc_id = _doc_id(body)
+        expected_initial = _expected_initial_version_count(
+            str(body.get("storageVendor", "")).lower()
+        )
+        assert _version_count(body) == expected_initial
 
     def test_02_upload_v1(self):
         assert self.doc_id
