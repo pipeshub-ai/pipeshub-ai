@@ -3,13 +3,14 @@
 """Azure Files connector fixtures."""
 
 import os
-from typing import Any, Dict, Generator
+from typing import Any, AsyncGenerator, Dict
 
 import pytest
-from neo4j import Driver
+import pytest_asyncio
 
 from connector_lifecycle import constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
+from helper.graph_provider import GraphProviderProtocol
 
 from connectors.azure_files.azure_files_storage_helper import AzureFilesStorageHelper
 
@@ -22,20 +23,20 @@ def azure_files_storage():
     return AzureFilesStorageHelper(connection_string=conn_str)
 
 
-@pytest.fixture(scope="module")
-def azure_files_connector(
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def azure_files_connector(
     azure_files_storage: AzureFilesStorageHelper,
     pipeshub_client: PipeshubClient,
-    neo4j_driver: Driver,
+    graph_provider: GraphProviderProtocol,
     sample_data_root,
-) -> Generator[Dict[str, Any], None, None]:
+) -> AsyncGenerator[Dict[str, Any], None]:
     conn_str = os.getenv("AZURE_FILES_CONNECTION_STRING")
     config = {"auth": {"connectionString": conn_str}}
 
-    state = constructor(
+    state = await constructor(
         azure_files_storage,
         pipeshub_client,
-        neo4j_driver,
+        graph_provider,
         sample_data_root,
         storage_name="Azure Files share",
         connector_type="Azure Files",
@@ -44,10 +45,10 @@ def azure_files_connector(
     )
     state["share_name"] = state["resource_name"]
     yield state
-    destructor(
+    await destructor(
         azure_files_storage,
         pipeshub_client,
-        neo4j_driver,
+        graph_provider,
         state,
         connector_type="Azure Files",
     )

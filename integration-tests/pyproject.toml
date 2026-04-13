@@ -19,6 +19,8 @@ dependencies = [
   "redis>=5.0.0",
   "pydantic>=2.12.5",
   "pyyaml>=6.0",
+  "jsonschema>=4.0.0",
+  "aiohttp>=3.8.0",
 ]
 
 [tool.setuptools.packages.find]

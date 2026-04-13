@@ -6,8 +6,11 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
+from __future__ import annotations
+
 import asyncio
 import contextlib
+import os
 import time
 import traceback
 import unicodedata
@@ -16,10 +19,9 @@ from collections import defaultdict
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
-from app.config.configuration_service import ConfigurationService
-
 if TYPE_CHECKING:
     from fastapi import Request
+    from app.config.configuration_service import ConfigurationService
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -182,14 +184,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
     def __init__(
         self,
         logger: Logger,
-        config_service: ConfigurationService,
+        config_service: ConfigurationService | None = None,
     ) -> None:
         """
         Initialize ArangoDB HTTP provider.
 
         Args:
             logger: Logger instance
-            config_service: Configuration service for database credentials
+            config_service: Configuration service for database credentials (optional for tests / env-only connect)
         """
         self.logger = logger
         self.config_service = config_service
@@ -387,18 +389,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info("🚀 Connecting to ArangoDB via HTTP API...")
 
-            # Get ArangoDB configuration
-            arangodb_config = await self.config_service.get_config(
-                config_node_constants.ARANGODB.value
-            )
+            if self.config_service is not None:
+                arangodb_config = await self.config_service.get_config(
+                    config_node_constants.ARANGODB.value
+                )
 
-            if not arangodb_config or not isinstance(arangodb_config, dict):
-                raise ValueError("ArangoDB configuration not found or invalid")
+                if not arangodb_config or not isinstance(arangodb_config, dict):
+                    raise ValueError("ArangoDB configuration not found or invalid")
 
-            arango_url = str(arangodb_config.get("url"))
-            arango_user = str(arangodb_config.get("username"))
-            arango_password = str(arangodb_config.get("password"))
-            arango_db = str(arangodb_config.get("db"))
+                arango_url = str(arangodb_config.get("url"))
+                arango_user = str(arangodb_config.get("username"))
+                arango_password = str(arangodb_config.get("password"))
+                arango_db = str(arangodb_config.get("db"))
+            else:
+                arango_url = str(os.getenv("ARANGO_URL", ""))
+                arango_user = str(os.getenv("ARANGO_USERNAME", "root"))
+                arango_password = str(os.getenv("ARANGO_PASSWORD", ""))
+                arango_db = str(os.getenv("ARANGO_DB_NAME", "es"))
 
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
