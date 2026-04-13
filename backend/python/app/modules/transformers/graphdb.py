@@ -1,5 +1,5 @@
 import uuid
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -105,14 +105,19 @@ class GraphDBTransformer(Transformer):
             label: label for log messages (e.g. "department")
         """
         # 1. Fetch existing edges for this record
-        existing_edges = await tx_store.get_edges_from_node(
+        existing_edges = await tx_store.get_edges_from_node_with_target_name(
             record_from, edge_collection
         )
+        self.logger.debug(f"Existing edges with adjacent node names : {existing_edges}")
         existing_by_to: Dict[str, Dict] = {e["_to"]: e for e in existing_edges}
 
         # 2. Create edges that are new (in new but not in existing)
         edges_to_create: List[Dict] = []
-        for to_full, name in new_tos.items():
+        sorted_new_targets = sorted(
+            new_tos.items(),
+            key=lambda item: item[1],
+        )
+        for to_full, name in sorted_new_targets:
             if to_full not in existing_by_to:
                 to_collection, to_id = to_full.split("/", 1)
                 edges_to_create.append({
@@ -133,15 +138,30 @@ class GraphDBTransformer(Transformer):
             to_full for to_full in existing_by_to
             if to_full not in new_tos
         ]
-        for to_full in stale_tos:
-            to_collection, to_id = to_full.split("/", 1)
-            from_collection, from_id = record_from.split("/", 1)
-            await tx_store.delete_edge(
-                from_id, from_collection,
-                to_id, to_collection,
-                edge_collection,
+        if stale_tos:
+            stale_tos = sorted(
+                stale_tos,
+                key=lambda to_full: existing_by_to[to_full]["name"],
             )
-            self.logger.info(f"🗑️ Deleted stale {label} edge: {record_id} -> {to_full}")
+            from_collection, from_id = record_from.split("/", 1)
+            stale_edges = []
+            for to_full in stale_tos:
+                to_collection, to_id = to_full.split("/", 1)
+                stale_edges.append(
+                    {
+                        "from_id": from_id,
+                        "from_collection": from_collection,
+                        "to_id": to_id,
+                        "to_collection": to_collection,
+                    }
+                )
+
+            deleted_count = await tx_store.batch_delete_edges(stale_edges, edge_collection)
+            for to_full in stale_tos:
+                self.logger.info(f"🗑️ Deleted stale {label} edge: {record_id} -> {to_full}")
+            self.logger.info(
+                f"🧹 Deleted {deleted_count} stale {label} edges for record {record_id}"
+            )
 
     # ------------------------------------------------------------------
     # main persistence logic
@@ -193,13 +213,14 @@ class GraphDBTransformer(Transformer):
                 )
 
                 # --- Reconcile category edges ---
-                new_cat_tos: Set[str] = set()
+                new_cat_tos: Dict[str, str] = {}
 
                 # Handle primary category
                 category_key = await self._find_or_create_node(
                     tx_store, CollectionNames.CATEGORIES.value, "name", metadata.categories[0]
                 )
-                new_cat_tos.add(f"{CollectionNames.CATEGORIES.value}/{category_key}")
+                cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
+                new_cat_tos[cat_to] = metadata.categories[0]
 
                 # Handle subcategories
                 async def handle_subcategory(
@@ -209,7 +230,7 @@ class GraphDBTransformer(Transformer):
                     key = await self._find_or_create_node(tx_store, collection_name, "name", name)
 
                     sub_to = f"{collection_name}/{key}"
-                    new_cat_tos.add(sub_to)
+                    new_cat_tos[sub_to] = name
 
                     # Create hierarchy relationship (inter-category)
                     # batch_create_edges uses UPSERT so this is idempotent
@@ -249,7 +270,7 @@ class GraphDBTransformer(Transformer):
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
                     CollectionNames.BELONGS_TO_CATEGORY.value,
-                    {to: to for to in new_cat_tos}, "category",
+                    new_cat_tos, "category",
                 )
 
                 # --- Reconcile language edges ---

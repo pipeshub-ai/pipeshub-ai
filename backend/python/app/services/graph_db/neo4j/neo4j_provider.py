@@ -1253,6 +1253,84 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete edge failed: {str(e)}")
             raise
 
+    async def batch_delete_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """Batch delete edges between node pairs."""
+        try:
+            if not edges:
+                return 0
+
+            relationship_type = edge_collection_to_relationship(collection)
+
+            edge_data = []
+            for edge in edges:
+                if "_from" in edge and "_to" in edge:
+                    from_collection, from_key = self._parse_arango_id(edge["_from"])
+                    to_collection, to_key = self._parse_arango_id(edge["_to"])
+                elif "from_id" in edge and "to_id" in edge:
+                    from_key = edge["from_id"]
+                    to_key = edge["to_id"]
+                    from_collection = edge.get("from_collection", "")
+                    to_collection = edge.get("to_collection", "")
+                else:
+                    self.logger.warning(
+                        f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}"
+                    )
+                    continue
+
+                if not from_key or not to_key or not from_collection or not to_collection:
+                    self.logger.warning(
+                        f"Skipping invalid edge (missing required fields): {edge}"
+                    )
+                    continue
+
+                edge_data.append(
+                    {
+                        "from_id": from_key,
+                        "to_id": to_key,
+                        "from_label": collection_to_label(from_collection),
+                        "to_label": collection_to_label(to_collection),
+                    }
+                )
+
+            if not edge_data:
+                return 0
+
+            from collections import defaultdict
+
+            grouped_edges = defaultdict(list)
+            for edge in edge_data:
+                key = (edge["from_label"], edge["to_label"])
+                grouped_edges[key].append(
+                    {"from_id": edge["from_id"], "to_id": edge["to_id"]}
+                )
+
+            total_deleted = 0
+            for (from_label, to_label), group_edges in grouped_edges.items():
+                query = f"""
+                UNWIND $edges AS edge
+                MATCH (from:{from_label} {{id: edge.from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: edge.to_id}})
+                DELETE r
+                RETURN count(r) AS deleted
+                """
+
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"edges": group_edges},
+                    txn_id=transaction,
+                )
+                total_deleted += results[0]["deleted"] if results else 0
+
+            return total_deleted
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch delete edges failed: {str(e)}")
+            raise
+
     async def delete_edges_from(
         self,
         from_id: str,
@@ -12335,6 +12413,77 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
             return []
+
+    async def get_edges_from_node_with_target_name(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a node with target node names.
+
+        Args:
+            node_id: Source node ID (e.g., "groups/123")
+            edge_collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of edges
+        """
+        try:
+            # Parse node_id to get collection and key
+            if "/" in node_id:
+                collection, key = node_id.split("/", 1)
+            else:
+                # Try to determine collection from context
+                collection = "records"  # Default fallback
+                key = node_id
+
+            label = collection_to_label(collection)
+            rel_type = self._get_relationship_type(edge_collection)
+
+            query = f"""
+            MATCH (source:{label} {{id: $key}})-[r:{rel_type}]->(target)
+                 RETURN properties(r) AS r, labels(target) AS target_labels, target.id AS target_id,
+                     coalesce(target.name, target.departmentName, target.recordName, target.groupName, target.id) AS target_name
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"key": key},
+                txn_id=transaction
+            )
+
+            # Create reverse mapping from label to collection
+            label_to_collection = {v: k for k, v in COLLECTION_TO_LABEL.items()}
+
+            edges = []
+            for result in results:
+                edge_dict = result.get("r", {})  # properties(r) already returns a dict
+                target_labels = result.get("target_labels", [])
+                target_id = result.get("target_id")
+                target_name = result.get("target_name")
+
+                # Determine target collection from labels using reverse of COLLECTION_TO_LABEL
+                target_collection = "records"  # Default
+                for label in target_labels:
+                    # Use reverse mapping to get collection from label
+                    if label in label_to_collection:
+                        target_collection = label_to_collection[label]
+                        break
+
+                # Convert to ArangoDB edge format
+                edge_dict["_from"] = node_id
+                edge_dict["_to"] = f"{target_collection}/{target_id}"
+                edge_dict["name"] = target_name
+                edges.append(edge_dict)
+            return edges
+
+        except Exception as e:
+            self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            return []
+
 
     # ==================== Missing Abstract Methods Implementation ====================
 

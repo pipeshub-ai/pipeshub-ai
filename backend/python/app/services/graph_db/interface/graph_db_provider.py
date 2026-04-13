@@ -349,6 +349,32 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def batch_delete_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Batch delete edges/relationships between nodes.
+
+        Args:
+            edges (List[Dict]): List of edges in generic format:
+                {
+                    "from_id": "user123",           # Source node ID
+                    "from_collection": "users",     # Source collection
+                    "to_id": "record456",           # Target node ID
+                    "to_collection": "records",     # Target collection
+                }
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
     async def delete_edges_from(
         self,
         from_id: str,
@@ -574,6 +600,28 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of edge documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_edges_from_node_with_target_name(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a node with target node names.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Source node ID (e.g., "groups/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents enriched with target name
         """
         pass
 

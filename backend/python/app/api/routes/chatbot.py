@@ -23,7 +23,6 @@ from app.utils.chat_helpers import (
     get_message_content,
 )
 from app.utils.fetch_full_record import create_fetch_full_record_tool
-from app.utils.citations import process_citations
 from app.utils.execute_query import create_execute_query_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation

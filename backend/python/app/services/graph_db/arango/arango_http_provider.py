@@ -1922,6 +1922,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
             collection, from_node, to_node, txn_id=transaction
         )
 
+    async def batch_delete_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Batch delete edges between node pairs - FULLY ASYNC.
+
+        Args:
+            edges: List of edges in generic format
+            collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of edges deleted
+        """
+        try:
+            if not edges:
+                return 0
+
+            arango_edges = self._translate_edges_to_arango(edges)
+
+            batch_query = """
+            FOR edge IN @edges
+                FOR rel IN @@collection
+                    FILTER rel._from == edge._from AND rel._to == edge._to
+                    REMOVE rel IN @@collection
+                    RETURN 1
+            """
+            bind_vars = {"edges": arango_edges, "@collection": collection}
+
+            results = await self.http_client.execute_aql(
+                batch_query,
+                bind_vars,
+                txn_id=transaction,
+            )
+            return len(results)
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch delete edges failed: {str(e)}")
+            raise
+
     async def delete_edges_from(
         self,
         from_id: str,
@@ -2370,6 +2413,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            return []
+
+    async def get_edges_from_node_with_target_name(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a node with target node names.
+
+        Args:
+            node_id: Source node ID (e.g., "groups/123")
+            edge_collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of edges enriched with target `name`
+        """
+        query = f"""
+        FOR edge IN {edge_collection}
+            FILTER edge._from == @node_id
+            LET target = DOCUMENT(edge._to)
+            LET target_name = NOT_NULL(
+                target.name,
+                target.departmentName,
+                target.recordName,
+                target.groupName,
+                target.id,
+                LAST(SPLIT(edge._to, "/"))
+            )
+            RETURN MERGE(edge, {{ name: target_name }})
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"node_id": node_id},
+                txn_id=transaction
+            )
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edges from node with target name failed: {str(e)}")
             return []
 
     async def get_related_nodes(

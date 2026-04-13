@@ -186,7 +186,7 @@ async def _fetch_record_by_id(
 
         # Build graph metadata for get_record so blob+graph normalization stays consistent
         record_id_value = meta.get("id") or meta.get("_key") or record_id
-        virtual_to_record_map: Dict[str, Dict[str, Any]] = {
+        virtual_to_record_map: dict[str, dict[str, Any]] = {
             vrid: {
                 "id": record_id_value,
                 "_key": record_id_value,
