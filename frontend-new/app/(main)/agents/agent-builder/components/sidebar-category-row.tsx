@@ -16,6 +16,29 @@ function applyDragPayload(e: React.DragEvent, dragType: string, dragData?: Recor
   }
 }
 
+/** Matches Radix ghost `IconButton` size 1 hit area so status glyphs line up with adjacent IconButtons. */
+const CATEGORY_TRAILING_ICON_SLOT: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  alignSelf: 'center',
+  boxSizing: 'border-box',
+  /* ghost size-1: padding var(--space-1) each side + 18px icon */
+  minWidth: 'calc(18px + var(--space-1) * 2)',
+  minHeight: 'calc(18px + var(--space-1) * 2)',
+  lineHeight: 0,
+};
+
+/** Stops drag propagation; centers trailing IconButtons with the status glyph slot. */
+const CATEGORY_ROW_ACTION_WRAP: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  alignSelf: 'center',
+  flexShrink: 0,
+  lineHeight: 0,
+};
+
 function StatusGlyphTooltip({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Tooltip content={label}>
@@ -23,7 +46,7 @@ function StatusGlyphTooltip({ label, children }: { label: string; children: Reac
         tabIndex={0}
         role="img"
         aria-label={label}
-        style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0, outline: 'none' }}
+        style={{ ...CATEGORY_TRAILING_ICON_SLOT, outline: 'none' }}
       >
         {children}
       </span>
@@ -126,8 +149,6 @@ export function SidebarCategoryRow(props: {
         mx="1"
         style={{
           borderRadius: 'var(--radius-1)',
-          border: '1px solid var(--olive-3)',
-          background: 'var(--olive-2)',
           userSelect: 'none',
         }}
         className="agent-builder-sidebar-category-row"
@@ -211,7 +232,11 @@ export function SidebarCategoryRow(props: {
           ) : null}
           {toolsetStatus === 'needs_authentication' ? (
             openInNewHandler ? (
-              <Box onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+              <Box
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                style={CATEGORY_ROW_ACTION_WRAP}
+              >
                 <Tooltip content={configureTooltip || statusTooltip || t('agentBuilder.authenticateShort')}>
                   <IconButton
                     type="button"
@@ -229,7 +254,11 @@ export function SidebarCategoryRow(props: {
                 </Tooltip>
               </Box>
             ) : showDisabledAuthControl ? (
-              <Box onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+              <Box
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                style={CATEGORY_ROW_ACTION_WRAP}
+              >
                 <Tooltip
                   content={
                     configureDisabledTooltip ||
@@ -245,7 +274,7 @@ export function SidebarCategoryRow(props: {
                     color="gray"
                     disabled
                     aria-label={configureDisabledTooltip || t('agentBuilder.authenticateShort')}
-                    style={{ cursor: 'not-allowed', opacity: 0.55, flexShrink: 0 }}
+                    style={{ cursor: 'not-allowed', opacity: 0.55 }}
                   >
                     <MaterialIcon name="open_in_new" size={18} color="var(--slate-11)" />
                   </IconButton>
@@ -258,7 +287,11 @@ export function SidebarCategoryRow(props: {
             ) : null
           ) : null}
           {gearHandler ? (
-            <Box onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+            <Box
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              style={CATEGORY_ROW_ACTION_WRAP}
+            >
               <Tooltip content={configureTooltip || t('agentBuilder.configureShort')}>
                 <IconButton
                   type="button"
@@ -280,7 +313,11 @@ export function SidebarCategoryRow(props: {
               </Tooltip>
             </Box>
           ) : showDisabledGear ? (
-            <Box onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+            <Box
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              style={CATEGORY_ROW_ACTION_WRAP}
+            >
               <Tooltip
                 content={configureDisabledTooltip || configureTooltip || t('agentBuilder.configureShort')}
               >
@@ -291,7 +328,7 @@ export function SidebarCategoryRow(props: {
                   color="gray"
                   disabled
                   aria-label={configureDisabledTooltip || t('agentBuilder.configureShort')}
-                  style={{ cursor: 'not-allowed', opacity: 0.55, flexShrink: 0 }}
+                  style={{ cursor: 'not-allowed', opacity: 0.55 }}
                 >
                   <MaterialIcon
                     name={configureUseKeyIcon ? 'vpn_key' : 'settings'}

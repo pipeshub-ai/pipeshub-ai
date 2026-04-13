@@ -1,9 +1,8 @@
 import type { AgentDetail } from '../types';
 
-/** Accept camelCase or snake_case from the Node API. */
+/** Covers both camelCase (typed) and snake_case (legacy API shape) for isServiceAccount. */
 type AgentDetailFlags = AgentDetail & {
   is_service_account?: boolean;
-  canEdit?: boolean;
 };
 
 function readIsServiceAccount(agent: AgentDetail): boolean {
@@ -11,10 +10,8 @@ function readIsServiceAccount(agent: AgentDetail): boolean {
   return a.isServiceAccount === true || a.is_service_account === true;
 }
 
-/** User may not persist agent changes (explicit false from API). */
 function readDeniedEdit(agent: AgentDetail): boolean {
-  const a = agent as AgentDetailFlags;
-  return a.can_edit === false || a.canEdit === false;
+  return agent.can_edit === false;
 }
 
 /**

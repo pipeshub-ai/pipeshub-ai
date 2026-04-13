@@ -9,6 +9,10 @@ import {
   OAUTH_VERIFY_GAP_MS,
   openCenteredOAuthWindow,
 } from '../components/toolset-oauth-constants';
+import {
+  isToolsetOAuthErrorMessageType,
+  isToolsetOAuthSuccessMessageType,
+} from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 
 export interface UseToolsetOauthPopupFlowOptions {
   t: TFunction;
@@ -16,6 +20,8 @@ export interface UseToolsetOauthPopupFlowOptions {
   onVerified: () => void;
   onNotify?: (message: string) => void;
   onIncomplete: () => void;
+  /** Popup posts `oauth-error` when the callback page fails before verification. */
+  onOAuthPopupError?: (message: string) => void;
 }
 
 export interface ToolsetOauthBeginHandlers {
@@ -24,7 +30,8 @@ export interface ToolsetOauthBeginHandlers {
 }
 
 /**
- * Popup OAuth for toolsets: open window, poll until it closes, verify with backoff, listen for `oauth-success` postMessage.
+ * Popup OAuth for toolsets: open window, poll until it closes, verify with backoff,
+ * listen for toolset OAuth popup messages (`TOOLSET_OAUTH_POST_MESSAGE` success/error payloads).
  */
 export function useToolsetOauthPopupFlow({
   t,
@@ -32,6 +39,7 @@ export function useToolsetOauthPopupFlow({
   onVerified,
   onNotify,
   onIncomplete,
+  onOAuthPopupError,
 }: UseToolsetOauthPopupFlowOptions) {
   const [authenticating, setAuthenticating] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -112,7 +120,6 @@ export function useToolsetOauthPopupFlow({
             return;
           }
           setAuthenticating(false);
-          onNotify?.(t('agentBuilder.oauthSignInSuccess'));
           onVerified();
           return;
         }
@@ -128,20 +135,45 @@ export function useToolsetOauthPopupFlow({
     setAuthenticating(false);
     oauthCompletionHandledRef.current = false;
     onIncomplete();
-  }, [clearOAuthPoll, onIncomplete, onNotify, onVerified, t, verifyAuthenticated]);
+  }, [clearOAuthPoll, onIncomplete, onVerified, verifyAuthenticated]);
 
   useEffect(() => {
     if (!authenticating) return;
     const onMsg = (event: MessageEvent) => {
-      if (event.data?.type !== 'oauth-success') return;
       const pop = oauthPopupRef.current;
       if (!pop) return;
       if (event.source && event.source !== pop) return;
-      void completeOAuthFlowIfNeeded();
+      if (typeof window !== 'undefined' && event.origin !== window.location.origin) return;
+
+      const type = event.data?.type as string | undefined;
+      if (isToolsetOAuthSuccessMessageType(type)) {
+        void completeOAuthFlowIfNeeded();
+        return;
+      }
+      if (isToolsetOAuthErrorMessageType(type)) {
+        oauthVerifyAbortRef.current = true;
+        oauthCompletionHandledRef.current = false;
+        clearOAuthPoll();
+        const msg =
+          typeof event.data?.error === 'string' && event.data.error.trim()
+            ? event.data.error
+            : t('agentBuilder.oauthSignInIncomplete');
+        const p = oauthPopupRef.current;
+        oauthPopupRef.current = null;
+        if (p && !p.closed) {
+          try {
+            p.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        setAuthenticating(false);
+        onOAuthPopupError?.(msg);
+      }
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
-  }, [authenticating, completeOAuthFlowIfNeeded]);
+  }, [authenticating, clearOAuthPoll, completeOAuthFlowIfNeeded, onOAuthPopupError, t]);
 
   const beginOAuth = useCallback(
     async (

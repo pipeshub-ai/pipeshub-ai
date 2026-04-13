@@ -768,7 +768,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             void refreshToolsets(effectiveAgentKey, true);
           }}
           onSuccess={() => {
-            setAgentToolsetDialog(null);
             void refreshToolsets(effectiveAgentKey, true);
           }}
           onNotify={setBanner}

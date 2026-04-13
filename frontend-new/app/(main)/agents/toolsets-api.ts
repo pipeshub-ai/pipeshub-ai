@@ -56,8 +56,8 @@ function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
       description: (t.description as string) || '',
       appName: toolsetType,
     })),
-    isConfigured: Boolean(inst.isConfigured),
-    isAuthenticated: Boolean(inst.isAuthenticated ?? false),
+    isConfigured: Boolean(inst.isConfigured ?? inst.is_configured),
+    isAuthenticated: Boolean(inst.isAuthenticated ?? inst.is_authenticated ?? false),
     isFromRegistry: Boolean(inst.isFromRegistry),
     instanceId: inst.instanceId as string | undefined,
     instanceName: inst.instanceName as string | undefined,
@@ -285,5 +285,34 @@ export const ToolsetsApi = {
 
   async reauthenticateMyToolsetInstance(instanceId: string): Promise<void> {
     await apiClient.post(`/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/reauthenticate`);
+  },
+
+  /**
+   * GET /api/v1/toolsets/oauth/callback — completes OAuth in the browser (popup flow).
+   * Forwards to the connector service; requires an authenticated session (Bearer / cookies).
+   */
+  async completeToolsetOAuthCallback(params: {
+    code: string;
+    state: string;
+    oauthError: string | null;
+    baseUrl: string;
+  }): Promise<{ success?: boolean; redirectUrl?: string; redirect_url?: string }> {
+    const query: Record<string, string> = {
+      code: params.code,
+      state: params.state,
+      base_url: params.baseUrl,
+    };
+    if (params.oauthError) {
+      query.error = params.oauthError;
+    }
+    const { data } = await apiClient.get<{
+      success?: boolean;
+      redirectUrl?: string;
+      redirect_url?: string;
+    }>('/api/v1/toolsets/oauth/callback', {
+      params: query,
+      suppressErrorToast: true,
+    });
+    return data ?? {};
   },
 };

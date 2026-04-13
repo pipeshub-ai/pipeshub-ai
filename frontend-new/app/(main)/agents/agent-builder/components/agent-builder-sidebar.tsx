@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField, IconButton, ScrollArea } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -134,9 +134,9 @@ export function AgentBuilderSidebar(props: {
   } = props;
 
   const { t } = useTranslation();
-  const onPaletteDragBlocked = () => {
+  const onPaletteDragBlocked = useCallback(() => {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
-  };
+  }, [paletteDragBlockedMessage, onNotify]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     models: true,

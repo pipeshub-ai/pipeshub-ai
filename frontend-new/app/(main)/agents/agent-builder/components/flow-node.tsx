@@ -220,26 +220,18 @@ export const FlowNode = React.memo(function FlowNode({
         header={
           <Flex align="center" justify="between" gap="2" px="3" py="2">
             <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-              <Box
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 'var(--radius-2)',
-                  background: chrome.iconWell,
-                  border: `1px solid ${chrome.iconWellBorder}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  boxShadow: 'inset 0 1px 0 var(--gray-a3)',
-                }}
+              <Flex
+                align="center"
+                justify="center"
+                style={{ flexShrink: 0, lineHeight: 0 }}
+                aria-hidden
               >
                 {isIconUrl ? (
-                  <img src={icon} width={20} height={20} alt="" style={{ objectFit: 'contain' }} />
+                  <img src={icon} width={22} height={22} alt="" style={{ objectFit: 'contain', display: 'block' }} />
                 ) : (
-                  <MaterialIcon name={icon || 'widgets'} size={20} color={chrome.iconColor} />
+                  <MaterialIcon name={icon || 'widgets'} size={22} color={chrome.iconColor} />
                 )}
-              </Box>
+              </Flex>
               <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
                 <Text
                   weight="medium"

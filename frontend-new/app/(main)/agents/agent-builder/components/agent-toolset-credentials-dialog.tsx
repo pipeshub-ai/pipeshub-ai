@@ -26,9 +26,11 @@ import {
   getToolsetAuthConfigFromSchema,
 } from './toolset-agent-auth-helpers';
 import {
-  toolsetDialogActionGridStyle,
   toolsetDialogBackdropStyle,
+  toolsetDialogFooterPrimaryClusterStyle,
+  toolsetDialogFooterToolbarStyle,
   toolsetDialogPanelStyle,
+  toolsetDialogPrimaryActionsStyle,
 } from './toolset-config-dialog-styles';
 import { useToolsetOauthPopupFlow } from '../hooks/use-toolset-oauth-popup-flow';
 
@@ -67,15 +69,25 @@ export function AgentToolsetCredentialsDialog({
   const [saveAttempted, setSaveAttempted] = useState(false);
 
   const [saving, setSaving] = useState(false);
-  const [reauthenticating, setReauthenticating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(toolset.isAuthenticated ?? false);
+  const [oauthJustVerified, setOauthJustVerified] = useState(false);
 
   useEffect(() => {
     setIsAuthenticated(toolset.isAuthenticated ?? false);
   }, [toolset.isAuthenticated]);
+
+  useEffect(() => {
+    setOauthJustVerified(false);
+  }, [instanceId]);
+
+  useEffect(() => {
+    if (!oauthJustVerified) return;
+    const id = window.setTimeout(() => setOauthJustVerified(false), 6000);
+    return () => window.clearTimeout(id);
+  }, [oauthJustVerified]);
 
   useEffect(() => {
     setIconBroken(false);
@@ -157,6 +169,7 @@ export function AgentToolsetCredentialsDialog({
 
   const onOAuthVerified = useCallback(() => {
     setIsAuthenticated(true);
+    setOauthJustVerified(true);
     onSuccess();
   }, [onSuccess]);
 
@@ -170,9 +183,10 @@ export function AgentToolsetCredentialsDialog({
     onVerified: onOAuthVerified,
     onNotify,
     onIncomplete: onOAuthIncomplete,
+    onOAuthPopupError: (msg) => setError(msg),
   });
 
-  const dismissLocked = saving || deleting || reauthenticating;
+  const dismissLocked = saving || deleting;
 
   const requestDismiss = useCallback(() => {
     if (dismissLocked) return;
@@ -198,7 +212,7 @@ export function AgentToolsetCredentialsDialog({
       }
       setIsAuthenticated(true);
       onNotify?.(t('agentBuilder.toolsetAuthUpdated'));
-      onSuccess();
+      onClose();
     } catch (e) {
       setError(apiErrorDetail(e));
     } finally {
@@ -208,6 +222,7 @@ export function AgentToolsetCredentialsDialog({
 
   const handleOAuthAuthenticate = async () => {
     setError(null);
+    setOauthJustVerified(false);
     await beginOAuth(
       async () => {
         const result = await ToolsetsApi.getAgentToolsetOAuthUrl(
@@ -230,30 +245,19 @@ export function AgentToolsetCredentialsDialog({
     );
   };
 
-  const handleReauthenticate = async () => {
-    try {
-      setReauthenticating(true);
-      setError(null);
-      await ToolsetsApi.reauthenticateAgentToolset(agentKey, instanceId);
-      setIsAuthenticated(false);
-      onNotify?.(t('agentBuilder.toolsetAuthUpdated'));
-      onSuccess();
-    } catch (e) {
-      setError(apiErrorDetail(e));
-    } finally {
-      setReauthenticating(false);
-    }
-  };
-
   const handleRemoveConfirmed = async () => {
     setRemoveConfirmOpen(false);
     try {
       setDeleting(true);
       setError(null);
-      await ToolsetsApi.removeAgentToolsetCredentials(agentKey, instanceId);
+      if (isOAuthType(authType)) {
+        await ToolsetsApi.reauthenticateAgentToolset(agentKey, instanceId);
+      } else {
+        await ToolsetsApi.removeAgentToolsetCredentials(agentKey, instanceId);
+      }
       setIsAuthenticated(false);
       onNotify?.(t('agentBuilder.toolsetAuthUpdated'));
-      onSuccess();
+      onClose();
     } catch (e) {
       setError(apiErrorDetail(e));
     } finally {
@@ -261,7 +265,11 @@ export function AgentToolsetCredentialsDialog({
     }
   };
 
-  const busy = saving || authenticating || deleting || reauthenticating;
+  const busy = saving || authenticating || deleting;
+
+  const showFooterPrimaryCluster =
+    !schemaLoading &&
+    (isOAuthType(authType) || (isCredentialAuthType(authType) && manageFields.length > 0));
 
   const handleMainOpenChange = (open: boolean) => {
     if (!open && !dismissLocked) requestDismiss();
@@ -366,6 +374,17 @@ export function AgentToolsetCredentialsDialog({
             </Callout.Root>
           ) : null}
 
+          {!schemaLoading && oauthJustVerified ? (
+            <Callout.Root color="green" variant="surface" size="1" mb="3">
+              <Callout.Icon>
+                <MaterialIcon name="check_circle" size={18} />
+              </Callout.Icon>
+              <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
+                {t('agentBuilder.oauthSignInSuccess')}
+              </Callout.Text>
+            </Callout.Root>
+          ) : null}
+
           {!schemaLoading && isNoneAuthType(authType) ? (
             <Text size="2">{t('agentBuilder.noCredentialsRequired')}</Text>
           ) : null}
@@ -432,10 +451,17 @@ export function AgentToolsetCredentialsDialog({
 
           <Separator size="4" my="4" />
 
-          <Flex width="100%" gap="3" align="center" justify="between" wrap="wrap" style={{ minWidth: 0 }}>
-            <Box style={{ flex: '1 1 14rem', minWidth: 0 }}>
-              {!schemaLoading && isOAuthType(authType) ? (
-                <Box style={toolsetDialogActionGridStyle}>
+          {showFooterPrimaryCluster ? (
+            <Box style={toolsetDialogFooterToolbarStyle}>
+              {isOAuthType(authType) ? (
+                <Flex
+                  wrap="wrap"
+                  gap="2"
+                  style={{
+                    ...toolsetDialogPrimaryActionsStyle,
+                    ...toolsetDialogFooterPrimaryClusterStyle,
+                  }}
+                >
                   <Button size="2" onClick={() => void handleOAuthAuthenticate()} disabled={busy}>
                     {authenticating
                       ? t('agentBuilder.waitingOAuth')
@@ -444,20 +470,21 @@ export function AgentToolsetCredentialsDialog({
                         : t('agentBuilder.authenticateOAuth')}
                   </Button>
                   {isAuthenticated ? (
-                    <Button size="2" variant="soft" color="amber" onClick={() => void handleReauthenticate()} disabled={busy}>
-                      {reauthenticating ? t('agentBuilder.working') : t('agentBuilder.reauthenticateCta')}
-                    </Button>
-                  ) : null}
-                  {isAuthenticated ? (
                     <Button size="2" variant="soft" color="red" onClick={() => setRemoveConfirmOpen(true)} disabled={busy}>
                       {t('agentBuilder.removeCredentials')}
                     </Button>
                   ) : null}
-                </Box>
+                </Flex>
               ) : null}
-
-              {!schemaLoading && isCredentialAuthType(authType) && manageFields.length > 0 ? (
-                <Box style={toolsetDialogActionGridStyle}>
+              {isCredentialAuthType(authType) && manageFields.length > 0 ? (
+                <Flex
+                  wrap="wrap"
+                  gap="2"
+                  style={{
+                    ...toolsetDialogPrimaryActionsStyle,
+                    ...toolsetDialogFooterPrimaryClusterStyle,
+                  }}
+                >
                   <Button size="2" onClick={() => void handleSaveCredentials()} disabled={busy}>
                     {saving
                       ? t('agentBuilder.savingCredentials')
@@ -466,23 +493,25 @@ export function AgentToolsetCredentialsDialog({
                         : t('agentBuilder.saveCredentials')}
                   </Button>
                   {isAuthenticated ? (
-                    <Button size="2" variant="soft" color="amber" onClick={() => void handleReauthenticate()} disabled={busy}>
-                      {reauthenticating ? t('agentBuilder.working') : t('agentBuilder.reauthenticateCta')}
-                    </Button>
-                  ) : null}
-                  {isAuthenticated ? (
                     <Button size="2" variant="soft" color="red" onClick={() => setRemoveConfirmOpen(true)} disabled={busy}>
                       {t('agentBuilder.removeCredentials')}
                     </Button>
                   ) : null}
-                </Box>
+                </Flex>
               ) : null}
+              <Box style={{ flexShrink: 0, marginInlineStart: 'auto' }}>
+                <Button size="2" variant="soft" color="gray" onClick={() => requestDismiss()} disabled={dismissLocked}>
+                  {isAuthenticated ? t('common.close') : t('action.cancel')}
+                </Button>
+              </Box>
             </Box>
-
-            <Button size="2" variant="soft" color="gray" onClick={() => requestDismiss()} disabled={dismissLocked} style={{ flexShrink: 0 }}>
-              {isAuthenticated ? t('common.close') : t('action.cancel')}
-            </Button>
-          </Flex>
+          ) : (
+            <Flex justify="end" width="100%">
+              <Button size="2" variant="soft" color="gray" onClick={() => requestDismiss()} disabled={dismissLocked}>
+                {isAuthenticated ? t('common.close') : t('action.cancel')}
+              </Button>
+            </Flex>
+          )}
           </Box>
         </Dialog.Content>
       </Dialog.Root>

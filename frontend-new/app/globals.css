@@ -742,6 +742,8 @@ li > blockquote {
 }
 
 .agent-builder-sidebar-category-row {
+  border: 1px solid transparent;
+  background: transparent;
   transition:
     background-color 0.15s ease,
     border-color 0.15s ease;

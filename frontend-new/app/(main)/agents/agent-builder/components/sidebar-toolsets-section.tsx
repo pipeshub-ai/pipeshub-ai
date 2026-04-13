@@ -16,6 +16,7 @@ import {
 } from '../sidebar-toolset-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
+import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 
 function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
@@ -214,7 +215,9 @@ export function AgentBuilderToolsetsSection(props: {
 
   useEffect(() => {
     const onOAuthMessage = async (event: MessageEvent) => {
-      if (event.data?.type !== 'oauth-success') return;
+      if (typeof window !== 'undefined' && event.origin !== window.location.origin) return;
+      const messageType = event.data?.type;
+      if (!isToolsetOAuthSuccessMessageType(messageType)) return;
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
@@ -224,7 +227,7 @@ export function AgentBuilderToolsetsSection(props: {
     };
     window.addEventListener('message', onOAuthMessage);
     return () => window.removeEventListener('message', onOAuthMessage);
-  }, [agentKey, isServiceAccount, onNotify, refreshToolsets, searchInput]);
+  }, [agentKey, isServiceAccount, onNotify, refreshToolsets, searchInput, t]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -549,7 +552,6 @@ export function AgentBuilderToolsetsSection(props: {
             void refreshToolsets(agentKey, isServiceAccount, searchInput);
           }}
           onSuccess={async () => {
-            setUserConfigToolset(null);
             await refreshToolsets(agentKey, isServiceAccount, searchInput);
           }}
           onNotify={onNotify}

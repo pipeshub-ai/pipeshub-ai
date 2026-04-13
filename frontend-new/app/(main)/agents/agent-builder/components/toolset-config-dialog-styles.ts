@@ -20,10 +20,26 @@ export const toolsetDialogBackdropStyle: CSSProperties = {
   zIndex: 999,
 };
 
-/** Equal-width action buttons that span the dialog content without a dead zone on the right. */
-export const toolsetDialogActionGridStyle: CSSProperties = {
-  display: 'grid',
-  width: '100%',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr))',
+/** Primary actions: wrap inside the footer toolbar; keep separate from Close for alignment control. */
+export const toolsetDialogPrimaryActionsStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
   gap: 'var(--space-2)',
+  alignItems: 'center',
+};
+
+/** Footer: primary block + Close on one row when space allows; Close stays top-aligned when primaries wrap. */
+export const toolsetDialogFooterToolbarStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'flex-start',
+  gap: 'var(--space-3)',
+  width: '100%',
+  minWidth: 0,
+};
+
+export const toolsetDialogFooterPrimaryClusterStyle: CSSProperties = {
+  flex: '1 1 auto',
+  minWidth: 0,
+  maxWidth: '100%',
 };
