@@ -993,7 +993,9 @@ class GitLabConnector(BaseConnector):
                     permission_work_items_level.append(permission)
                     permission_merge_requests_level.append(permission)
                     permission_code_repo_level.append(permission)
-
+                else:
+                    self.logger.warning(f"Member {member.name} has unrecognized access level {external_member_level}, skipping")
+                
         project_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
             name=project.path_with_namespace,
@@ -1047,15 +1049,13 @@ class GitLabConnector(BaseConnector):
         """Transform restrictions to permissions"""
         principal_id = str(member.id)
         permission_type = PermissionType.OWNER.value
-        if principal_id:
-            permission = await self._create_permission_from_principal(
+        permission = await self._create_permission_from_principal(
                 "user",
                 principal_id,
                 permission_type,
                 create_pseudo_group_if_missing=True,  # Enable pseudo-group creation for record-level permissions
             )
         if permission:
-            # permissions.append(permission)
             return permission
         return None
 
@@ -1255,22 +1255,23 @@ class GitLabConnector(BaseConnector):
         for issue in issue_batch:
             # consider ticket types-> issue, incident, task
             record_update = await self._process_issue_incident_task_to_ticket(issue)
-            if record_update:
-                record_updates_batch.append(record_update)
-                # get the file attachments from issue data
-                # make file records for all except images
-                markdown_content_raw: str = getattr(issue, "description", "") or ""
-                (
-                    attachments,
-                    markdown_content,
-                ) = await self.parse_gitlab_uploads_clean_test(markdown_content_raw)
-                if attachments:
-                    file_record_updates = await self.make_file_records_from_list(
-                        attachments=attachments, record=record_update.record
-                    )
-                    if file_record_updates:
-                        record_updates_batch.extend(file_record_updates)
-                        attachment_records_cnt += len(file_record_updates)
+            if not record_update:
+                continue
+            record_updates_batch.append(record_update)
+            # get the file attachments from issue data
+            # make file records for all except images
+            markdown_content_raw: str = getattr(issue, "description", "") or ""
+            (
+                attachments,
+                markdown_content,
+            ) = await self.parse_gitlab_uploads_clean_test(markdown_content_raw)
+            if attachments:
+                file_record_updates = await self.make_file_records_from_list(
+                    attachments=attachments, record=record_update.record
+                )
+                if file_record_updates:
+                    record_updates_batch.extend(file_record_updates)
+                    attachment_records_cnt += len(file_record_updates)
             # adding notes attachments
             attachment_records = await self.make_files_records_from_notes(
                 issue, record_update.record
@@ -1279,7 +1280,7 @@ class GitLabConnector(BaseConnector):
                 record_updates_batch.extend(attachment_records)
                 attachment_records_cnt += len(attachment_records)
         self.logger.debug(
-            f"Added {attachment_records_cnt} attachments for issue {issue.title}"
+            f"Added {attachment_records_cnt} attachments for issues batch"
         )
         return record_updates_batch
 
@@ -2271,13 +2272,17 @@ class GitLabConnector(BaseConnector):
 
     # ---------------------------insitu functions-----------------------------------#
 
-    def datetime_to_epoch_ms(self, dt: datetime | str) -> int:
-        # make sure it's timezone-aware (assume UTC if missing)
-        if isinstance(dt, str):
-            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1000)
+    def datetime_to_epoch_ms(self, dt: str | None) -> int | None:
+        # convert string to datetime and then to epoch milliseconds
+        try:
+            if isinstance(dt, str):
+                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            else:
+                return None
+            return int(dt.timestamp() * 1000)
+        except Exception as e:
+            self.logger.debug(f"Error in conversion of date time: {e}")
+            return None
 
     def string_to_datetime(self, time_str: str) -> datetime | None:
         try:
@@ -2304,7 +2309,7 @@ class GitLabConnector(BaseConnector):
             list[FileAttachment]: List of file attachments
             str: Cleaned markdown content
         """
-        IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+        IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp","svg"}
         UPLOAD_PATTERN = re.compile(
             r"""
                 (?P<full>
@@ -2321,7 +2326,7 @@ class GitLabConnector(BaseConnector):
             re.VERBOSE | re.IGNORECASE,
         )
         if not isinstance(text, str):
-            return {"files": [], "cleaned_markdown": ""}
+            return [], ""
 
         files = []
         cleaned_text = text
@@ -2335,14 +2340,14 @@ class GitLabConnector(BaseConnector):
 
             # Safety check for malformed filename
             if "." not in filename or filename.endswith("."):
-                continue
-
-            extension = filename.rsplit(".", 1)[-1].lower()
+                extension = "txt"
+            else:
+                extension = filename.rsplit(".", 1)[-1].lower()
 
             # Ignore SVG explicitly
-            if extension == "svg":
-                cleaned_text = cleaned_text.replace(full_match, "")
-                continue
+            # if extension == "svg":
+            #     cleaned_text = cleaned_text.replace(full_match, "")
+            #     continue
 
             category = "image" if extension in IMAGE_EXTENSIONS else "attachment"
 
