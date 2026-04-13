@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Dict, Optional
 
-from fastapi import HTTPException as FastAPIHTTPException
+from fastapi import HTTPException as FastAPIHTTPException  # type: ignore
 
 
 class HttpStatusCode(Enum):

@@ -43,7 +43,9 @@ async def azure_files_connector(
         connector_config=config,
         create_fn="create_share",
     )
-    state["share_name"] = state["resource_name"]
+    resource = state["resource_name"]
+    state["share_name"] = resource
+    state["container_name"] = resource
     yield state
     await destructor(
         azure_files_storage,

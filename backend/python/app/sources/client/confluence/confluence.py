@@ -108,11 +108,7 @@ class ConfluenceTokenConfig:
     ssl: bool = False
 
     def create_client(self) -> ConfluenceRESTClientViaToken:
-        # Normalize base URL to include /wiki/api/v2 if not present
-        base_url = self.base_url.rstrip('/')
-        if not base_url.endswith('/wiki/api/v2'):
-            base_url = f"{base_url}/wiki/api/v2"
-        return ConfluenceRESTClientViaToken(base_url, self.token)
+        return ConfluenceRESTClientViaToken(self.base_url, self.token)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -135,11 +131,7 @@ class ConfluenceApiKeyConfig:
     ssl: bool = False
 
     def create_client(self) -> ConfluenceRESTClientViaApiKey:
-        # Normalize base URL to include /wiki/api/v2 if not present
-        base_url = self.base_url.rstrip('/')
-        if not base_url.endswith('/wiki/api/v2'):
-            base_url = f"{base_url}/wiki/api/v2"
-        return ConfluenceRESTClientViaApiKey(base_url, self.email, self.api_key)
+        return ConfluenceRESTClientViaApiKey(self.base_url, self.email, self.api_key)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
