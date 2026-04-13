@@ -13,18 +13,23 @@ from pathlib import Path
 from typing import Any, Dict
 
 import requests
-from neo4j import Driver
 from neo4j.exceptions import Neo4jError
 
-from graph_assertions import (  # type: ignore[import-not-found]
-    assert_all_records_cleaned,
-    count_records,
-)
+try:
+    import aiohttp
+
+    _GRAPH_TEARDOWN_HTTP_ERRORS: tuple[type[BaseException], ...] = (aiohttp.ClientError,)
+except ImportError:
+    _GRAPH_TEARDOWN_HTTP_ERRORS = ()
+
 from pipeshub_client import (  # type: ignore[import-not-found]
     PipeshubAuthError,
     PipeshubClient,
     PipeshubClientError,
 )
+
+from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider_utils import wait_until_graph_condition
 
 logger = logging.getLogger("connector-lifecycle")
 
@@ -35,7 +40,9 @@ _CONNECTOR_API_TEARDOWN_ERRORS = (
     requests.exceptions.RequestException,
 )
 
-_CONNECTOR_DELETE_TEARDOWN_ERRORS = _CONNECTOR_API_TEARDOWN_ERRORS + (TimeoutError, Neo4jError)
+_CONNECTOR_DELETE_TEARDOWN_ERRORS = (
+    _CONNECTOR_API_TEARDOWN_ERRORS + (TimeoutError, Neo4jError) + _GRAPH_TEARDOWN_HTTP_ERRORS
+)
 
 
 def _storage_clear_error_types() -> tuple[type[BaseException], ...]:
@@ -99,16 +106,18 @@ def ensure_resource_exists(storage: object, resource_name: str, create_fn: str) 
     assert isinstance(objects, list), f"Resource {resource_name} still not accessible after retries"
 
 
-def constructor(
+async def constructor(
     storage: object,
     pipeshub_client: PipeshubClient,
-    neo4j_driver: Driver,
+    graph_provider: GraphProviderProtocol,
     sample_data_root: Path,
     *,
     storage_name: str,
     connector_type: str,
     connector_config: dict,
     create_fn: str = "create_bucket",
+    scope: str = "personal",
+    auth_type: str | None = None,
 ) -> Dict[str, Any]:
     """Ensure storage exists, upload data, create connector, wait for full sync."""
     resource_name = RESOURCE_NAME
@@ -144,8 +153,9 @@ def constructor(
     instance = pipeshub_client.create_connector(
         connector_type=connector_type,
         instance_name=connector_name,
-        scope="personal",
+        scope=scope,
         config=connector_config,
+        auth_type=auth_type,
     )
     assert instance.connector_id, "Connector must have a valid ID"
     connector_id = instance.connector_id
@@ -156,24 +166,29 @@ def constructor(
     logger.info("CONSTRUCTOR [%s]: Sync enabled — waiting for full sync (connector %s)", connector_type, connector_id)
 
     uploaded = state["uploaded_count"]
-    pipeshub_client.wait_for_sync(
+
+    async def _check_full_sync() -> bool:
+        return await graph_provider.count_records(connector_id) >= uploaded
+
+    await wait_until_graph_condition(
         connector_id,
-        check_fn=lambda: count_records(neo4j_driver, connector_id) >= uploaded,
+        check=_check_full_sync,
         timeout=180,
         poll_interval=10,
         description="full sync",
     )
-    full_count = count_records(neo4j_driver, connector_id)
+
+    full_count = await graph_provider.count_records(connector_id)
     state["full_sync_count"] = full_count
     logger.info("CONSTRUCTOR [%s]: Full sync complete — %d records (connector %s)", connector_type, full_count, connector_id)
 
     return state
 
 
-def destructor(
+async def destructor(
     storage: object,
     pipeshub_client: PipeshubClient,
-    neo4j_driver: Driver,
+    graph_provider: GraphProviderProtocol,
     state: Dict[str, Any],
     *,
     connector_type: str,
@@ -198,7 +213,7 @@ def destructor(
         cleanup_s = int(
             os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", str(cleanup_timeout))
         )
-        assert_all_records_cleaned(neo4j_driver, connector_id, timeout=cleanup_s)
+        await graph_provider.assert_all_records_cleaned(connector_id, timeout=cleanup_s)
         logger.info("DESTRUCTOR [%s]: Graph cleaned for connector %s", connector_type, connector_id)
     except _CONNECTOR_DELETE_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to delete/clean connector %s", connector_type, connector_id)

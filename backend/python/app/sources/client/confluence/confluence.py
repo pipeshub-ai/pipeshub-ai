@@ -1,15 +1,16 @@
 import base64
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from app.api.routes.toolsets import get_toolset_by_id
-from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
 from app.sources.external.common.atlassian import AtlassianCloudResource
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
 
 
 class ConfluenceRESTClientViaUsernamePassword(HTTPClient):
@@ -108,7 +109,11 @@ class ConfluenceTokenConfig:
     ssl: bool = False
 
     def create_client(self) -> ConfluenceRESTClientViaToken:
-        return ConfluenceRESTClientViaToken(self.base_url, self.token)
+        # Normalize base URL to include /wiki/api/v2 if not present
+        base_url = self.base_url.rstrip('/')
+        if not base_url.endswith('/wiki/api/v2'):
+            base_url = f"{base_url}/wiki/api/v2"
+        return ConfluenceRESTClientViaToken(base_url, self.token)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -131,7 +136,11 @@ class ConfluenceApiKeyConfig:
     ssl: bool = False
 
     def create_client(self) -> ConfluenceRESTClientViaApiKey:
-        return ConfluenceRESTClientViaApiKey(self.base_url, self.email, self.api_key)
+        # Normalize base URL to include /wiki/api/v2 if not present
+        base_url = self.base_url.rstrip('/')
+        if not base_url.endswith('/wiki/api/v2'):
+            base_url = f"{base_url}/wiki/api/v2"
+        return ConfluenceRESTClientViaApiKey(base_url, self.email, self.api_key)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -246,7 +255,7 @@ class ConfluenceClient(IClient):
     async def build_from_services(
         cls,
         logger: logging.Logger,
-        config_service: ConfigurationService,
+        config_service: "ConfigurationService",
         connector_instance_id: Optional[str] = None,
     ) -> "ConfluenceClient":
         """Build ConfluenceClient using configuration service
@@ -328,7 +337,7 @@ class ConfluenceClient(IClient):
         cls,
         toolset_config: dict[str, Any],
         logger: logging.Logger,
-        config_service: Optional[ConfigurationService] = None,
+        config_service: Optional["ConfigurationService"] = None,
     ) -> "ConfluenceClient":
         """
         Build ConfluenceClient using toolset configuration from etcd.
@@ -381,6 +390,8 @@ class ConfluenceClient(IClient):
             elif auth_type == "API_TOKEN":
                 # API Token authentication - fetch instance config for CONFIGURE fields,
                 # use toolset_config for AUTHENTICATE fields (like MariaDB pattern)
+                from app.api.routes.toolsets import get_toolset_by_id
+                
                 instance_id = toolset_config.get("instanceId")
                 if not instance_id:
                     raise ValueError("instanceId is required for API_TOKEN auth")
@@ -425,7 +436,7 @@ class ConfluenceClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: "ConfigurationService", connector_instance_id: Optional[str] = None) -> dict[str, Any]:
         """Fetch connector config from etcd for Confluence."""
         try:
             config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")

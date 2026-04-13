@@ -33,7 +33,6 @@ from typing import Any
 
 import pytest
 import requests
-from neo4j import Driver
 
 # Ensure helpers are importable
 _THIS_DIR = Path(__file__).resolve().parent
@@ -43,8 +42,9 @@ for p in (_ROOT_DIR, _HELPER_DIR):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-import graph_assertions
 from pipeshub_client import PipeshubClient
+from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider_utils import async_poll_until
 
 logger = logging.getLogger("e2e-record-pipeline")
 
@@ -408,7 +408,7 @@ class TestRecordGraphStage:
 
     @pytest.mark.asyncio
     async def test_record_appears_in_graph(
-        self, kb_client: KBClient, test_kb: dict, neo4j_driver: Driver,
+        self, kb_client: KBClient, test_kb: dict, graph_provider: GraphProviderProtocol,
     ):
         """Upload a file, wait for indexing, then verify the graph contains the record."""
         kb_id = test_kb["kb_id"]
@@ -439,22 +439,19 @@ class TestRecordGraphStage:
                 description=f"indexing for record {record_id}",
             )
 
-            # Wait for graph to be populated (may lag behind DB status)
-            def check_graph():
-                return graph_assertions.count_records(neo4j_driver, connector_id) > 0
+            async def check_graph():
+                return await graph_provider.count_records(connector_id) > 0
 
-            poll_until(
+            await async_poll_until(
                 check_graph,
                 timeout=GRAPH_TIMEOUT,
                 interval=GRAPH_POLL_INTERVAL,
                 description=f"graph record node for connector {connector_id}",
             )
 
-            # Verify record node exists
-            graph_assertions.assert_min_records(neo4j_driver, connector_id, 1)
+            await graph_provider.assert_min_records(connector_id, 1)
 
-            # Verify record name in graph
-            names = graph_assertions.fetch_record_names(neo4j_driver, connector_id)
+            names = await graph_provider.fetch_record_names(connector_id)
             logger.info("Graph record names for %s: %s", connector_id, names)
             assert any(record_name in n for n in names), (
                 f"Record '{record_name}' not found in graph names: {names}"
@@ -517,7 +514,7 @@ class TestRecordCleanupStage:
 
     @pytest.mark.asyncio
     async def test_deleted_record_removed_from_graph(
-        self, kb_client: KBClient, test_kb: dict, neo4j_driver: Driver,
+        self, kb_client: KBClient, test_kb: dict, graph_provider: GraphProviderProtocol,
     ):
         """Upload, wait for graph, delete, and verify graph is cleaned."""
         kb_id = test_kb["kb_id"]
@@ -542,13 +539,13 @@ class TestRecordCleanupStage:
         poll_until(check_terminal, INDEXING_TIMEOUT, INDEXING_POLL_INTERVAL,
                    f"indexing for {record_id}")
 
-        # Verify it's in graph first
-        def check_in_graph():
-            return graph_assertions.get_record_by_name(neo4j_driver, connector_id, record_name) is not None
+        async def check_in_graph():
+            rec = await graph_provider.get_record_by_name(connector_id, record_name)
+            return rec is not None
 
         try:
-            poll_until(check_in_graph, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
-                       f"graph node for {record_name}")
+            await async_poll_until(check_in_graph, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
+                                   f"graph node for {record_name}")
         except TimeoutError:
             logger.warning("Record %s never appeared in graph — skipping graph cleanup check", record_name)
             kb_client.delete_record(record_id)
@@ -558,11 +555,11 @@ class TestRecordCleanupStage:
         kb_client.delete_record(record_id)
         logger.info("Deleted record %s, waiting for graph cleanup", record_id)
 
-        def check_removed():
-            rec = graph_assertions.get_record_by_name(neo4j_driver, connector_id, record_name)
+        async def check_removed():
+            rec = await graph_provider.get_record_by_name(connector_id, record_name)
             return rec is None
 
-        poll_until(
+        await async_poll_until(
             check_removed,
             timeout=GRAPH_TIMEOUT,
             interval=GRAPH_POLL_INTERVAL,
@@ -577,7 +574,7 @@ class TestRecordFullPipeline:
 
     @pytest.mark.asyncio
     async def test_full_pipeline_upload_to_cleanup(
-        self, kb_client: KBClient, test_kb: dict, neo4j_driver: Driver,
+        self, kb_client: KBClient, test_kb: dict, graph_provider: GraphProviderProtocol,
     ):
         """Upload → DB check → indexing → graph check → delete → cleanup check."""
         kb_id = test_kb["kb_id"]
@@ -615,16 +612,14 @@ class TestRecordFullPipeline:
             )
             logger.info("Stage 3 (indexing): reached %s", final_status)
 
-            # --- Stage 4: Graph validation ---
-            def check_graph():
-                return graph_assertions.get_record_by_name(
-                    neo4j_driver, connector_id, record_name
-                ) is not None
+            async def check_graph():
+                rec = await graph_provider.get_record_by_name(connector_id, record_name)
+                return rec is not None
 
             try:
-                poll_until(check_graph, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
-                           f"graph node for {record_name}")
-                graph_assertions.assert_min_records(neo4j_driver, connector_id, 1)
+                await async_poll_until(check_graph, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
+                                       f"graph node for {record_name}")
+                await graph_provider.assert_min_records(connector_id, 1)
                 logger.info("Stage 4 (graph): record '%s' found in Neo4j", record_name)
             except TimeoutError:
                 logger.warning("Stage 4 (graph): record never appeared in graph — may not have indexed fully")
@@ -646,15 +641,13 @@ class TestRecordFullPipeline:
             else:
                 logger.info("Stage 5 (API): record returns HTTP %d", resp.status_code)
 
-            # Verify graph removal
-            def check_graph_removed():
-                return graph_assertions.get_record_by_name(
-                    neo4j_driver, connector_id, record_name
-                ) is None
+            async def check_graph_removed():
+                rec = await graph_provider.get_record_by_name(connector_id, record_name)
+                return rec is None
 
             try:
-                poll_until(check_graph_removed, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
-                           f"graph removal of {record_name}")
+                await async_poll_until(check_graph_removed, GRAPH_TIMEOUT, GRAPH_POLL_INTERVAL,
+                                       f"graph removal of {record_name}")
                 logger.info("Stage 5 (cleanup): record removed from graph")
             except TimeoutError:
                 logger.warning("Stage 5 (cleanup): graph removal timed out")

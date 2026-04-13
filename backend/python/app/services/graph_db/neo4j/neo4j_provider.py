@@ -5,6 +5,8 @@ Minimal implementation of IGraphDBProvider using Neo4j for testing OneDrive conn
 Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, properties, relationships).
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
@@ -15,11 +17,12 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from fastapi import Request
+if TYPE_CHECKING:
+    from fastapi import Request
+    from app.config.configuration_service import ConfigurationService
 
-from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -84,14 +87,14 @@ class Neo4jProvider(IGraphDBProvider):
     def __init__(
         self,
         logger: Logger,
-        config_service: ConfigurationService,
+        config_service: ConfigurationService | None = None,
     ) -> None:
         """
         Initialize Neo4j provider.
 
         Args:
             logger: Logger instance
-            config_service: Configuration service for database credentials
+            config_service: Configuration service for database credentials (optional for testing)
         """
         self.logger = logger
         self.config_service = config_service
