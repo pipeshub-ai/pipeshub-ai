@@ -206,3 +206,5 @@ backend/python/uv.lock
 # others
 tasks
 backend/python/.claude/settings.local.json
+.cursor/rules/code-quality.mdc
+.cursor/rules/python.mdc

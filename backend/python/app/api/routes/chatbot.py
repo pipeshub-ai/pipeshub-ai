@@ -141,6 +141,7 @@ _CITATION_SYSTEM_RULES = (
     "- Cite by embedding the block's Citation ID as a markdown link: [source](ref1).\n"
     "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
     "- Do NOT manually assign citation numbers — the system numbers them automatically.\n"
+    "- Do NOT repeat the same Citation ID within the same paragraph or group — one mention per block per paragraph is enough.\n"
     "- If you cannot find the Citation ID for a fact, omit the citation rather than guessing.\n"
 )
 

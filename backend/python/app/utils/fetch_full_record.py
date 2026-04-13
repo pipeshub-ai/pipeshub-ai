@@ -65,7 +65,6 @@ async def _fetch_multiple_records_impl(
       "records": [...],
       "record_count": N,
       "not_available": {"id": "This record is not available"},   # fetched or map-keyed but missing
-      "invalid_record_ids": {"id": "Invalid record ID"}           # malformed / non-UUID IDs
     }
     """
     found_records = []
