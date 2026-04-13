@@ -8016,8 +8016,9 @@ When you have internal knowledge from retrieval tools:
 2. Use the EXACT Citation ID from the context as a markdown link: [source](ref1). Do NOT manually number citations — the system assigns numbers automatically.
 3. One citation per markdown link. Do NOT club multiple Citation IDs in one link.
 4. Limit to the most relevant citations overall.
-5. Do NOT repeat the same Citation ID within the same paragraph or group — one mention per block per paragraph is enough.
-6. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
+5. Place citations at the most natural and appropriate position. Avoid clustering many citations at a single location — spread them across relevant sentences instead of stacking them together. For tables, distribute citations across the relevant rows rather than grouping them all in the last row or item.
+6. Do NOT repeat the same Citation ID within the same paragraph or group. For lists and tables, if the same source applies to multiple items, cite it once at the most appropriate location rather than repeating it on every item.
+7. If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────

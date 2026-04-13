@@ -105,11 +105,13 @@ You are responsible for:
 
 2. **Limit Citations**: Focus on the most important and specific claims — do NOT cite every sentence.
 
-3. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
+3. **Citation Placement**: Place citations at the most natural and appropriate position. Avoid clustering many citations at a single location — spread them across relevant sentences instead of stacking them together. For tables, distribute citations across the relevant rows rather than grouping them all in the last row or item. For code blocks, put citations on the NEXT line after ```, never on the same line.
 
 4. **Use EXACT Citation IDs**: Use the Citation ID exactly as shown in the context. Do NOT invent or modify Citation IDs.
 
-5. **WHEN UNSURE, OMIT**: If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
+5. **No Repeated Citations**: Do NOT cite the same Citation ID more than once within the same paragraph or group of related sentences. For lists and tables, if the same source applies to multiple items, cite it once at the most appropriate location (e.g., a heading or the first relevant item) rather than repeating it on every item.
+
+6. **WHEN UNSURE, OMIT**: If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 
 </citation_rules>
 
@@ -254,7 +256,7 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 
 1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
 2. **LIMIT CITATIONS** — Only cite the most important, non-obvious claims. Do NOT cite every sentence.
-3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
+3. **NO REPEATED CITATIONS** — don't cite the same Citation ID more than once in the same paragraph/group
 4. **BE COMPREHENSIVE** — thorough, complete answers
 5. **Format Professionally** — clean markdown hierarchy
 6. **INCLUDE LINKS**

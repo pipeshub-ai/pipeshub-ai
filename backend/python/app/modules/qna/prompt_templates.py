@@ -114,8 +114,10 @@ Answer the query clearly and comprehensively using relevant context.
 - Cite by embedding the Citation ID as a markdown link: [source](Citation ID)
 - Each block has a unique Citation ID like ref1, ref2, etc. Use EXACTLY the Citation ID shown in the context.
 - Do NOT manually assign citation numbers — the system numbers them automatically
+- Place citations at the most natural and appropriate position. Avoid clustering many citations at a single location — spread them across relevant sentences instead of stacking them together. For tables, distribute citations across the relevant rows rather than grouping them all in the last row or item.
 - If you are unsure which block a fact came from, omit the citation rather than guessing
 - Limit to the most relevant citations. Do NOT cite every sentence.
+- Do NOT repeat the same Citation ID within the same paragraph or group. For lists and tables, if the same source applies to multiple items, cite it once at the most appropriate location rather than repeating it on every item.
 
 
 
@@ -207,7 +209,8 @@ Query: {{ query }}
 - Cite key facts using the Citation ID as a markdown link: [source](Citation ID). Focus on important claims, not every sentence.
 - Each block has a unique Citation ID like ref1, ref2. Use it exactly as shown.
 - Limit to the most relevant citations. Do NOT cite every sentence.
-- Reuse the same link if citing the same block again.
+- Place citations at the most natural and appropriate position. Avoid clustering many citations at a single location — spread them across relevant sentences instead of stacking them together. For tables, distribute citations across the relevant rows rather than grouping them all in the last row or item.
+- Do NOT repeat the same Citation ID within the same paragraph or group. For lists and tables, if the same source applies to multiple items, cite it once at the most appropriate location rather than repeating it on every item.
 - Do NOT number citations manually — just use [source](refN) format.
 - If you cannot find the Citation ID for a fact, omit the citation rather than guessing.
 </instructions>
