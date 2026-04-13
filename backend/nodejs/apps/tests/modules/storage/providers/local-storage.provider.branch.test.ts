@@ -202,11 +202,14 @@ describe('LocalStorageAdapter - branch coverage', () => {
   // getBufferFromStorageService - version branching
   // =========================================================================
   describe('getBufferFromStorageService - version branches', () => {
-    it('should use localPath first, then fall back to url for version 0', async () => {
+    it('should use versionHistory localPath for version 0', async () => {
       const adapter = createAdapter()
       try {
         await adapter.getBufferFromStorageService({
-          local: { localPath: 'file:///path/file.pdf', url: 'file:///path/file.pdf' },
+          local: { localPath: 'file:///current/file.pdf', url: 'file:///current/file.pdf' },
+          versionHistory: [
+            { local: { localPath: 'file:///versions/v0.pdf', url: 'file:///versions/v0.pdf' } },
+          ],
         } as any, 0)
       } catch {
         // May throw due to actual file read; we're testing the branch selection
