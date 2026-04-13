@@ -103,8 +103,10 @@ export function ModelSelectorPanel({
     [onModelSelect]
   );
 
-  // Determine which modelKey is "active" — follows selectedModel only
+  // Determine which model is "active" — match on both modelKey and modelName
+  // because comma-separated configs share the same modelKey.
   const activeKey = selectedModel?.modelKey ?? null;
+  const activeName = selectedModel?.modelName ?? null;
 
   return (
     <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
@@ -156,9 +158,9 @@ export function ModelSelectorPanel({
 
         {!isLoading && !error && models.map((model) => (
           <ModelItem
-            key={model.modelKey}
+            key={`${model.modelKey}::${model.modelName}`}
             model={model}
-            isSelected={model.modelKey === activeKey}
+            isSelected={model.modelKey === activeKey && model.modelName === activeName}
             onSelect={handleSelect}
           />
         ))}
