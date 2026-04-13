@@ -274,7 +274,7 @@ function FolderTreeItem({
                 textAlign: 'left',
                 whiteSpace: 'nowrap',
                 flex: 1,
-                maxWidth: '60%',
+                minWidth: 0,
               }}
             >
               {node.name}
