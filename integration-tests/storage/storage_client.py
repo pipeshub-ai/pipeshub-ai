@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import sys
 from pathlib import Path
+from typing import Callable
 
 import requests
 
@@ -26,8 +27,32 @@ DOCUMENT_BASE = "/api/v1/document"
 
 
 class StorageClient:
-    def __init__(self, client: PipeshubClient) -> None:
+    def __init__(
+        self,
+        client: PipeshubClient,
+        register_document_id: Callable[[str], None] | None = None,
+    ) -> None:
         self._c = client
+        self._register_document_id = register_document_id
+
+    def _register_doc_id(self, doc_id: str) -> None:
+        if not doc_id or not self._register_document_id:
+            return
+        self._register_document_id(doc_id)
+
+    def _extract_doc_id_from_json(self, payload: object) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        if isinstance(payload.get("document"), dict):
+            payload = payload["document"]
+        return str(payload.get("_id") or payload.get("id") or payload.get("documentId") or "")
+
+    def _track_document_from_response(self, response: requests.Response) -> None:
+        try:
+            payload = response.json()
+        except ValueError:
+            return
+        self._register_doc_id(self._extract_doc_id_from_json(payload))
 
     @property
     def org_id(self) -> str:
@@ -72,20 +97,24 @@ class StorageClient:
             payload["permissions"] = permissions
         if custom_metadata is not None:
             payload["customMetadata"] = custom_metadata
-        return requests.post(
+        resp = requests.post(
             self._url("/placeholder"),
             headers=self._json_headers(),
             json=payload,
             timeout=self._c.timeout_seconds,
         )
+        self._track_document_from_response(resp)
+        return resp
 
     def direct_upload(self, document_id: str) -> requests.Response:
         """Get a presigned URL for direct upload to the storage vendor."""
-        return requests.post(
+        resp = requests.post(
             self._url(f"/{document_id}/directUpload"),
             headers=self._json_headers(),
             timeout=self._c.timeout_seconds,
         )
+        self._track_document_from_response(resp)
+        return resp
 
     def upload(
         self,
@@ -132,11 +161,13 @@ class StorageClient:
         # The backend uses HTTP 301 (HTTP_STATUS.PERMANENT_REDIRECT) to signal
         # the presigned-URL flow; 308 is accepted too for forward-compat.
         if resp.status_code not in (301, 308):
+            self._track_document_from_response(resp)
             return resp
 
         # Presigned direct-upload flow.
         signed_url = resp.headers.get("Location")
         if not signed_url:
+            self._track_document_from_response(resp)
             return resp
 
         # Extract the document id from the placeholder body (preferred) or
@@ -173,10 +204,12 @@ class StorageClient:
         if doc_id:
             fetched = self.get_document(doc_id)
             if fetched.status_code == 200:
+                self._register_doc_id(doc_id)
                 return fetched
 
         # Fall through: rewrite the 308 to a 200 so existing asserts pass.
         resp.status_code = 200
+        self._register_doc_id(doc_id)
         return resp
 
     def upload_next_version(
@@ -195,13 +228,16 @@ class StorageClient:
             data["nextVersionNote"] = next_version_note
 
         files = [("file", (file_name, io.BytesIO(file_content), "text/plain"))]
-        return requests.post(
+        resp = requests.post(
             self._url(f"/{document_id}/uploadNextVersion"),
             headers=self._auth_headers(),
             data=data,
             files=files,
             timeout=self._c.timeout_seconds,
         )
+        self._register_doc_id(document_id)
+        self._track_document_from_response(resp)
+        return resp
 
     def rollback(
         self,
@@ -209,12 +245,15 @@ class StorageClient:
         version: int,
         note: str = "",
     ) -> requests.Response:
-        return requests.post(
+        resp = requests.post(
             self._url(f"/{document_id}/rollBack"),
             headers=self._json_headers(),
             json={"version": version, "note": note},
             timeout=self._c.timeout_seconds,
         )
+        self._register_doc_id(document_id)
+        self._track_document_from_response(resp)
+        return resp
 
     def get_document(self, document_id: str) -> requests.Response:
         return requests.get(
@@ -261,12 +300,15 @@ class StorageClient:
         file_name: str,
     ) -> requests.Response:
         files = [("file", (file_name, io.BytesIO(file_content), "text/plain"))]
-        return requests.put(
+        resp = requests.put(
             self._url(f"/{document_id}/buffer"),
             headers=self._auth_headers(),
             files=files,
             timeout=self._c.timeout_seconds,
         )
+        self._register_doc_id(document_id)
+        self._track_document_from_response(resp)
+        return resp
 
     def delete_document(self, document_id: str) -> requests.Response:
         return requests.delete(
