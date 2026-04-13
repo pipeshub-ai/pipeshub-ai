@@ -3013,6 +3013,7 @@ class ConfluenceDataSource:
         _body = body
         rel_path = '/pages/{id}/title'
         url = self.base_url + _safe_format_url(rel_path, _path)
+        
         req = HTTPRequest(
             method='PUT',
             url=url,
@@ -8135,6 +8136,102 @@ class ConfluenceDataSource:
         return resp
 
 # ---- Helpers used by generated methods ----
+
+    async def get_space_by_key(self, space_key: str) -> Dict[str, Any]:
+        """Get space by key string. Returns space dict with 'id', 'key', 'name', etc.
+        
+        Args:
+            space_key: The space key (string like 'MYSPACE')
+            
+        Returns:
+            Dict containing space details including numeric 'id'
+            
+        Raises:
+            ValueError: If space with given key is not found
+        """
+        resp = await self.get_spaces(keys=[space_key])
+        results = resp.json().get("results", [])
+        if not results:
+            raise ValueError(f"Space with key '{space_key}' not found")
+        return results[0]
+
+    async def delete_space(self, space_key: str) -> HTTPResponse:
+        """Delete a space by key. Uses v1 REST API.
+        
+        Args:
+            space_key: The space key to delete
+            
+        Returns:
+            HTTPResponse from the delete operation
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/space/{space_key}"
+        req = HTTPRequest(
+            method='DELETE',
+            url=url,
+            headers=self._client.headers.copy(),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def move_page(self, page_id: str, new_parent_id: str) -> HTTPResponse:
+        """Move a page under a new parent. Uses v1 REST API.
+        
+        Args:
+            page_id: The ID of the page to move
+            new_parent_id: The ID of the new parent page
+            
+        Returns:
+            HTTPResponse from the move operation
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/content/{page_id}/move/append/{new_parent_id}"
+        req = HTTPRequest(
+            method='PUT',
+            url=url,
+            headers=self._client.headers.copy(),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def create_space_v1(self, space_key: str, name: str, description: str = "") -> HTTPResponse:
+        """Create a space using v1 API with simple key/name.
+        
+        Args:
+            space_key: The space key (must be uppercase alphanumeric)
+            name: The display name for the space
+            description: Optional description for the space
+            
+        Returns:
+            HTTPResponse from the create operation
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/space"
+        body = {
+            "key": space_key,
+            "name": name,
+            "description": {"plain": {"value": description, "representation": "plain"}}
+        }
+        req = HTTPRequest(
+            method='POST',
+            url=url,
+            headers=self._client.headers.copy(),
+            path={},
+            query={},
+            body=body,
+        )
+        return await self._client.execute(req)
+
 
 def _format_cql_date_with_offset(iso_date: str, offset_hours: int = 0) -> str:
     """Convert ISO 8601 datetime to CQL format with an optional time offset.
