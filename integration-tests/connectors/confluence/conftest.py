@@ -3,17 +3,19 @@
 """Confluence connector fixtures."""
 
 import os
-from typing import Any, Dict, Generator
+from typing import Any, AsyncGenerator, Dict
 
 import pytest
+import pytest_asyncio
+
 from connector_lifecycle import (  # type: ignore[import-not-found]
     RESOURCE_NAME,
     constructor,
     destructor,
 )
 from connectors.confluence.confluence_storage_helper import ConfluenceStorageHelper
-from neo4j import Driver
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
+from helper.graph_provider import GraphProviderProtocol
 
 
 @pytest.fixture(scope="session")
@@ -22,7 +24,7 @@ def confluence_storage():
     base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
     email = os.getenv("CONFLUENCE_TEST_EMAIL")
     api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
-    
+
     if not base_url or not email or not api_token:
         pytest.skip("Confluence credentials not set (CONFLUENCE_TEST_BASE_URL, CONFLUENCE_TEST_EMAIL, CONFLUENCE_TEST_API_TOKEN)")
     
@@ -33,13 +35,13 @@ def confluence_storage():
     )
 
 
-@pytest.fixture(scope="module")
-def confluence_connector(
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def confluence_connector(
     confluence_storage: ConfluenceStorageHelper,
     pipeshub_client: PipeshubClient,
-    neo4j_driver: Driver,
+    graph_provider: GraphProviderProtocol,
     sample_data_root,
-) -> Generator[Dict[str, Any], None, None]:
+) -> AsyncGenerator[Dict[str, Any], None]:
     """Module-scoped Confluence connector with full lifecycle."""
     base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
     email = os.getenv("CONFLUENCE_TEST_EMAIL")
@@ -47,7 +49,7 @@ def confluence_connector(
     
     # Allow custom space key via env var (useful if you have an existing test space)
     custom_space_key = os.getenv("CONFLUENCE_TEST_SPACE_KEY")
-    
+
     config = {
         "auth": {
             "authType": "API_TOKEN",
@@ -56,34 +58,33 @@ def confluence_connector(
             "apiToken": api_token,
         }
     }
-    
-    state = constructor(
+
+    state = await constructor(
         confluence_storage,
         pipeshub_client,
-        neo4j_driver,
+        graph_provider,
         sample_data_root,
         storage_name="Confluence space",
         connector_type="Confluence",
         connector_config=config,
         create_fn="create_space",
-        scope="team",  # Confluence is a team connector
-        auth_type="API_TOKEN",  # Using API Token authentication
+        scope="team",
+        auth_type="API_TOKEN",
     )
-    
-    # Use custom space key if provided, otherwise normalize resource_name
+
     if custom_space_key:
         space_key = confluence_storage._normalize_space_key(custom_space_key)
     else:
         space_key = confluence_storage._normalize_space_key(state["resource_name"])
-    
+
     state["space_key"] = space_key
-    
+
     yield state
-    
-    destructor(
+
+    await destructor(
         confluence_storage,
         pipeshub_client,
-        neo4j_driver,
+        graph_provider,
         state,
-        connector_type="Confluence"
+        connector_type="Confluence",
     )

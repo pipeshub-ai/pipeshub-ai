@@ -7,22 +7,29 @@ import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator, List
+from typing import TYPE_CHECKING, AsyncGenerator, List
 
 import pytest
-from neo4j import Driver, GraphDatabase
+import pytest_asyncio
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from helper.graph_provider import GraphProviderProtocol
 
 _THIS_DIR = Path(__file__).resolve().parent
 _HELPER_DIR = _THIS_DIR / "helper"
 _SAMPLE_DATA_DIR = _THIS_DIR / "sample-data"
 _REPORTS_DIR = _THIS_DIR / "reports"
+_BACKEND_PYTHON = _THIS_DIR.parent / "backend" / "python"
+
 if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 if str(_SAMPLE_DATA_DIR) not in sys.path:
     sys.path.insert(0, str(_SAMPLE_DATA_DIR))
+if str(_BACKEND_PYTHON) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_PYTHON))
 
 
 def _load_env() -> None:
@@ -49,8 +56,46 @@ def _load_env() -> None:
 
 
 def _init_global_test_env() -> None:
-    """Load integration-tests/.env then .env.local or .env.prod. Neo4j uses TEST_NEO4J_* only."""
+    """Load integration-tests/.env then .env.local or .env.prod. Map TEST_NEO4J_* and TEST_ARANGO_* to backend vars."""
     _load_env()
+    _setup_neo4j_env_vars()
+    _setup_arango_env_vars()
+
+
+def _setup_neo4j_env_vars() -> None:
+    """
+    Map TEST_NEO4J_* env vars to NEO4J_* for backend provider compatibility.
+    The backend Neo4jProvider reads from NEO4J_* env vars.
+    """
+    mappings = [
+        ("TEST_NEO4J_URI", "NEO4J_URI"),
+        ("TEST_NEO4J_USERNAME", "NEO4J_USERNAME"),
+        ("TEST_NEO4J_PASSWORD", "NEO4J_PASSWORD"),
+        ("TEST_NEO4J_DATABASE", "NEO4J_DATABASE"),
+    ]
+    for test_var, backend_var in mappings:
+        value = os.getenv(test_var)
+        if value:
+            os.environ[backend_var] = value
+
+
+def _setup_arango_env_vars() -> None:
+    """
+    Map TEST_ARANGO_* env vars to ARANGO_* for backend provider compatibility.
+
+    ``ArangoHTTPProvider.connect()`` reads ``ARANGO_*`` from the process environment when
+    ``config_service`` is None (integration tests); production uses ConfigurationService.
+    """
+    mappings = [
+        ("TEST_ARANGO_URL", "ARANGO_URL"),
+        ("TEST_ARANGO_USERNAME", "ARANGO_USERNAME"),
+        ("TEST_ARANGO_PASSWORD", "ARANGO_PASSWORD"),
+        ("TEST_ARANGO_DB_NAME", "ARANGO_DB_NAME"),
+    ]
+    for test_var, backend_var in mappings:
+        value = os.getenv(test_var)
+        if value:
+            os.environ[backend_var] = value
 
 
 _init_global_test_env()
@@ -94,45 +139,83 @@ def pipeshub_client() -> PipeshubClient:
 
 
 @pytest.fixture(scope="session")
-def neo4j_driver() -> Generator[Driver, None, None]:
-    """Session-scoped Neo4j driver."""
-    uri = os.getenv("TEST_NEO4J_URI")
-    user = os.getenv("TEST_NEO4J_USERNAME")
-    password = os.getenv("TEST_NEO4J_PASSWORD")
-
-    if not uri or not user or not password:
-        pytest.skip(
-            "TEST_NEO4J_URI / TEST_NEO4J_USERNAME / TEST_NEO4J_PASSWORD not set; skipping connector integration tests."
-        )
-
-    driver = GraphDatabase.driver(uri, auth=(user, password))
-    try:
-        yield driver
-    finally:
-        driver.close()
-
-
-@pytest.fixture(scope="session")
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def graph_provider() -> AsyncGenerator["GraphProviderProtocol", None]:
+    """
+    Session-scoped async graph provider (Neo4j or ArangoDB based on TEST_GRAPH_DB_TYPE).
+    
+    This provider gives access to all base provider methods plus test-specific
+    helper methods (count_records, assert_min_records, etc.).
+    
+    Usage in tests:
+        async def test_something(graph_provider):
+            count = await graph_provider.count_records(connector_id)
+            await graph_provider.assert_min_records(connector_id, 5)
+            
+            # Also has all base provider methods
+            doc = await provider.get_document("key", "collection")
+    """
+    from helper.neo4j_integration import TestNeo4jProvider
+    from helper.arango import TestArangoHTTPProvider
+    
+    graph_type = os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower()
+    
+    if graph_type == "arango":
+        # Validate ArangoDB env vars
+        arango_url = os.getenv("TEST_ARANGO_URL")
+        arango_username = os.getenv("TEST_ARANGO_USERNAME")
+        arango_password = os.getenv("TEST_ARANGO_PASSWORD")
+        
+        if not arango_url or not arango_password:
+            pytest.skip("TEST_ARANGO_URL / TEST_ARANGO_PASSWORD not set; skipping tests requiring graph_provider.")
+        
+        provider = TestArangoHTTPProvider()
+        connected = await provider.connect()
+        if not connected:
+            pytest.fail("Failed to connect TestArangoHTTPProvider to ArangoDB")
+    else:
+        # Default to Neo4j
+        neo4j_uri = os.getenv("TEST_NEO4J_URI")
+        neo4j_user = os.getenv("TEST_NEO4J_USERNAME")
+        neo4j_password = os.getenv("TEST_NEO4J_PASSWORD")
+        
+        if not neo4j_uri or not neo4j_user or not neo4j_password:
+            pytest.skip("TEST_NEO4J_URI / TEST_NEO4J_USERNAME / TEST_NEO4J_PASSWORD not set; skipping tests requiring graph_provider.")
+        
+        provider = TestNeo4jProvider()
+        connected = await provider.connect()
+        if not connected:
+            pytest.fail("Failed to connect TestNeo4jProvider to Neo4j")
+    
+    try:
+        yield provider
+    finally:
+        await provider.disconnect()
 
 
 def pytest_sessionstart(session) -> None:  # type: ignore[override]
     """
     Pytest hook to validate that critical env vars are present.
 
-    Prod (PIPESHUB_TEST_ENV=prod): require PIPESHUB_BASE_URL, CLIENT_ID, CLIENT_SECRET, TEST_NEO4J_*.
-    Local (PIPESHUB_TEST_ENV=local): require PIPESHUB_BASE_URL, TEST_NEO4J_*,
+    Validates env vars based on TEST_GRAPH_DB_TYPE (neo4j or arango).
+    Prod (PIPESHUB_TEST_ENV=prod): require PIPESHUB_BASE_URL, CLIENT_ID, CLIENT_SECRET, and graph DB vars.
+    Local (PIPESHUB_TEST_ENV=local): require PIPESHUB_BASE_URL, graph DB vars,
     and either (CLIENT_ID + CLIENT_SECRET) or (PIPESHUB_TEST_USER_EMAIL + PIPESHUB_TEST_USER_PASSWORD).
     """
     test_env = os.getenv("PIPESHUB_TEST_ENV", "").strip().lower()
+    graph_type = os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower()
     env_file = ".env.prod" if test_env == "prod" else (".env.local" if test_env == "local" else "none")
     base_url = os.getenv("PIPESHUB_BASE_URL", "")
     log = logging.getLogger("integration-tests")
     log.info(
-        "PIPESHUB_TEST_ENV=%s, env file=%s, base_url=%s",
+        "PIPESHUB_TEST_ENV=%s, TEST_GRAPH_DB_TYPE=%s, env file=%s, base_url=%s",
         test_env or "(not set)",
+        graph_type,
         env_file,
         base_url or "(not set)",
     )
@@ -143,8 +226,14 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
     if not os.getenv("PIPESHUB_BASE_URL"):
         missing.append("PIPESHUB_BASE_URL")
 
+    # Validate graph DB vars based on TEST_GRAPH_DB_TYPE
+    if graph_type == "arango":
+        graph_vars = ["TEST_ARANGO_URL", "TEST_ARANGO_PASSWORD"]
+    else:
+        graph_vars = ["TEST_NEO4J_URI", "TEST_NEO4J_USERNAME", "TEST_NEO4J_PASSWORD"]
+
     if is_local:
-        for key in ["TEST_NEO4J_URI", "TEST_NEO4J_USERNAME", "TEST_NEO4J_PASSWORD"]:
+        for key in graph_vars:
             if not os.getenv(key):
                 missing.append(key)
         has_creds = os.getenv("CLIENT_ID") and os.getenv("CLIENT_SECRET")
@@ -161,7 +250,7 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
             missing.append("CLIENT_ID")
         if not os.getenv("CLIENT_SECRET"):
             missing.append("CLIENT_SECRET")
-        for key in ["TEST_NEO4J_URI", "TEST_NEO4J_USERNAME", "TEST_NEO4J_PASSWORD"]:
+        for key in graph_vars:
             if not os.getenv(key):
                 missing.append(key)
 
