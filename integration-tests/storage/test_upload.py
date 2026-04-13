@@ -25,6 +25,8 @@ logger = logging.getLogger("storage-integration")
 # Test 1 — non-versioned upload smoke test
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_non_versioned(sc: StorageClient):
     """Upload a non-versioned .txt file; verify isVersionedFile=false and versionHistory empty."""
     resp = sc.upload(
@@ -52,6 +54,8 @@ def test_upload_non_versioned(sc: StorageClient):
 # Validation tests — independent, no shared state needed
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_without_file(sc: StorageClient):
     """Test 33: POST /upload without attaching a file → 400."""
     url = sc._url("/upload")
@@ -64,6 +68,8 @@ def test_upload_without_file(sc: StorageClient):
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_without_document_name(sc: StorageClient):
     """Test 34: POST /upload without documentName → 400."""
     files = [("file", ("test.txt", io.BytesIO(b"data"), "text/plain"))]
@@ -77,6 +83,8 @@ def test_upload_without_document_name(sc: StorageClient):
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_unsupported_mime_type(sc: StorageClient):
     """Test 36: Upload a file whose extension has no known MIME type → 400."""
     files = [("file", ("payload.unknownxyz", io.BytesIO(b"data"), "application/octet-stream"))]
@@ -90,6 +98,8 @@ def test_upload_unsupported_mime_type(sc: StorageClient):
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_document_name_with_slash(sc: StorageClient):
     """Test 45: POST /upload with documentName containing '/' → 400."""
     files = [("file", ("test.txt", io.BytesIO(b"data"), "text/plain"))]

@@ -30,6 +30,8 @@ def _doc_id(body: dict[str, Any]) -> str:
 # Test 2 — GET by ID
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_get_document_by_id(sc: StorageClient):
     resp = sc.upload(
         file_content=b"get-by-id test",
@@ -54,6 +56,8 @@ def test_get_document_by_id(sc: StorageClient):
 # Test 7 — DELETE
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_delete_document(sc: StorageClient):
     resp = sc.upload(
         file_content=b"delete me",
@@ -73,6 +77,8 @@ def test_delete_document(sc: StorageClient):
 # Test 17 — Upload → delete → operations that filter isDeleted → 404
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_deleted_document_buffer_returns_404(sc: StorageClient):
     """
     GET /:documentId returns the doc even after soft-delete (isDeleted=true, no filter).
@@ -106,12 +112,16 @@ def test_deleted_document_buffer_returns_404(sc: StorageClient):
 # Tests 25 & 26 — Not-found for non-existent IDs
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_get_nonexistent_document(sc: StorageClient):
     """Test 25: GET valid-format ObjectId that doesn't exist → 404."""
     resp = sc.get_document(NONEXISTENT_ID)
     assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_delete_nonexistent_document(sc: StorageClient):
     """Test 26: DELETE non-existent documentId → 404."""
     resp = sc.delete_document(NONEXISTENT_ID)

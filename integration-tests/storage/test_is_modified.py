@@ -28,6 +28,8 @@ def _doc_id(body: dict[str, Any]) -> str:
 # Test 8 — isModified false on fresh upload
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_is_modified_false_on_fresh_upload(sc: StorageClient):
     """Test 8: isModified is false immediately after upload (no buffer update yet)."""
     resp = sc.upload(
@@ -52,6 +54,8 @@ def test_is_modified_false_on_fresh_upload(sc: StorageClient):
 # Test 9 — isModified true after buffer update
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestIsModifiedAfterBufferUpdate:
     """Sequential: upload → PUT /buffer → GET /isModified → true."""
 
@@ -93,6 +97,8 @@ class TestIsModifiedAfterBufferUpdate:
 # Test 29 — not found
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_is_modified_nonexistent_document(sc: StorageClient):
     """Test 29: GET /isModified for non-existent document → 404."""
     resp = sc.is_modified(NONEXISTENT_ID)

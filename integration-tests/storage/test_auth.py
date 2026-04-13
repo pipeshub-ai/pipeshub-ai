@@ -21,12 +21,16 @@ def _doc_url(doc_id: str = FAKE_DOC_ID) -> str:
 
 
 # Test 22 — no Authorization header
+@pytest.mark.integration
+@pytest.mark.storage
 def test_no_auth_header():
     resp = requests.get(_doc_url(), timeout=30)
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
 
 
 # Test 23 — malformed / expired token
+@pytest.mark.integration
+@pytest.mark.storage
 def test_malformed_token():
     resp = requests.get(
         _doc_url(),
@@ -36,6 +40,8 @@ def test_malformed_token():
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_expired_token():
     # A syntactically valid JWT whose signature is wrong / expired
     expired = (

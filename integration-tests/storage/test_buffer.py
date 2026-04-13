@@ -34,6 +34,8 @@ def _doc_id(body: dict[str, Any]) -> str:
 # Tests 3 & 11 — GET /buffer smoke + bytes verification
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_get_document_buffer_non_empty(sc: StorageClient):
     """Test 3: GET buffer returns 200 and non-empty binary content."""
     resp = sc.upload(
@@ -52,6 +54,8 @@ def test_get_document_buffer_non_empty(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_buffer_bytes_match_upload(sc: StorageClient):
     """Test 11: Bytes returned by GET /buffer equal the bytes uploaded."""
     content = b"exact bytes check 12345"
@@ -88,6 +92,8 @@ def test_buffer_bytes_match_upload(sc: StorageClient):
 # Test 6 — PUT /buffer
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_update_buffer(sc: StorageClient):
     """Test 6: PUT /:documentId/buffer returns 200."""
     resp = sc.upload(
@@ -111,6 +117,8 @@ def test_update_buffer(sc: StorageClient):
 # Test 12 — Non-versioned lifecycle: upload → update → GET → new content
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestNonVersionedBufferLifecycle:
     """Sequential: upload → PUT /buffer → GET /buffer → assert new content returned."""
 
@@ -152,6 +160,8 @@ class TestNonVersionedBufferLifecycle:
 # Test 13 — Versioned: GET /buffer?version=0 returns v0 content
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestVersionedBufferAtVersion0:
     """Upload v0 → upload v1 → GET /buffer?version=0 → assert v0 content."""
 
@@ -200,6 +210,8 @@ class TestVersionedBufferAtVersion0:
 # Test 15 — /buffer?version=N and /download?version=N point to same version
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_buffer_and_download_same_version(sc: StorageClient):
     """Test 15: Both /buffer?version=0 and /download?version=0 resolve the same stored file."""
     resp = sc.upload(
@@ -227,18 +239,24 @@ def test_buffer_and_download_same_version(sc: StorageClient):
 # Not-found and validation errors
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_get_buffer_nonexistent_document(sc: StorageClient):
     """Test 27: GET /buffer for non-existent document → 404."""
     resp = sc.get_document_buffer(NONEXISTENT_ID)
     assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_get_buffer_negative_version(sc: StorageClient):
     """Test 31: GET /buffer?version=-1 → 400."""
     resp = sc.get_document_buffer(NONEXISTENT_ID, version=-1)
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_get_buffer_out_of_range_version(sc: StorageClient):
     """Test 43: GET /buffer?version=999 on doc with 1 version → 400."""
     resp = sc.upload(

@@ -53,6 +53,8 @@ def _version_path(entry: dict[str, Any], vendor: str) -> str:
 # Group A — documentPath field integrity
 # ===========================================================================
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_a1_upload_without_document_path(sc: StorageClient):
     """A1: Upload without documentPath → documentPath ends with /PipesHub."""
     resp = sc.upload(b"a1 content", "a1.txt", "A1 Doc", is_versioned=False)
@@ -64,6 +66,8 @@ def test_a1_upload_without_document_path(sc: StorageClient):
     sc.delete_document(_doc_id(body))
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_a2_upload_with_document_path(sc: StorageClient):
     """A2: Upload with documentPath='reports/q1' → documentPath ends with /PipesHub/reports/q1."""
     resp = sc.upload(
@@ -78,6 +82,8 @@ def test_a2_upload_with_document_path(sc: StorageClient):
     sc.delete_document(_doc_id(body))
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestDocumentPathAfterVersionOps:
     """A3/A4: documentPath unchanged after uploadNextVersion and rollback."""
 
@@ -118,6 +124,8 @@ class TestDocumentPathAfterVersionOps:
         self._sc.delete_document(self.doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_a5_document_path_unchanged_after_buffer_update(sc: StorageClient):
     """A5: documentPath unchanged after PUT /buffer."""
     resp = sc.upload(b"original", "a5.txt", "A5 Buffer Doc", is_versioned=False)
@@ -137,6 +145,8 @@ def test_a5_document_path_unchanged_after_buffer_update(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_a6_placeholder_without_document_path(sc: StorageClient):
     """A6: create_placeholder with empty documentPath → documentPath ends with /PipesHub."""
     # CreateDocumentSchema requires documentPath: z.string(), so we pass "" which is
@@ -150,6 +160,8 @@ def test_a6_placeholder_without_document_path(sc: StorageClient):
     sc.delete_document(_doc_id(body))
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_a7_placeholder_with_document_path(sc: StorageClient):
     """A7: create_placeholder with documentPath → documentPath ends with /PipesHub/<path>."""
     resp = sc.create_placeholder("A7 Placeholder", "txt", "finance/2024")
@@ -165,6 +177,8 @@ def test_a7_placeholder_with_document_path(sc: StorageClient):
 # Group B — extension consistency
 # ===========================================================================
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_b1_extension_txt(sc: StorageClient):
     """B1: Upload .txt file → extension is .txt."""
     resp = sc.upload(b"text content", "b1.txt", "B1 Txt Doc", is_versioned=False)
@@ -173,6 +187,8 @@ def test_b1_extension_txt(sc: StorageClient):
     sc.delete_document(_doc_id(resp.json()))
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_b2_extension_pdf(sc: StorageClient):
     """B2: Upload .pdf file → extension is .pdf."""
     resp = sc.upload(b"%PDF-1.4 content", "b2.pdf", "B2 Pdf Doc", is_versioned=False)
@@ -181,6 +197,8 @@ def test_b2_extension_pdf(sc: StorageClient):
     sc.delete_document(_doc_id(resp.json()))
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestExtensionConsistencyAcrossOps:
     """B3/B4/B5/B6: extension unchanged across uploadNextVersion, rollback, PUT /buffer."""
 
@@ -255,6 +273,8 @@ class TestExtensionConsistencyAcrossOps:
 # Group C — versionHistory file paths
 # ===========================================================================
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestVersionHistoryPaths:
     """C1-C5: versionHistory entries have paths containing /versions/v{N}.
 
@@ -341,6 +361,8 @@ class TestVersionHistoryPaths:
         self._sc.delete_document(self.doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestRollbackToV1Path:
     """C4: After rollback to v1, the appended entry path contains /versions/v."""
 
@@ -388,6 +410,8 @@ class TestRollbackToV1Path:
 # Group D — documentName consistency
 # ===========================================================================
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestDocumentNameConsistency:
     """D1/D2/D3: documentName unchanged after uploadNextVersion, rollback, PUT /buffer."""
 
@@ -454,7 +478,8 @@ class TestDocumentNameConsistency:
 # backend's ``extractOrgId`` helper reads off every request).  We use that
 # as the source of truth here, mirroring the backend.
 
-
+@pytest.mark.integration
+@pytest.mark.storage
 def test_e1_document_path_starts_with_org_id(sc: StorageClient):
     """E1: documentPath starts with the authenticated client's orgId."""
     resp = sc.upload(b"e1 content", "e1.txt", "E1 OrgId Doc", is_versioned=False)
@@ -470,6 +495,8 @@ def test_e1_document_path_starts_with_org_id(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestOrgIdNeverChanges:
     """E2: documentPath remains scoped to the same orgId across
     uploadNextVersion, rollback, and PUT /buffer."""
@@ -528,6 +555,8 @@ class TestOrgIdNeverChanges:
 # Group F — storageVendor consistency
 # ===========================================================================
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestStorageVendorConsistency:
     """F1/F2/F3: storageVendor is valid after upload and unchanged across operations."""
 

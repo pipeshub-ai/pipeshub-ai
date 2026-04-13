@@ -43,6 +43,8 @@ def _has_download_payload(resp) -> bool:
 # Test 4 — download smoke test
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_download_document_smoke(sc: StorageClient):
     """Test 4: GET /download with no version → 200 and has signedUrl or stream."""
     resp = sc.upload(
@@ -65,6 +67,8 @@ def test_download_document_smoke(sc: StorageClient):
 # Test 10 — upload content then download
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_then_download_content(sc: StorageClient):
     """Test 10: Upload b'hello', download, assert we get a valid download handle."""
     resp = sc.upload(
@@ -87,6 +91,8 @@ def test_upload_then_download_content(sc: StorageClient):
 # Test 14 — versioned download at version=0
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestVersionedDownloadAtV0:
     """Upload v0 → upload v1 → GET /download?version=0 → 200."""
 
@@ -133,6 +139,8 @@ class TestVersionedDownloadAtV0:
 # Test 20 — custom expiration time
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_download_with_custom_expiration(sc: StorageClient):
     """Test 20: GET /download?expirationTimeInSeconds=7200 → 200."""
     resp = sc.upload(
@@ -156,24 +164,32 @@ def test_download_with_custom_expiration(sc: StorageClient):
 # Not-found and validation errors
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_download_nonexistent_document(sc: StorageClient):
     """Test 28: GET /download for non-existent document → 404."""
     resp = sc.download_document(NONEXISTENT_ID)
     assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_download_negative_version(sc: StorageClient):
     """Test 30: GET /download?version=-1 → 400."""
     resp = sc.download_document(NONEXISTENT_ID, version=-1)
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_download_zero_expiration(sc: StorageClient):
     """Test 37: GET /download?expirationTimeInSeconds=0 → 400."""
     resp = sc.download_document(NONEXISTENT_ID, expiration_seconds=0)
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_download_out_of_range_version(sc: StorageClient):
     """Test 44: GET /download?version=999 on doc with only a couple versions → 400."""
     resp = sc.upload(

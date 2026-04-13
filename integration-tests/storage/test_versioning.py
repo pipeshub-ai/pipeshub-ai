@@ -34,6 +34,8 @@ def _version_count(body: dict[str, Any]) -> int:
 # Test 16 — Rollback + content verification
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestRollbackContentVerification:
     """Upload v0 → upload v1 → rollback to v0 → GET /buffer → confirm state."""
 
@@ -90,6 +92,8 @@ class TestRollbackContentVerification:
 # Test 21 — Rollback to v1 (not v0)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestRollbackToV1:
     """Upload v0 → v1 → v2 → rollback to v1 → assert versionHistory grows, content valid."""
 
@@ -139,6 +143,8 @@ class TestRollbackToV1:
 # Business logic validation errors
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_next_version_on_non_versioned(sc: StorageClient):
     """Test 38: POST /uploadNextVersion on a non-versioned document → 400."""
     resp = sc.upload(
@@ -158,6 +164,8 @@ def test_upload_next_version_on_non_versioned(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_next_version_wrong_extension(sc: StorageClient):
     """Test 39: POST /uploadNextVersion with wrong extension → 400."""
     resp = sc.upload(
@@ -178,6 +186,8 @@ def test_upload_next_version_wrong_extension(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_rollback_on_non_versioned(sc: StorageClient):
     """Test 40: POST /rollBack on a non-versioned document → 400."""
     resp = sc.upload(
@@ -197,6 +207,8 @@ def test_rollback_on_non_versioned(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_rollback_nonexistent_version(sc: StorageClient):
     """Test 41: POST /rollBack with version=999 that doesn't exist → 400."""
     resp = sc.upload(
@@ -216,6 +228,8 @@ def test_rollback_nonexistent_version(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_rollback_without_note(sc: StorageClient):
     """Test 32: POST /rollBack without note field → 400."""
     import requests as req_lib
@@ -245,6 +259,8 @@ def test_rollback_without_note(sc: StorageClient):
     sc.delete_document(doc_id)
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestRollbackToCurrentLatestVersion:
     """Test 42: POST /rollBack to the current latest version → 400."""
 

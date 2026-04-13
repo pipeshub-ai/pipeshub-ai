@@ -29,6 +29,8 @@ def _doc_id(body: dict[str, Any]) -> str:
 # Test 5 — placeholder smoke test
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_create_placeholder(sc: StorageClient):
     """Test 5: POST /placeholder → 200 and document created."""
     resp = sc.create_placeholder(
@@ -50,6 +52,8 @@ def test_create_placeholder(sc: StorageClient):
 # Test 18 — placeholder → directUpload
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_placeholder_then_direct_upload(sc: StorageClient):
     """Test 18: Create placeholder → POST /directUpload → assert signedUrl and documentId present."""
     ph_resp = sc.create_placeholder(
@@ -90,6 +94,8 @@ def test_placeholder_then_direct_upload(sc: StorageClient):
 # Test 19 — customMetadata preserved
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_upload_custom_metadata_preserved(sc: StorageClient):
     """Test 19: Upload with customMetadata → GET → metadata preserved."""
     metadata = [{"key": "project", "value": "integration-test"}, {"key": "owner", "value": "qa"}]
@@ -118,6 +124,8 @@ def test_upload_custom_metadata_preserved(sc: StorageClient):
 # Validation errors
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_placeholder_without_extension(sc: StorageClient):
     """Test 35: POST /placeholder without extension field → 400."""
     resp = requests.post(
@@ -129,6 +137,8 @@ def test_placeholder_without_extension(sc: StorageClient):
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
+@pytest.mark.integration
+@pytest.mark.storage
 def test_placeholder_document_name_with_extension(sc: StorageClient):
     """Test 46: POST /placeholder with documentName that includes an extension → 400."""
     resp = sc.create_placeholder(

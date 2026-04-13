@@ -44,6 +44,8 @@ def _version_count(body: dict[str, Any]) -> int:
 # Test class
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
+@pytest.mark.storage
 class TestUploadAndRollback:
     """
     Sequential lifecycle: upload -> next version x2 -> rollback -> cleanup.
