@@ -735,7 +735,14 @@ function ChatContent() {
       )}
       {showSearchView ? (
         /* Search Results View */
-        <SearchResultsView />
+        <Flex direction="column" style={{
+          flex: 1,
+          width: '100%',
+          overflow: 'hidden',
+          marginBottom: isMobile ? '120px' : '230px',
+        }}>
+          <SearchResultsView />
+        </Flex>
       ) : showNewChatView ? (
         /* New Chat View */
         <Flex
