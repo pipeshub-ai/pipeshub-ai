@@ -29,7 +29,7 @@ from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     PipeshubClient,
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import wait_until_graph_condition  # noqa: E402
+from helper.graph_provider_utils import wait_until_graph_condition, async_wait_for_stable_record_count  # noqa: E402
 
 logger = logging.getLogger("confluence-lifecycle-test")
 
@@ -114,6 +114,9 @@ class TestConfluenceConnector:
             }
         )
 
+        # Brief wait for Confluence to register page timestamps
+        pipeshub_client.wait(5)
+        
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -216,6 +219,8 @@ class TestConfluenceConnector:
             }
         )
         
+        pipeshub_client.wait(5)
+        
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -234,7 +239,14 @@ class TestConfluenceConnector:
         await graph_provider.assert_record_paths_or_names_contain(connector_id, [new_title])
         await graph_provider.assert_record_not_exists(connector_id, old_title)
 
-        after_count = await graph_provider.count_records(connector_id)
+        # Wait for record count to stabilize after rename
+        after_count = await async_wait_for_stable_record_count(
+            graph_provider,
+            connector_id,
+            stability_checks=3,
+            interval=5,
+            max_rounds=10,
+        )
         assert after_count == before_count, (
             f"Record count should be stable after rename; before={before_count}, after={after_count}"
         )
@@ -270,6 +282,8 @@ class TestConfluenceConnector:
         )
         parent_page = parent_resp.json()
 
+        pipeshub_client.wait(5)
+        
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -292,6 +306,8 @@ class TestConfluenceConnector:
 
         await confluence_datasource.move_page(page_id, str(parent_page["id"]))
 
+        pipeshub_client.wait(5)
+        
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)

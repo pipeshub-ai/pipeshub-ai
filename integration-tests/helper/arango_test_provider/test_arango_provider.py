@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.constants.arangodb import CollectionNames
+from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
 logger = logging.getLogger("test-graph-provider")
@@ -26,15 +27,19 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     and adds test-specific helper methods for assertions and queries using AQL.
 
     Usage:
-        provider = TestArangoHTTPProvider()
+        provider = TestArangoHTTPProvider(config_service)
         await provider.connect()
 
         count = await provider.count_records("connector-id")
         await provider.assert_min_records("connector-id", 5)
     """
 
-    def __init__(self, custom_logger: logging.Logger | None = None) -> None:
-        super().__init__(logger=custom_logger or logger, config_service=None)
+    def __init__(
+        self, 
+        config_service: ConfigurationService,
+        custom_logger: logging.Logger | None = None
+    ) -> None:
+        super().__init__(logger=custom_logger or logger, config_service=config_service)
 
     # connect() / disconnect() inherited: env-based connect when ``config_service`` is None (see backend).
 

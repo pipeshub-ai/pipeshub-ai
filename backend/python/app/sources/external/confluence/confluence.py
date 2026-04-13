@@ -4789,25 +4789,47 @@ class ConfluenceDataSource:
 
     async def create_space(
         self,
+        space_key: Optional[str] = None,
+        name: Optional[str] = None,
+        description: str = "",
         body: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Create space\n\nHTTP POST /spaces\nBody: application/json (Any)"""
+        """Create space using v1 API (v2 is restricted to RBAC-enabled sites).
+        
+        Args:
+            space_key: The space key (uppercase alphanumeric)
+            name: The display name for the space
+            description: Optional description for the space
+            body: Optional full body payload (overrides space_key/name/description if provided)
+            headers: Optional headers
+            
+        Returns:
+            HTTPResponse from the create operation
+        """
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
+
+        if body is None:
+            if not space_key or not name:
+                raise ValueError("Either provide body or both space_key and name")
+            body = {
+                "key": space_key,
+                "name": name,
+                "description": {"plain": {"value": description, "representation": "plain"}}
+            }
+
+        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
+        url = f"{v1_base_url}/space"
         _headers: Dict[str, Any] = dict(headers or {})
-        _path: Dict[str, Any] = {}
-        _query: Dict[str, Any] = {}
-        _body = body
-        rel_path = '/spaces'
-        url = self.base_url + _safe_format_url(rel_path, _path)
+
         req = HTTPRequest(
             method='POST',
             url=url,
-            headers=_as_str_dict(_headers),
-            path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
-            body=_body,
+            headers=_as_str_dict(_headers) if _headers else self._client.headers.copy(),
+            path={},
+            query={},
+            body=body,
         )
         resp = await self._client.execute(req)
         return resp
@@ -8137,24 +8159,6 @@ class ConfluenceDataSource:
 
 # ---- Helpers used by generated methods ----
 
-    async def get_space_by_key(self, space_key: str) -> Dict[str, Any]:
-        """Get space by key string. Returns space dict with 'id', 'key', 'name', etc.
-        
-        Args:
-            space_key: The space key (string like 'MYSPACE')
-            
-        Returns:
-            Dict containing space details including numeric 'id'
-            
-        Raises:
-            ValueError: If space with given key is not found
-        """
-        resp = await self.get_spaces(keys=[space_key])
-        results = resp.json().get("results", [])
-        if not results:
-            raise ValueError(f"Space with key '{space_key}' not found")
-        return results[0]
-
     async def delete_space(self, space_key: str) -> HTTPResponse:
         """Delete a space by key. Uses v1 REST API.
         
@@ -8199,36 +8203,6 @@ class ConfluenceDataSource:
             path={},
             query={},
             body=None,
-        )
-        return await self._client.execute(req)
-
-    async def create_space_v1(self, space_key: str, name: str, description: str = "") -> HTTPResponse:
-        """Create a space using v1 API with simple key/name.
-        
-        Args:
-            space_key: The space key (must be uppercase alphanumeric)
-            name: The display name for the space
-            description: Optional description for the space
-            
-        Returns:
-            HTTPResponse from the create operation
-        """
-        if self._client is None:
-            raise ValueError('HTTP client is not initialized')
-        v1_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{v1_base_url}/space"
-        body = {
-            "key": space_key,
-            "name": name,
-            "description": {"plain": {"value": description, "representation": "plain"}}
-        }
-        req = HTTPRequest(
-            method='POST',
-            url=url,
-            headers=self._client.headers.copy(),
-            path={},
-            query={},
-            body=body,
         )
         return await self._client.execute(req)
 

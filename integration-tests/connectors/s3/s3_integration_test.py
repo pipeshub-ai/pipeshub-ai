@@ -112,7 +112,7 @@ class TestS3Connector:
             "incremental-test/new-file-beta.csv": b"id,name,value\n1,charlie,300\n2,delta,400\n",
         }
         for blob_key, file_bytes in new_files.items():
-            s3_storage.upload_blob(bucket_name, blob_key, file_bytes, content_type="text/csv")
+            s3_storage.upload_object(bucket_name, blob_key, file_bytes, content_type="text/csv")
 
         logger.info(
             "Uploaded %d new files for incremental sync (connector %s)",
@@ -196,18 +196,18 @@ class TestS3Connector:
             before_count, connector_id,
         )
 
-        pre_meta = s3_storage.get_blob_metadata(bucket_name, update_key)
+        pre_meta = s3_storage.get_object_metadata(bucket_name, update_key)
         logger.info(
             "Pre-update metadata for %s: etag=%s (connector %s)",
             update_key, pre_meta.get("etag"), connector_id,
         )
 
         new_content = f"Updated content at {uuid.uuid4().hex}".encode()
-        s3_storage.overwrite_blob(
+        s3_storage.overwrite_object(
             bucket_name, update_key, new_content, content_type="text/plain"
         )
 
-        post_meta = s3_storage.get_blob_metadata(bucket_name, update_key)
+        post_meta = s3_storage.get_object_metadata(bucket_name, update_key)
         assert post_meta["etag"] != pre_meta["etag"], (
             f"Object ETag should change after overwrite; "
             f"before={pre_meta['etag']}, after={post_meta['etag']} (connector {connector_id})"

@@ -17,12 +17,10 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
-if TYPE_CHECKING:
-    from fastapi import Request
-    from app.config.configuration_service import ConfigurationService
-
+from fastapi import Request
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -87,14 +85,14 @@ class Neo4jProvider(IGraphDBProvider):
     def __init__(
         self,
         logger: Logger,
-        config_service: ConfigurationService | None = None,
+        config_service: ConfigurationService,
     ) -> None:
         """
         Initialize Neo4j provider.
 
         Args:
             logger: Logger instance
-            config_service: Configuration service for database credentials (optional for testing)
+            config_service: Configuration service for database credentials
         """
         self.logger = logger
         self.config_service = config_service
@@ -10057,7 +10055,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
-    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional["Request"] = None, record_id: str | None = None) -> dict:
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
         try:
             # Handle both translated (_key -> id) and untranslated document formats

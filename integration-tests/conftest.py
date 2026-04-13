@@ -31,6 +31,9 @@ if str(_SAMPLE_DATA_DIR) not in sys.path:
 if str(_BACKEND_PYTHON) not in sys.path:
     sys.path.insert(0, str(_BACKEND_PYTHON))
 
+# Import after backend path is added to sys.path
+from helper.config_service_fixture import config_service  # noqa: F401, E402
+
 
 def _load_env() -> None:
     """
@@ -145,7 +148,7 @@ def sample_data_root() -> Path:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def graph_provider() -> AsyncGenerator["GraphProviderProtocol", None]:
+async def graph_provider(config_service) -> AsyncGenerator["GraphProviderProtocol", None]:
     """
     Session-scoped async graph provider (Neo4j or ArangoDB based on TEST_GRAPH_DB_TYPE).
     
@@ -161,7 +164,7 @@ async def graph_provider() -> AsyncGenerator["GraphProviderProtocol", None]:
             doc = await provider.get_document("key", "collection")
     """
     from helper.neo4j_integration import TestNeo4jProvider
-    from helper.arango import TestArangoHTTPProvider
+    from helper.arango_test_provider import TestArangoHTTPProvider
     
     graph_type = os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower()
     
@@ -174,7 +177,7 @@ async def graph_provider() -> AsyncGenerator["GraphProviderProtocol", None]:
         if not arango_url or not arango_password:
             pytest.skip("TEST_ARANGO_URL / TEST_ARANGO_PASSWORD not set; skipping tests requiring graph_provider.")
         
-        provider = TestArangoHTTPProvider()
+        provider = TestArangoHTTPProvider(config_service=config_service)
         connected = await provider.connect()
         if not connected:
             pytest.fail("Failed to connect TestArangoHTTPProvider to ArangoDB")
@@ -187,7 +190,7 @@ async def graph_provider() -> AsyncGenerator["GraphProviderProtocol", None]:
         if not neo4j_uri or not neo4j_user or not neo4j_password:
             pytest.skip("TEST_NEO4J_URI / TEST_NEO4J_USERNAME / TEST_NEO4J_PASSWORD not set; skipping tests requiring graph_provider.")
         
-        provider = TestNeo4jProvider()
+        provider = TestNeo4jProvider(config_service=config_service)
         connected = await provider.connect()
         if not connected:
             pytest.fail("Failed to connect TestNeo4jProvider to Neo4j")

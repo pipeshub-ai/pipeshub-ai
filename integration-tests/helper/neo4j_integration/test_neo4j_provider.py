@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 logger = logging.getLogger("test-graph-provider")
@@ -24,7 +25,7 @@ class TestNeo4jProvider(Neo4jProvider):
     and adds test-specific helper methods for assertions and queries.
     
     Usage:
-        provider = TestNeo4jProvider()
+        provider = TestNeo4jProvider(config_service)
         await provider.connect()
         
         # Use inherited methods
@@ -35,16 +36,21 @@ class TestNeo4jProvider(Neo4jProvider):
         await provider.assert_min_records("connector-id", 5)
     """
     
-    def __init__(self, custom_logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self, 
+        config_service: ConfigurationService,
+        custom_logger: logging.Logger | None = None
+    ) -> None:
         """
         Initialize test provider.
         
         Args:
+            config_service: ConfigurationService instance
             custom_logger: Optional custom logger. Uses default if not provided.
         """
         super().__init__(
             logger=custom_logger or logger,
-            config_service=None,  # Not needed - Neo4jProvider reads from env vars
+            config_service=config_service,
         )
 
     # =========================================================================

@@ -75,17 +75,20 @@ async def confluence_connector(
     
     # Create or reuse space
     try:
-        space = await confluence_datasource.get_space_by_key(space_key)
-        logger.info("SETUP: Space '%s' already exists (id=%s), reusing it", space_key, space.get("id"))
-        state["space_id"] = str(space.get("id"))
-    except ValueError:
-        resp = await confluence_datasource.create_space_v1(
+        resp = await confluence_datasource.get_spaces(keys=[space_key])
+        results = resp.json().get("results", [])
+        if results:
+            space = results[0]
+            state["space_id"] = str(space.get("id"))
+        else:
+            raise ValueError("Space not found")
+    except (ValueError, Exception):
+        resp = await confluence_datasource.create_space(
             space_key=space_key,
             name=f"Integration Test Space {space_key}",
             description="Automated integration test space"
         )
         if resp.status != 200:
-            logger.error("SETUP: Failed to create space. Status: %s, Response: %s", resp.status, resp.text())
             raise RuntimeError(f"Failed to create Confluence space: HTTP {resp.status}")
         space_data = resp.json()
         state["space_id"] = str(space_data.get("id"))
@@ -173,7 +176,6 @@ async def confluence_connector(
     assert instance.connector_id, "Connector must have a valid ID"
     connector_id = instance.connector_id
     state["connector_id"] = connector_id
-    logger.info("SETUP: Connector created: %s", connector_id)
     
     pipeshub_client.toggle_sync(connector_id, enable=True)
     
@@ -243,10 +245,8 @@ async def confluence_connector(
     except Exception as e:
         logger.warning("TEARDOWN: Failed to clear pages in space '%s': %s", space_key, e)
     
-    # Optionally delete space (commented out by default to allow inspection)
-    # Uncomment if you want full cleanup
-    # try:
-    #     await confluence_datasource.delete_space(space_key)
-    #     logger.info("TEARDOWN: Deleted space '%s'", space_key)
-    # except Exception as e:
-    #     logger.warning("TEARDOWN: Failed to delete space '%s': %s", space_key, e)
+    try:
+        await confluence_datasource.delete_space(space_key)
+        logger.info("TEARDOWN: Deleted space '%s'", space_key)
+    except Exception as e:
+        logger.warning("TEARDOWN: Failed to delete space '%s': %s", space_key, e)

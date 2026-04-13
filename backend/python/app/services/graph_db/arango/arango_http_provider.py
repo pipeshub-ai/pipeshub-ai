@@ -17,12 +17,10 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
-if TYPE_CHECKING:
-    from fastapi import Request
-    from app.config.configuration_service import ConfigurationService
-
+from fastapi import Request
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -184,14 +182,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
     def __init__(
         self,
         logger: Logger,
-        config_service: ConfigurationService | None = None,
+        config_service: ConfigurationService,
     ) -> None:
         """
         Initialize ArangoDB HTTP provider.
 
         Args:
             logger: Logger instance
-            config_service: Configuration service for database credentials (optional for tests / env-only connect)
+            config_service: Configuration service for database credentials
         """
         self.logger = logger
         self.config_service = config_service
@@ -389,23 +387,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info("🚀 Connecting to ArangoDB via HTTP API...")
 
-            if self.config_service is not None:
-                arangodb_config = await self.config_service.get_config(
-                    config_node_constants.ARANGODB.value
-                )
+            # Get ArangoDB configuration
+            arangodb_config = await self.config_service.get_config(
+                config_node_constants.ARANGODB.value
+            )
 
-                if not arangodb_config or not isinstance(arangodb_config, dict):
-                    raise ValueError("ArangoDB configuration not found or invalid")
+            if not arangodb_config or not isinstance(arangodb_config, dict):
+                raise ValueError("ArangoDB configuration not found or invalid")
 
-                arango_url = str(arangodb_config.get("url"))
-                arango_user = str(arangodb_config.get("username"))
-                arango_password = str(arangodb_config.get("password"))
-                arango_db = str(arangodb_config.get("db"))
-            else:
-                arango_url = str(os.getenv("ARANGO_URL", ""))
-                arango_user = str(os.getenv("ARANGO_USERNAME", "root"))
-                arango_password = str(os.getenv("ARANGO_PASSWORD", ""))
-                arango_db = str(os.getenv("ARANGO_DB_NAME", "es"))
+            arango_url = str(arangodb_config.get("url"))
+            arango_user = str(arangodb_config.get("username"))
+            arango_password = str(arangodb_config.get("password"))
+            arango_db = str(arangodb_config.get("db"))
 
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
@@ -1383,7 +1376,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         org_id: str,
-        request: Optional["Request"] = None,
+        request: Optional[Request] = None,
         depth: int = 0,
     ) -> dict:
         """
@@ -10021,7 +10014,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
             return None
 
-    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional["Request"] = None, record_id: str | None = None) -> dict:
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
         try:
             # Handle both translated (_key -> id) and untranslated document formats
