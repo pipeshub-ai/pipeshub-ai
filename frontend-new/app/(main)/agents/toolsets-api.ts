@@ -2,6 +2,9 @@ import { apiClient } from '@/lib/api';
 
 const PAGE_SIZE = 20;
 
+/** Backend caps `limit` on my-toolsets and agents toolsets list routes (e.g. ≤ 200). */
+export const MAX_TOOLSETS_LIST_LIMIT = 100;
+
 export interface BuilderToolsetTool {
   name: string;
   fullName: string;
@@ -124,7 +127,7 @@ export const ToolsetsApi = {
     }>('/api/v1/toolsets/my-toolsets', {
       params: {
         page: params.page ?? 1,
-        limit: params.limit ?? PAGE_SIZE,
+        limit: Math.min(params.limit ?? PAGE_SIZE, MAX_TOOLSETS_LIST_LIMIT),
         search: params.search || undefined,
         includeRegistry: params.includeRegistry ?? true,
       },
@@ -146,7 +149,7 @@ export const ToolsetsApi = {
     }>(`/api/v1/toolsets/agents/${agentKey}`, {
       params: {
         page: params.page ?? 1,
-        limit: params.limit ?? PAGE_SIZE,
+        limit: Math.min(params.limit ?? PAGE_SIZE, MAX_TOOLSETS_LIST_LIMIT),
         search: params.search || undefined,
         includeRegistry: params.includeRegistry ?? true,
       },
@@ -156,6 +159,43 @@ export const ToolsetsApi = {
       toolsets: rows.map(mapToSidebar),
       hasNext: data?.pagination?.hasNext ?? false,
     };
+  },
+
+  /** Pages through my-toolsets until `instanceId` is found (OAuth verify after popup). */
+  async findMyToolsetByInstanceId(instanceId: string): Promise<BuilderSidebarToolset | undefined> {
+    let page = 1;
+    for (let guard = 0; guard < 100; guard += 1) {
+      const res = await this.getMyToolsets({
+        page,
+        limit: MAX_TOOLSETS_LIST_LIMIT,
+        includeRegistry: false,
+      });
+      const hit = res.toolsets.find((t) => t.instanceId === instanceId);
+      if (hit) return hit;
+      if (!res.hasNext) return undefined;
+      page += 1;
+    }
+    return undefined;
+  },
+
+  /** Pages through agent toolsets until `instanceId` is found (OAuth verify after popup). */
+  async findAgentToolsetByInstanceId(
+    agentKey: string,
+    instanceId: string
+  ): Promise<BuilderSidebarToolset | undefined> {
+    let page = 1;
+    for (let guard = 0; guard < 100; guard += 1) {
+      const res = await this.getAgentToolsets(agentKey, {
+        page,
+        limit: MAX_TOOLSETS_LIST_LIMIT,
+        includeRegistry: false,
+      });
+      const hit = res.toolsets.find((t) => t.instanceId === instanceId);
+      if (hit) return hit;
+      if (!res.hasNext) return undefined;
+      page += 1;
+    }
+    return undefined;
   },
 
   /** GET /api/v1/toolsets/registry/:toolsetType/schema */

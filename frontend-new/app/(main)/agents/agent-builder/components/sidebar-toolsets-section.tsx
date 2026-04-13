@@ -544,12 +544,15 @@ export function AgentBuilderToolsetsSection(props: {
           key={userConfigToolset.instanceId}
           toolset={userConfigToolset}
           instanceId={userConfigToolset.instanceId}
-          onClose={() => setUserConfigToolset(null)}
+          onClose={() => {
+            setUserConfigToolset(null);
+            void refreshToolsets(agentKey, isServiceAccount, searchInput);
+          }}
           onSuccess={async () => {
             setUserConfigToolset(null);
             await refreshToolsets(agentKey, isServiceAccount, searchInput);
-            onNotify(t('agentBuilder.toolsetAuthUpdated'));
           }}
+          onNotify={onNotify}
         />
       ) : null}
     </Box>

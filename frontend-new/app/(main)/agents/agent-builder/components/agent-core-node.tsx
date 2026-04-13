@@ -83,43 +83,66 @@ function inboundHandleForEdge(
 function ConnectionChip({
   label,
   variant = 'default',
+  onClick,
 }: {
   label: string;
   variant?: 'default' | 'more';
+  /** When set (e.g. overflow chip), the chip is keyboard-activatable and expands/collapses the list. */
+  onClick?: () => void;
 }) {
   const isMore = variant === 'more';
-  return (
-    <Box
-      className="agent-core-connection-chip"
-      title={label}
+  const surfaceStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    padding: '4px 10px',
+    borderRadius: 'var(--radius-full)',
+    border: isMore ? '1px dashed var(--gray-8)' : '1px solid var(--gray-7)',
+    background: isMore ? 'var(--gray-a3)' : 'var(--gray-a4)',
+    boxShadow: isMore ? 'none' : 'inset 0 1px 0 var(--gray-a2)',
+    cursor: onClick ? 'pointer' : undefined,
+    font: 'inherit',
+    color: 'inherit',
+  };
+
+  const text = (
+    <Text
+      as="span"
+      size="1"
+      weight="medium"
       style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        maxWidth: '100%',
+        color: 'var(--agent-flow-text)',
+        lineHeight: '18px',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
         minWidth: 0,
-        boxSizing: 'border-box',
-        padding: '4px 10px',
-        borderRadius: 'var(--radius-full)',
-        border: isMore ? '1px dashed var(--gray-8)' : '1px solid var(--gray-7)',
-        background: isMore ? 'var(--gray-a3)' : 'var(--gray-a4)',
-        boxShadow: isMore ? 'none' : 'inset 0 1px 0 var(--gray-a2)',
       }}
     >
-      <Text
-        as="span"
-        size="1"
-        weight="medium"
-        style={{
-          color: 'var(--agent-flow-text)',
-          lineHeight: '18px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          minWidth: 0,
-        }}
+      {label}
+    </Text>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className="agent-core-connection-chip"
+        title={label}
+        aria-label={label}
+        onClick={onClick}
+        style={surfaceStyle}
       >
-        {label}
-      </Text>
+        {text}
+      </button>
+    );
+  }
+
+  return (
+    <Box className="agent-core-connection-chip" title={label} style={surfaceStyle}>
+      {text}
     </Box>
   );
 }
@@ -136,16 +159,24 @@ function ConnectedChips({
   labelOf: (n: FlowNodeData) => string;
 }) {
   const { t } = useTranslation();
+  const [showAll, setShowAll] = useState(false);
   if (!nodes.length) return null;
-  const shown = nodes.slice(0, max);
   const overflow = nodes.length - max;
+  const limit = showAll ? nodes.length : max;
+  const shown = nodes.slice(0, limit);
   return (
     <Flex wrap="wrap" gap="2" style={{ alignSelf: 'stretch' }}>
       {shown.map((n) => (
         <ConnectionChip key={n.id} label={labelOf(n)} />
       ))}
       {overflow > 0 ? (
-        <ConnectionChip variant="more" label={t('agentBuilder.moreItems', { count: overflow })} />
+        <ConnectionChip
+          variant="more"
+          label={
+            showAll ? t('agentBuilder.showFewerTools') : t('agentBuilder.moreItems', { count: overflow })
+          }
+          onClick={() => setShowAll((v) => !v)}
+        />
       ) : null}
     </Flex>
   );

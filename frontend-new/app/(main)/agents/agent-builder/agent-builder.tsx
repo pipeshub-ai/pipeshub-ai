@@ -763,11 +763,15 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           toolset={agentToolsetDialog.toolset}
           instanceId={agentToolsetDialog.instanceId}
           agentKey={effectiveAgentKey}
-          onClose={() => setAgentToolsetDialog(null)}
+          onClose={() => {
+            setAgentToolsetDialog(null);
+            void refreshToolsets(effectiveAgentKey, true);
+          }}
           onSuccess={() => {
             setAgentToolsetDialog(null);
             void refreshToolsets(effectiveAgentKey, true);
           }}
+          onNotify={setBanner}
         />
       ) : null}
 
