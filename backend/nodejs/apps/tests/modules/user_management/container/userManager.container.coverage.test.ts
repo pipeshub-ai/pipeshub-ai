@@ -28,7 +28,7 @@ describe('UserManagerContainer - coverage', () => {
       publishBatch: sinon.stub().resolves(),
       healthCheck: sinon.stub().resolves(true),
     } as any)
-    // If the container holds a direct ref to the real factory fn, avoid real producer.connect
+    // stub so that the actual instance is not called.
     sinon.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
     sinon.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
     sinon.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
