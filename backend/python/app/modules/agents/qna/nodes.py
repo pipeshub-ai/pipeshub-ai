@@ -869,16 +869,46 @@ class PlaceholderResolver:
         return None, []
 
     @classmethod
-    def _extract_source_tool_name(cls, placeholder: str) -> str | None:
+    def _extract_source_tool_name(
+        cls,
+        placeholder: str,
+        known_tools: set[str] | frozenset[str] | None = None,
+    ) -> str | None:
         """Extract the source tool name from a placeholder string.
 
         'jira.search_users.data.results[0].accountId' -> 'jira.search_users'
         'jira_search_users.data.results[0].accountId' -> 'jira_search_users'
+        'mcp_jira_getFoo.data[0].id' -> 'mcp_jira_getFoo' (not 'mcp_jira_getFoo.data[0]')
+
+        When ``known_tools`` is provided, the longest prefix of ``placeholder``
+        that matches a known tool name wins (handles MCP and registry names).
         """
+        if placeholder == "":
+            return ""
         parts = placeholder.split(".")
-        if len(parts) >= 2:
-            return f"{parts[0]}.{parts[1]}"
-        return parts[0] if parts else None
+        if len(parts) < 2:
+            return parts[0] if parts else None
+
+        if known_tools:
+            kt = known_tools
+            for i in range(len(parts) - 1, 0, -1):
+                candidate = ".".join(parts[:i])
+                for variant in (candidate, candidate.replace(".", "_")):
+                    if variant in kt:
+                        return variant
+                if "_" in candidate and "." not in candidate:
+                    dotted = _underscore_to_dotted(candidate)
+                    if dotted in kt:
+                        return dotted
+
+        # Heuristic when no known-tool match: dotted two-segment tools (jira.search_*)
+        # vs single-segment tools whose payload starts at .data... (mcp_jira_*, jira_search_*).
+        fieldish = parts[1]
+        if fieldish == "data" or (
+            isinstance(fieldish, str) and fieldish.startswith("data[")
+        ):
+            return parts[0]
+        return f"{parts[0]}.{parts[1]}"
 
 
 # ============================================================================
@@ -887,6 +917,20 @@ class PlaceholderResolver:
 
 class ToolExecutor:
     """Handles tool execution with cascading support"""
+
+    @staticmethod
+    def _normalize_nested_kwargs(tool_args: dict[str, Any]) -> dict[str, Any]:
+        """Flatten ``{\"kwargs\": {...}, ...}`` so real parameters are top-level.
+
+        LLMs and LangChain sometimes emit tool args with parameters nested under
+        ``kwargs`` alongside other keys. Pydantic then ignores the nested dict as
+        an extra field, and MCP receives an empty / wrong argument object.
+        """
+        out: dict[str, Any] = dict(tool_args)
+        while isinstance(out.get("kwargs"), dict):
+            inner: dict[str, Any] = out.pop("kwargs")
+            out = {**inner, **out}
+        return out
 
     @staticmethod
     def _format_args_preview(args: dict[str, Any], max_len: int = 220) -> str:
@@ -948,6 +992,21 @@ class ToolExecutor:
         results_by_tool = {}  # Store successful results for placeholder resolution
         tool_invocation_counts = {}  # Track how many times each tool has been called
 
+        # Share a single MCPClientManager across all MCP tools in the chain
+        # so they reuse connections to the same server.
+        shared_mcp_manager: Any = None
+        mcp_wrappers: list[Any] = []
+        try:
+            from app.agents.mcp.client import MCPClientManager as _MCPClientManager
+            shared_mcp_manager = _MCPClientManager()
+            for tool in tools_by_name.values():
+                wrapper = getattr(tool, "_tool_wrapper", None)
+                if wrapper is not None and hasattr(wrapper, "set_manager"):
+                    wrapper.set_manager(shared_mcp_manager)
+                    mcp_wrappers.append(wrapper)
+        except Exception:
+            log.debug("Could not set up shared MCP manager, tools will create their own connections")
+
         for i, tool_call in enumerate(planned_tools):
             tool_name = tool_call.get("name", "")
             tool_args = tool_call.get("args", {})
@@ -998,8 +1057,12 @@ class ToolExecutor:
                     all_known = planned_tool_names | planned_tool_names_sanitized | set(results_by_tool.keys())
 
                     for ph in stripped_placeholders:
-                        source = PlaceholderResolver._extract_source_tool_name(ph)
-                        if source and (source in all_known or source.replace(".", "_") in all_known):
+                        source = PlaceholderResolver._extract_source_tool_name(ph, all_known)
+                        if source and (
+                            source in all_known
+                            or source.replace(".", "_") in all_known
+                            or _underscore_to_dotted(source) in all_known
+                        ):
                             cascade_failures.append(ph)
 
                     if cascade_failures:
@@ -1182,6 +1245,15 @@ class ToolExecutor:
             else:
                 log.debug(f"❌ Skipped storing failed tool: {actual_tool_name}")
 
+        # Clean up shared MCP connections
+        if shared_mcp_manager is not None:
+            try:
+                await shared_mcp_manager.disconnect_all()
+            except Exception:
+                log.debug("Error cleaning up shared MCP manager", exc_info=True)
+            for w in mcp_wrappers:
+                w.set_manager(None)
+
         return tool_results
 
     @staticmethod
@@ -1278,9 +1350,9 @@ class ToolExecutor:
         start_time = time.perf_counter()
 
         try:
-            # Normalize args
-            if isinstance(tool_args, dict) and "kwargs" in tool_args and len(tool_args) == 1:
-                tool_args = tool_args["kwargs"]
+            # Normalize args (unwrap nested kwargs; merge with sibling keys)
+            if isinstance(tool_args, dict):
+                tool_args = ToolExecutor._normalize_nested_kwargs(tool_args)
 
             log.debug(f"⚙️ Executing {tool_name} with args: {json.dumps(tool_args, default=str)[:150]}...")
 
@@ -1290,11 +1362,15 @@ class ToolExecutor:
             )
 
             if validated_args is None:
-                # Validation failed - error already logged
                 duration_ms = (time.perf_counter() - start_time) * 1000
+                schema_cls = getattr(tool, 'args_schema', None)
+                schema_fields = getattr(schema_cls, 'model_fields', {}) if schema_cls else {}
+                expected = sorted(schema_fields.keys()) if schema_fields else []
+                hint = f" Expected parameters: {expected}" if expected else ""
                 return {
                     "tool_name": tool_name,
-                    "result": "Error: Argument validation failed",
+                    "result": f"Error: Argument validation failed — provided keys "
+                              f"{sorted(tool_args.keys())} do not match the tool schema.{hint}",
                     "status": "error",
                     "tool_id": tool_id,
                     "args": tool_args,
@@ -1372,36 +1448,76 @@ class ToolExecutor:
         tool_args: dict[str, Any],
         log: logging.Logger
     ) -> dict[str, Any] | None:
-        """Validate and normalize tool args using Pydantic schema"""
+        """Validate and normalize tool args using Pydantic schema.
+
+        Returns validated args on success, the original args when no schema
+        exists, or ``None`` when validation fails (caller should treat as
+        an error and feed back to the LLM for retry).
+        """
         try:
-            # Get schema
             args_schema = getattr(tool, 'args_schema', None)
             if not args_schema:
-                return tool_args  # No validation available
+                return tool_args
 
-            # Validate
+            schema_fields = getattr(args_schema, 'model_fields', {})
+            if not schema_fields:
+                log.debug(f"⚠️ Empty schema for {tool_name} — passing args through unvalidated")
+                return tool_args
+
+            # When an MCP tool has no inputSchema stored in the graph,
+            # LangChain auto-generates a schema from the ``**kwargs`` function
+            # signature, producing a single ``kwargs`` field.  Validating against
+            # this synthetic schema is counter-productive — skip and let the
+            # MCP server validate the args itself.
+            if set(schema_fields.keys()) == {"kwargs"}:
+                log.debug(
+                    "⚠️ Skipping validation for %s — auto-generated kwargs schema detected; "
+                    "passing args through to MCP server",
+                    tool_name,
+                )
+                return tool_args
+
             validated_model = args_schema.model_validate(tool_args)
             validated_args = validated_model.model_dump(exclude_unset=True)
+
+            if not validated_args and tool_args:
+                expected_params = sorted(schema_fields.keys())
+                provided_params = sorted(tool_args.keys())
+                log.warning(
+                    "⚠️ Validation for %s produced empty args from non-empty input. "
+                    "Expected params: %s, provided params: %s — returning validation error",
+                    tool_name, expected_params, provided_params,
+                )
+                return None
 
             log.debug(f"✅ Validated args for {tool_name}")
             return validated_args
 
         except Exception as e:
-            log.error(f"❌ Validation failed for {tool_name}: {e}")
+            schema_fields = getattr(getattr(tool, 'args_schema', None), 'model_fields', {})
+            expected_params = sorted(schema_fields.keys()) if schema_fields else []
+            log.error(
+                "❌ Validation failed for %s: %s (expected params: %s)",
+                tool_name, e, expected_params,
+            )
             return None
 
     @staticmethod
     async def _run_tool(tool: object, args: dict[str, Any]) -> dict[str, Any] | str | tuple[bool, str] | list[Any] | None:
-        """Run tool using appropriate method - all tools run in the same event loop as FastAPI"""
-        if hasattr(tool, 'arun'):
-            # Tool has async arun() - use it directly (no thread executor)
+        """Run tool using appropriate method - all tools run in the same event loop as FastAPI.
+
+        For StructuredTools with a coroutine, calls the coroutine directly to
+        avoid LangChain's ``_parse_input`` re-validation which can silently
+        strip arguments when the auto-inferred schema is empty.
+        """
+        coroutine = getattr(tool, 'coroutine', None)
+        if coroutine is not None:
+            return await coroutine(**args)
+        elif hasattr(tool, 'arun'):
             return await tool.arun(args)
         elif hasattr(tool, '_run'):
-            # Sync _run() - call directly (shouldn't happen if tools are properly async)
-            # This is a fallback for backwards compatibility
             return tool._run(**args)
         else:
-            # Fallback to run() method
             return tool.run(**args)
 
     @staticmethod
@@ -5647,6 +5763,39 @@ async def reflect_node(
 
     if cascade_errors or cascade_broken:
         log.info(f"🔗 ORCHESTRATION FAILURE: {len(cascade_errors)} cascade errors detected")
+
+        # Check if the root cause is a transient MCP error that may succeed on retry
+        root_errors = [r for r in tool_results if r.get("status") == "error"]
+        _transient_hints = [
+            "try again", "having trouble", "temporarily unavailable",
+            "timeout", "timed out", "service unavailable",
+            "connection reset", "connection refused",
+            "internal server error", "502", "503", "504",
+        ]
+        is_transient_root = any(
+            any(h in str(r.get("result", "")).lower() for h in _transient_hints)
+            for r in root_errors
+        )
+
+        if is_transient_root and retry_count < max_retries:
+            log.info("🔄 Cascade broke due to transient error — retrying chain")
+            state["reflection_decision"] = "retry_with_fix"
+            state["reflection"] = {
+                "decision": "retry_with_fix",
+                "reasoning": (
+                    f"Cascade broke due to transient MCP error in "
+                    f"{[r.get('tool_name') for r in root_errors]}. Retrying."
+                ),
+                "fix_instruction": (
+                    "Retry the same tool calls — the external service "
+                    "reported a temporary issue."
+                ),
+                "task_complete": False,
+            }
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: retry_with_fix (transient cascade) - {duration_ms:.0f}ms")
+            return state
+
         state["reflection_decision"] = "respond_error"
         state["reflection"] = {
             "decision": "respond_error",
@@ -6252,8 +6401,24 @@ async def respond_node(
                 error_str = str(error_result)[:150]
                 failed_errors.append(f"{tool_name}: {error_str}")
 
+        _ERROR_CONTEXT_MESSAGES = {
+            "cascade_broken": (
+                "A multi-step operation failed because an intermediate step "
+                "encountered an error. This is often a temporary issue with "
+                "the external service."
+            ),
+            "Permission or access issue": (
+                "You don't have permission to access the requested resource."
+            ),
+            "Resource not found": "The requested resource was not found.",
+            "Rate limit reached": (
+                "The service rate limit has been reached. Please wait a moment."
+            ),
+        }
+
         if error_context:
-            error_msg = f"I wasn't able to complete that request. {error_context}\n\nPlease try again."
+            human_message = _ERROR_CONTEXT_MESSAGES.get(error_context, error_context)
+            error_msg = f"I wasn't able to complete that request. {human_message}\n\nPlease try again."
         elif failed_errors:
             error_details = "\n".join(failed_errors[:2])
             error_msg = f"I encountered an error:\n{error_details}\n\nPlease check settings or try again."

@@ -6,6 +6,7 @@ import type {
   AgentFilterOptions,
   ToolsetReference,
   KnowledgeReference,
+  MCPServerReference,
 } from 'src/types/agent';
 
 import chatIcon from '@iconify-icons/mdi/chat';
@@ -652,6 +653,70 @@ export const extractAgentConfigFromFlow = (
     }
   });
 
+  // Build set of MCP server node IDs connected to agent
+  const connectedMcpServerNodeIds = new Set<string>();
+  
+  edges.forEach((edge) => {
+    const sourceNode = nodes.find((n) => n.id === edge.source);
+    const targetNode = nodes.find((n) => n.id === edge.target);
+    
+    if (sourceNode?.data.type.startsWith('mcp-server-') && targetNode?.data.type === 'agent-core') {
+      connectedMcpServerNodeIds.add(sourceNode.id);
+    }
+    if (targetNode?.data.type.startsWith('mcp-server-') && sourceNode?.data.type === 'agent-core') {
+      connectedMcpServerNodeIds.add(targetNode.id);
+    }
+  });
+
+  // Extract MCP servers from connected nodes
+  const mcpServersInternal: {
+    name: string;
+    displayName: string;
+    type: string;
+    instanceId?: string;
+    instanceName?: string;
+    tools: { name: string; namespacedName: string; description?: string; inputSchema?: Record<string, any> }[];
+  }[] = [];
+
+  nodes.forEach((node) => {
+    if (!node.data.type.startsWith('mcp-server-') || !connectedMcpServerNodeIds.has(node.id)) {
+      return;
+    }
+    const cfg = node.data.config;
+    const serverName = cfg?.mcpServerName || cfg?.name || node.data.label || '';
+    const displayName = cfg?.displayName || node.data.label || serverName;
+    const serverType = cfg?.serverType || 'custom';
+    const instanceId = cfg?.instanceId || '';
+    const instanceName = cfg?.instanceName || '';
+    const tools: { name: string; namespacedName: string; description?: string; inputSchema?: Record<string, any> }[] = [];
+
+    if (cfg?.tools && Array.isArray(cfg.tools)) {
+      cfg.tools.forEach((tool: any) => {
+        const name = tool.name || '';
+        const namespacedName = tool.namespacedName || `mcp_${serverName}_${name}`;
+        if (name) {
+          tools.push({
+            name,
+            namespacedName,
+            description: tool.description || '',
+            inputSchema: tool.inputSchema,
+          });
+        }
+      });
+    }
+
+    if (tools.length > 0) {
+      mcpServersInternal.push({
+        name: serverName,
+        displayName,
+        type: serverType,
+        instanceId: instanceId || undefined,
+        instanceName: instanceName || undefined,
+        tools,
+      });
+    }
+  });
+
   // Build sets of connected node IDs (similar to toolsets)
   const connectedKnowledgeNodeIds = new Set<string>();
   const connectedLLMNodeIds = new Set<string>();
@@ -859,6 +924,16 @@ export const extractAgentConfigFromFlow = (
     connectorId: k.connectorId,
     filters: k.filters,
   }));
+
+  // Convert internal MCP server data to MCPServerReference format
+  const mcpServers: MCPServerReference[] = mcpServersInternal.map((ms) => ({
+    id: ms.instanceId || ms.name,
+    instanceId: ms.instanceId,
+    name: ms.name,
+    displayName: ms.displayName,
+    type: ms.type,
+    tools: ms.tools,
+  }));
   
   return {
     name: agentName,
@@ -880,6 +955,7 @@ export const extractAgentConfigFromFlow = (
         : currentAgent?.instructions,
     toolsets, // ToolsetReference[] with id
     knowledge, // KnowledgeReference[] with id (includes both apps and KBs)
+    mcpServers, // MCPServerReference[] with id
     models,
     tags: currentAgent?.tags || ['flow-based', 'visual-workflow'],
     shareWithOrg: shareWithOrg !== undefined ? shareWithOrg : (currentAgent?.shareWithOrg ?? false),

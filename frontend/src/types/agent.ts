@@ -76,6 +76,7 @@ export interface Agent {
     edges: any[];
   };
   isServiceAccount?: boolean; // Whether this agent acts as a service account with its own credentials
+  mcpServers?: MCPServerReference[];
 }
 
 export interface AgentConversation {
@@ -300,6 +301,93 @@ export interface KnowledgeReference {
   filters?: Record<string, any>;
 }
 
+// ============================================================================
+// MCP Server types
+// ============================================================================
+
+export interface MCPServerAuthHint {
+  methods: string[];
+  defaultMethod: string;
+  oauth2AuthorizationUrl?: string;
+  oauth2TokenUrl?: string;
+  oauth2Scopes?: string[];
+  envMapping?: Record<string, string>;
+}
+
+export interface MCPServerTemplate {
+  typeId: string;
+  displayName: string;
+  description: string;
+  transport: string;
+  command?: string;
+  defaultArgs?: string[];
+  requiredEnv?: string[];
+  optionalEnv?: string[];
+  url?: string;
+  authMode: string;
+  supportedAuthTypes: string[];
+  redirectUri?: string;
+  iconPath?: string;
+  documentationUrl?: string;
+  tags: string[];
+  auth?: MCPServerAuthHint;
+  authConfig?: {
+    methods: string[];
+    defaultMethod: string;
+    oauth2AuthorizationUrl?: string;
+    oauth2TokenUrl?: string;
+    oauth2Scopes?: string[];
+    envMapping?: Record<string, string>;
+  };
+}
+
+export interface MCPServerInstance {
+  instanceId: string;
+  instanceName: string;
+  serverType: string;
+  displayName: string;
+  description?: string;
+  transport: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  authMode: string;
+  supportedAuthTypes: string[];
+  requiredEnv?: string[];
+  iconPath?: string;
+  enabled: boolean;
+  isAuthenticated?: boolean;
+  isConfigured?: boolean;
+  isFromRegistry?: boolean;
+  agentIsAuthenticated?: boolean;
+  oauthExpiresAt?: number;
+  hasOAuthClientConfig?: boolean;
+  tools?: MCPServerTool[];
+}
+
+export interface MCPServerTool {
+  name: string;
+  namespacedName: string;
+  description: string;
+  inputSchema?: Record<string, any>;
+}
+
+export interface MCPServerReference {
+  id: string;
+  instanceId?: string;
+  name: string;
+  displayName: string;
+  type: string;
+  tools?: MCPServerToolRef[];
+}
+
+export interface MCPServerToolRef {
+  name: string;
+  namespacedName: string;
+  description?: string;
+  inputSchema?: Record<string, any>;
+}
+
 export interface AgentFormData {
   name: string;
   description: string;
@@ -324,6 +412,7 @@ export interface AgentFormData {
   // New graph-based fields
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
+  mcpServers?: MCPServerReference[];
 }
 
 export interface AgentStats {

@@ -37,6 +37,7 @@ import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
 import { NodeData } from '../../types/agent';
 import { NodeHandles, NodeIcon } from './nodes';
 import { ToolsetNode } from './nodes/ToolsetNode';
+import { MCPServerNode } from './nodes/MCPServerNode';
 
 interface FlowNodeProps {
   id?: string; // ReactFlow passes the actual node ID as a prop automatically
@@ -134,7 +135,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
   const connectedNodesByHandle = React.useMemo(() => {
     if (data.type !== 'agent-core') return {} as Record<string, any[]>;
     const incoming = storeEdges.filter((e) => e.target === data.id);
-    const map: Record<string, any[]> = { input: [], toolsets: [], knowledge: [], llms: [] };
+    const map: Record<string, any[]> = { input: [], toolsets: [], mcpServers: [], knowledge: [], llms: [] };
     incoming.forEach((e: any) => {
       const sourceNode = storeNodes.find((n) => n.id === e.source) as any;
       if (sourceNode) {
@@ -1052,6 +1053,161 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                   sx={{ fontSize: '0.85rem', color: colors.text.muted, fontStyle: 'italic' }} // Keep comfortable size
                 >
                   No toolsets connected
+                </Typography>
+              )}
+            </Box>
+          </Box>
+          {/* MCP Servers Section */}
+          <Box sx={{ mb: 2.5 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 700,
+                color: colors.text.primary,
+                fontSize: '0.8rem',
+                mb: 1.5,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              }}
+            >
+              MCP Servers
+            </Typography>
+            <Box
+              sx={{
+                p: 1.5,
+                backgroundColor: colors.background.section,
+                borderRadius: 2,
+                border: `2px solid ${colors.border.subtle}`,
+                position: 'relative',
+                transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: colors.background.hover,
+                  borderColor: colors.border.main,
+                },
+              }}
+            >
+              <Handle
+                type="target"
+                position={Position.Left}
+                id="mcpServers"
+                style={{
+                  top: '50%',
+                  left: -9,
+                  background: `linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%)`,
+                  width: 14,
+                  height: 14,
+                  border: `2px solid ${colors.background.card}`,
+                  borderRadius: '50%',
+                  boxShadow: `0 2px 8px ${alpha('#8b5cf6', 0.4)}`,
+                  zIndex: 10,
+                  transformOrigin: 'center',
+                }}
+              />
+              {connectedNodesByHandle.mcpServers?.length > 0 ? (
+                <Box>
+                  {connectedNodesByHandle.mcpServers.slice(0, 2).map((mcpNode: any, index: number) => (
+                    <Box
+                      key={index}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1.5,
+                        mt: index > 0 ? 1.5 : 0,
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 1.5,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          boxShadow: `0 2px 4px ${alpha('#8b5cf6', 0.3)}`,
+                        }}
+                      >
+                        {mcpNode.config?.iconPath ? (
+                          <img
+                            src={mcpNode.config.iconPath}
+                            alt=""
+                            style={{
+                              width: 14,
+                              height: 14,
+                              objectFit: 'contain',
+                            }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              e.currentTarget.nextElementSibling?.setAttribute(
+                                'style',
+                                'display: block; color: #ffffff;'
+                              );
+                            }}
+                          />
+                        ) : null}
+                        <Icon
+                          icon="solar:server-bold-duotone"
+                          width={12}
+                          height={12}
+                          style={{
+                            color: '#ffffff',
+                            display: mcpNode.config?.iconPath ? 'none' : 'block',
+                          }}
+                        />
+                      </Box>
+                      <Box>
+                        <Typography
+                          sx={{ fontSize: '0.85rem', fontWeight: 600, color: colors.text.primary }}
+                        >
+                          {mcpNode.config?.displayName ||
+                            mcpNode.config?.name ||
+                            mcpNode.label}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            fontSize: '0.75rem',
+                            color: colors.text.secondary,
+                            fontWeight: 500,
+                          }}
+                        >
+                          MCP Server
+                        </Typography>
+                      </Box>
+                    </Box>
+                  ))}
+                  {connectedNodesByHandle.mcpServers.length > 2 && (
+                    <Chip
+                      label={`+${connectedNodesByHandle.mcpServers.length - 2} more`}
+                      size="small"
+                      sx={{
+                        height: 22,
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        backgroundColor: isDark
+                          ? alpha('#ffffff', 0.2)
+                          : alpha(colors.text.secondary, 0.1),
+                        color: colors.text.secondary,
+                        border: `1px solid ${isDark ? alpha(colors.text.secondary, 0.2) : alpha(colors.text.secondary, 0.2)}`,
+                        mt: 1,
+                        '&:hover': {
+                          backgroundColor: isDark
+                            ? alpha('#ffffff', 0.2)
+                            : alpha(colors.text.secondary, 0.2),
+                          transform: 'scale(1.05)',
+                          color: isDark ? colors.text.secondary : colors.text.secondary,
+                          borderColor: isDark
+                            ? alpha(colors.text.secondary, 0.2)
+                            : alpha(colors.text.secondary, 0.2),
+                        },
+                        transition: 'all 0.2s ease',
+                      }}
+                    />
+                  )}
+                </Box>
+              ) : (
+                <Typography
+                  sx={{ fontSize: '0.85rem', color: colors.text.muted, fontStyle: 'italic' }}
+                >
+                  No MCP servers connected
                 </Typography>
               )}
             </Box>
@@ -2091,6 +2247,11 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
   // Check both category and type to ensure toolset nodes are always rendered correctly
   if (data.type.startsWith('toolset-') || data.category === 'toolset') {
     return <ToolsetNode data={data} selected={selected} onDelete={onDelete} />;
+  }
+
+  // Use specialized MCPServerNode for MCP server nodes
+  if (data.type.startsWith('mcp-server-') || data.category === 'mcp-server') {
+    return <MCPServerNode data={data} selected={selected} onDelete={onDelete} />;
   }
 
   return (

@@ -122,6 +122,7 @@ export const AGENT_CORE_HANDLES = {
   ACTIONS: 'actions',
   KNOWLEDGE: 'knowledge',
   LLMS: 'llms',
+  MCP_SERVERS: 'mcpServers',
 } as const;
 
 /**
