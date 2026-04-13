@@ -43,6 +43,9 @@ export function SidebarCategoryRow(props: {
   onDragAttempt?: () => void;
   showConfigureIcon?: boolean;
   onConfigureClick?: () => void;
+  /** View-only / locked palette: show configure (or auth) control in a disabled state like palette rows. */
+  configureDisabled?: boolean;
+  configureDisabledTooltip?: string;
   configureTooltip?: string;
   /** When true, use key icon (service account); else settings */
   configureUseKeyIcon?: boolean;
@@ -62,6 +65,8 @@ export function SidebarCategoryRow(props: {
     onDragAttempt,
     showConfigureIcon,
     onConfigureClick,
+    configureDisabled = false,
+    configureDisabledTooltip,
     configureTooltip,
     configureUseKeyIcon,
     configureIconColor = 'var(--slate-11)',
@@ -82,12 +87,20 @@ export function SidebarCategoryRow(props: {
           : undefined;
 
   const openInNewHandler =
-    toolsetStatus === 'needs_authentication' && onConfigureClick ? onConfigureClick : undefined;
-
-  const gearHandler =
-    toolsetStatus !== 'needs_authentication' && showConfigureIcon && onConfigureClick
+    toolsetStatus === 'needs_authentication' && onConfigureClick && !configureDisabled
       ? onConfigureClick
       : undefined;
+
+  /** When configure is locked, {@link openInNewHandler} is never set. */
+  const showDisabledAuthControl = configureDisabled && toolsetStatus === 'needs_authentication';
+
+  const gearHandler =
+    toolsetStatus !== 'needs_authentication' && showConfigureIcon && onConfigureClick && !configureDisabled
+      ? onConfigureClick
+      : undefined;
+
+  const showDisabledGear =
+    configureDisabled && showConfigureIcon && toolsetStatus !== 'needs_authentication';
 
   const configureGlyphColor =
     toolsetStatus === 'registry' ? 'var(--red-11)' : configureIconColor;
@@ -156,7 +169,7 @@ export function SidebarCategoryRow(props: {
           style={{
             flex: 1,
             minWidth: 0,
-            cursor: dragType ? 'grab' : 'default',
+            cursor: dragType ? 'grab' : onDragAttempt && !dragType ? 'not-allowed' : 'default',
             borderRadius: 'var(--radius-1)',
           }}
         >
@@ -215,6 +228,29 @@ export function SidebarCategoryRow(props: {
                   </IconButton>
                 </Tooltip>
               </Box>
+            ) : showDisabledAuthControl ? (
+              <Box onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                <Tooltip
+                  content={
+                    configureDisabledTooltip ||
+                    configureTooltip ||
+                    statusTooltip ||
+                    t('agentBuilder.authenticateShort')
+                  }
+                >
+                  <IconButton
+                    type="button"
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    disabled
+                    aria-label={configureDisabledTooltip || t('agentBuilder.authenticateShort')}
+                    style={{ cursor: 'not-allowed', opacity: 0.55, flexShrink: 0 }}
+                  >
+                    <MaterialIcon name="open_in_new" size={18} color="var(--slate-11)" />
+                  </IconButton>
+                </Tooltip>
+              </Box>
             ) : statusTooltip ? (
               <StatusGlyphTooltip label={statusTooltip}>
                 <MaterialIcon name="open_in_new" size={18} color="var(--amber-11)" />
@@ -239,6 +275,28 @@ export function SidebarCategoryRow(props: {
                     name={configureUseKeyIcon ? 'vpn_key' : 'settings'}
                     size={18}
                     color={configureGlyphColor}
+                  />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          ) : showDisabledGear ? (
+            <Box onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+              <Tooltip
+                content={configureDisabledTooltip || configureTooltip || t('agentBuilder.configureShort')}
+              >
+                <IconButton
+                  type="button"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  disabled
+                  aria-label={configureDisabledTooltip || t('agentBuilder.configureShort')}
+                  style={{ cursor: 'not-allowed', opacity: 0.55, flexShrink: 0 }}
+                >
+                  <MaterialIcon
+                    name={configureUseKeyIcon ? 'vpn_key' : 'settings'}
+                    size={18}
+                    color="var(--slate-11)"
                   />
                 </IconButton>
               </Tooltip>

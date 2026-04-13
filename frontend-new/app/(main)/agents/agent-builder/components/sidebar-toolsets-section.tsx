@@ -25,19 +25,69 @@ function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
   });
 }
 
+/** Row-level drag/configure flags for one toolset instance (shared by single-type and grouped UI). */
+function getToolsetPaletteRowState(
+  ts: BuilderSidebarToolset,
+  ui: {
+    isFromRegistry: boolean;
+    forceShowConfigureIcon: boolean;
+    configureUseKeyIcon: boolean;
+    configureIconColor: string;
+    configureTooltip: string;
+  },
+  normalizedActive: string[],
+  structureLocked: boolean,
+  orgCredentialUiLocked: boolean,
+  isServiceAccount: boolean,
+  onStructureDragBlocked: () => void,
+  onDuplicate: () => void,
+  onUnconfigured: () => void
+) {
+  const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
+  const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
+  const dup = normalizedActive.includes(normalizedType);
+  const dragPayload = buildToolsetDragPayload(ts);
+  const dragBlocked = structureLocked || needsConfiguration || dup;
+  const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
+  const showCfg = ui.forceShowConfigureIcon || (!isServiceAccount && needsConfiguration);
+  const cfgClickable = showCfg && !orgCredentialUiLocked;
+  const configureLocked = orgCredentialUiLocked && showCfg;
+  const onDragAttempt = structureLocked
+    ? onStructureDragBlocked
+    : dup
+      ? onDuplicate
+      : needsConfiguration
+        ? onUnconfigured
+        : undefined;
+
+  return {
+    needsConfiguration,
+    dragPayload,
+    dragBlocked,
+    dragType,
+    showCfg,
+    cfgClickable,
+    configureLocked,
+    onDragAttempt,
+  };
+}
+
 function ToolDragRow(props: {
   tool: BuilderSidebarToolset['tools'][0];
   toolset: BuilderSidebarToolset;
   needsConfiguration: boolean;
+  /** Viewer without edit: block dragging tools onto the canvas. */
+  structureLocked?: boolean;
   onBlocked?: () => void;
 }) {
-  const { tool, toolset, needsConfiguration, onBlocked } = props;
+  const { tool, toolset, needsConfiguration, structureLocked = false, onBlocked } = props;
   const payload = buildToolDragPayload(tool, toolset);
+  const blocked = needsConfiguration || structureLocked;
   return (
     <Box
-      draggable={!needsConfiguration}
+      draggable={!blocked}
       onDragStart={(e) => {
-        if (needsConfiguration) {
+        if (blocked) {
           e.preventDefault();
           onBlocked?.();
           return;
@@ -53,14 +103,14 @@ function ToolDragRow(props: {
         padding: '0 12px',
         boxSizing: 'border-box',
         gap: 8,
-        cursor: needsConfiguration ? 'not-allowed' : 'grab',
-        opacity: needsConfiguration ? 0.55 : 1,
+        cursor: blocked ? 'not-allowed' : 'grab',
+        opacity: blocked ? 0.55 : 1,
         borderRadius: 'var(--radius-1)',
         border: '1px solid transparent',
         backgroundColor: 'transparent',
       }}
       className={
-        needsConfiguration
+        blocked
           ? 'agent-builder-draggable-row agent-builder-draggable-row--disabled'
           : 'agent-builder-draggable-row'
       }
@@ -100,6 +150,12 @@ export function AgentBuilderToolsetsSection(props: {
   agentKey: string | null;
   onManageAgentToolsetCredentials?: (ts: BuilderSidebarToolset) => void;
   onNotify: (message: string) => void;
+  /** Viewer without edit: block tool/toolset drags onto the canvas. */
+  structureLocked?: boolean;
+  /** SA viewer without edit: block search, load-more, and org credential controls only. */
+  orgCredentialUiLocked?: boolean;
+  /** Same toast as main palette when structure-only drag is blocked (from sidebar). */
+  onPaletteStructureDragBlocked?: () => void;
 }) {
   const {
     toolsets,
@@ -113,6 +169,9 @@ export function AgentBuilderToolsetsSection(props: {
     agentKey,
     onManageAgentToolsetCredentials,
     onNotify,
+    structureLocked = false,
+    orgCredentialUiLocked = false,
+    onPaletteStructureDragBlocked,
   } = props;
 
   const { t } = useTranslation();
@@ -135,13 +194,14 @@ export function AgentBuilderToolsetsSection(props: {
 
   const handleSearchChange = useCallback(
     (value: string) => {
+      if (orgCredentialUiLocked) return;
       setSearchInput(value);
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         void refreshToolsets(agentKey, isServiceAccount, value);
       }, 400);
     },
-    [agentKey, isServiceAccount, refreshToolsets]
+    [agentKey, orgCredentialUiLocked, isServiceAccount, refreshToolsets]
   );
 
   useEffect(
@@ -171,7 +231,12 @@ export function AgentBuilderToolsetsSection(props: {
     if (!el) return;
     const obs = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && !toolsetsLoadingMore && toolsetsHasMore) {
+        if (
+          entries[0]?.isIntersecting &&
+          !toolsetsLoadingMore &&
+          toolsetsHasMore &&
+          !orgCredentialUiLocked
+        ) {
           void loadMoreRef.current();
         }
       },
@@ -179,7 +244,7 @@ export function AgentBuilderToolsetsSection(props: {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [toolsetsHasMore, toolsetsLoadingMore]);
+  }, [orgCredentialUiLocked, toolsetsHasMore, toolsetsLoadingMore]);
 
   const buildUiState = useCallback(
     (ts: BuilderSidebarToolset) => {
@@ -220,6 +285,10 @@ export function AgentBuilderToolsetsSection(props: {
 
   const handleConfigureClick = useCallback(
     (ts: BuilderSidebarToolset) => {
+      if (orgCredentialUiLocked) {
+        onNotify(t('agentBuilder.paletteActionBlockedViewOnly'));
+        return;
+      }
       const instanceId = ts.instanceId || '';
       const isFromRegistry = ts.isFromRegistry === true || !instanceId;
 
@@ -234,7 +303,7 @@ export function AgentBuilderToolsetsSection(props: {
 
       setUserConfigToolset(ts);
     },
-    [isServiceAccount, onManageAgentToolsetCredentials, onNotify, t]
+    [orgCredentialUiLocked, isServiceAccount, onManageAgentToolsetCredentials, onNotify, t]
   );
 
   const toolsetsByType = useMemo(() => groupToolsetsByType(toolsets), [toolsets]);
@@ -264,6 +333,13 @@ export function AgentBuilderToolsetsSection(props: {
     [onNotify, t]
   );
 
+  const notifyStructureDragBlocked = useCallback(() => {
+    if (onPaletteStructureDragBlocked) onPaletteStructureDragBlocked();
+    else onNotify(t('agentBuilder.viewerPaletteDragBlocked'));
+  }, [onPaletteStructureDragBlocked, onNotify, t]);
+
+  const orgCredentialLockedTooltip = t('agentBuilder.paletteActionBlockedViewOnly');
+
   return (
     <Box style={{ minWidth: 0 }}>
       <Box pb="2" style={{ minWidth: 0 }}>
@@ -275,7 +351,7 @@ export function AgentBuilderToolsetsSection(props: {
           placeholder={t('agentBuilder.searchToolsets')}
           value={searchInput}
           onChange={(e) => handleSearchChange(e.target.value)}
-          disabled={loading}
+          disabled={loading || orgCredentialUiLocked}
         >
           <TextField.Slot side="left">
             <MaterialIcon name="search" size={18} color="var(--slate-11)" />
@@ -308,16 +384,27 @@ export function AgentBuilderToolsetsSection(props: {
               const ts = first;
               const toolsetKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
               const isExpanded = expandedApps[toolsetKey] ?? false;
-              const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
-              const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-              const dup = normalizedActive.includes(normalizedType);
               const ui = buildUiState(ts);
-              const dragPayload = buildToolsetDragPayload(ts);
-              const dragType =
-                needsConfiguration || dup ? undefined : dragPayload['application/reactflow'];
-              const showCfg =
-                ui.forceShowConfigureIcon || (!isServiceAccount && needsConfiguration);
-              const cfgClickable = showCfg;
+              const {
+                needsConfiguration,
+                dragPayload,
+                dragBlocked,
+                dragType,
+                showCfg,
+                cfgClickable,
+                configureLocked,
+                onDragAttempt,
+              } = getToolsetPaletteRowState(
+                ts,
+                ui,
+                normalizedActive,
+                structureLocked,
+                orgCredentialUiLocked,
+                isServiceAccount,
+                notifyStructureDragBlocked,
+                () => handleDuplicateDrag(ts),
+                () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
+              );
 
               return (
                 <SidebarCategoryRow
@@ -328,16 +415,12 @@ export function AgentBuilderToolsetsSection(props: {
                   isExpanded={isExpanded}
                   onToggle={() => onAppToggle(toolsetKey)}
                   dragType={dragType}
-                  dragData={needsConfiguration || dup ? undefined : dragPayload}
-                  onDragAttempt={
-                    dup
-                      ? () => handleDuplicateDrag(ts)
-                      : needsConfiguration
-                        ? () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-                        : undefined
-                  }
+                  dragData={dragBlocked ? undefined : dragPayload}
+                  onDragAttempt={onDragAttempt}
                   showConfigureIcon={showCfg}
                   onConfigureClick={cfgClickable ? () => void handleConfigureClick(ts) : undefined}
+                  configureDisabled={configureLocked}
+                  configureDisabledTooltip={orgCredentialLockedTooltip}
                   configureTooltip={ui.configureTooltip}
                   configureUseKeyIcon={ui.configureUseKeyIcon}
                   configureIconColor={ui.configureIconColor}
@@ -349,7 +432,12 @@ export function AgentBuilderToolsetsSection(props: {
                       tool={tool}
                       toolset={ts}
                       needsConfiguration={needsConfiguration}
-                      onBlocked={() => handleUnconfiguredDrag(ts, ui.isFromRegistry)}
+                      structureLocked={structureLocked}
+                      onBlocked={
+                        structureLocked
+                          ? notifyStructureDragBlocked
+                          : () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
+                      }
                     />
                   ))}
                 </SidebarCategoryRow>
@@ -368,16 +456,27 @@ export function AgentBuilderToolsetsSection(props: {
                   {typeToolsets.map((ts) => {
                     const instKey = `toolset-${ts.instanceId || ''}`;
                     const isExpanded = expandedApps[instKey];
-                    const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
-                    const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-                    const dup = normalizedActive.includes(normalizedType);
                     const ui = buildUiState(ts);
-                    const dragPayload = buildToolsetDragPayload(ts);
-                    const dragType =
-                      needsConfiguration || dup ? undefined : dragPayload['application/reactflow'];
-                    const showCfg =
-                      ui.forceShowConfigureIcon || (!isServiceAccount && needsConfiguration);
-                    const cfgClickable = showCfg;
+                    const {
+                      needsConfiguration,
+                      dragPayload,
+                      dragBlocked,
+                      dragType,
+                      showCfg,
+                      cfgClickable,
+                      configureLocked,
+                      onDragAttempt,
+                    } = getToolsetPaletteRowState(
+                      ts,
+                      ui,
+                      normalizedActive,
+                      structureLocked,
+                      orgCredentialUiLocked,
+                      isServiceAccount,
+                      notifyStructureDragBlocked,
+                      () => handleDuplicateDrag(ts),
+                      () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
+                    );
 
                     return (
                       <SidebarCategoryRow
@@ -388,18 +487,14 @@ export function AgentBuilderToolsetsSection(props: {
                         isExpanded={Boolean(isExpanded)}
                         onToggle={() => onAppToggle(instKey)}
                         dragType={dragType}
-                        dragData={needsConfiguration || dup ? undefined : dragPayload}
-                        onDragAttempt={
-                          dup
-                            ? () => handleDuplicateDrag(ts)
-                            : needsConfiguration
-                              ? () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-                              : undefined
-                        }
+                        dragData={dragBlocked ? undefined : dragPayload}
+                        onDragAttempt={onDragAttempt}
                         showConfigureIcon={showCfg}
                         onConfigureClick={
                           cfgClickable ? () => void handleConfigureClick(ts) : undefined
                         }
+                        configureDisabled={configureLocked}
+                        configureDisabledTooltip={orgCredentialLockedTooltip}
                         configureTooltip={ui.configureTooltip}
                         configureUseKeyIcon={ui.configureUseKeyIcon}
                         configureIconColor={ui.configureIconColor}
@@ -411,7 +506,12 @@ export function AgentBuilderToolsetsSection(props: {
                             tool={tool}
                             toolset={ts}
                             needsConfiguration={needsConfiguration}
-                            onBlocked={() => handleUnconfiguredDrag(ts, ui.isFromRegistry)}
+                            structureLocked={structureLocked}
+                            onBlocked={
+                              structureLocked
+                                ? notifyStructureDragBlocked
+                                : () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
+                            }
                           />
                         ))}
                       </SidebarCategoryRow>
@@ -431,7 +531,7 @@ export function AgentBuilderToolsetsSection(props: {
           variant="ghost"
           size="1"
           color="gray"
-          disabled={toolsetsLoadingMore}
+          disabled={toolsetsLoadingMore || orgCredentialUiLocked}
           onClick={() => void loadMoreToolsets()}
           style={{ marginTop: 8 }}
         >
