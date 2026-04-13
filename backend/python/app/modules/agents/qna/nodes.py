@@ -6487,24 +6487,13 @@ async def respond_node(
             from app.utils.fetch_full_record import (
                 create_fetch_full_record_tool,
             )
-            fetch_tool = create_fetch_full_record_tool(
-                virtual_record_map,
-                org_id=org_id,
-                graph_provider=graph_provider,
-            )
+            fetch_tool = create_fetch_full_record_tool()
             tools = [fetch_tool]
             log.debug(
                 f"Added agent fetch_full_record tool "
                 f"({len(virtual_record_map)} records available, "
             )
 
-        # Create tool_runtime_kwargs
-        tool_runtime_kwargs = {
-            "blob_store": blob_store,
-            "graph_provider": graph_provider,
-            "org_id": org_id,
-            "conversation_id": state.get("conversation_id"),
-        }
 
         answer_text = ""
         citations = []
@@ -6525,7 +6514,6 @@ async def respond_node(
             is_multimodal_llm=is_multimodal_llm,
             context_length=context_length,
             tools=tools,
-            tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
             is_agent=True,  # Use agent schemas (with referenceData support)
@@ -6533,6 +6521,7 @@ async def respond_node(
             is_service_account=is_service_account,
             filter_groups=agent_filter_groups,
             ref_mapper=state.get("citation_ref_mapper"),
+            graph_provider=graph_provider,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
