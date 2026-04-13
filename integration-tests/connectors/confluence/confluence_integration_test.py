@@ -24,9 +24,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from connectors.confluence.confluence_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
-    ConfluenceStorageHelper,
-)
+from app.sources.external.confluence.confluence import ConfluenceDataSource  # type: ignore[import-not-found]  # noqa: E402
 from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     PipeshubClient,
 )
@@ -76,28 +74,45 @@ class TestConfluenceConnector:
     async def test_tc_incr_001_incremental_sync_new_pages(
         self,
         confluence_connector: Dict[str, Any],
-        confluence_storage: ConfluenceStorageHelper,
+        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-INCR-001: Create new pages, verify they appear in graph."""
         connector_id = confluence_connector["connector_id"]
-        space_key = confluence_connector["space_key"]
+        space_id = confluence_connector["space_id"]
         before_count = await graph_provider.count_records(connector_id)
 
         # Create new pages
-        new_page_1 = confluence_storage.create_page(
-            space_key,
-            f"Integration Test Page Alpha {uuid.uuid4().hex[:8]}",
-            "<p>This is test content for incremental sync testing.</p>",
+        title_1 = f"Integration Test Page Alpha {uuid.uuid4().hex[:8]}"
+        title_2 = f"Integration Test Page Beta {uuid.uuid4().hex[:8]}"
+        
+        resp_1 = await confluence_datasource.create_page(
+            root_level=True,
+            body={
+                "spaceId": space_id,
+                "status": "current",
+                "title": title_1,
+                "body": {
+                    "representation": "storage",
+                    "value": "<p>This is test content for incremental sync testing.</p>"
+                }
+            }
         )
-        confluence_storage.create_page(
-            space_key,
-            f"Integration Test Page Beta {uuid.uuid4().hex[:8]}",
-            "<p>Another test page for incremental sync.</p>",
+        new_page_1 = resp_1.json()
+        
+        await confluence_datasource.create_page(
+            root_level=True,
+            body={
+                "spaceId": space_id,
+                "status": "current",
+                "title": title_2,
+                "body": {
+                    "representation": "storage",
+                    "value": "<p>Another test page for incremental sync.</p>"
+                }
+            }
         )
-
-        logger.info("Created 2 new pages for incremental sync (connector %s)", connector_id)
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
@@ -119,7 +134,7 @@ class TestConfluenceConnector:
             f"Expected at least 2 new records; before={before_count}, after={after_count}"
         )
 
-        confluence_connector["test_page_id"] = new_page_1["id"]
+        confluence_connector["test_page_id"] = str(new_page_1["id"])
         confluence_connector["test_page_title"] = new_page_1["title"]
         logger.info("TC-INCR-001 passed: %d -> %d records (added 2 pages)", before_count, after_count)
 
@@ -128,21 +143,35 @@ class TestConfluenceConnector:
     async def test_tc_update_001_content_change_detection(
         self,
         confluence_connector: Dict[str, Any],
-        confluence_storage: ConfluenceStorageHelper,
+        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-UPDATE-001: Update page content, verify record is updated."""
         connector_id = confluence_connector["connector_id"]
-        page_id = confluence_connector["test_page_id"]
+        page_id = int(confluence_connector["test_page_id"])
         before_count = await graph_provider.count_records(connector_id)
 
-        # Update page content
-        new_content = f"Updated content at {uuid.uuid4().hex}"
-        confluence_storage.overwrite_object(page_id, new_content)
-        logger.info("Updated page %s (connector %s)", page_id, connector_id)
+        page_resp = await confluence_datasource.get_page_by_id(page_id, body_format="storage")
+        page_data = page_resp.json()
+        
+        new_content = f"<p>Updated content at {uuid.uuid4().hex}</p>"
+        await confluence_datasource.update_page(
+            id=page_id,
+            body={
+                "id": str(page_id),
+                "status": "current",
+                "title": page_data["title"],
+                "body": {
+                    "representation": "storage",
+                    "value": new_content
+                },
+                "version": {
+                    "number": page_data["version"]["number"] + 1
+                }
+            }
+        )
 
-        # Trigger sync
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -163,27 +192,30 @@ class TestConfluenceConnector:
             f"Record count should be stable after update; before={before_count}, after={after_count}"
         )
 
-        logger.info("TC-UPDATE-001 passed: record count stable at %d", after_count)
-
     @pytest.mark.order(4)
     async def test_tc_rename_001_rename_detection(
         self,
         confluence_connector: Dict[str, Any],
-        confluence_storage: ConfluenceStorageHelper,
+        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-RENAME-001: Rename page, verify old title gone and new title present."""
         connector_id = confluence_connector["connector_id"]
-        space_key = confluence_connector["space_key"]
-        page_id = confluence_connector["test_page_id"]
+        page_id = int(confluence_connector["test_page_id"])
         old_title = confluence_connector["test_page_title"]
         before_count = await graph_provider.count_records(connector_id)
 
         new_title = f"Renamed-{old_title}"
-        confluence_storage.rename_object(space_key, page_id, new_title)
-        logger.info("Renamed page %s: '%s' -> '%s'", page_id, old_title, new_title)
-
+        
+        resp = await confluence_datasource.update_page_title(
+            id=page_id,
+            body={
+                "status": "current",
+                "title": new_title
+            }
+        )
+        
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -207,32 +239,36 @@ class TestConfluenceConnector:
             f"Record count should be stable after rename; before={before_count}, after={after_count}"
         )
 
-        confluence_connector["renamed_page_id"] = page_id
-        logger.info(
-            "TC-RENAME-001 passed: '%s' -> '%s' (record count stable at %d)",
-            old_title, new_title, after_count,
-        )
+        confluence_connector["renamed_page_id"] = str(page_id)
 
     @pytest.mark.order(5)
     async def test_tc_move_001_move_detection(
         self,
         confluence_connector: Dict[str, Any],
-        confluence_storage: ConfluenceStorageHelper,
+        confluence_datasource: ConfluenceDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-MOVE-001: Move page under new parent, verify hierarchy change."""
         connector_id = confluence_connector["connector_id"]
-        space_key = confluence_connector["space_key"]
+        space_id = confluence_connector["space_id"]
         page_id = confluence_connector["renamed_page_id"]
         before_count = await graph_provider.count_records(connector_id)
 
-        parent_page = confluence_storage.create_page(
-            space_key,
-            f"Parent Page {uuid.uuid4().hex[:8]}",
-            "<p>This is a parent page.</p>",
+        parent_title = f"Parent Page {uuid.uuid4().hex[:8]}"
+        parent_resp = await confluence_datasource.create_page(
+            root_level=True,
+            body={
+                "spaceId": space_id,
+                "status": "current",
+                "title": parent_title,
+                "body": {
+                    "representation": "storage",
+                    "value": "<p>This is a parent page.</p>"
+                }
+            }
         )
-        logger.info("Created parent page: %s (%s)", parent_page["id"], parent_page["title"])
+        parent_page = parent_resp.json()
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
@@ -253,10 +289,8 @@ class TestConfluenceConnector:
         assert after_parent_count == before_count + 1, (
             f"Expected 1 new record (parent page); before={before_count}, after={after_parent_count}"
         )
-        logger.info("Parent page synced: %d -> %d records", before_count, after_parent_count)
 
-        confluence_storage.move_object(space_key, page_id, parent_page["id"])
-        logger.info("Moved page %s under parent %s", page_id, parent_page["id"])
+        await confluence_datasource.move_page(page_id, str(parent_page["id"]))
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.wait(3)
@@ -277,5 +311,3 @@ class TestConfluenceConnector:
         assert final_count == after_parent_count, (
             f"Record count should be stable after move; before_move={after_parent_count}, after_move={final_count}"
         )
-
-        logger.info("TC-MOVE-001 passed: page hierarchy updated (record count stable at %d)", final_count)

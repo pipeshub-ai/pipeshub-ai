@@ -1,7 +1,14 @@
 from enum import Enum
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
-from fastapi import HTTPException as FastAPIHTTPException  # type: ignore
+if TYPE_CHECKING:
+    from fastapi import HTTPException as FastAPIHTTPException
+else:
+    try:
+        from fastapi import HTTPException as FastAPIHTTPException  # type: ignore
+    except ImportError:
+        # FastAPI not available - exception classes won't work but HttpStatusCode will
+        FastAPIHTTPException = Exception  # type: ignore
 
 
 class HttpStatusCode(Enum):
