@@ -266,6 +266,7 @@ export function AgentToolsetCredentialsDialog({
   };
 
   const busy = saving || authenticating || deleting;
+  const oauthDisconnectFlow = isOAuthType(authType);
 
   const showFooterPrimaryCluster =
     !schemaLoading &&
@@ -471,7 +472,7 @@ export function AgentToolsetCredentialsDialog({
                   </Button>
                   {isAuthenticated ? (
                     <Button size="2" variant="soft" color="red" onClick={() => setRemoveConfirmOpen(true)} disabled={busy}>
-                      {t('agentBuilder.removeCredentials')}
+                      {t('agentBuilder.disconnectOAuth')}
                     </Button>
                   ) : null}
                 </Flex>
@@ -532,9 +533,15 @@ export function AgentToolsetCredentialsDialog({
             zIndex: 1002,
           }}
         >
-          <Dialog.Title>{t('agentBuilder.removeCredentialsTitle')}</Dialog.Title>
+          <Dialog.Title>
+            {oauthDisconnectFlow
+              ? t('agentBuilder.disconnectOAuthTitle', { name: displayName })
+              : t('agentBuilder.removeCredentialsTitle')}
+          </Dialog.Title>
           <Text size="2" mb="3" style={{ color: 'var(--slate-11)' }}>
-            {t('agentBuilder.removeCredentialsDesc', { name: displayName })}
+            {oauthDisconnectFlow
+              ? t('agentBuilder.disconnectOAuthDesc', { name: displayName })
+              : t('agentBuilder.removeCredentialsDesc', { name: displayName })}
           </Text>
           <Flex gap="2" justify="end">
             <Dialog.Close>
@@ -543,7 +550,13 @@ export function AgentToolsetCredentialsDialog({
               </Button>
             </Dialog.Close>
             <Button color="red" onClick={() => void handleRemoveConfirmed()} disabled={deleting}>
-              {deleting ? t('agentBuilder.removing') : t('agentBuilder.remove')}
+              {deleting
+                ? oauthDisconnectFlow
+                  ? t('agentBuilder.disconnectOAuthProgress')
+                  : t('agentBuilder.removing')
+                : oauthDisconnectFlow
+                  ? t('agentBuilder.disconnectOAuth')
+                  : t('agentBuilder.remove')}
             </Button>
           </Flex>
         </Dialog.Content>
