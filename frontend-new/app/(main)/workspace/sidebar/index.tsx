@@ -29,6 +29,9 @@ const OVERVIEW_ITEMS: NavItem[] = [
   { icon: 'business', labelKey: 'workspace.sidebar.nav.general', route: '/workspace/general' },
   { icon: 'science', labelKey: 'workspace.sidebar.nav.labs', route: '/workspace/labs', adminOnly: true },
 ];
+const DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
+  { icon: 'code', labelKey: 'workspace.sidebar.nav.oauth2', route: '/workspace/developer-settings/oauth2', adminOnly: true },
+];
 
 const PEOPLE_SUB_ITEMS = [
   { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users' },
@@ -38,10 +41,10 @@ const PEOPLE_SUB_ITEMS = [
 
 const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
-  { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors' },
-  { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots' },
+  { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors', adminOnly: true },
+  { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
   { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },
-  { icon: 'smart_toy', labelKey: 'workspace.sidebar.nav.aiModels', route: '/workspace/ai-models' },
+  { icon: 'smart_toy', labelKey: 'workspace.sidebar.nav.aiModels', route: '/workspace/ai-models', adminOnly: true },
   { icon: 'mail', labelKey: 'workspace.sidebar.nav.mail', route: '/workspace/mail', adminOnly: true },
   { icon: 'edit_note', labelKey: 'workspace.sidebar.nav.prompts', route: '/workspace/prompts', adminOnly: true },
   { icon: 'travel_explore', labelKey: 'workspace.sidebar.nav.webSearch', route: '/workspace/web-search', adminOnly: true },
@@ -82,7 +85,8 @@ export default function WorkspaceSidebar() {
 
   const allRoutes = [
     ...OVERVIEW_ITEMS,
-    ...WORKSPACE_ITEMS,
+    ...(isAdmin ? WORKSPACE_ITEMS : []),
+    ...(isAdmin ? DEVELOPER_SETTINGS_ITEMS : []),
     ...PERSONAL_ITEMS,
     ...PEOPLE_SUB_ITEMS,
   ].map((item) => item.route);
@@ -153,18 +157,34 @@ export default function WorkspaceSidebar() {
         </Flex>
 
         {/* ── Workspace section ── */}
-        <Flex direction="column" gap="1">
-          <SectionHeader title={t('workspace.sidebar.sections.workspace')} />
-          {visibleWorkspaceItems.map((item) => (
-            <WorkspaceSidebarItem
-              key={item.route}
-              icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-              label={t(item.labelKey)}
-              onClick={() => router.push(item.route)}
-              isActive={isActive(item.route)}
-            />
-          ))}
-        </Flex>
+        {isAdmin && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.workspace')} />
+            {visibleWorkspaceItems.map((item) => (
+              <WorkspaceSidebarItem
+                key={item.route}
+                icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+                label={t(item.labelKey)}
+                onClick={() => router.push(item.route)}
+                isActive={isActive(item.route)}
+              />
+            ))}
+          </Flex>
+        )}
+        {isAdmin && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />
+            {DEVELOPER_SETTINGS_ITEMS.map((item) => (
+              <WorkspaceSidebarItem
+                key={item.route}
+                icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+                label={t(item.labelKey)}
+                onClick={() => router.push(item.route)}
+                isActive={isActive(item.route)}
+              />
+            ))}
+          </Flex>
+        )}
 
         {/* ── Personal section ── */}
         <Flex direction="column" gap="1">

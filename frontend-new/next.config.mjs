@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    output: 'export',
+    // output: 'export',
     trailingSlash: true,
     /**
      * Static export does not emit per-slug callback HTML. Rewrites map

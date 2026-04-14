@@ -1,74 +1,54 @@
 'use client';
 
-import React from 'react';
-import { Dialog, Flex, Text, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import React, { useEffect, useState } from 'react';
+import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 
-// ========================================
-// Types
-// ========================================
-
-export interface ConfirmationDialogProps {
-  /** Controls open/close */
+export interface DestructiveTypedConfirmationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-
-  /** Dialog title (e.g. "Remove user?") */
-  title: string;
-
-  /** Descriptive message body */
-  message: string;
-
-  /** Label for the confirm button (e.g. "Remove") */
-  confirmLabel: string;
-
-  /** Label for the cancel button */
+  heading: string;
+  body: React.ReactNode;
+  confirmationKeyword: string;
+  confirmInputLabel: string;
+  primaryButtonText: string;
   cancelLabel?: string;
-
-  /** Visual style of the confirm button */
-  confirmVariant?: 'danger' | 'primary';
-
-  /** Whether the confirm action is in-progress */
-  isLoading?: boolean;
-
-  /** Label shown on the confirm button while loading (default: "Removing...") */
-  confirmLoadingLabel?: string;
-
-  /** Callback when confirm is clicked */
   onConfirm: () => void;
+  isLoading?: boolean;
+  confirmLoadingLabel?: string;
 }
 
-// ========================================
-// Component
-// ========================================
-
-/**
- * ConfirmationDialog — reusable modal for confirming destructive or important actions.
- *
- * Used for:
- * - Remove user from workspace
- * - Delete group/team
- * - Cancel invite
- * - Any action requiring user confirmation
- */
-export function ConfirmationDialog({
+export function DestructiveTypedConfirmationDialog({
   open,
   onOpenChange,
-  title,
-  message,
-  confirmLabel,
+  heading,
+  body,
+  confirmationKeyword,
+  confirmInputLabel,
+  primaryButtonText,
   cancelLabel = 'Cancel',
-  confirmVariant = 'danger',
-  isLoading = false,
-  confirmLoadingLabel = 'Removing...',
   onConfirm,
-}: ConfirmationDialogProps) {
+  isLoading = false,
+  confirmLoadingLabel = 'ΓÇª',
+}: DestructiveTypedConfirmationDialogProps) {
+  const [input, setInput] = useState('');
+
+  useEffect(() => {
+    setInput('');
+  }, [open, confirmationKeyword]);
+
+  const matches = confirmationKeyword.length > 0 && input === confirmationKeyword;
+
   const handleCancel = () => {
     if (!isLoading) onOpenChange(false);
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={(v) => !isLoading && onOpenChange(v)}>
-      {/* Dark overlay */}
+    <Dialog.Root
+      open={open}
+      onOpenChange={(v) => {
+        if (!isLoading) onOpenChange(v);
+      }}
+    >
       {open && (
         <Box
           style={{
@@ -93,27 +73,48 @@ export function ConfirmationDialog({
           zIndex: 1000,
           overflow: 'hidden',
         }}
+        onClick={(e) => e.stopPropagation()}
       >
         <VisuallyHidden>
-          <Dialog.Title>{title}</Dialog.Title>
+          <Dialog.Title>{heading}</Dialog.Title>
         </VisuallyHidden>
 
         <Flex direction="column" gap="4">
-          {/* Title + Message */}
           <Flex
             direction="column"
             gap="3"
             style={{ padding: '0 var(--space-5)' }}
           >
             <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
-              {title}
+              {heading}
             </Text>
-            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
-              {message}
-            </Text>
+            <Flex direction="column" gap="2">
+              {body}
+            </Flex>
           </Flex>
 
-          {/* Action buttons */}
+          <Flex
+            direction="column"
+            gap="2"
+            style={{ padding: '0 var(--space-5)' }}
+          >
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              {confirmInputLabel}
+            </Text>
+            <TextField.Root
+              size="2"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={isLoading || confirmationKeyword.length === 0}
+              autoComplete="off"
+              style={{
+                ...(matches
+                  ? { borderColor: 'var(--accent-8)', boxShadow: '0 0 0 1px var(--accent-8)' }
+                  : {}),
+              }}
+            />
+          </Flex>
+
           <Flex
             justify="end"
             gap="2"
@@ -131,13 +132,13 @@ export function ConfirmationDialog({
             </Button>
             <Button
               variant="solid"
-              color={confirmVariant === 'danger' ? 'red' : undefined}
+              color="red"
               size="2"
               onClick={onConfirm}
-              disabled={isLoading}
-              style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
+              disabled={!matches || isLoading}
+              style={{ cursor: !matches || isLoading ? 'not-allowed' : 'pointer' }}
             >
-              {isLoading ? confirmLoadingLabel : confirmLabel}
+              {isLoading ? confirmLoadingLabel : primaryButtonText}
             </Button>
           </Flex>
         </Flex>
