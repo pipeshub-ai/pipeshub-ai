@@ -114,14 +114,13 @@ class ConnectorFactory:
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
     _beta_connector_definitions: dict[str, type[BaseConnector]] = {
-        "slack": SlackConnector,
-        "calendar": CalendarConnector,
-        "meet": MeetConnector,
-        "forms": FormsConnector,
-        "slides": SlidesConnector,
-        "docs": DocsConnector,
-        "zendesk": ZendeskConnector,
-        "airtable": AirtableConnector,
+        'calendar': CalendarConnector,
+        'meet': MeetConnector,
+        'forms': FormsConnector,
+        'slides': SlidesConnector,
+        'docs': DocsConnector,
+        'zendesk': ZendeskConnector,
+        'airtable': AirtableConnector,
     }
 
     @classmethod
