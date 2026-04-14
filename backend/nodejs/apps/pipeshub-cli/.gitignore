@@ -1,8 +1,0 @@
-node_modules/
-dist/
-dist-test/
-coverage/
-.c8_output/
-.env
-.env.*
-!.env.example
