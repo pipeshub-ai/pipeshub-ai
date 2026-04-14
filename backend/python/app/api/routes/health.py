@@ -1,7 +1,7 @@
 import asyncio
 import os
 from logging import Logger
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
@@ -155,7 +155,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
             },
         )
 
-async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> Tuple[Any, Any, Any]:
+async def initialize_embedding_model(request: Request, embedding_configs: list[dict]) -> tuple[Any, Any, Any]:
     """Initialize the embedding model and return necessary components."""
     app = request.app
     logger = app.container.logger()
@@ -394,7 +394,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Perform health check for LLM models"""
     try:
         logger.info(f"Performing LLM health check for {llm_config.get('provider')} with configuration model {llm_config.get('configuration', {}).get('model', '')}")
@@ -539,7 +539,7 @@ async def perform_embedding_health_check(
     request: Request,
     embedding_config: dict,
     logger: Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Perform health check for embedding models"""
     try:
         logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")

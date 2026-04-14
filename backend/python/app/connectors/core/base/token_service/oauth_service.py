@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlencode
 
 from aiohttp import ClientSession
@@ -37,22 +37,22 @@ class OAuthConfig:
     redirect_uri: str
     authorize_url: str
     token_url: str
-    tenant_id: Optional[str] = None
-    scope: Optional[str] = None
-    state: Optional[str] = None
+    tenant_id: str | None = None
+    scope: str | None = None
+    state: str | None = None
     response_type: str = "code"
     grant_type: GrantType = GrantType.AUTHORIZATION_CODE
-    additional_params: Dict[str, Any] = field(default_factory=dict)
-    token_access_type: Optional[str] = None
+    additional_params: dict[str, Any] = field(default_factory=dict)
+    token_access_type: str | None = None
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
-    token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
+    token_response_path: str | None = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
         self.state = secrets.token_urlsafe(32)
         return self.state
 
-    def normalize_token_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def normalize_token_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """
         Normalize token response if token_response_path is configured.
         Args:
@@ -99,15 +99,15 @@ class OAuthToken:
     """OAuth Token representation"""
     access_token: str
     token_type: str = "Bearer"
-    expires_in: Optional[int] = None
-    refresh_token: Optional[str] = None
-    refresh_token_expires_in: Optional[int] = None  # used by Microsoft/OneDrive
-    scope: Optional[str] = None
-    id_token: Optional[str] = None
+    expires_in: int | None = None
+    refresh_token: str | None = None
+    refresh_token_expires_in: int | None = None  # used by Microsoft/OneDrive
+    scope: str | None = None
+    id_token: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
-    uid: Optional[str] = None   # used for dropbox
-    account_id: Optional[str] = None
-    team_id: Optional[str] = None
+    uid: str | None = None   # used for dropbox
+    account_id: str | None = None
+    team_id: str | None = None
 
     @property
     def is_expired(self) -> bool:
@@ -118,13 +118,13 @@ class OAuthToken:
         return datetime.now() >= expiry_time
 
     @property
-    def expires_at_epoch(self) -> Optional[int]:
+    def expires_at_epoch(self) -> int | None:
         """Get token expiration time"""
         if not self.expires_in:
             return None
         return int((self.created_at + timedelta(seconds=self.expires_in)).timestamp())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert token to dictionary"""
         return {
             "access_token": self.access_token,
@@ -141,7 +141,7 @@ class OAuthToken:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
+    def from_dict(cls, data: dict[str, Any]) -> 'OAuthToken':
         """Create token from dictionary, filtering out unknown fields"""
         # Make a shallow copy to avoid mutating the caller's dict
         data = dict(data)
@@ -160,10 +160,10 @@ class OAuthToken:
 class OAuthProvider:
     """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, configuration_service: ConfigurationService, credentials_path: str, connector_name: Optional[str] = None) -> None:
+    def __init__(self, config: OAuthConfig, configuration_service: ConfigurationService, credentials_path: str, connector_name: str | None = None) -> None:
         self.config = config
         self.configuration_service = configuration_service
-        self._session: Optional[ClientSession] = None
+        self._session: ClientSession | None = None
         self.credentials_path = credentials_path
         self.token = None
         self.connector_name = connector_name
@@ -277,7 +277,7 @@ class OAuthProvider:
             else:
                 return await response.json()
 
-    async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
+    async def exchange_code_for_token(self, code: str, state: str | None = None, code_verifier: str | None = None) -> OAuthToken:
         # Note: State validation is handled in handle_callback, not here
         # This method only exchanges the code for a token
 
@@ -378,9 +378,9 @@ class OAuthProvider:
         s256 = hashlib.sha256(verifier.encode()).digest()
         return base64.urlsafe_b64encode(s256).decode().rstrip("=")
 
-    async def start_authorization(self, *, return_to: Optional[str] = None, use_pkce: bool = True, **extra) -> str:
+    async def start_authorization(self, *, return_to: str | None = None, use_pkce: bool = True, **extra) -> str:
         state = self.config.generate_state()
-        session_data: Dict[str, Any] = {
+        session_data: dict[str, Any] = {
             "created_at": datetime.utcnow().isoformat(),
             "state": state,
             "used_codes": []  # Start fresh with empty used_codes for new auth flow

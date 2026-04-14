@@ -4,10 +4,10 @@ import logging
 import os
 import tempfile
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -224,15 +224,15 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
 
         # Google clients and data sources (initialized in init())
-        self.admin_client: Optional[GoogleClient] = None
-        self.drive_client: Optional[GoogleClient] = None
-        self.admin_data_source: Optional[GoogleAdminDataSource] = None
-        self.drive_data_source: Optional[GoogleDriveDataSource] = None
-        self.config: Optional[Dict] = None
+        self.admin_client: GoogleClient | None = None
+        self.drive_client: GoogleClient | None = None
+        self.admin_data_source: GoogleAdminDataSource | None = None
+        self.drive_data_source: GoogleDriveDataSource | None = None
+        self.config: dict | None = None
         logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
         # Store synced users for use in batch processing
-        self.synced_users: List[AppUser] = []
+        self.synced_users: list[AppUser] = []
 
     async def init(self) -> bool:
         """Initialize the Google Drive enterprise connector with service account credentials and services."""
@@ -372,8 +372,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise ValueError("Admin data source not initialized")
 
             self.logger.info("Fetching all users from Google Workspace Admin API...")
-            all_users: List[AppUser] = []
-            page_token: Optional[str] = None
+            all_users: list[AppUser] = []
+            page_token: str | None = None
 
             while True:
                 try:
@@ -480,7 +480,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise ValueError("Admin data source not initialized")
 
             self.logger.info("Fetching all groups from Google Workspace Admin API...")
-            page_token: Optional[str] = None
+            page_token: str | None = None
             total_groups_processed = 0
 
             while True:
@@ -526,7 +526,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
             raise
 
-    async def _process_group(self, group: Dict) -> None:
+    async def _process_group(self, group: dict) -> None:
         """
         Process a single group: fetch members and create AppUserGroup with AppUser objects.
 
@@ -570,7 +570,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             # Create AppUser objects for each member
-            app_users: List[AppUser] = []
+            app_users: list[AppUser] = []
             for member in user_members:
                 try:
                     member_email = member.get("email", "")
@@ -619,7 +619,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error processing group {group.get('id', 'unknown')}: {e}", exc_info=True)
             raise
 
-    async def _fetch_group_members(self, group_id: str) -> List[Dict]:
+    async def _fetch_group_members(self, group_id: str) -> list[dict]:
         """
         Fetch all members of a group with pagination.
 
@@ -629,8 +629,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         Returns:
             List of member dictionaries
         """
-        members: List[Dict] = []
-        page_token: Optional[str] = None
+        members: list[dict] = []
+        page_token: str | None = None
 
         while True:
             try:
@@ -681,7 +681,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.warning(f"Unknown Google Drive role '{role}', defaulting to READ")
             return PermissionType.READ
 
-    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: Optional[str] = None) -> EntityType:
+    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: str | None = None) -> EntityType:
         """
         Map Google Drive permission type to EntityType enum.
 
@@ -712,9 +712,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         self,
         resource_id: str,
         is_drive: bool = False,
-        user_email: Optional[str] = None,
-        drive_data_source: Optional[GoogleDriveDataSource] = None
-    ) -> Tuple[List[Permission], bool]:
+        user_email: str | None = None,
+        drive_data_source: GoogleDriveDataSource | None = None
+    ) -> tuple[list[Permission], bool]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
 
@@ -727,9 +727,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         Returns:
             List of Permission objects and a boolean indicating if the permissions were fallback permissions
         """
-        permissions: List[Permission] = []
-        page_token: Optional[str] = None
-        anyone_with_link_permission_type: Optional[PermissionType] = None
+        permissions: list[Permission] = []
+        page_token: str | None = None
+        anyone_with_link_permission_type: PermissionType | None = None
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
@@ -872,7 +872,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         return (permissions, False)
 
-    async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
+    async def _create_and_sync_shared_drive_record_group(self, drive: dict) -> None:
         """
         Create and sync a record group for a single shared drive.
 
@@ -927,7 +927,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             raise
 
-    async def _sync_record_groups(self) -> List[Dict]:
+    async def _sync_record_groups(self) -> list[dict]:
         """Sync record groups (drives) for all users.
 
         Returns:
@@ -940,8 +940,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Step 1: Sync shared drives
             self.logger.info("Fetching all shared drives from Google Drive...")
-            all_drives: List[Dict] = []
-            page_token: Optional[str] = None
+            all_drives: list[dict] = []
+            page_token: str | None = None
 
             while True:
                 try:
@@ -1079,17 +1079,17 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _process_drive_files_batch(
         self,
-        files: List[Dict],
+        files: list[dict],
         user_id: str,
-        user_email: Optional[str],
+        user_email: str | None,
         drive_id: str,
         is_shared_drive: bool,
         context_name: str,
-        batch_records: List,
+        batch_records: list,
         batch_count: int,
         total_counter: int,
-        drive_data_source: Optional[GoogleDriveDataSource] = None
-    ) -> Tuple[List, int, int]:
+        drive_data_source: GoogleDriveDataSource | None = None
+    ) -> tuple[list, int, int]:
         """
         Process a batch of files from a drive (shared or user drive).
 
@@ -1141,9 +1141,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _process_remaining_batch_records(
         self,
-        batch_records: List,
+        batch_records: list,
         context_name: str
-    ) -> Tuple[List, int]:
+    ) -> tuple[list, int]:
         """
         Process any remaining records in the batch.
 
@@ -1216,7 +1216,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             return True  # Break and continue to next drive
 
-    def _parse_datetime(self, dt_obj) -> Optional[int]:
+    def _parse_datetime(self, dt_obj) -> int | None:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         if not dt_obj:
             return None
@@ -1381,8 +1381,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         user_email: str,
         drive_id: str,
         is_shared_drive: bool = False,
-        drive_data_source: Optional[GoogleDriveDataSource] = None
-    ) -> Optional[RecordUpdate]:
+        drive_data_source: GoogleDriveDataSource | None = None
+    ) -> RecordUpdate | None:
         """
         Process a single Google Drive file and detect changes.
 
@@ -1573,13 +1573,13 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _process_drive_items_generator(
         self,
-        files: List[dict],
+        files: list[dict],
         user_id: str,
         user_email: str,
         drive_id: str,
         is_shared_drive: bool = False,
-        drive_data_source: Optional[GoogleDriveDataSource] = None
-    ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
+        drive_data_source: GoogleDriveDataSource | None = None
+    ) -> AsyncGenerator[tuple[FileRecord | None, list[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
         Generator for non-blocking processing of large datasets.
@@ -1929,8 +1929,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.logger.info(f"Syncing shared drives for user {user.email}")
         try:
             # List all shared drives the user has access to
-            all_user_drives: List[Dict] = []
-            page_token: Optional[str] = None
+            all_user_drives: list[dict] = []
+            page_token: str | None = None
 
             while True:
                 try:
@@ -2232,7 +2232,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing shared drives for user {user.email}: {e}", exc_info=True)
             # Don't raise - continue with user sync completion
 
-    async def _process_users_in_batches(self, users: List[AppUser]) -> None:
+    async def _process_users_in_batches(self, users: list[AppUser]) -> None:
         """
         Process user drives in concurrent batches for improved performance.
 
@@ -2294,7 +2294,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error testing connection and access to Google Drive enterprise account: {e}")
             return False
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         """Get a signed URL for a specific record."""
         raise NotImplementedError("get_signed_url is not yet implemented for Google Drive enterprise")
 
@@ -2403,7 +2403,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error during conversion: {str(conv_error)}")
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
-    async def _get_file_metadata_from_drive(self, file_id: str, drive_service) -> Dict:
+    async def _get_file_metadata_from_drive(self, file_id: str, drive_service) -> dict:
         """
         Get file metadata from Google Drive API.
 
@@ -2439,7 +2439,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 detail=f"Error getting file metadata: {str(e)}"
             )
 
-    async def _get_drive_service_for_user(self, user_email: Optional[str] = None) -> object:
+    async def _get_drive_service_for_user(self, user_email: str | None = None) -> object:
         """
         Get the appropriate Google Drive service client with user impersonation.
 
@@ -2479,7 +2479,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.logger.info("Using service account drive client")
         return self.drive_client.get_client()
 
-    async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
+    async def stream_record(self, record: Record, user_id: str | None = None, convertTo: str | None = None) -> StreamingResponse:
         """
         Stream a record from Google Drive.
 
@@ -2664,11 +2664,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Run incremental sync for Google Drive enterprise."""
         raise NotImplementedError("run_incremental_sync is not yet implemented for Google Drive enterprise")
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from Google Drive."""
         raise NotImplementedError("handle_webhook_notification is not yet implemented for Google Drive enterprise")
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex records for Google Drive enterprise."""
         try:
             if not records:
@@ -2712,7 +2712,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from Google Drive and return data for reindexing if changed."""
         try:
             file_id = record.external_record_id
@@ -2814,8 +2814,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """Google Drive enterprise connector does not support dynamic filter options."""
         raise NotImplementedError("Google Drive enterprise connector does not support dynamic filter options")

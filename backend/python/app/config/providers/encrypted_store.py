@@ -2,8 +2,9 @@ import asyncio
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union
+from typing import Any, Generic, TypeVar
 
 import dotenv  # type: ignore
 
@@ -78,14 +79,14 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     def _create_store(self, store_type_str: str) -> KeyValueStore:
         """Create the appropriate key-value store based on configuration."""
 
-        def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
+        def serialize(value: str | int | float | bool | dict | list | None) -> bytes:
             if value is None:
                 return b""
             if isinstance(value, (str, int, float, bool)):
                 return json.dumps(value).encode("utf-8")
             return json.dumps(value, default=str).encode("utf-8")
 
-        def deserialize(value: bytes) -> Union[str, int, float, bool, dict, list, None]:
+        def deserialize(value: bytes) -> str | int | float | bool | dict | list | None:
             if not value:
                 return None
             try:
@@ -176,7 +177,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         return store
 
     async def create_key(
-        self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None
+        self, key: str, value: T, overwrite: bool = True, ttl: int | None = None
     ) -> bool:
         """Create a new key with optional encryption."""
         try:
@@ -241,11 +242,11 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return False
 
     async def update_value(
-        self, key: str, value: T, ttl: Optional[int] = None
+        self, key: str, value: T, ttl: int | None = None
     ) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str) -> T | None:
         try:
             encrypted_value = await self.store.get_key(key)
 
@@ -291,18 +292,18 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def delete_key(self, key: str) -> bool:
         return await self.store.delete_key(key)
 
-    async def get_all_keys(self) -> List[str]:
+    async def get_all_keys(self) -> list[str]:
         return await self.store.get_all_keys()
 
     async def watch_key(
         self,
         key: str,
-        callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None,
+        callback: Callable[[T | None], None],
+        error_callback: Callable[[Exception], None] | None = None,
     ) -> None:
         return await self.store.watch_key(key, callback, error_callback)
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         """
         List all keys in a directory, decrypting encrypted keys.
 

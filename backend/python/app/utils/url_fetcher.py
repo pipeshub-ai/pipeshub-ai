@@ -15,7 +15,7 @@ Install:
 import random
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class FetchError(Exception):
 # Shared headers
 # ---------------------------------------------------------------------------
 
-def _build_headers(url: str, referer: Optional[str], extra: Optional[dict]) -> dict:
+def _build_headers(url: str, referer: str | None, extra: dict | None) -> dict:
     parsed = urlparse(url)
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -107,8 +107,8 @@ def _try_curl_cffi(
     headers: dict,
     timeout: int,
     use_http2: bool = True,
-    profiles: Optional[list[str]] = None,
-) -> Optional[FetchResult]:
+    profiles: list[str] | None = None,
+) -> FetchResult | None:
     """Try curl_cffi with rotating profiles or an explicit profile list."""
     try:
         from curl_cffi import CurlOpt
@@ -177,7 +177,7 @@ def _try_curl_cffi(
 # Strategy 2: cloudscraper
 # ---------------------------------------------------------------------------
 
-def _try_cloudscraper(url: str, headers: dict, timeout: int) -> Optional[FetchResult]:
+def _try_cloudscraper(url: str, headers: dict, timeout: int) -> FetchResult | None:
     try:
         import cloudscraper
     except ImportError:
@@ -208,7 +208,7 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> Optional[FetchRe
 # Strategy 3: plain requests with stealth UA
 # ---------------------------------------------------------------------------
 
-def _try_requests(url: str, headers: dict, timeout: int) -> Optional[FetchResult]:
+def _try_requests(url: str, headers: dict, timeout: int) -> FetchResult | None:
     try:
         import requests as req
     except ImportError:
@@ -250,12 +250,12 @@ MAX_RETRIES = 0
 def fetch_url(
     url: str,
     *,
-    headers: Optional[dict] = None,
-    referer: Optional[str] = None,
+    headers: dict | None = None,
+    referer: str | None = None,
     timeout: int = 15,
     max_retries: int = MAX_RETRIES,
-    strategy: Optional[Literal["curl_cffi_h2", "curl_cffi_h1", "cloudscraper", "requests"]] = None,
-    profile: Optional[str] = None,
+    strategy: Literal["curl_cffi_h2", "curl_cffi_h1", "cloudscraper", "requests"] | None = None,
+    profile: str | None = None,
     verbose: bool = False,
 ) -> FetchResult:
     """

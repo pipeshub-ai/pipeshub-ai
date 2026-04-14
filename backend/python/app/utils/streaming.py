@@ -37,7 +37,6 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
-    count_tokens,
     get_flattened_results,
     record_to_message_content,
 )
@@ -527,8 +526,8 @@ async def execute_tool_calls(
                 original_llm=llm,
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 ref_to_url=ref_mapper.ref_to_url if ref_mapper else None,
-                **{"is_agent":is_agent } if mode != "simple" else {}
                 web_records=web_records,
+                **{"is_agent":is_agent } if mode != "simple" else {}
             ):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
@@ -1657,6 +1656,7 @@ async def call_aiter_llm_stream_simple(
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     original_llm: BaseChatModel | None = None,
     ref_to_url: dict[str, str] | None = None,
+    web_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response in simple (non-JSON) mode.
 
@@ -1895,12 +1895,12 @@ async def call_aiter_llm_stream(
                             char_end += m.end()
 
                         current_raw = state.answer_buf[:char_end]
-                
+
                         incomplete_match = incomplete_cite_re.search(current_raw)
                         if incomplete_match:
                             state.words_in_chunk = target_words_per_chunk - 1
                             break
-                        
+
                         state.emit_upto = char_end
                         state.words_in_chunk = 0
 

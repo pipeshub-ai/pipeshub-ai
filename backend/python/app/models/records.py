@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.models.graph import Node
 
@@ -9,12 +9,12 @@ class RecordGroup(Node):
     _key: str
     org_id: str = ""
     name: str = ""
-    description: Optional[str] = None
-    created_at_timestamp: Optional[float] = None
-    updated_at_timestamp: Optional[float] = None
-    last_sync_timestamp: Optional[float] = None
-    source_created_at_timestamp: Optional[float] = None
-    source_last_modified_timestamp: Optional[float] = None
+    description: str | None = None
+    created_at_timestamp: float | None = None
+    updated_at_timestamp: float | None = None
+    last_sync_timestamp: float | None = None
+    source_created_at_timestamp: float | None = None
+    source_last_modified_timestamp: float | None = None
 
 @dataclass
 class Record(Node):
@@ -23,35 +23,35 @@ class Record(Node):
     org_id: str = ""
     record_name: str = ""
     external_record_id: str = ""
-    external_revision_id: Optional[str] = None
+    external_revision_id: str | None = None
     record_type: str = ""  # FILE, DRIVE, WEBPAGE, MESSAGE, MAIL, OTHERS
     version: int = 0
     origin: str = ""  # UPLOAD or CONNECTOR
-    connector_name: Optional[str] = None
-    connector_id: Optional[str] = None
-    created_at_timestamp: Optional[float] = None
-    updated_at_timestamp: Optional[float] = None
-    last_sync_timestamp: Optional[float] = None
-    source_created_at_timestamp: Optional[float] = None
-    source_last_modified_timestamp: Optional[float] = None
-    indexing_status: Optional[str] = None
-    extraction_status: Optional[str] = None
+    connector_name: str | None = None
+    connector_id: str | None = None
+    created_at_timestamp: float | None = None
+    updated_at_timestamp: float | None = None
+    last_sync_timestamp: float | None = None
+    source_created_at_timestamp: float | None = None
+    source_last_modified_timestamp: float | None = None
+    indexing_status: str | None = None
+    extraction_status: str | None = None
     is_latest_version: bool = True
     is_deleted: bool = False
     is_archived: bool = False
     is_dirty: bool = False
-    reason: Optional[str] = None
-    last_index_timestamp: Optional[float] = None
-    last_extraction_timestamp: Optional[float] = None
-    summary_document_id: Optional[str] = None
-    virtual_record_id: Optional[str] = None
-    deleted_by_user_id: Optional[str] = None
+    reason: str | None = None
+    last_index_timestamp: float | None = None
+    last_extraction_timestamp: float | None = None
+    summary_document_id: str | None = None
+    virtual_record_id: str | None = None
+    deleted_by_user_id: str | None = None
     is_vlm_ocr_processed: bool = False
-    web_url: Optional[str] = None,
-    mime_type: Optional[str] = None
+    web_url: str | None = None,
+    mime_type: str | None = None
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> 'Record':
+    def from_dict(data: dict[str, Any]) -> 'Record':
         record = Record()
 
         record._key = data.get("_key", "")
@@ -111,7 +111,7 @@ class Record(Node):
     #         raise AttributeError("Cannot modify _key after initialization")
     #     super().__setattr__(name, value)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "_key": self._key,
             "orgId": self.org_id,
@@ -164,22 +164,22 @@ class FileRecord(Node):
     org_id: str = ""
     name: str = ""
     is_file: bool = True
-    extension: Optional[str] = None
-    mime_type: Optional[str] = None
-    size_in_bytes: Optional[int] = None
-    web_url: Optional[str] = None
-    path: Optional[str] = None
+    extension: str | None = None
+    mime_type: str | None = None
+    size_in_bytes: int | None = None
+    web_url: str | None = None
+    path: str | None = None
 
-    etag: Optional[str] = None
-    ctag: Optional[str] = None
-    md5_checksum: Optional[str] = None
-    quick_xor_hash: Optional[str] = None
-    crc32_hash: Optional[str] = None
-    sha1_hash: Optional[str] = None
-    sha256_hash: Optional[str] = None
+    etag: str | None = None
+    ctag: str | None = None
+    md5_checksum: str | None = None
+    quick_xor_hash: str | None = None
+    crc32_hash: str | None = None
+    sha1_hash: str | None = None
+    sha256_hash: str | None = None
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> 'FileRecord':
+    def from_dict(data: dict[str, Any]) -> 'FileRecord':
         file_record = FileRecord()
         file_record._key = data.get("_key", "")
         file_record.org_id = data.get("orgId", "")
@@ -209,7 +209,7 @@ class FileRecord(Node):
         if not self.name:
             raise ValueError("name must be set")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "_key": self._key,
             "orgId": self.org_id,
@@ -242,15 +242,15 @@ class MailRecord(Node):
     _key: str = ""
     thread_id: str = ""
     is_parent: bool = False
-    subject: Optional[str] = None
-    from_address: Optional[str] = None
-    to_addresses: List[str] = field(default_factory=list)
-    cc_addresses: List[str] = field(default_factory=list)
-    bcc_addresses: List[str] = field(default_factory=list)
-    web_url: Optional[str] = None
+    subject: str | None = None
+    from_address: str | None = None
+    to_addresses: list[str] = field(default_factory=list)
+    cc_addresses: list[str] = field(default_factory=list)
+    bcc_addresses: list[str] = field(default_factory=list)
+    web_url: str | None = None
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> 'MailRecord':
+    def from_dict(data: dict[str, Any]) -> 'MailRecord':
         mail_record = MailRecord()
         mail_record._key = data.get("_key", "")
         mail_record.thread_id = data.get("threadId", "")
@@ -277,7 +277,7 @@ class MailRecord(Node):
             raise ValueError("from_address must be set")
 
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "_key": self._key,
             "threadId": self.thread_id,

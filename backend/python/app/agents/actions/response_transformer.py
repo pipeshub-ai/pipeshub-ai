@@ -13,7 +13,7 @@ Usage:
     )
 """
 
-from typing import Any, List
+from typing import Any
 
 # Constants for pattern matching
 _PATTERN_SPLIT_PARTS = 2
@@ -49,8 +49,8 @@ class ResponseTransformer:
             data: The data structure to transform (dict, list, or primitive)
         """
         self.data = data
-        self._remove_fields: List[str] = []
-        self._keep_fields: List[str] = []
+        self._remove_fields: list[str] = []
+        self._keep_fields: list[str] = []
 
     def remove(self, *field_paths: str) -> 'ResponseTransformer':
         """Add field paths to remove (supports nested paths and wildcards).

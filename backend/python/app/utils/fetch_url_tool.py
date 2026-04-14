@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from langchain_core.tools import BaseTool, tool
@@ -21,7 +21,7 @@ class FetchUrlArgs(BaseModel):
         description="The URL to fetch content from. Must be a valid HTTP/HTTPS URL."
     )
 
-def split_long_text(text: str, max_words: int = 200) -> List[str]:
+def split_long_text(text: str, max_words: int = 200) -> list[str]:
     """
     Split text into chunks at sentence boundaries, respecting max_words limit.
     """
@@ -75,7 +75,7 @@ def split_long_text(text: str, max_words: int = 200) -> List[str]:
 
 
 def create_fetch_url_tool(
-    url_counter: Optional[Dict[str, int]] = None,
+    url_counter: dict[str, int] | None = None,
     is_multimodal_llm: bool = False,
 ) -> BaseTool:
     """
@@ -89,7 +89,7 @@ def create_fetch_url_tool(
         url_counter = {"count": 0}
 
     @tool("fetch_url", args_schema=FetchUrlArgs)
-    def fetch_url_tool(url: str) -> Dict[str, Any]:
+    def fetch_url_tool(url: str) -> dict[str, Any]:
         """
         This tool Fetches and extracts main content from a URL for detailed analysis.
 

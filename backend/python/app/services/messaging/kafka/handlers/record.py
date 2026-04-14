@@ -3,7 +3,6 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from io import BytesIO
 from logging import Logger
-from typing import Optional
 
 import aiohttp  # type: ignore
 
@@ -432,7 +431,7 @@ class RecordEventHandler(BaseEventService):
         record_id: str,
         indexing_status: str,
         extraction_status: str,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> dict|None:
         """Update document status in database"""
         try:

@@ -7,7 +7,6 @@ are local storage.
 """
 
 from logging import Logger
-from typing import Dict, List, Optional
 
 import aiohttp
 from fastapi import HTTPException
@@ -108,7 +107,7 @@ class KnowledgeBaseConnector(BaseConnector):
         # KB is local storage, so connection is always available
         return True
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """
         Get signed URL for a KB record.
 
@@ -179,7 +178,7 @@ class KnowledgeBaseConnector(BaseConnector):
             return None
 
     async def stream_record(
-        self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None
+        self, record: Record, user_id: str | None = None, convertTo: str | None = None
     ) -> Response:
         """
         Stream a record from KB.
@@ -248,7 +247,7 @@ class KnowledgeBaseConnector(BaseConnector):
         """No-op for KB connector - KBs are local storage"""
         self.logger.debug("KB connector incremental sync skipped (local storage)")
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """KB connector doesn't support webhooks"""
         self.logger.debug("KB connector webhook notification ignored (not supported)")
 
@@ -297,8 +296,8 @@ class KnowledgeBaseConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """KB connector does not support dynamic filter options"""
         # KBs don't have external sources to filter, so return empty

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 from langchain_core.tools import BaseTool, tool
@@ -16,7 +16,7 @@ class WebSearchArgs(BaseModel):
     )
 
 
-def _search_with_duckduckgo(query: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     """Search using DuckDuckGo (default, no API key needed)."""
     from ddgs import DDGS
 
@@ -32,7 +32,7 @@ def _search_with_duckduckgo(query: str, config: Dict[str, Any]) -> List[Dict[str
     ]
 
 
-def _search_with_serper(query: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _search_with_serper(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     """Search using Serper API."""
     api_key = config.get("apiKey")
     if not api_key:
@@ -61,7 +61,7 @@ def _search_with_serper(query: str, config: Dict[str, Any]) -> List[Dict[str, An
         return results
 
 
-def _search_with_tavily(query: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _search_with_tavily(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     """Search using Tavily API."""
     api_key = config.get("apiKey")
     if not api_key:
@@ -92,8 +92,8 @@ def _search_with_tavily(query: str, config: Dict[str, Any]) -> List[Dict[str, An
         return results
 
 def create_web_search_tool(
-    url_counter: Optional[Dict[str, int]] = None,
-    config: Optional[Dict[str, Any]] = None,
+    url_counter: dict[str, int] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> BaseTool:
     """
     Factory function to create web search tool.
@@ -127,7 +127,7 @@ def create_web_search_tool(
     search_func = provider_map.get(provider, _search_with_duckduckgo)
 
     @tool("web_search", args_schema=WebSearchArgs)
-    def web_search_tool(query: str) -> Dict[str, Any]:
+    def web_search_tool(query: str) -> dict[str, Any]:
         """
         This tool searches the web for information.
 
