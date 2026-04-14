@@ -8,6 +8,7 @@ import {
   ModelInfo,
   SharedWithEntry,
   StreamChatRequest,
+  AgentStrategyApiSegment,
   SSEEventType,
   SSEConnectedEvent,
   SSEStatusEvent,
@@ -18,6 +19,7 @@ import {
   SearchRequest,
   SearchResponse,
   buildStreamRequestModeFields,
+  streamChatModeToAgentApiChatMode,
 } from './types';
 
 export interface StreamMessageCallbacks {
@@ -158,7 +160,7 @@ export const ChatApi = {
     let payload: Record<string, unknown>;
 
     if (request.agentId) {
-      const agentChatMode = request.conversationId ? 'verification' : 'auto';
+      const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
       const timezone =
         typeof Intl !== 'undefined'
           ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -338,7 +340,7 @@ export const ChatApi = {
       modelKey: string;
       modelName: string;
       modelProvider: string;
-      chatMode: 'auto' | 'verification';
+      chatMode: AgentStrategyApiSegment;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;

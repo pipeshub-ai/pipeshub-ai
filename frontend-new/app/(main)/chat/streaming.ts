@@ -18,8 +18,15 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore } from './store';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages } from './runtime';
-import type { StreamChatRequest, StatusMessage, ModelOverride, SSEConnectedEvent } from './types';
 import { i18n } from '@/lib/i18n';
+import {
+  buildStreamRequestModeFields,
+  streamChatModeToAgentApiChatMode,
+  type StreamChatRequest,
+  type StatusMessage,
+  type ModelOverride,
+  type SSEConnectedEvent,
+} from './types';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
@@ -540,6 +547,8 @@ export async function streamRegenerateForSlot(
       useChatStore.getState().updateSlot(slotId, { threadAgentId });
     }
     if (threadAgentId) {
+      const { chatMode } = buildStreamRequestModeFields(store.settings);
+      const agentApiChatMode = streamChatModeToAgentApiChatMode(chatMode);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -549,7 +558,7 @@ export async function streamRegenerateForSlot(
           modelKey: resolvedModel.modelKey.trim(),
           modelName: resolvedModel.modelName || resolvedModel.modelKey,
           modelProvider: resolvedModel.modelProvider ?? 'openAI',
-          chatMode: 'auto',
+          chatMode: agentApiChatMode,
         }
       );
     } else {
