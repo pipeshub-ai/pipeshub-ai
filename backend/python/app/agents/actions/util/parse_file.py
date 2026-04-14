@@ -195,6 +195,7 @@ class FileContentParser:
         context_length = (model_config or {}).get("contextLength") or 128_000
         max_allowed_tokens = int(context_length * 0.8)
         token_count = count_tokens_text(data, None)
+        # print(f"\033[95m[check_token_limit] token_count: {token_count} | max_allowed_tokens: {max_allowed_tokens}\033[0m")
         return token_count < max_allowed_tokens
 
     async def parse(

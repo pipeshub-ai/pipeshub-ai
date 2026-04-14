@@ -1,5 +1,3 @@
-
-
 import json
 import logging
 from dataclasses import asdict
@@ -23,6 +21,7 @@ from msgraph.generated.drives.item.items.item.copy.copy_post_request_body import
 from msgraph.generated.drives.item.items.item.drive_item_item_request_builder import DriveItemItemRequestBuilder
 from msgraph.generated.models.drive_item import DriveItem as DriveItemModel
 from msgraph.generated.models.notebook import Notebook
+from msgraph.generated.models.onenote_section import OnenoteSection
 
 
 
@@ -18798,23 +18797,25 @@ class OneDriveDataSource:
                 error=f"OneDrive Insights API call failed: {str(e)}",
             )
     
-    async def me_insights_shared_resource(self, insight_id: str) -> OneDriveResponse:
+    async def me_insights_shared_resource(
+        self,
+        insight_id: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Fetch resource for a shared insight.
+        Operation: GET /me/insights/shared/{insight-id}/resource
+        """
         try:
-            # Use the ID directly to get the resource
-            response = await self.client.me.insights.shared \
-                .by_shared_insight_id(insight_id) \
-                .resource.get()
+            response = await self.client.me.insights.shared.by_shared_insight_id(insight_id).resource.get()
             return self._handle_onedrive_response(response)
+        
         except Exception as e:
-            # Check if it's a 403 to differentiate between "API error" and "No Permission"
-            error_str = str(e)
-            if "accessDenied" in error_str or "403" in error_str:
-                return OneDriveResponse(
-                    success=False,
-                    error="ACCESS_DENIED",
-                    message="You do not have permission to access the underlying file for this insight."
-                )
-            return OneDriveResponse(success=False, error=f"Resource fetch failed: {error_str}")
+            return OneDriveResponse(
+                success=False, 
+                error=f"OneDrive API call failed: {str(e)}",
+            )
 
     async def groups_group_sites_site_lists_list_items_list_item_create_link(
         self,
@@ -26151,6 +26152,193 @@ class OneDriveDataSource:
             return OneDriveResponse(
                 success=False,
                 error=f"Invite failed: {str(e)}"
+            )
+
+    async def me_onenote_create_section(
+        self,
+        notebook_id: str,
+        display_name: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Create a new section in an existing OneNote notebook.
+        Operation: POST /me/onenote/notebooks/{notebook_id}/sections
+        """
+        try:
+            body = OnenoteSection()
+            body.display_name = display_name
+
+            config = RequestConfiguration()
+            config.headers.add("Content-Type", "application/json")
+            if headers:
+                for k, v in headers.items():
+                    config.headers.add(k, v)
+
+            response = await self.client.me.onenote.notebooks.by_notebook_id(
+                notebook_id
+            ).sections.post(
+                body=body,
+                request_configuration=config
+            )
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
+            )
+
+    async def me_onenote_create_page(
+        self,
+        section_id: str,
+        title: str,
+        body_html: str = "",
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Create a new page in an existing OneNote section.
+        Operation: POST /me/onenote/sections/{section_id}/pages
+
+        The Graph SDK's pages.post() expects a Parsable object, but the
+        OneNote API requires raw HTML with Content-Type: text/html.
+        We use the request adapter's send_async with a native RequestInformation.
+        """
+        try:
+            from kiota_abstractions.request_information import RequestInformation
+            from kiota_abstractions.method import Method
+            from msgraph.generated.models.onenote_page import OnenotePage
+
+            html = (
+                f"<!DOCTYPE html>\n"
+                f"<html>\n"
+                f"  <head><title>{title}</title></head>\n"
+                f"  <body>{body_html}</body>\n"
+                f"</html>"
+            )
+
+            request_info = RequestInformation()
+            request_info.http_method = Method.POST
+            request_info.url = (
+                f"https://graph.microsoft.com/v1.0"
+                f"/me/onenote/sections/{section_id}/pages"
+            )
+            request_info.headers.try_add("Content-Type", "text/html")
+            request_info.set_stream_content(html.encode("utf-8"))
+
+            response = await self.client.request_adapter.send_async(
+                request_info,
+                OnenotePage,
+                None,
+            )
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
+            )
+
+    async def me_onenote_get_notebook_from_web_url(
+        self,
+        web_url: str,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Resolve a OneNote notebook from its webUrl.
+        Operation: POST /me/onenote/notebooks/getNotebookFromWebUrl
+        """
+        try:
+            from msgraph.generated.users.item.onenote.notebooks.get_notebook_from_web_url.get_notebook_from_web_url_post_request_body import (
+                GetNotebookFromWebUrlPostRequestBody,
+            )
+
+            body = GetNotebookFromWebUrlPostRequestBody(web_url=web_url)
+            response = await self.client.me.onenote.notebooks \
+                .get_notebook_from_web_url \
+                .post(body)
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
+            )
+
+    async def me_onenote_get_sections(
+        self,
+        notebook_id: str,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        List all sections in a OneNote notebook.
+        Operation: GET /me/onenote/notebooks/{notebook_id}/sections
+        """
+        try:
+            response = await self.client.me.onenote.notebooks.by_notebook_id(
+                notebook_id
+            ).sections.get()
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
+            )
+
+    async def me_onenote_get_pages(
+        self,
+        section_id: str,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        List all pages in a OneNote section.
+        Operation: GET /me/onenote/sections/{section_id}/pages
+        """
+        try:
+            response = await self.client.me.onenote.sections.by_onenote_section_id(
+                section_id
+            ).pages.get()
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
+            )
+
+    async def me_onenote_get_page_content(
+        self,
+        page_id: str,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Get the HTML content of a OneNote page.
+        Operation: GET /me/onenote/pages/{page_id}/content
+
+        The SDK does not expose a clean helper for /content,
+        so we use the request adapter directly.
+        """
+        try:
+            from kiota_abstractions.request_information import RequestInformation
+            from kiota_abstractions.method import Method
+
+            request_info = RequestInformation()
+            request_info.http_method = Method.GET
+            request_info.url = (
+                f"https://graph.microsoft.com/v1.0"
+                f"/me/onenote/pages/{page_id}/content"
+            )
+
+            response = await self.client.request_adapter.send_primitive_async(
+                request_info,
+                "bytes",
+                None,
+            )
+            if response:
+                html_text = response.decode("utf-8") if isinstance(response, bytes) else str(response)
+                return OneDriveResponse(success=True, data=html_text)
+            return OneDriveResponse(success=False, error="Empty response from OneNote API")
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
             )
 
     async def me(self) -> OneDriveResponse:
