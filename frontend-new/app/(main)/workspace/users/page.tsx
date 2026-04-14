@@ -113,18 +113,6 @@ function UsersPageContent() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
@@ -966,6 +954,19 @@ function UsersPageContent() {
       ROLE_SUB_MENU_OPTIONS,
     ]
   );
+
+  // ── Redirect non-admin users ──────────────────────────────
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  // Prevent rendering (and running data-fetching effects) while profile is
+  // unresolved or before the redirect fires for confirmed non-admin users.
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── Render ──────────────────────────────
 
