@@ -16,12 +16,7 @@ import {
   useAuthStore,
   REFRESH_TOKEN_STORAGE_KEY,
 } from '@/lib/store/auth-store';
-
-/**
- * Same-origin default. `undefined` would template-string-concatenate to the
- * literal "undefined" and 404 against the Node.js backend's static handler.
- */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
 /** Endpoint that issues a new access token from a valid refresh token. */
 export const REFRESH_TOKEN_ENDPOINT = '/api/v1/userAccount/refresh/token';
@@ -110,7 +105,7 @@ export async function refreshAccessToken(): Promise<boolean> {
       }
 
       // Bypass axios so the request interceptor doesn't recurse into refresh.
-      const response = await fetch(`${API_BASE_URL}${REFRESH_TOKEN_ENDPOINT}`, {
+      const response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -54,5 +54,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# electron build output
+/electron/out/
+/dist-electron/
+
 # local postman collection dump
 kb_swagger.yaml

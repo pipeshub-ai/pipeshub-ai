@@ -139,7 +139,8 @@ export interface AuthSchemaField {
     | 'CHECKBOX'
     | 'NUMBER'
     | 'FILE'
-    | 'TAGS';
+    | 'TAGS'
+    | 'FOLDER_PICKER';
   required?: boolean;
   defaultValue?: unknown;
   options?: string[];
@@ -170,7 +171,8 @@ export interface SyncCustomField {
     | 'FILE'
     | 'JSON'
     | 'BOOLEAN'
-    | 'TAGS';
+    | 'TAGS'
+    | 'FOLDER_PICKER';
   required?: boolean;
   defaultValue?: unknown;
   options?: string[];

@@ -8,6 +8,7 @@ import {
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
 } from './token-refresh';
+import { getApiBaseUrl, isElectron } from '@/lib/utils/api-base-url';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -15,15 +16,12 @@ declare module 'axios' {
   }
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
-
 const API_TIMEOUT = 90_000;
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
 
 export const apiClient = axios.create({
-  baseURL: API_BASE_URL,
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',
@@ -39,14 +37,21 @@ export const apiClient = axios.create({
 // (`refreshAccessToken`) when the token slipped past the buffer for any
 // reason (e.g. timer was throttled in a backgrounded tab, request was made
 // before the scheduler initialized, manual hot-reload during development).
+//
+// Dynamic base URL supports Electron (user-configured API URL); cookie policy
+// follows the web vs Electron split.
 apiClient.interceptors.request.use(
   async (config) => {
+    config.baseURL = getApiBaseUrl();
+    if (isElectron()) {
+      config.withCredentials = false;
+    }
+
     // Skip token handling for the refresh endpoint itself to avoid loops.
     if (config.url?.includes(REFRESH_TOKEN_ENDPOINT)) {
       return config;
     }
 
-    // Allow callers to pre-set their own Authorization header.
     const authHeader =
       (config.headers?.Authorization as string | undefined) ??
       (config.headers?.authorization as string | undefined);

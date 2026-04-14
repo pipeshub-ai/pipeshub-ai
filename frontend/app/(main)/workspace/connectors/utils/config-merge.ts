@@ -280,6 +280,9 @@ export function initializeFormData(
       } else {
         syncCustomValues[field.name] = field.defaultValue;
       }
+    } else if (syncCustomValues[field.name] === undefined && field.name === 'include_subfolders') {
+      // Local FS should default to recursive sync unless explicitly turned off.
+      syncCustomValues[field.name] = true;
     }
   }
 

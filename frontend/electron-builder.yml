@@ -1,0 +1,35 @@
+appId: com.pipeshub.desktop
+productName: PipesHub
+icon: electron/out/logo/pipes-hub-1024.png
+directories:
+  output: dist-electron
+files:
+  - electron/main.js
+  - electron/preload.js
+  - electron/package.json
+  - electron/out/**/*
+  - "!electron/node_modules"
+  - "!node_modules"
+asarUnpack:
+  - electron/preload.js
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+  darkModeSupport: true
+dmg:
+  title: PipesHub
+  artifactName: PipesHub-${version}-mac.${ext}
+win:
+  # Classic Windows (Intel/AMD). On ARM hosts without this, builder may default to arm64.
+  defaultArch: x64
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: PipesHub-${version}-win.${ext}
+linux:
+  target:
+    - AppImage
+    - deb

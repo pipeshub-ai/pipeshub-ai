@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
+const electronStaticExport = process.env.ELECTRON_STATIC_EXPORT === '1';
+
 const nextConfig = {
-    // output: 'export',
+    ...(electronStaticExport ? { output: 'export' } : {}),
     trailingSlash: true,
     /**
      * Static export does not emit per-slug callback HTML. Rewrites map
