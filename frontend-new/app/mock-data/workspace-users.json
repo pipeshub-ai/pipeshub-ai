@@ -1,0 +1,59 @@
+{
+    "status": "success",
+    "message": "Users fetched successfully",
+    "users": [
+        {
+            "id": "e142e9df-d007-4f80-b641-9b1f7e289655",
+            "userId": "69803cedc03caefc0f8c1680",
+            "name": "Abhishek",
+            "email": "abhishek@pipeshub.app",
+            "isActive": true,
+            "createdAtTimestamp": 1770011885554,
+            "updatedAtTimestamp": 1770011889604
+        },
+        {
+            "id": "81bf21fe-49b1-48f2-b419-a226422489f0",
+            "userId": "69803d56c03caefc0f8c171b",
+            "name": "AG",
+            "email": "abhishek@pipeshubinc.onmicrosoft.com",
+            "isActive": true,
+            "createdAtTimestamp": 1770011990641,
+            "updatedAtTimestamp": 1770012340986
+        },
+        {
+            "id": "3faa2e43-bbbd-4325-8bc9-0ef4b79e0aa0",
+            "userId": "6982e8a05fd4457d51a95f12",
+            "name": "Akshay",
+            "email": "akshay@kagha.ai",
+            "isActive": true,
+            "createdAtTimestamp": 1770186912784,
+            "updatedAtTimestamp": 1770187253734
+        },
+        {
+            "id": "cb9f7414-c83b-4c03-bf5b-7270a7e4a799",
+            "userId": "6982e8a05fd4457d51a95f11",
+            "name": "Paul Sebi",
+            "email": "paul@kagha.ai",
+            "isActive": true,
+            "createdAtTimestamp": 1770186912671,
+            "updatedAtTimestamp": 1770187019213
+        },
+        {
+            "id": "a71ccb81-3c36-4c79-aa7c-019ece1b3cd9",
+            "userId": "698b0a02fb109cb8cd5ed1ad",
+            "name": "Vishwjeet",
+            "email": "vishwjeet.pawar@pipeshub.app",
+            "isActive": true,
+            "createdAtTimestamp": 1770719746523,
+            "updatedAtTimestamp": 1770720043515
+        }
+    ],
+    "pagination": {
+        "page": 1,
+        "limit": 25,
+        "total": 5,
+        "pages": 1,
+        "hasNext": false,
+        "hasPrev": false
+    }
+}

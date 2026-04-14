@@ -191,6 +191,20 @@ const updateUserToolsetInstanceSchema = z.object({
   }),
 });
 
+/**
+ * Schema for updating agent's credentials for a toolset instance.
+ * Auth fields are toolset-schema-defined (dynamic keys); do not restrict to a fixed set.
+ */
+const updateAgentToolsetInstanceSchema = z.object({
+  body: z.object({
+    auth: z.record(z.string(), z.any()),
+  }),
+  params: z.object({
+    instanceId: z.string().min(1, 'Instance ID is required'),
+    agentKey: z.string().min(1, 'Agent Key is required'),
+  }),
+});
+
 
 /**
  * Schema for getting my toolsets.
@@ -619,7 +633,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/agents/:agentKey/instances/:instanceId/credentials',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    ValidationMiddleware.validate(updateUserToolsetInstanceSchema),
+    ValidationMiddleware.validate(updateAgentToolsetInstanceSchema),
     updateAgentToolsetCredentials(config)
   );
 

@@ -4,6 +4,10 @@ import sinon from 'sinon'
 import { UserManagerContainer } from '../../../../src/modules/user_management/container/userManager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
+import {
+  BaseKafkaConnection,
+  BaseKafkaProducerConnection,
+} from '../../../../src/libs/services/kafka.service'
 
 describe('UserManagerContainer - coverage', () => {
   let originalInstance: any
@@ -24,6 +28,10 @@ describe('UserManagerContainer - coverage', () => {
       publishBatch: sinon.stub().resolves(),
       healthCheck: sinon.stub().resolves(true),
     } as any)
+    // stub so that the actual instance is not called.
+    sinon.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
+    sinon.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
+    sinon.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
   })
 
   afterEach(() => {

@@ -6,21 +6,21 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
+from __future__ import annotations
+
 import asyncio
 import contextlib
+import os
 import time
 import traceback
 import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
+from fastapi import Request
 from app.config.configuration_service import ConfigurationService
-
-if TYPE_CHECKING:
-    from fastapi import Request
-
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -1376,7 +1376,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         org_id: str,
-        request: Optional["Request"] = None,
+        request: Optional[Request] = None,
         depth: int = 0,
     ) -> dict:
         """
@@ -10043,7 +10043,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
             return None
 
-    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional["Request"] = None, record_id: str | None = None) -> dict:
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
         try:
             # Handle both translated (_key -> id) and untranslated document formats
@@ -15818,19 +15818,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET is_creator = ({node_var}.createdBy == {user_var}.userId OR {node_var}.createdBy == {user_var}._key)
 
             // Determine role based on conditions
-            RETURN CASE
-                // No direct user->app and no team->app: no access
-                WHEN user_app_rel == null AND team_app_rel == null THEN null
-                // Access via team (All)->app: READER; admin gets EDITOR for team apps
-                WHEN user_app_rel == null AND team_app_rel != null THEN (is_admin == true ? "EDITOR" : "READER")
-                // Admin users: Team apps get EDITOR, Personal apps get OWNER
-                WHEN is_admin == true AND app_scope == "team" THEN "EDITOR"
-                WHEN is_admin == true AND app_scope == "personal" THEN "OWNER"
-                // Team app creator gets OWNER
-                WHEN app_scope == "team" AND is_creator == true THEN "OWNER"
-                // Otherwise READER
-                ELSE "READER"
-            END
+            RETURN (user_app_rel == null AND team_app_rel == null) ? null
+                 : (user_app_rel == null AND team_app_rel != null) ? (is_admin == true ? "EDITOR" : "READER")
+                 : (is_admin == true AND app_scope == "team") ? "EDITOR"
+                 : (is_admin == true AND app_scope == "personal") ? "OWNER"
+                 : (app_scope == "team" AND is_creator == true) ? "OWNER"
+                 : "READER"
         )
         """
 

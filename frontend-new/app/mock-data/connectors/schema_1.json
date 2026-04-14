@@ -1,0 +1,333 @@
+{
+    "success": true,
+    "schema": {
+        "iconPath": "/assets/icons/connectors/onedrive.svg",
+        "supportsRealtime": false,
+        "supportsSync": true,
+        "supportsAgent": true,
+        "documentationLinks": [
+            {
+                "title": "Azure AD App Registration Setup",
+                "url": "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app",
+                "type": "setup"
+            },
+            {
+                "title": "Pipeshub Documentation",
+                "url": "https://docs.pipeshub.com/connectors/microsoft-365/one-drive",
+                "type": "pipeshub"
+            }
+        ],
+        "hideConnector": false,
+        "auth": {
+            "supportedAuthTypes": [
+                "OAUTH_ADMIN_CONSENT"
+            ],
+            "schemas": {
+                "OAUTH_ADMIN_CONSENT": {
+                    "fields": [
+                        {
+                            "name": "clientId",
+                            "displayName": "Application (Client) ID",
+                            "placeholder": "Enter your Azure AD Application ID",
+                            "description": "The Application (Client) ID from Azure AD App Registration",
+                            "fieldType": "TEXT",
+                            "required": true,
+                            "defaultValue": "",
+                            "validation": {
+                                "minLength": 1,
+                                "maxLength": 1000
+                            },
+                            "isSecret": false
+                        },
+                        {
+                            "name": "clientSecret",
+                            "displayName": "Client Secret",
+                            "placeholder": "Enter your Azure AD Client Secret",
+                            "description": "The Client Secret from Azure AD App Registration",
+                            "fieldType": "PASSWORD",
+                            "required": true,
+                            "defaultValue": "",
+                            "validation": {
+                                "minLength": 1,
+                                "maxLength": 1000
+                            },
+                            "isSecret": true
+                        },
+                        {
+                            "name": "tenantId",
+                            "displayName": "Directory (Tenant) ID",
+                            "placeholder": "Enter your Azure AD Tenant ID",
+                            "description": "The Directory (Tenant) ID from Azure AD",
+                            "fieldType": "TEXT",
+                            "required": true,
+                            "defaultValue": "",
+                            "validation": {
+                                "minLength": 1,
+                                "maxLength": 1000
+                            },
+                            "isSecret": false
+                        },
+                        {
+                            "name": "hasAdminConsent",
+                            "displayName": "Has Admin Consent",
+                            "placeholder": "",
+                            "description": "Check if admin consent has been granted for the application",
+                            "fieldType": "CHECKBOX",
+                            "required": true,
+                            "defaultValue": false,
+                            "validation": {
+                                "minLength": 0,
+                                "maxLength": 1000
+                            },
+                            "isSecret": false
+                        },
+                        {
+                            "name": "redirectUri",
+                            "displayName": "Redirect URI",
+                            "placeholder": "http://localhost:3001/connectors/oauth/callback/onedrive",
+                            "description": "The redirect URI for OAuth authentication",
+                            "fieldType": "URL",
+                            "required": false,
+                            "defaultValue": "",
+                            "validation": {
+                                "minLength": 1,
+                                "maxLength": 2000
+                            },
+                            "isSecret": false
+                        }
+                    ]
+                }
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {},
+            "conditionalDisplay": {
+                "redirectUri": {
+                    "showWhen": {
+                        "field": "hasAdminConsent",
+                        "operator": "equals",
+                        "value": false
+                    }
+                }
+            }
+        },
+        "sync": {
+            "supportedStrategies": [
+                "SCHEDULED",
+                "MANUAL"
+            ],
+            "selectedStrategy": "MANUAL",
+            "webhookConfig": {
+                "supported": false,
+                "webhookUrl": "",
+                "events": [],
+                "verificationToken": "",
+                "secretKey": ""
+            },
+            "scheduledConfig": {
+                "intervalMinutes": 60,
+                "cronExpression": "",
+                "timezone": "UTC",
+                "startTime": 0,
+                "nextTime": 0,
+                "endTime": 0,
+                "maxRepetitions": 0,
+                "repetitionCount": 0
+            },
+            "realtimeConfig": {
+                "supported": false,
+                "connectionType": "WEBSOCKET"
+            },
+            "customFields": [],
+            "customValues": {},
+            "values": {}
+        },
+        "filters": {
+            "sync": {
+                "schema": {
+                    "fields": [
+                        {
+                            "name": "modified",
+                            "displayName": "Modified Date",
+                            "description": "Filter files and folders by modification date.",
+                            "filterType": "datetime",
+                            "category": "sync",
+                            "required": false,
+                            "defaultValue": null,
+                            "defaultOperator": null,
+                            "operators": [
+                                "last_7_days",
+                                "last_14_days",
+                                "last_30_days",
+                                "last_90_days",
+                                "last_180_days",
+                                "last_365_days",
+                                "is_after",
+                                "is_before",
+                                "is_between"
+                            ],
+                            "optionSourceType": "manual"
+                        },
+                        {
+                            "name": "created",
+                            "displayName": "Created Date",
+                            "description": "Filter files and folders by creation date.",
+                            "filterType": "datetime",
+                            "category": "sync",
+                            "required": false,
+                            "defaultValue": null,
+                            "defaultOperator": null,
+                            "operators": [
+                                "last_7_days",
+                                "last_14_days",
+                                "last_30_days",
+                                "last_90_days",
+                                "last_180_days",
+                                "last_365_days",
+                                "is_after",
+                                "is_before",
+                                "is_between"
+                            ],
+                            "optionSourceType": "manual"
+                        },
+                        {
+                            "name": "file_extensions",
+                            "displayName": "File Extensions",
+                            "description": "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+                            "filterType": "multiselect",
+                            "category": "sync",
+                            "required": false,
+                            "defaultValue": [],
+                            "defaultOperator": "in",
+                            "operators": [
+                                "in",
+                                "not_in"
+                            ],
+                            "optionSourceType": "static",
+                            "options": [
+                                {
+                                    "id": "pdf",
+                                    "label": ".pdf"
+                                },
+                                {
+                                    "id": "docx",
+                                    "label": ".docx"
+                                },
+                                {
+                                    "id": "doc",
+                                    "label": ".doc"
+                                },
+                                {
+                                    "id": "pptx",
+                                    "label": ".pptx"
+                                },
+                                {
+                                    "id": "ppt",
+                                    "label": ".ppt"
+                                },
+                                {
+                                    "id": "xlsx",
+                                    "label": ".xlsx"
+                                },
+                                {
+                                    "id": "xls",
+                                    "label": ".xls"
+                                },
+                                {
+                                    "id": "csv",
+                                    "label": ".csv"
+                                },
+                                {
+                                    "id": "tsv",
+                                    "label": ".tsv"
+                                },
+                                {
+                                    "id": "txt",
+                                    "label": ".txt"
+                                },
+                                {
+                                    "id": "md",
+                                    "label": ".md"
+                                },
+                                {
+                                    "id": "mdx",
+                                    "label": ".mdx"
+                                },
+                                {
+                                    "id": "html",
+                                    "label": ".html"
+                                },
+                                {
+                                    "id": "png",
+                                    "label": ".png"
+                                },
+                                {
+                                    "id": "jpg",
+                                    "label": ".jpg"
+                                },
+                                {
+                                    "id": "jpeg",
+                                    "label": ".jpeg"
+                                },
+                                {
+                                    "id": "webp",
+                                    "label": ".webp"
+                                },
+                                {
+                                    "id": "svg",
+                                    "label": ".svg"
+                                },
+                                {
+                                    "id": "heic",
+                                    "label": ".heic"
+                                },
+                                {
+                                    "id": "heif",
+                                    "label": ".heif"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "values": {}
+            },
+            "indexing": {
+                "schema": {
+                    "fields": [
+                        {
+                            "name": "enable_manual_sync",
+                            "displayName": "Enable Manual Indexing",
+                            "description": "Disable automatic indexing for all synced records.",
+                            "filterType": "boolean",
+                            "category": "indexing",
+                            "required": false,
+                            "defaultValue": false,
+                            "defaultOperator": null,
+                            "operators": [
+                                "is",
+                                "is_not"
+                            ],
+                            "optionSourceType": "manual"
+                        },
+                        {
+                            "name": "shared",
+                            "displayName": "Index Shared Items",
+                            "description": "Enable indexing of shared items",
+                            "filterType": "boolean",
+                            "category": "indexing",
+                            "required": false,
+                            "defaultValue": true,
+                            "defaultOperator": null,
+                            "operators": [
+                                "is",
+                                "is_not"
+                            ],
+                            "optionSourceType": "manual"
+                        }
+                    ]
+                },
+                "values": {}
+            }
+        }
+    }
+}

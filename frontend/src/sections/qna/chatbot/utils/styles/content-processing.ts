@@ -20,6 +20,9 @@ export const processMarkdownContent = (content: string): string => {
   return content
     // Fix escaped newlines
     .replace(/\\n/g, '\n')
+    // Strip citation markdown links [N](url) to [N] so they render as citation chips
+    // Only matches URLs containing /record/.../preview...blockIndex=N (backend citation format)
+    .replace(/\[(\d+)\]\([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?\)/g, '[$1]')
     // Clean up trailing whitespace but preserve structure
     .trim();
 };

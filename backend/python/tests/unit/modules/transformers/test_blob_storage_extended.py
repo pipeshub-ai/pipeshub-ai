@@ -91,6 +91,169 @@ class TestSaveRecordLocalUploadErrors:
                 )
 
 
+class TestSaveRecordPayloadFields:
+    """Assert payload and metadata fields for save_record_to_storage."""
+
+    @pytest.mark.asyncio
+    async def test_local_upload_uses_virtual_record_id_fields_and_payload(self):
+        """Local branch should use virtual_record_id in form metadata and payload."""
+        bs = _make_blob_storage()
+        bs.config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
+            ]
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"_id": "doc-1"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        fake_form_data = MagicMock()
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ), patch(
+            "app.modules.transformers.blob_storage.aiohttp.FormData",
+            return_value=fake_form_data,
+        ):
+            await bs.save_record_to_storage(
+                "org-1", "rec-1", "vr-1", {"key": "value"}
+            )
+
+        add_field_calls = fake_form_data.add_field.call_args_list
+        assert len(add_field_calls) >= 6
+
+        # First add_field call contains encoded upload JSON payload.
+        file_call = add_field_calls[0]
+        assert file_call.args[0] == "file"
+        payload_bytes = file_call.args[1]
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        assert payload["isCompressed"] is True
+        assert payload["virtualRecordId"] == "vr-1"
+        assert "record" in payload
+
+        fields = {
+            call.args[0]: call
+            for call in add_field_calls
+            if call.args
+        }
+        assert fields["documentName"].args[1] == "record_vr-1"
+        assert fields["documentPath"].args[1] == "records/vr-1"
+        assert fields["file"].kwargs["filename"] == "record_vr-1.json"
+
+    @pytest.mark.asyncio
+    async def test_local_upload_payload_when_compression_fails(self):
+        """When compression fails, local payload should carry raw record and isCompressed=False."""
+        bs = _make_blob_storage()
+        bs.config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
+            ]
+        )
+        bs._compress_record = MagicMock(side_effect=Exception("Compression failed"))
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"_id": "doc-2"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        fake_form_data = MagicMock()
+        raw_record = {"key": "value", "n": 1}
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ), patch(
+            "app.modules.transformers.blob_storage.aiohttp.FormData",
+            return_value=fake_form_data,
+        ):
+            await bs.save_record_to_storage("org-1", "rec-1", "vr-1", raw_record)
+
+        file_call = fake_form_data.add_field.call_args_list[0]
+        payload = json.loads(file_call.args[1].decode("utf-8"))
+        assert payload["isCompressed"] is False
+        assert payload["record"] == raw_record
+        assert payload["virtualRecordId"] == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_s3_placeholder_document_name_uses_virtual_record_id_compressed(self):
+        """Compressed S3 branch should use virtual_record_id in placeholder documentName."""
+        bs = _make_blob_storage()
+        bs.config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "s3"},
+            ]
+        )
+        bs._compress_record = MagicMock(return_value="compressed-record")
+        bs._create_placeholder = AsyncMock(return_value={"_id": "doc-123"})
+        bs._get_signed_url = AsyncMock(return_value={"signedUrl": "https://s3/upload"})
+        bs._upload_to_signed_url = AsyncMock(return_value=200)
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            await bs.save_record_to_storage("org-1", "rec-1", "vr-1", {"key": "value"})
+
+        placeholder_data = bs._create_placeholder.await_args.args[2]
+        assert placeholder_data["documentName"] == "record_vr-1"
+        assert placeholder_data["documentPath"] == "records/vr-1"
+
+    @pytest.mark.asyncio
+    async def test_s3_placeholder_document_name_uses_virtual_record_id_uncompressed(self):
+        """Uncompressed S3 fallback should also use virtual_record_id in placeholder documentName."""
+        bs = _make_blob_storage()
+        bs.config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "s3"},
+            ]
+        )
+        bs._compress_record = MagicMock(side_effect=Exception("Compression failed"))
+        bs._create_placeholder = AsyncMock(return_value={"_id": "doc-456"})
+        bs._get_signed_url = AsyncMock(return_value={"signedUrl": "https://s3/upload"})
+        bs._upload_to_signed_url = AsyncMock(return_value=200)
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            await bs.save_record_to_storage("org-1", "rec-1", "vr-1", {"key": "value"})
+
+        placeholder_data = bs._create_placeholder.await_args.args[2]
+        assert placeholder_data["documentName"] == "record_vr-1"
+        assert placeholder_data["documentPath"] == "records/vr-1"
+
+
 # ===================================================================
 # save_record_to_storage — S3 path: no placeholder document_id, no signed url
 # ===================================================================
@@ -126,7 +289,9 @@ class TestSaveRecordS3ErrorBranches:
             "app.modules.transformers.blob_storage.aiohttp.ClientSession",
             return_value=mock_session,
         ):
-            with pytest.raises(Exception, match="No document ID in placeholder"):
+            with pytest.raises(
+                Exception, match="No document ID found in placeholder response"
+            ):
                 await bs.save_record_to_storage(
                     "org-1", "rec-1", "vr-1", {"key": "value"}
                 )

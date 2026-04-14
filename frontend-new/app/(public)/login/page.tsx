@@ -1,0 +1,158 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { Flex } from '@radix-ui/themes';
+import { useAuthStore } from '@/lib/store/auth-store';
+import { toast } from '@/lib/store/toast-store';
+import { GuestGuard } from '@/app/components/ui/guest-guard';
+import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
+import AuthHero from '../components/auth-hero';
+import FormPanel from '../components/form-panel';
+import { SingleProvider, MultipleProviders } from '../forms';
+import { AuthApi, type AuthMethod } from '../api';
+
+// --- Auth step state machine --------------------------------------------------
+
+type AuthStep =
+  | { type: 'loading' }
+  | {
+      type: 'single';
+      method: AuthMethod;
+      authProviders: Record<string, Record<string, string>>;
+    }
+  | {
+      type: 'multiple';
+      allowedMethods: AuthMethod[];
+      authProviders: Record<string, Record<string, string>>;
+    };
+
+/** Backend SAML error codes → short user-facing descriptions. */
+const SAML_ERROR_DESCRIPTIONS: Record<string, string> = {
+  jit_Disabled: 'JIT Disabled',
+};
+
+function getSamlErrorDescription(code: string): string {
+  return SAML_ERROR_DESCRIPTIONS[code] ?? code.replace(/_/g, ' ');
+}
+
+// --- Page ---------------------------------------------------------------------
+
+/**
+ * LoginPage - orchestrates the multi-step sign-in flow.
+ *
+ * On mount it calls initAuth automatically to fetch allowed methods for the
+ * current session.
+ *
+ * Steps:
+ *   1. 'loading'  - Auto-initAuth on mount.
+ *   2. 'single'   - Exactly 1 allowed method  => SingleProvider (email entered in-form).
+ *   3. 'multiple' - 2+ allowed methods         => MultipleProviders.
+ */
+export default function LoginPage() {
+  const router = useRouter();
+  const splitLayout = useAuthWideLayout();
+  const isHydrated = useAuthStore((s) => s.isHydrated);
+  const [step, setStep] = useState<AuthStep>({ type: 'loading' });
+
+  // Prevents the initAuth call from running twice in React Strict Mode
+  // (where mount effects are intentionally run twice in development).
+  const initAuthCalledRef = useRef(false);
+  const samlErrorHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (samlErrorHandledRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+
+    const samlErrorCode = params.get('saml_error');
+    if (samlErrorCode) {
+      samlErrorHandledRef.current = true;
+      toast.error('Error in logging in with SAML', {
+        description: getSamlErrorDescription(samlErrorCode),
+      });
+      router.replace('/login');
+      return;
+    }
+
+    if (params.get('error') === 'saml_sso') {
+      samlErrorHandledRef.current = true;
+      toast.error('Sign-in failed', {
+        description: 'SAML SSO could not complete. Please try again.',
+      });
+      router.replace('/login');
+    }
+  }, [isHydrated, router]);
+
+  // Auto-call initAuth once on mount
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (initAuthCalledRef.current) return;
+    initAuthCalledRef.current = true;
+
+    AuthApi.initAuth()
+      .then((response) => {
+        const methods = response.allowedMethods ?? [];
+        const providers = response.authProviders ?? {};
+        if (methods.length <= 1) {
+          setStep({
+            type: 'single',
+            method: methods[0] ?? 'password',
+            authProviders: providers,
+          });
+        } else {
+          setStep({
+            type: 'multiple',
+            allowedMethods: methods,
+            authProviders: providers,
+          });
+        }
+      })
+      .catch(() => {
+        setStep({
+          type: 'single',
+          method: 'password',
+          authProviders: {},
+        });
+      });
+  }, [isHydrated]);
+
+  function renderForm() {
+    switch (step.type) {
+      case 'loading':
+        return null;
+
+      case 'single':
+        return (
+          <SingleProvider
+            method={step.method}
+            authProviders={step.authProviders}
+          />
+        );
+
+      case 'multiple':
+        return (
+          <MultipleProviders
+            allowedMethods={step.allowedMethods}
+            authProviders={step.authProviders}
+          />
+        );
+    }
+  }
+
+  return (
+    <GuestGuard>
+      <Flex
+        direction={splitLayout ? 'row' : 'column'}
+        style={{
+          minHeight: '100dvh',
+          overflow: splitLayout ? 'hidden' : undefined,
+        }}
+      >
+        <AuthHero splitLayout={splitLayout} />
+        <FormPanel splitLayout={splitLayout}>{renderForm()}</FormPanel>
+      </Flex>
+    </GuestGuard>
+  );
+}

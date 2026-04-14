@@ -1,0 +1,321 @@
+{
+    "conversations": [
+        {
+            "_id": "69a58a6288fbfe2dfae4e5ca",
+            "userId": "699fda84712d1105459d0682",
+            "orgId": "699fd9f1712d1105459d05cf",
+            "title": "Test 4 - Find all customer feedback",
+            "initiator": "699fda84712d1105459d0682",
+            "messages": [
+                {
+                    "messageType": "user_query",
+                    "content": "Test 4 - Find all customer feedback",
+                    "contentFormat": "MARKDOWN",
+                    "modelInfo": {
+                        "chatMode": "quick"
+                    },
+                    "_id": "69a58a6288fbfe2dfae4e5cb",
+                    "createdAt": "2026-03-02T13:02:26.233Z",
+                    "updatedAt": "2026-03-02T13:02:26.233Z",
+                    "citations": [],
+                    "followUpQuestions": [],
+                    "feedback": [],
+                    "referenceData": []
+                },
+                {
+                    "messageType": "bot_response",
+                    "content": "## Customer Feedback Overview\n\n### Sources of Customer Feedback\nPipesHub collects customer feedback from various platforms, including:\n- **Slack**: Feedback is often gathered through direct messages or channels where customers report issues or suggestions.\n- **Notion**: Notes and comparisons regarding product releases and customer experiences are documented here.\n- **Confluence**: Documents tagged with 'Compliance' are accessible for review and feedback.\n\n### Specific Feedback Examples\n1. **Latency Issues**: Customers have reported latency issues in their interactions, which are tracked and analyzed to improve service performance. For instance, a request was made to \"Find all customer feedback from Slack mentioning latency issues\" [1].\n2. **New Release Comparisons**: Feedback also includes comparisons of notes from different platforms, such as Slack and Notion, to ensure consistency and address any discrepancies in customer experiences [2].\n3. **Compliance Documentation**: Customers can request to \"Show all documents tagged 'Compliance' from Confluence and Drive,\" which helps in understanding compliance-related feedback and concerns [3].\n\n### Importance of Customer Feedback\nCustomer feedback is crucial for:\n- **Improving Service Quality**: By addressing reported issues, such as latency, PipesHub can enhance user experience and satisfaction.\n- **Product Development**: Insights from feedback help in refining product features and addressing customer needs effectively.\n- **Compliance and Security**: Ensuring that all customer interactions and feedback are documented and compliant with industry standards is vital for maintaining trust and transparency.\n\n### Conclusion\nPipesHub actively monitors and utilizes customer feedback from multiple sources to enhance its services and address any issues promptly. This systematic approach not only improves customer satisfaction but also drives continuous improvement in product offerings.",
+                    "contentFormat": "MARKDOWN",
+                    "citations": [
+                        {
+                            "citationId": "69a6513e609a077f7e35a64e"
+                        },
+                        {
+                            "citationId": "69a6513e609a077f7e35a64f"
+                        },
+                        {
+                            "citationId": "69a6513e609a077f7e35a650"
+                        }
+                    ],
+                    "confidence": "Very High",
+                    "followUpQuestions": [],
+                    "modelInfo": {
+                        "modelKey": "4ae38bdf-7299-4a8d-a629-c34de0979190",
+                        "modelName": "gpt-5-nano",
+                        "chatMode": "quick",
+                        "modelFriendlyName": "GPT-5 Nano"
+                    },
+                    "_id": "69a58a7988fbfe2dfae4e616",
+                    "createdAt": "2026-03-03T03:10:54.068Z",
+                    "updatedAt": "2026-03-03T03:10:54.068Z",
+                    "feedback": [],
+                    "referenceData": []
+                },
+                {
+                    "messageType": "user_query",
+                    "content": "Thanks for that. Helpful",
+                    "contentFormat": "MARKDOWN",
+                    "modelInfo": {
+                        "chatMode": "quick"
+                    },
+                    "_id": "69a656f3609a077f7e35a6d6",
+                    "createdAt": "2026-03-03T03:35:15.576Z",
+                    "updatedAt": "2026-03-03T03:35:15.576Z",
+                    "citations": [],
+                    "followUpQuestions": [],
+                    "feedback": [],
+                    "referenceData": []
+                },
+                {
+                    "messageType": "bot_response",
+                    "content": "## Customer Feedback on Latency Issues\n\n### Overview\nPipesHub has collected various customer feedback regarding latency issues across different platforms, including Slack, Notion, and Confluence. Below are specific examples and compliance documentation related to these concerns.\n\n### Customer Feedback Examples\n1. **Slack Feedback**: Customers have reported latency issues when interacting with the Slack integration. For instance, users noted that response times were significantly delayed during peak hours, impacting their workflow and communication efficiency [1].\n\n2. **Notion Comparisons**: Feedback from Notion indicated similar latency challenges, particularly when accessing large documents or during collaborative sessions. Users expressed frustration over slow loading times, which hindered productivity [2].\n\n3. **Confluence Documentation**: In Confluence, users have raised concerns about the speed of document retrieval and editing. The feedback highlighted that latency in loading pages could lead to interruptions in team collaboration [3].\n\n### Compliance Documentation\nThe **Asana SOC 3 Report** provides insights into the effectiveness of controls within their service, which includes aspects of latency management. The report asserts that Asana's controls were effective in meeting applicable trust services criteria, which indirectly relates to performance and latency issues experienced by users [4].\n\n### Conclusion\nOverall, the feedback collected from various platforms indicates a consistent concern regarding latency issues, which affects user experience and operational efficiency. Addressing these concerns is crucial for enhancing customer satisfaction and ensuring seamless integration across tools.",
+                    "contentFormat": "MARKDOWN",
+                    "citations": [
+                        {
+                            "citationId": "69a6571b609a077f7e35a6f0"
+                        },
+                        {
+                            "citationId": "69a6571b609a077f7e35a6f1"
+                        },
+                        {
+                            "citationId": "69a6571b609a077f7e35a6f2"
+                        },
+                        {
+                            "citationId": "69a6571b609a077f7e35a6f3"
+                        }
+                    ],
+                    "confidence": "High",
+                    "followUpQuestions": [],
+                    "modelInfo": {
+                        "modelKey": "4ae38bdf-7299-4a8d-a629-c34de0979190",
+                        "modelName": "gpt-5-nano",
+                        "chatMode": "quick",
+                        "modelFriendlyName": "GPT-5 Nano"
+                    },
+                    "_id": "69a6571b609a077f7e35a6fc",
+                    "createdAt": "2026-03-03T03:35:55.068Z",
+                    "updatedAt": "2026-03-03T03:35:55.068Z",
+                    "feedback": [],
+                    "referenceData": []
+                },
+                {
+                    "messageType": "user_query",
+                    "content": "Understood",
+                    "contentFormat": "MARKDOWN",
+                    "modelInfo": {
+                        "chatMode": "quick"
+                    },
+                    "_id": "69a6573b609a077f7e35a704",
+                    "createdAt": "2026-03-03T03:36:27.934Z",
+                    "updatedAt": "2026-03-03T03:36:27.934Z",
+                    "citations": [],
+                    "followUpQuestions": [],
+                    "feedback": [],
+                    "referenceData": []
+                },
+                {
+                    "messageType": "bot_response",
+                    "content": "## Customer Feedback on Latency Issues\n\n### Overview\nPipesHub has received various customer feedback regarding latency issues across different platforms, including Slack, Notion, and Confluence. Below are specific examples and compliance documentation related to these concerns.\n\n### Customer Feedback Examples\n1. **Slack Feedback**: Customers have reported latency issues when interacting with the Slack integration. For instance, users noted that response times were significantly delayed during peak hours, impacting their workflow and communication efficiency [1].\n\n2. **Notion Comparisons**: Feedback from Notion indicated similar latency challenges, particularly when accessing large documents or during collaborative sessions. Users expressed frustration over slow loading times, which hindered productivity [2].\n\n3. **Confluence Documentation**: In Confluence, users have raised concerns about the speed of document retrieval and editing. The feedback highlighted that latency in loading pages could lead to interruptions in team collaboration [3].\n\n### Compliance Documentation\nThe **Asana SOC 3 Report** provides insights into the effectiveness of controls within their service, which includes aspects of latency management. The report asserts that Asana's controls were effective in meeting applicable trust services criteria, which indirectly relates to performance and latency issues experienced by users [4].\n\n### Importance of Customer Feedback\nCustomer feedback is crucial for:\n- **Improving Service Quality**: By addressing reported issues, such as latency, PipesHub can enhance user experience and satisfaction.\n- **Product Development**: Insights from feedback help in refining product features and addressing customer needs effectively.\n- **Compliance and Security**: Ensuring that all customer interactions and feedback are documented and compliant with industry standards is vital for maintaining trust and transparency.\n\n### Conclusion\nOverall, the feedback collected from various platforms indicates a consistent concern regarding latency issues, which affects user experience and operational efficiency. Addressing these concerns is crucial for enhancing customer satisfaction and ensuring seamless integration across tools.",
+                    "contentFormat": "MARKDOWN",
+                    "citations": [
+                        {
+                            "citationId": "69a65773609a077f7e35a721"
+                        },
+                        {
+                            "citationId": "69a65773609a077f7e35a726"
+                        },
+                        {
+                            "citationId": "69a65773609a077f7e35a72b"
+                        },
+                        {
+                            "citationId": "69a65773609a077f7e35a730"
+                        }
+                    ],
+                    "confidence": "Very High",
+                    "followUpQuestions": [],
+                    "modelInfo": {
+                        "modelKey": "4ae38bdf-7299-4a8d-a629-c34de0979190",
+                        "modelName": "gpt-5-nano",
+                        "chatMode": "quick",
+                        "modelFriendlyName": "GPT-5 Nano"
+                    },
+                    "_id": "69a65773609a077f7e35a739",
+                    "createdAt": "2026-03-03T03:37:23.065Z",
+                    "updatedAt": "2026-03-03T03:37:23.065Z",
+                    "feedback": [],
+                    "referenceData": []
+                }
+            ],
+            "isShared": false,
+            "isDeleted": false,
+            "isArchived": true,
+            "lastActivityAt": 1772515684562,
+            "status": "Complete",
+            "modelInfo": {
+                "modelKey": "4ae38bdf-7299-4a8d-a629-c34de0979190",
+                "modelName": "gpt-5-nano",
+                "chatMode": "quick",
+                "modelFriendlyName": "gpt-5-nano"
+            },
+            "sharedWith": [],
+            "conversationErrors": [],
+            "createdAt": "2026-03-02T13:02:26.235Z",
+            "updatedAt": "2026-03-03T05:28:04.562Z",
+            "archivedBy": "699fda84712d1105459d0682",
+            "isOwner": true,
+            "accessLevel": "read",
+            "archivedAt": "2026-03-03T05:28:04.562Z"
+        }
+    ],
+    "pagination": {
+        "page": 1,
+        "limit": 20,
+        "totalCount": 1,
+        "totalPages": 1,
+        "hasNextPage": false,
+        "hasPrevPage": false
+    },
+    "filters": {
+        "applied": {
+            "filters": [
+                "page",
+                "limit"
+            ],
+            "values": {
+                "page": 1,
+                "limit": 20
+            }
+        },
+        "available": {
+            "shared": {
+                "values": [
+                    "true",
+                    "false"
+                ],
+                "description": "Filter by shared status",
+                "current": null,
+                "applied": false
+            },
+            "tags": {
+                "type": "string",
+                "description": "Filter by tags",
+                "current": null,
+                "applied": false
+            },
+            "minMessages": {
+                "type": "number",
+                "description": "Filter by minimum number of messages",
+                "current": null,
+                "applied": false
+            },
+            "search": {
+                "type": "string",
+                "description": "Search in conversation title and messages",
+                "current": null,
+                "applied": false
+            },
+            "pagination": {
+                "page": {
+                    "type": "number",
+                    "current": 1,
+                    "min": 1,
+                    "max": 1000,
+                    "default": 1,
+                    "description": "Page number for pagination",
+                    "applied": false
+                },
+                "limit": {
+                    "type": "number",
+                    "current": 20,
+                    "min": 1,
+                    "max": 100,
+                    "default": 20,
+                    "description": "Number of items per page",
+                    "applied": false
+                }
+            },
+            "sorting": {
+                "sortBy": {
+                    "values": [
+                        "createdAt",
+                        "lastActivityAt",
+                        "title",
+                        "messageType",
+                        "content"
+                    ],
+                    "default": "lastActivityAt",
+                    "description": "Field to sort by",
+                    "current": "lastActivityAt",
+                    "applied": false
+                },
+                "sortOrder": {
+                    "values": [
+                        "asc",
+                        "desc"
+                    ],
+                    "default": "desc",
+                    "description": "Sort order",
+                    "current": "desc",
+                    "applied": false
+                }
+            },
+            "dateFilters": {
+                "dateRange": {
+                    "type": "date",
+                    "description": "Filter by creation date range",
+                    "format": "ISO 8601 (YYYY-MM-DD)",
+                    "current": {
+                        "start": null,
+                        "end": null
+                    },
+                    "applied": false
+                }
+            },
+            "messageFilters": {
+                "messageType": {
+                    "values": [
+                        "user_query",
+                        "bot_response",
+                        "error",
+                        "feedback",
+                        "system"
+                    ],
+                    "description": "Filter by message type",
+                    "current": null,
+                    "applied": false
+                }
+            },
+            "sortingMessages": {
+                "sortBy": {
+                    "values": [
+                        "createdAt",
+                        "messageType",
+                        "content"
+                    ],
+                    "default": "createdAt",
+                    "description": "Field to sort messages by",
+                    "current": "createdAt"
+                },
+                "sortOrder": {
+                    "values": [
+                        "asc",
+                        "desc"
+                    ],
+                    "default": "desc",
+                    "description": "Sort order for messages",
+                    "current": "desc"
+                }
+            }
+        }
+    },
+    "summary": {
+        "totalArchived": 1,
+        "oldestArchive": "2026-03-03T05:28:04.562Z",
+        "newestArchive": "2026-03-03T05:28:04.562Z"
+    },
+    "meta": {
+        "requestId": "1772592368649-46dea78ae19c877b6597",
+        "timestamp": "2026-03-04T02:46:08.657Z",
+        "duration": 4
+    }
+}

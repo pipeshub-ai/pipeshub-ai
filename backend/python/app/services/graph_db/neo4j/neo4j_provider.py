@@ -5,6 +5,8 @@ Minimal implementation of IGraphDBProvider using Neo4j for testing OneDrive conn
 Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, properties, relationships).
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
@@ -18,7 +20,6 @@ from logging import Logger
 from typing import Any, Optional
 
 from fastapi import Request
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -10129,7 +10130,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
-    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional["Request"] = None, record_id: str | None = None) -> dict:
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
         try:
             # Handle both translated (_key -> id) and untranslated document formats
