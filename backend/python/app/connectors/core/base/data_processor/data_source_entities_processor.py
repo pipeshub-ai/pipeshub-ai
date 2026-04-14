@@ -87,8 +87,8 @@ class DataSourceEntitiesProcessor:
         RecordType.TICKET,
         RecordType.DEAL,
         RecordType.CASE,
-        RecordType.TASK
-        RecordType.MESSAGE,  
+        RecordType.TASK,
+        RecordType.MESSAGE,
     ]
 
     # Record relation types that connectors create for related external records

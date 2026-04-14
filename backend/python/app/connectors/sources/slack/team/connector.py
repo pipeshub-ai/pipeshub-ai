@@ -311,11 +311,14 @@ class SlackConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             SlackWorkspaceApp(connector_id), logger,
             data_entities_processor, data_store_provider,
             config_service, connector_id,
+            scope, created_by,
         )
 
         self.connector_id = connector_id
@@ -4119,7 +4122,9 @@ class SlackConnector(BaseConnector):
         data_store_provider:  DataStoreProvider,
         config_service:       ConfigurationService,
         connector_id:         str,
+        scope:                str,
+        created_by:           str,
     ) -> "SlackConnector":
         dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await dep.initialize()
-        return cls(logger, dep, data_store_provider, config_service, connector_id)
+        return cls(logger, dep, data_store_provider, config_service, connector_id, scope, created_by)
