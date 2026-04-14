@@ -275,6 +275,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         alignSelf: 'stretch',
       }}
     >
+      <style>{`.sidebar-drag-handle { opacity: 0; } *:hover > .sidebar-drag-handle { opacity: 1; }`}</style>
       {primarySidebar}
 
       {/* Click-outside backdrop — covers the entire viewport so clicking
