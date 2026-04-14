@@ -71,81 +71,120 @@ def _make_connector() -> GitLabConnector:
         created_by="test-user-1",
     )
 
+
 class TestDatetimeHelperFunctions:
-    def test_datetime_to_epoch_ms_string_z(self) ->None:
+    def test_datetime_to_epoch_ms_string_z(self) -> None:
         connector = _make_connector()
         assert connector.datetime_to_epoch_ms("1970-01-01T00:00:00Z") == 0
 
-    def test_datetime_to_epoch_ms_string_z_none(self) ->None:
+    def test_datetime_to_epoch_ms_string_z_none(self) -> None:
         connector = _make_connector()
         assert connector.datetime_to_epoch_ms(None) is None
 
-    def test_datetime_to_epoch_ms_string_z_invalid(self) ->None:
+    def test_datetime_to_epoch_ms_string_z_invalid(self) -> None:
         connector = _make_connector()
         assert connector.datetime_to_epoch_ms("invalid") is None
 
-    def test_string_to_datetime(self) ->None:
+    def test_string_to_datetime(self) -> None:
         connector = _make_connector()
-        assert connector.string_to_datetime("1970-01-01T00:00:00Z") == datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert connector.string_to_datetime("1970-01-01T00:00:00Z") == datetime(
+            1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc
+        )
 
-    def test_string_to_datetime_none(self) ->None:
+    def test_string_to_datetime_none(self) -> None:
         connector = _make_connector()
         assert connector.string_to_datetime(None) is None
 
-    def test_string_to_datetime_invalid(self) ->None:
+    def test_string_to_datetime_invalid(self) -> None:
         connector = _make_connector()
         assert connector.string_to_datetime("invalid") is None
 
+
 class TestGitlabHelperFunctions:
     @pytest.mark.asyncio
-    async def test_parse_gitlab_uploads_clean_test_only_text(self) ->None:
+    async def test_parse_gitlab_uploads_clean_test_only_text(self) -> None:
         connector = _make_connector()
         assert await connector.parse_gitlab_uploads_clean_test("test") == ([], "test")
 
     @pytest.mark.asyncio
-    async def test_parse_gitlab_uploads_clean_test_with_files(self) ->None:
+    async def test_parse_gitlab_uploads_clean_test_with_files(self) -> None:
         connector = _make_connector()
-        assert await connector.parse_gitlab_uploads_clean_test("This is a simple issue.\n\n![parrot.png](/uploads/91df98eac27282a4c79af15d18659860/parrot.png){width=540 height=360}\n\nAdding some more text. Then an attachment.\n\n[mpl-ayush.pdf](/uploads/63236944d6e8c5de56b499649c4b8209/mpl-ayush.pdf)") == ([FileAttachment(href='/uploads/91df98eac27282a4c79af15d18659860/parrot.png', filename='parrot.png', filetype='png', category='image'), FileAttachment(href='/uploads/63236944d6e8c5de56b499649c4b8209/mpl-ayush.pdf', filename='mpl-ayush.pdf', filetype='pdf', category='attachment')],"This is a simple issue.\n\n{width=540 height=360}\n\nAdding some more text. Then an attachment.")
+        assert await connector.parse_gitlab_uploads_clean_test(
+            "This is a simple issue.\n\n![parrot.png](/uploads/91df98eac27282a4c79af15d18659860/parrot.png){width=540 height=360}\n\nAdding some more text. Then an attachment.\n\n[mpl-ayush.pdf](/uploads/63236944d6e8c5de56b499649c4b8209/mpl-ayush.pdf)"
+        ) == (
+            [
+                FileAttachment(
+                    href="/uploads/91df98eac27282a4c79af15d18659860/parrot.png",
+                    filename="parrot.png",
+                    filetype="png",
+                    category="image",
+                ),
+                FileAttachment(
+                    href="/uploads/63236944d6e8c5de56b499649c4b8209/mpl-ayush.pdf",
+                    filename="mpl-ayush.pdf",
+                    filetype="pdf",
+                    category="attachment",
+                ),
+            ],
+            "This is a simple issue.\n\n{width=540 height=360}\n\nAdding some more text. Then an attachment.",
+        )
 
     @pytest.mark.asyncio
-    async def test_parse_gitlab_uploads_clean_test_with_none(self) ->None:
+    async def test_parse_gitlab_uploads_clean_test_with_none(self) -> None:
         connector = _make_connector()
         assert await connector.parse_gitlab_uploads_clean_test(None) == ([], "")
 
     @pytest.mark.asyncio
-    async def test_parse_gitlab_uploads_clean_test_with_default_extension(self) ->None:
+    async def test_parse_gitlab_uploads_clean_test_with_default_extension(self) -> None:
         connector = _make_connector()
-        assert await connector.parse_gitlab_uploads_clean_test("Adding some more text. Then an attachment.\n\n[dockerfile](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dockerfile)") == ([FileAttachment(href='/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dockerfile', filename='dockerfile', filetype='txt', category='attachment')],"Adding some more text. Then an attachment.")
+        assert await connector.parse_gitlab_uploads_clean_test(
+            "Adding some more text. Then an attachment.\n\n[dockerfile](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dockerfile)"
+        ) == (
+            [
+                FileAttachment(
+                    href="/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dockerfile",
+                    filename="dockerfile",
+                    filetype="txt",
+                    category="attachment",
+                )
+            ],
+            "Adding some more text. Then an attachment.",
+        )
 
     @pytest.mark.asyncio
-    async def test_parse_gitlab_uploads_clean_test_with_missing_file_name(self) ->None:
+    async def test_parse_gitlab_uploads_clean_test_with_missing_file_name(self) -> None:
         connector = _make_connector()
         with patch(
-        "app.connectors.sources.gitlab.connector.unquote",
-        return_value="",
-    ):
-            files, cleaned = await connector.parse_gitlab_uploads_clean_test("Adding some more text. Then an attachment.\n\n[dummy](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dummy)")
+            "app.connectors.sources.gitlab.connector.unquote",
+            return_value="",
+        ):
+            files, cleaned = await connector.parse_gitlab_uploads_clean_test(
+                "Adding some more text. Then an attachment.\n\n[dummy](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dummy)"
+            )
             assert files == []
-            assert cleaned == "Adding some more text. Then an attachment.\n\n[dummy](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dummy)"
+            assert (
+                cleaned
+                == "Adding some more text. Then an attachment.\n\n[dummy](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dummy)"
+            )
             connector.logger.warning.assert_called_once()
             msg = connector.logger.warning.call_args[0][0]
             assert "Skipping malformed attachment missing required fields" in msg
 
-    def test_get_parent_path_from_path(self) ->None:
+    def test_get_parent_path_from_path(self) -> None:
         connector = _make_connector()
         assert connector.get_parent_path_from_path("a/b/c/d.txt") == ["a", "b", "c"]
         assert connector.get_parent_path_from_path("") == []
 
+
 class TestGitlabConnector:
     @pytest.mark.asyncio
-    async def test_init_success(self) ->None:
+    async def test_init_success(self) -> None:
         connector = _make_connector()
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
-        with patch(
-            "app.connectors.sources.gitlab.connector.GitLabClient"
-        ) as MockClient, patch(
-            "app.connectors.sources.gitlab.connector.GitLabDataSource"
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch("app.connectors.sources.gitlab.connector.GitLabDataSource"),
         ):
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             result = await connector.init()
@@ -153,36 +192,47 @@ class TestGitlabConnector:
         assert connector.external_client is mock_client
 
     @pytest.mark.asyncio
-    async def test_init_failure_returns_false(self) ->None:
+    async def test_init_failure_returns_false(self) -> None:
         connector = _make_connector()
         with patch(
             "app.connectors.sources.gitlab.connector.GitLabClient"
         ) as MockClient:
-            MockClient.build_from_services = AsyncMock(side_effect=Exception("bad creds of auth config"))
+            MockClient.build_from_services = AsyncMock(
+                side_effect=Exception("bad creds of auth config")
+            )
             result = await connector.init()
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_init_failure_returns_false_due_to_data_source_build_failure(self) ->None:
+    async def test_init_failure_returns_false_due_to_data_source_build_failure(
+        self,
+    ) -> None:
         connector = _make_connector()
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
-        with patch(
-            "app.connectors.sources.gitlab.connector.GitLabClient"
-        ) as MockClient, patch(
-            "app.connectors.sources.gitlab.connector.GitLabDataSource"
-        )as MockDataSource:
+        with (
+            patch("app.connectors.sources.gitlab.connector.GitLabClient") as MockClient,
+            patch(
+                "app.connectors.sources.gitlab.connector.GitLabDataSource"
+            ) as MockDataSource,
+        ):
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
-            MockDataSource.side_effect =Exception("bad creds of client in data source")
+            MockDataSource.side_effect = Exception("bad creds of client in data source")
             result = await connector.init()
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_test_connection_and_access_success(self) ->None:
+    async def test_test_connection_and_access_success(self) -> None:
         connector = _make_connector()
         mock_response = MagicMock()
         mock_response.success = True
-        mock_response.data = {'id': 123456, 'username': 'demo-user', 'public_email': 'abc.ad@test.com', 'name': 'xyz', 'state': 'active'}
+        mock_response.data = {
+            "id": 123456,
+            "username": "demo-user",
+            "public_email": "abc.ad@test.com",
+            "name": "xyz",
+            "state": "active",
+        }
         mock_data_source = MagicMock()
         mock_data_source.get_user = MagicMock(return_value=mock_response)
         connector.data_source = mock_data_source
@@ -191,7 +241,7 @@ class TestGitlabConnector:
         mock_data_source.get_user.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_test_connection_and_access_response_not_success(self) ->None:
+    async def test_test_connection_and_access_response_not_success(self) -> None:
         connector = _make_connector()
         mock_response = MagicMock()
         mock_response.success = False
@@ -207,7 +257,7 @@ class TestGitlabConnector:
         connector.logger.error.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_test_connection_and_access_exception(self) ->None:
+    async def test_test_connection_and_access_exception(self) -> None:
         connector = _make_connector()
         mock_data_source = MagicMock()
         mock_data_source.get_user = MagicMock(side_effect=Exception("Network error"))
@@ -219,11 +269,12 @@ class TestGitlabConnector:
         connector.logger.error.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_test_connection_and_access_no_data_source(self) ->None:
+    async def test_test_connection_and_access_no_data_source(self) -> None:
         connector = _make_connector()
         connector.data_source = None
         result = await connector.test_connection_and_access()
         assert result is False
+
 
 class TestGitlabConnectorStreamRecord:
     @pytest.mark.asyncio
@@ -247,10 +298,12 @@ class TestGitlabConnectorStreamRecord:
         # Assertions
         assert isinstance(response, StreamingResponse)
         assert response.media_type == MimeTypes.BLOCKS.value
-        assert response.headers["Content-Disposition"] == "attachment; filename=ISSUE-123.json"
+        assert (
+            response.headers["Content-Disposition"]
+            == "attachment; filename=ISSUE-123.json"
+        )
         connector._build_ticket_blocks.assert_called_once_with(ticket_record)
         connector.logger.info.assert_any_call("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
-
 
     @pytest.mark.asyncio
     async def test_stream_record_pull_request_success(self) -> None:
@@ -265,7 +318,9 @@ class TestGitlabConnectorStreamRecord:
 
         # Mock the _build_pull_request_blocks method
         mock_blocks_container = MagicMock(spec=BlocksContainer)
-        connector._build_pull_request_blocks = AsyncMock(return_value=mock_blocks_container)
+        connector._build_pull_request_blocks = AsyncMock(
+            return_value=mock_blocks_container
+        )
 
         # Call the method
         response = await connector.stream_record(pr_record)
@@ -273,10 +328,14 @@ class TestGitlabConnectorStreamRecord:
         # Assertions
         assert isinstance(response, StreamingResponse)
         assert response.media_type == MimeTypes.BLOCKS.value
-        assert response.headers["Content-Disposition"] == "attachment; filename=MR-456.json"
+        assert (
+            response.headers["Content-Disposition"]
+            == "attachment; filename=MR-456.json"
+        )
         connector._build_pull_request_blocks.assert_called_once_with(pr_record)
-        connector.logger.info.assert_any_call("🟣🟣🟣 STREAM_MERGE_REQUEST_MARKER 🟣🟣🟣")
-
+        connector.logger.info.assert_any_call(
+            "🟣🟣🟣 STREAM_MERGE_REQUEST_MARKER 🟣🟣🟣"
+        )
 
     @pytest.mark.asyncio
     async def test_stream_record_file_success(self) -> None:
@@ -292,17 +351,19 @@ class TestGitlabConnectorStreamRecord:
         file_record.mime_type = "application/pdf"
 
         # Mock the _fetch_attachment_content method
-        async def mock_content_generator()->AsyncGenerator[bytes, None]:
+        async def mock_content_generator() -> AsyncGenerator[bytes, None]:
             yield b"file content chunk 1"
             yield b"file content chunk 2"
 
-        connector._fetch_attachment_content = MagicMock(return_value=mock_content_generator())
+        connector._fetch_attachment_content = MagicMock(
+            return_value=mock_content_generator()
+        )
 
         # Mock create_stream_record_response
         mock_response = MagicMock(spec=StreamingResponse)
         with patch(
             "app.connectors.sources.gitlab.connector.create_stream_record_response",
-            return_value=mock_response
+            return_value=mock_response,
         ) as mock_create_stream:
             # Call the method
             response = await connector.stream_record(file_record)
@@ -316,7 +377,6 @@ class TestGitlabConnectorStreamRecord:
             assert call_args[1]["mime_type"] == "application/pdf"
             assert call_args[1]["fallback_filename"] == "record_record-id-123"
             connector.logger.info.assert_any_call("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
-
 
     @pytest.mark.asyncio
     async def test_stream_record_file_no_record_name(self) -> None:
@@ -332,16 +392,18 @@ class TestGitlabConnectorStreamRecord:
         file_record.mime_type = "application/pdf"
 
         # Mock the _fetch_attachment_content method
-        async def mock_content_generator()->AsyncGenerator[bytes, None]:
+        async def mock_content_generator() -> AsyncGenerator[bytes, None]:
             yield b"file content"
 
-        connector._fetch_attachment_content = MagicMock(return_value=mock_content_generator())
+        connector._fetch_attachment_content = MagicMock(
+            return_value=mock_content_generator()
+        )
 
         # Mock create_stream_record_response
         mock_response = MagicMock(spec=StreamingResponse)
         with patch(
             "app.connectors.sources.gitlab.connector.create_stream_record_response",
-            return_value=mock_response
+            return_value=mock_response,
         ) as mock_create_stream:
             # Call the method
             response = await connector.stream_record(file_record)
@@ -351,7 +413,6 @@ class TestGitlabConnectorStreamRecord:
             call_args = mock_create_stream.call_args
             # Should use external_record_id as filename
             assert call_args[1]["filename"] == "file-789"
-
 
     @pytest.mark.asyncio
     async def test_stream_record_code_file_success(self) -> None:
@@ -367,17 +428,19 @@ class TestGitlabConnectorStreamRecord:
         code_file_record.mime_type = "text/x-python"
 
         # Mock the _fetch_code_file_content method
-        async def mock_content_generator()->AsyncGenerator[bytes,None] :
+        async def mock_content_generator() -> AsyncGenerator[bytes, None]:
             yield b"def main():\n"
             yield b"    print('Hello')\n"
 
-        connector._fetch_code_file_content = MagicMock(return_value=mock_content_generator())
+        connector._fetch_code_file_content = MagicMock(
+            return_value=mock_content_generator()
+        )
 
         # Mock create_stream_record_response
         mock_response = MagicMock(spec=StreamingResponse)
         with patch(
             "app.connectors.sources.gitlab.connector.create_stream_record_response",
-            return_value=mock_response
+            return_value=mock_response,
         ) as mock_create_stream:
             # Call the method
             response = await connector.stream_record(code_file_record)
@@ -390,8 +453,9 @@ class TestGitlabConnectorStreamRecord:
             assert call_args[1]["filename"] == "main.py"
             assert call_args[1]["mime_type"] == "text/x-python"
             assert call_args[1]["fallback_filename"] == "record_record-id-456"
-            connector.logger.info.assert_any_call("🟣🟣🟣 STREAM-CODE-FILE-MARKER 🟣🟣🟣")
-
+            connector.logger.info.assert_any_call(
+                "🟣🟣🟣 STREAM-CODE-FILE-MARKER 🟣🟣🟣"
+            )
 
     @pytest.mark.asyncio
     async def test_stream_record_code_file_no_record_name(self) -> None:
@@ -407,16 +471,18 @@ class TestGitlabConnectorStreamRecord:
         code_file_record.mime_type = "text/x-python"
 
         # Mock the _fetch_code_file_content method
-        async def mock_content_generator()->AsyncGenerator[bytes,None] :
+        async def mock_content_generator() -> AsyncGenerator[bytes, None]:
             yield b"code content"
 
-        connector._fetch_code_file_content = MagicMock(return_value=mock_content_generator())
+        connector._fetch_code_file_content = MagicMock(
+            return_value=mock_content_generator()
+        )
 
         # Mock create_stream_record_response
         mock_response = MagicMock(spec=StreamingResponse)
         with patch(
             "app.connectors.sources.gitlab.connector.create_stream_record_response",
-            return_value=mock_response
+            return_value=mock_response,
         ) as mock_create_stream:
             # Call the method
             await connector.stream_record(code_file_record)
@@ -425,7 +491,6 @@ class TestGitlabConnectorStreamRecord:
             call_args = mock_create_stream.call_args
             # Should use external_record_id as filename
             assert call_args[1]["filename"] == "code-file-999"
-
 
     @pytest.mark.asyncio
     async def test_stream_record_unsupported_record_type(self) -> None:
@@ -444,7 +509,6 @@ class TestGitlabConnectorStreamRecord:
         # Assertions
         assert "Unsupported record type for streaming" in str(exc_info.value)
         assert "UNSUPPORTED_TYPE" in str(exc_info.value)
-
 
     @pytest.mark.asyncio
     async def test_stream_record_ticket_build_blocks_fails(self) -> None:
@@ -473,7 +537,6 @@ class TestGitlabConnectorStreamRecord:
         assert "Error streaming record issue-123" in error_call
         assert connector.logger.error.call_args[1]["exc_info"] is True
 
-
     @pytest.mark.asyncio
     async def test_stream_record_pull_request_build_blocks_fails(self) -> None:
         """Test streaming pull request when _build_pull_request_blocks raises exception."""
@@ -499,7 +562,6 @@ class TestGitlabConnectorStreamRecord:
         connector.logger.error.assert_called_once()
         error_call = connector.logger.error.call_args[0][0]
         assert "Error streaming record mr-456" in error_call
-
 
     @pytest.mark.asyncio
     async def test_stream_record_file_fetch_content_fails(self) -> None:
@@ -529,7 +591,6 @@ class TestGitlabConnectorStreamRecord:
         error_call = connector.logger.error.call_args[0][0]
         assert "Error streaming record file-789" in error_call
 
-
     @pytest.mark.asyncio
     async def test_stream_record_code_file_fetch_content_fails(self) -> None:
         """Test streaming code file when _fetch_code_file_content raises exception."""
@@ -558,6 +619,7 @@ class TestGitlabConnectorStreamRecord:
         error_call = connector.logger.error.call_args[0][0]
         assert "Error streaming record code-file-999" in error_call
 
+
 class TestGitlabConnectorSyncPoints:
     @pytest.mark.asyncio
     async def test_get_issues_sync_checkpoint_success_with_last_sync_time(self) -> None:
@@ -569,7 +631,10 @@ class TestGitlabConnectorSyncPoints:
         # Mock the record_sync_point
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": expected_last_sync_time, "other_data": "value"}
+            return_value={
+                "last_sync_time": expected_last_sync_time,
+                "other_data": "value",
+            }
         )
 
         # Call the method
@@ -579,7 +644,9 @@ class TestGitlabConnectorSyncPoints:
         assert result == expected_last_sync_time
 
     @pytest.mark.asyncio
-    async def test_get_issues_sync_checkpoint_sync_point_data_exists_no_last_sync_time(self) -> None:
+    async def test_get_issues_sync_checkpoint_sync_point_data_exists_no_last_sync_time(
+        self,
+    ) -> None:
         """Test getting issues sync checkpoint when sync_point_data exists but has no last_sync_time key."""
         connector = _make_connector()
         project_id = 12345
@@ -596,7 +663,6 @@ class TestGitlabConnectorSyncPoints:
         # Assertions
         assert result is None
         connector.record_sync_point.read_sync_point.assert_called_once()
-
 
     @pytest.mark.asyncio
     async def test_get_issues_sync_checkpoint_sync_point_data_is_none(self) -> None:
@@ -615,9 +681,10 @@ class TestGitlabConnectorSyncPoints:
         assert result is None
         connector.record_sync_point.read_sync_point.assert_called_once()
 
-
     @pytest.mark.asyncio
-    async def test_get_issues_sync_checkpoint_exception_during_key_generation(self) -> None:
+    async def test_get_issues_sync_checkpoint_exception_during_key_generation(
+        self,
+    ) -> None:
         """Test getting issues sync checkpoint when generate_record_sync_point_key raises exception."""
         connector = _make_connector()
         project_id = 12345
@@ -625,7 +692,7 @@ class TestGitlabConnectorSyncPoints:
         # Mock generate_record_sync_point_key to raise exception
         with patch(
             "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            side_effect=Exception("Key generation error")
+            side_effect=Exception("Key generation error"),
         ):
             # Call the method - should catch exception and return None
             result = await connector._get_issues_sync_checkpoint(project_id)
@@ -650,8 +717,7 @@ class TestGitlabConnectorSyncPoints:
         # Assertions
         # connector.record_sync_point.update_sync_point.assert_called_once()
         connector.record_sync_point.update_sync_point.assert_called_once_with(
-            "gitlab/12345-work-items/",
-            {"last_sync_time": last_sync_time}
+            "gitlab/12345-work-items/", {"last_sync_time": last_sync_time}
         )
 
     @pytest.mark.asyncio
@@ -664,7 +730,10 @@ class TestGitlabConnectorSyncPoints:
         # Mock the record_sync_point
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": expected_last_sync_time, "other_data": "value"}
+            return_value={
+                "last_sync_time": expected_last_sync_time,
+                "other_data": "value",
+            }
         )
 
         # Call the method
@@ -674,7 +743,9 @@ class TestGitlabConnectorSyncPoints:
         assert result == expected_last_sync_time
 
     @pytest.mark.asyncio
-    async def test_get_mr_sync_checkpoint_sync_point_data_exists_no_last_sync_time(self) -> None:
+    async def test_get_mr_sync_checkpoint_sync_point_data_exists_no_last_sync_time(
+        self,
+    ) -> None:
         """Test getting merge requests sync checkpoint when sync_point_data exists but has no last_sync_time key."""
         connector = _make_connector()
         project_id = 12345
@@ -691,7 +762,6 @@ class TestGitlabConnectorSyncPoints:
         # Assertions
         assert result is None
         connector.record_sync_point.read_sync_point.assert_called_once()
-
 
     @pytest.mark.asyncio
     async def test_get_mr_sync_checkpoint_sync_point_data_is_none(self) -> None:
@@ -710,7 +780,6 @@ class TestGitlabConnectorSyncPoints:
         assert result is None
         connector.record_sync_point.read_sync_point.assert_called_once()
 
-
     @pytest.mark.asyncio
     async def test_get_mr_sync_checkpoint_exception_during_key_generation(self) -> None:
         """Test getting merge requests sync checkpoint when generate_record_sync_point_key raises exception."""
@@ -720,7 +789,7 @@ class TestGitlabConnectorSyncPoints:
         # Mock generate_record_sync_point_key to raise exception
         with patch(
             "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            side_effect=Exception("Key generation error")
+            side_effect=Exception("Key generation error"),
         ):
             # Call the method - should catch exception and return None
             result = await connector._get_mr_sync_checkpoint(project_id)
@@ -745,9 +814,9 @@ class TestGitlabConnectorSyncPoints:
         # Assertions
         # connector.record_sync_point.update_sync_point.assert_called_once()
         connector.record_sync_point.update_sync_point.assert_called_once_with(
-            "gitlab/12345-merge-requests/",
-            {"last_sync_time": last_sync_time}
+            "gitlab/12345-merge-requests/", {"last_sync_time": last_sync_time}
         )
+
 
 class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
@@ -776,6 +845,7 @@ class TestGitlabConnectorRunSync:
         # Should raise an exception
         with pytest.raises(RuntimeError, match="sync fail"):
             await connector.run_sync()
+
 
 class TestGitlabConnectorSyncUsers:
     @pytest.mark.asyncio
@@ -1237,7 +1307,9 @@ class TestGitlabConnectorSyncUsers:
         connector._sync_users_from_projects_groups.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_sync_users_duplicate_members_across_groups_and_projects(self) -> None:
+    async def test_sync_users_duplicate_members_across_groups_and_projects(
+        self,
+    ) -> None:
         """Test sync with duplicate members across groups and projects."""
         connector = _make_connector()
 
@@ -1431,6 +1503,7 @@ class TestGitlabConnectorSyncUsers:
         connector._sync_users_from_projects_groups.assert_called_once_with({})
         assert connector.logger.error.call_count >= 1
 
+
 class TestGitlabConnectorSyncUsersFromProjectsGroups:
     @pytest.mark.asyncio
     async def test_sync_users_from_projects_groups_success(self) -> None:
@@ -1471,7 +1544,10 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         assert app_users[1].full_name == "User Two"
 
         # Verify migration was called for both users
-        assert connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count == 2
+        assert (
+            connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count
+            == 2
+        )
 
     @pytest.mark.asyncio
     async def test_sync_users_from_projects_groups_empty_dict(self) -> None:
@@ -1549,7 +1625,9 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         assert app_users[0].email == "user2@example.com"
 
     @pytest.mark.asyncio
-    async def test_sync_users_from_projects_groups_member_missing_email_attribute(self) -> None:
+    async def test_sync_users_from_projects_groups_member_missing_email_attribute(
+        self,
+    ) -> None:
         """Test sync when member doesn't have public_email attribute at all."""
         connector = _make_connector()
 
@@ -1577,7 +1655,9 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         assert app_users[0].email == "user2@example.com"
 
     @pytest.mark.asyncio
-    async def test_sync_users_from_projects_groups_all_members_without_email(self) -> None:
+    async def test_sync_users_from_projects_groups_all_members_without_email(
+        self,
+    ) -> None:
         """Test sync when all members lack email addresses."""
         connector = _make_connector()
 
@@ -1603,7 +1683,9 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         connector.data_entities_processor.migrate_group_to_user_by_external_id.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sync_users_from_projects_groups_migration_fails_for_one_user(self) -> None:
+    async def test_sync_users_from_projects_groups_migration_fails_for_one_user(
+        self,
+    ) -> None:
         """Test sync when migration fails for one user but continues for others."""
         connector = _make_connector()
 
@@ -1622,8 +1704,8 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         dict_member = {1: mock_member1, 2: mock_member2}
 
         # Mock migration to fail for first user, succeed for second
-        connector.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock(
-            side_effect=[Exception("Migration failed"), None]
+        connector.data_entities_processor.migrate_group_to_user_by_external_id = (
+            AsyncMock(side_effect=[Exception("Migration failed"), None])
         )
 
         # Execute
@@ -1631,13 +1713,18 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
 
         # Verify - both users should be created, migration attempted for both
         connector.data_entities_processor.on_new_app_users.assert_called_once()
-        assert connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count == 2
+        assert (
+            connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count
+            == 2
+        )
 
         # Verify warning was logged
         connector.logger.warning.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_sync_users_from_projects_groups_migration_fails_for_all_users(self) -> None:
+    async def test_sync_users_from_projects_groups_migration_fails_for_all_users(
+        self,
+    ) -> None:
         """Test sync when migration fails for all users."""
         connector = _make_connector()
 
@@ -1656,8 +1743,8 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         dict_member = {1: mock_member1, 2: mock_member2}
 
         # Mock migration to fail for all users
-        connector.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock(
-            side_effect=Exception("Migration failed")
+        connector.data_entities_processor.migrate_group_to_user_by_external_id = (
+            AsyncMock(side_effect=Exception("Migration failed"))
         )
 
         # Execute
@@ -1665,11 +1752,16 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
 
         # Verify - users should still be created despite migration failures
         connector.data_entities_processor.on_new_app_users.assert_called_once()
-        assert connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count == 2
+        assert (
+            connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count
+            == 2
+        )
         assert connector.logger.warning.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_sync_users_from_projects_groups_migration_called_with_correct_params(self) -> None:
+    async def test_sync_users_from_projects_groups_migration_called_with_correct_params(
+        self,
+    ) -> None:
         """Test that migration is called with correct parameters."""
         connector = _make_connector()
 
@@ -1688,7 +1780,7 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         connector.data_entities_processor.migrate_group_to_user_by_external_id.assert_called_once_with(
             group_external_id="123",
             user_email="test@example.com",
-            connector_id="gitlab-conn-1"
+            connector_id="gitlab-conn-1",
         )
 
     @pytest.mark.asyncio
@@ -1741,10 +1833,15 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         assert len(app_users) == 5
 
         # Verify migration was called for all
-        assert connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count == 5
+        assert (
+            connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count
+            == 5
+        )
 
     @pytest.mark.asyncio
-    async def test_sync_users_from_projects_groups_mixed_valid_invalid_emails(self) -> None:
+    async def test_sync_users_from_projects_groups_mixed_valid_invalid_emails(
+        self,
+    ) -> None:
         """Test sync with a mix of valid and invalid email addresses."""
         connector = _make_connector()
 
@@ -1772,7 +1869,12 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         mock_member4.name = "User Four"
         mock_member4.public_email = None
 
-        dict_member = {1: mock_member1, 2: mock_member2, 3: mock_member3, 4: mock_member4}
+        dict_member = {
+            1: mock_member1,
+            2: mock_member2,
+            3: mock_member3,
+            4: mock_member4,
+        }
 
         # Execute
         await connector._sync_users_from_projects_groups(dict_member)
@@ -1784,7 +1886,10 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         assert app_users[1].source_user_id == "3"
 
         # Verify migration called only for valid users
-        assert connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count == 2
+        assert (
+            connector.data_entities_processor.migrate_group_to_user_by_external_id.call_count
+            == 2
+        )
 
     @pytest.mark.asyncio
     async def test_sync_users_from_projects_groups_member_id_as_string(self) -> None:
@@ -1811,6 +1916,7 @@ class TestGitlabConnectorSyncUsersFromProjectsGroups:
         call_args = connector.data_entities_processor.migrate_group_to_user_by_external_id.call_args
         assert call_args[1]["group_external_id"] == "42"
 
+
 class TestGitlabConnectorSyncAllProject:
     @pytest.mark.asyncio
     async def test_sync_all_project_success(self) -> None:
@@ -1824,13 +1930,16 @@ class TestGitlabConnectorSyncAllProject:
 
         # Mock timestamp
         mock_timestamp = 1678901234567
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=mock_timestamp
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
-        ) as mock_generate_key:
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=mock_timestamp,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ) as mock_generate_key,
+        ):
             # Execute
             await connector._sync_all_project()
 
@@ -1838,8 +1947,7 @@ class TestGitlabConnectorSyncAllProject:
         connector._sync_projects.assert_called_once()
         mock_generate_key.assert_called_once_with("gitlab", "record_group", "global")
         connector.record_sync_point.update_sync_point.assert_called_once_with(
-            "gitlab/record_group/global/",
-            {"timestamp": mock_timestamp}
+            "gitlab/record_group/global/", {"timestamp": mock_timestamp}
         )
 
     @pytest.mark.asyncio
@@ -1849,22 +1957,25 @@ class TestGitlabConnectorSyncAllProject:
 
         call_order = []
 
-        async def mock_sync_projects()->None:
+        async def mock_sync_projects() -> None:
             call_order.append("sync_projects")
 
-        async def mock_update_sync_point(key, data)->None:
+        async def mock_update_sync_point(key, data) -> None:
             call_order.append("update_sync_point")
 
         connector._sync_projects = mock_sync_projects
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.update_sync_point = mock_update_sync_point
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=1678901234567
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=1678901234567,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ),
         ):
             # Execute
             await connector._sync_all_project()
@@ -1882,12 +1993,15 @@ class TestGitlabConnectorSyncAllProject:
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.update_sync_point = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=1678901234567
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=1678901234567,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ),
         ):
             # Execute and expect exception
             with pytest.raises(Exception) as exc_info:
@@ -1912,12 +2026,15 @@ class TestGitlabConnectorSyncAllProject:
             side_effect=Exception("Update sync point failed")
         )
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=1678901234567
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=1678901234567,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ),
         ):
             # Execute and expect exception
             with pytest.raises(Exception) as exc_info:
@@ -1935,11 +2052,11 @@ class TestGitlabConnectorSyncAllProject:
 
         captured_timestamp = None
 
-        async def mock_sync_projects()->None:
+        async def mock_sync_projects() -> None:
             # Simulate some delay
             await asyncio.sleep(0.01)
 
-        async def mock_update_sync_point(key, data)->None:
+        async def mock_update_sync_point(key, data) -> None:
             nonlocal captured_timestamp
             captured_timestamp = data["timestamp"]
 
@@ -1948,12 +2065,15 @@ class TestGitlabConnectorSyncAllProject:
         connector.record_sync_point.update_sync_point = mock_update_sync_point
 
         mock_timestamp = 1678901234567
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=mock_timestamp
-        ) as mock_get_timestamp, patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=mock_timestamp,
+            ) as mock_get_timestamp,
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ),
         ):
             # Execute
             await connector._sync_all_project()
@@ -1972,13 +2092,16 @@ class TestGitlabConnectorSyncAllProject:
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.update_sync_point = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=1678901234567
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
-        ) as mock_generate_key:
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=1678901234567,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ) as mock_generate_key,
+        ):
             # Execute
             await connector._sync_all_project()
 
@@ -1995,12 +2118,15 @@ class TestGitlabConnectorSyncAllProject:
         connector.record_sync_point.update_sync_point = AsyncMock()
 
         mock_timestamp = 1678901234567
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=mock_timestamp
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=mock_timestamp,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ),
         ):
             # Execute
             await connector._sync_all_project()
@@ -2019,12 +2145,15 @@ class TestGitlabConnectorSyncAllProject:
         connector._sync_projects = AsyncMock()
         connector.record_sync_point = None
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=1678901234567
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=1678901234567,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value="gitlab/record_group/global/",
+            ),
         ):
             # Execute and expect AttributeError
             with pytest.raises(AttributeError):
@@ -2043,12 +2172,12 @@ class TestGitlabConnectorSyncAllProject:
 
         with patch(
             "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/"
+            return_value="gitlab/record_group/global/",
         ):
             for timestamp in timestamps:
                 with patch(
                     "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-                    return_value=timestamp
+                    return_value=timestamp,
                 ):
                     await connector._sync_all_project()
 
@@ -2068,10 +2197,10 @@ class TestGitlabConnectorSyncAllProject:
         # Track all operations
         operations = []
 
-        async def track_sync_projects()->None:
+        async def track_sync_projects() -> None:
             operations.append(("sync_projects", None))
 
-        async def track_update_sync_point(key, data)->None:
+        async def track_update_sync_point(key, data) -> None:
             operations.append(("update_sync_point", (key, data)))
 
         connector._sync_projects = track_sync_projects
@@ -2081,12 +2210,15 @@ class TestGitlabConnectorSyncAllProject:
         mock_timestamp = 1678901234567
         mock_key = "gitlab/record_group/global/"
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
-            return_value=mock_timestamp
-        ), patch(
-            "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value=mock_key
+        with (
+            patch(
+                "app.connectors.sources.gitlab.connector.get_epoch_timestamp_in_ms",
+                return_value=mock_timestamp,
+            ),
+            patch(
+                "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
+                return_value=mock_key,
+            ),
         ):
             # Execute
             await connector._sync_all_project()
@@ -2094,7 +2226,11 @@ class TestGitlabConnectorSyncAllProject:
         # Verify complete flow
         assert len(operations) == 2
         assert operations[0] == ("sync_projects", None)
-        assert operations[1] == ("update_sync_point", (mock_key, {"timestamp": mock_timestamp}))
+        assert operations[1] == (
+            "update_sync_point",
+            (mock_key, {"timestamp": mock_timestamp}),
+        )
+
 
 class TestGitlabConnectorBuildCodeFileRecords:
     @pytest.mark.asyncio
@@ -2108,7 +2244,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123def456",
                 "webPath": "/project/src/main.py",
-                "webUrl": "https://gitlab.com/project/src/main.py"
+                "webUrl": "https://gitlab.com/project/src/main.py",
             }
         ]
 
@@ -2159,22 +2295,22 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123",
                 "webPath": "/project/src/main.py",
-                "webUrl": "https://gitlab.com/project/src/main.py"
+                "webUrl": "https://gitlab.com/project/src/main.py",
             },
             {
                 "path": "src/utils.js",
                 "name": "utils.js",
                 "sha": "def456",
                 "webPath": "/project/src/utils.js",
-                "webUrl": "https://gitlab.com/project/src/utils.js"
+                "webUrl": "https://gitlab.com/project/src/utils.js",
             },
             {
                 "path": "README.md",
                 "name": "README.md",
                 "sha": "ghi789",
                 "webPath": "/project/README.md",
-                "webUrl": "https://gitlab.com/project/README.md"
-            }
+                "webUrl": "https://gitlab.com/project/README.md",
+            },
         ]
 
         # Mock data store
@@ -2211,22 +2347,22 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": ".gitignore",
                 "sha": "abc123",
                 "webPath": "/project/.gitignore",
-                "webUrl": "https://gitlab.com/project/.gitignore"
+                "webUrl": "https://gitlab.com/project/.gitignore",
             },
             {
                 "path": ".env",
                 "name": ".env",
                 "sha": "def456",
                 "webPath": "/project/.env",
-                "webUrl": "https://gitlab.com/project/.env"
+                "webUrl": "https://gitlab.com/project/.env",
             },
             {
                 "path": "main.py",
                 "name": "main.py",
                 "sha": "ghi789",
                 "webPath": "/project/main.py",
-                "webUrl": "https://gitlab.com/project/main.py"
-            }
+                "webUrl": "https://gitlab.com/project/main.py",
+            },
         ]
 
         # Mock data store
@@ -2260,14 +2396,14 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "Button.tsx",
                 "sha": "abc123",
                 "webPath": "/project/src/components/Button.tsx",
-                "webUrl": "https://gitlab.com/project/src/components/Button.tsx"
+                "webUrl": "https://gitlab.com/project/src/components/Button.tsx",
             }
         ]
 
         # Mock parent record found
         mock_parent_record = {
             "externalRecordId": "/project/src/components",
-            "id": "parent-id-123"
+            "id": "parent-id-123",
         }
 
         mock_tx_store = AsyncMock()
@@ -2293,7 +2429,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
         mock_tx_store.get_record_by_path.assert_called_once_with(
             connector_id="gitlab-conn-1",
             path=["src", "components"],
-            record_group_id="123-code-repository"
+            record_group_id="123-code-repository",
         )
 
     @pytest.mark.asyncio
@@ -2307,7 +2443,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "Button.tsx",
                 "sha": "abc123",
                 "webPath": "/project/src/components/Button.tsx",
-                "webUrl": "https://gitlab.com/project/src/components/Button.tsx"
+                "webUrl": "https://gitlab.com/project/src/components/Button.tsx",
             }
         ]
 
@@ -2343,7 +2479,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "README.md",
                 "sha": "abc123",
                 "webPath": "/project/README.md",
-                "webUrl": "https://gitlab.com/project/README.md"
+                "webUrl": "https://gitlab.com/project/README.md",
             }
         ]
 
@@ -2380,7 +2516,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123",
                 "webPath": "/project/main.py",
-                "webUrl": "https://gitlab.com/project/main.py"
+                "webUrl": "https://gitlab.com/project/main.py",
             }
         ]
 
@@ -2389,7 +2525,9 @@ class TestGitlabConnectorBuildCodeFileRecords:
         mock_existing_record.id = "existing-record-id-123"
 
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=mock_existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=mock_existing_record
+        )
 
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
@@ -2417,22 +2555,22 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "script.py",
                 "sha": "abc1",
                 "webPath": "/project/script.py",
-                "webUrl": "https://gitlab.com/project/script.py"
+                "webUrl": "https://gitlab.com/project/script.py",
             },
             {
                 "path": "app.js",
                 "name": "app.js",
                 "sha": "abc2",
                 "webPath": "/project/app.js",
-                "webUrl": "https://gitlab.com/project/app.js"
+                "webUrl": "https://gitlab.com/project/app.js",
             },
             {
                 "path": "unknown.xyz",
                 "name": "unknown.xyz",
                 "sha": "abc3",
                 "webPath": "/project/unknown.xyz",
-                "webUrl": "https://gitlab.com/project/unknown.xyz"
-            }
+                "webUrl": "https://gitlab.com/project/unknown.xyz",
+            },
         ]
 
         # Mock data store
@@ -2468,21 +2606,21 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "helper1.py",
                 "sha": "abc1",
                 "webPath": "/project/src/utils/helper1.py",
-                "webUrl": "https://gitlab.com/project/src/utils/helper1.py"
+                "webUrl": "https://gitlab.com/project/src/utils/helper1.py",
             },
             {
                 "path": "src/utils/helper2.py",
                 "name": "helper2.py",
                 "sha": "abc2",
                 "webPath": "/project/src/utils/helper2.py",
-                "webUrl": "https://gitlab.com/project/src/utils/helper2.py"
-            }
+                "webUrl": "https://gitlab.com/project/src/utils/helper2.py",
+            },
         ]
 
         # Mock parent record
         mock_parent_record = {
             "externalRecordId": "/project/src/utils",
-            "id": "parent-id-123"
+            "id": "parent-id-123",
         }
 
         mock_tx_store = AsyncMock()
@@ -2519,7 +2657,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123",
                 "webPath": "/project/src/main.py",
-                "webUrl": "https://gitlab.com/project/src/main.py"
+                "webUrl": "https://gitlab.com/project/src/main.py",
             }
         ]
 
@@ -2575,15 +2713,15 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": ".gitignore",
                 "sha": "abc1",
                 "webPath": "/project/.gitignore",
-                "webUrl": "https://gitlab.com/project/.gitignore"
+                "webUrl": "https://gitlab.com/project/.gitignore",
             },
             {
                 "path": ".env",
                 "name": ".env",
                 "sha": "abc2",
                 "webPath": "/project/.env",
-                "webUrl": "https://gitlab.com/project/.env"
-            }
+                "webUrl": "https://gitlab.com/project/.env",
+            },
         ]
 
         connector._process_new_records = AsyncMock()
@@ -2605,7 +2743,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123def456",
                 "webPath": "/project/src/main.py",
-                "webUrl": "https://gitlab.com/project/src/main.py"
+                "webUrl": "https://gitlab.com/project/src/main.py",
             }
         ]
 
@@ -2656,7 +2794,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123",
                 "webPath": "/project/main.py",
-                "webUrl": "https://gitlab.com/project/main.py"
+                "webUrl": "https://gitlab.com/project/main.py",
             }
         ]
 
@@ -2700,14 +2838,14 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "Button.tsx",
                 "sha": "abc123",
                 "webPath": "/project/src/app/components/ui/Button.tsx",
-                "webUrl": "https://gitlab.com/project/src/app/components/ui/Button.tsx"
+                "webUrl": "https://gitlab.com/project/src/app/components/ui/Button.tsx",
             }
         ]
 
         # Mock parent record
         mock_parent_record = {
             "externalRecordId": "/project/src/app/components/ui",
-            "id": "parent-id-123"
+            "id": "parent-id-123",
         }
 
         mock_tx_store = AsyncMock()
@@ -2729,11 +2867,14 @@ class TestGitlabConnectorBuildCodeFileRecords:
         mock_tx_store.get_record_by_path.assert_called_once_with(
             connector_id="gitlab-conn-1",
             path=["src", "app", "components", "ui"],
-            record_group_id="123-code-repository"
+            record_group_id="123-code-repository",
         )
 
         records = connector._process_new_records.call_args[0][0]
-        assert records[0].record.parent_external_record_id == "/project/src/app/components/ui"
+        assert (
+            records[0].record.parent_external_record_id
+            == "/project/src/app/components/ui"
+        )
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_external_group_id_format(self) -> None:
@@ -2746,7 +2887,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
                 "name": "main.py",
                 "sha": "abc123",
                 "webPath": "/project/main.py",
-                "webUrl": "https://gitlab.com/project/main.py"
+                "webUrl": "https://gitlab.com/project/main.py",
             }
         ]
 
@@ -2769,6 +2910,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.external_record_group_id == "999-code-repository"
 
+
 class TestGitlabConnectorFetchCodeFileContent:
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_success(self) -> None:
@@ -2785,7 +2927,9 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Mock file content response
         mock_file_data = MagicMock()
-        mock_file_data.content = base64.b64encode(b"print('Hello World')").decode('utf-8')
+        mock_file_data.content = base64.b64encode(b"print('Hello World')").decode(
+            "utf-8"
+        )
 
         mock_file_response = MagicMock()
         mock_file_response.success = True
@@ -2803,7 +2947,9 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Mock data source
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -2832,7 +2978,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         file_path = ["main.py"]
 
         mock_file_data = MagicMock()
-        mock_file_data.content = base64.b64encode(b"content").decode('utf-8')
+        mock_file_data.content = base64.b64encode(b"content").decode("utf-8")
 
         mock_file_response = MagicMock()
         mock_file_response.success = True
@@ -2849,7 +2995,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -2888,7 +3036,9 @@ class TestGitlabConnectorFetchCodeFileContent:
             async for _ in result_generator:
                 pass
 
-        assert "Error fetching code content for record record-123" in str(exc_info.value)
+        assert "Error fetching code content for record record-123" in str(
+            exc_info.value
+        )
         assert "'NoneType' object has no attribute 'split'" in str(exc_info.value)
 
     @pytest.mark.asyncio
@@ -2949,7 +3099,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute and expect exception
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -2988,7 +3140,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute and expect exception (accessing .content on None)
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3010,7 +3164,7 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Original content
         original_content = b"def hello():\n    print('Hello, World!')\n"
-        encoded_content = base64.b64encode(original_content).decode('utf-8')
+        encoded_content = base64.b64encode(original_content).decode("utf-8")
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3030,7 +3184,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3072,7 +3228,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute and expect exception
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3081,7 +3239,9 @@ class TestGitlabConnectorFetchCodeFileContent:
             async for _ in result_generator:
                 pass
 
-        assert "Error fetching code content for record record-123" in str(exc_info.value)
+        assert "Error fetching code content for record record-123" in str(
+            exc_info.value
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_get_record_path_fails(self) -> None:
@@ -3111,7 +3271,9 @@ class TestGitlabConnectorFetchCodeFileContent:
             async for _ in result_generator:
                 pass
 
-        assert "Error fetching code content for record record-123" in str(exc_info.value)
+        assert "Error fetching code content for record record-123" in str(
+            exc_info.value
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_nested_file_path(self) -> None:
@@ -3126,7 +3288,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         file_path = ["src", "app", "components", "Button.tsx"]
 
         mock_file_data = MagicMock()
-        mock_file_data.content = base64.b64encode(b"React component").decode('utf-8')
+        mock_file_data.content = base64.b64encode(b"React component").decode("utf-8")
 
         mock_file_response = MagicMock()
         mock_file_response.success = True
@@ -3143,7 +3305,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3165,8 +3329,8 @@ class TestGitlabConnectorFetchCodeFileContent:
         file_path = ["image.png"]
 
         # Binary content (fake PNG header)
-        binary_content = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
-        encoded_content = base64.b64encode(binary_content).decode('utf-8')
+        binary_content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        encoded_content = base64.b64encode(binary_content).decode("utf-8")
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3186,7 +3350,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3211,7 +3377,7 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Empty content
         empty_content = b""
-        encoded_content = base64.b64encode(empty_content).decode('utf-8')
+        encoded_content = base64.b64encode(empty_content).decode("utf-8")
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3231,7 +3397,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3254,9 +3422,7 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Mock transaction store with failure
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_path = AsyncMock(
-            side_effect=Exception("Some error")
-        )
+        mock_tx_store.get_record_path = AsyncMock(side_effect=Exception("Some error"))
 
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
@@ -3287,7 +3453,7 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Large content
         large_content = b"x" * 10000
-        encoded_content = base64.b64encode(large_content).decode('utf-8')
+        encoded_content = base64.b64encode(large_content).decode("utf-8")
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3307,7 +3473,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector.data_source = MagicMock()
-        connector.data_source.get_file_content = MagicMock(return_value=mock_file_response)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=mock_file_response
+        )
 
         # Execute
         result_generator = connector._fetch_code_file_content(mock_record)
@@ -3318,6 +3486,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Verify single chunk
         assert len(chunks) == 1
         assert chunks[0] == large_content
+
 
 class TestGitlabConnectorSyncProjects:
     @pytest.mark.asyncio
@@ -3514,10 +3683,17 @@ class TestGitlabConnectorSyncProjects:
 
         call_order = []
 
-        async def track_pseudo(project)->None: call_order.append("sync_pseudo")
-        async def track_issues(project_id)->None: call_order.append("fetch_issues")
-        async def track_prs(project_id)->None: call_order.append("fetch_prs")
-        async def track_repo(project_id, path)->None: call_order.append("sync_repo")
+        async def track_pseudo(project) -> None:
+            call_order.append("sync_pseudo")
+
+        async def track_issues(project_id) -> None:
+            call_order.append("fetch_issues")
+
+        async def track_prs(project_id) -> None:
+            call_order.append("fetch_prs")
+
+        async def track_repo(project_id, path) -> None:
+            call_order.append("sync_repo")
 
         connector._sync_project_members_as_pseudo = track_pseudo
         connector._fetch_issues_batched = track_issues
@@ -3558,7 +3734,9 @@ class TestGitlabConnectorSyncProjects:
         # Verify correct project_id and path were passed
         connector._fetch_issues_batched.assert_called_once_with(789)
         connector._fetch_prs_batched.assert_called_once_with(789)
-        connector._sync_repo_main.assert_called_once_with(789, "org-name/deep/project-path")
+        connector._sync_repo_main.assert_called_once_with(
+            789, "org-name/deep/project-path"
+        )
 
     @pytest.mark.asyncio
     async def test_sync_projects_sync_pseudo_raises_propagates(self) -> None:
@@ -3676,9 +3854,7 @@ class TestGitlabConnectorSyncProjects:
         connector._sync_project_members_as_pseudo = AsyncMock()
         connector._fetch_issues_batched = AsyncMock()
         connector._fetch_prs_batched = AsyncMock()
-        connector._sync_repo_main = AsyncMock(
-            side_effect=Exception("Repo sync failed")
-        )
+        connector._sync_repo_main = AsyncMock(side_effect=Exception("Repo sync failed"))
 
         with pytest.raises(Exception) as exc_info:
             await connector._sync_projects()
@@ -3721,9 +3897,12 @@ class TestGitlabConnectorSyncProjects:
         assert connector._sync_project_members_as_pseudo.call_count == 1
         connector._fetch_issues_batched.assert_not_called()
 
+
 class TestGitlabConnectorSyncProjectMembersAsPseudo:
     @pytest.mark.asyncio
-    async def test_sync_project_members_as_pseudo_success_single_member_high_access(self) -> None:
+    async def test_sync_project_members_as_pseudo_success_single_member_high_access(
+        self,
+    ) -> None:
         """Test sync with one member having access_level >= 15."""
         connector = _make_connector()
 
@@ -3742,23 +3921,34 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_permission = MagicMock()
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=mock_permission)
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=mock_permission
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
         # Verify on_new_record_groups was called once
         connector.data_entities_processor.on_new_record_groups.assert_called_once()
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
 
         # Should be 4 record groups
         assert len(call_args) == 4
 
         # Unpack all groups and their permissions
-        (proj_rg, proj_perms), (work_rg, work_perms), (code_rg, code_perms), (mr_rg, mr_perms) = call_args
+        (
+            (proj_rg, proj_perms),
+            (work_rg, work_perms),
+            (code_rg, code_perms),
+            (mr_rg, mr_perms),
+        ) = call_args
 
         # access_level >= 15 → permission in all levels
         assert mock_permission in proj_perms
@@ -3786,16 +3976,27 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_permission = MagicMock()
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=mock_permission)
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=mock_permission
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
-        (proj_rg, proj_perms), (work_rg, work_perms), (code_rg, code_perms), (mr_rg, mr_perms) = call_args
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
+        (
+            (proj_rg, proj_perms),
+            (work_rg, work_perms),
+            (code_rg, code_perms),
+            (mr_rg, mr_perms),
+        ) = call_args
 
         # access_level == 10 → only project and work_items
         assert mock_permission in proj_perms
@@ -3823,16 +4024,27 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_permission = MagicMock()
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=mock_permission)
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=mock_permission
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
-        (proj_rg, proj_perms), (work_rg, work_perms), (code_rg, code_perms), (mr_rg, mr_perms) = call_args
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
+        (
+            (proj_rg, proj_perms),
+            (work_rg, work_perms),
+            (code_rg, code_perms),
+            (mr_rg, mr_perms),
+        ) = call_args
 
         # access_level == 0 → only project level, none of the sub-levels
         assert mock_permission in proj_perms
@@ -3860,7 +4072,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         # Transform returns None → permission is skipped
         connector._transform_restrictions_to_permisions = AsyncMock(return_value=None)
@@ -3868,8 +4082,15 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
-        (proj_rg, proj_perms), (work_rg, work_perms), (code_rg, code_perms), (mr_rg, mr_perms) = call_args
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
+        (
+            (proj_rg, proj_perms),
+            (work_rg, work_perms),
+            (code_rg, code_perms),
+            (mr_rg, mr_perms),
+        ) = call_args
 
         # No permissions added anywhere
         assert proj_perms == []
@@ -3902,7 +4123,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member_guest, mock_member_dev]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_perm_guest = MagicMock()
         mock_perm_dev = MagicMock()
@@ -3913,8 +4136,15 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
-        (proj_rg, proj_perms), (work_rg, work_perms), (code_rg, code_perms), (mr_rg, mr_perms) = call_args
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
+        (
+            (proj_rg, proj_perms),
+            (work_rg, work_perms),
+            (code_rg, code_perms),
+            (mr_rg, mr_perms),
+        ) = call_args
 
         # Both in project
         assert mock_perm_guest in proj_perms
@@ -3951,14 +4181,20 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]  # FIX: non-empty list
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=MagicMock())
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=MagicMock()
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
         (proj_rg, _), (work_rg, _), (code_rg, _), (mr_rg, _) = call_args
 
         # Project record group
@@ -3998,7 +4234,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.success = False
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
@@ -4022,7 +4260,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = None
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
@@ -4045,7 +4285,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = []  # Empty list → `not []` is True → early return
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
@@ -4054,7 +4296,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         connector.data_entities_processor.on_new_record_groups.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sync_project_members_as_pseudo_duplicate_members_deduped(self) -> None:
+    async def test_sync_project_members_as_pseudo_duplicate_members_deduped(
+        self,
+    ) -> None:
         """Test that duplicate member IDs are deduped via dict_member."""
         connector = _make_connector()
 
@@ -4079,10 +4323,14 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member_a, mock_member_b]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_permission = MagicMock()
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=mock_permission)
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=mock_permission
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
@@ -4091,7 +4339,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         assert connector._transform_restrictions_to_permisions.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_sync_project_members_as_pseudo_list_project_members_called_correctly(self) -> None:
+    async def test_sync_project_members_as_pseudo_list_project_members_called_correctly(
+        self,
+    ) -> None:
         """Test that list_project_members_all is called with project_id."""
         connector = _make_connector()
 
@@ -4105,7 +4355,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = []
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
@@ -4133,15 +4385,21 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_permission = MagicMock()
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=mock_permission)
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=mock_permission
+        )
 
         # Execute
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
         (_, proj_perms), (_, work_perms), (_, code_perms), (_, mr_perms) = call_args
 
         # access_level >= 15 → all levels
@@ -4151,7 +4409,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         assert mock_permission in mr_perms
 
     @pytest.mark.asyncio
-    async def test_sync_project_members_as_pseudo_unrecognised_access_level(self) -> None:
+    async def test_sync_project_members_as_pseudo_unrecognised_access_level(
+        self,
+    ) -> None:
         """Test member with unrecognised access level (e.g. 5 - Minimal) gets
         only project-level permission and a warning is logged."""
         connector = _make_connector()
@@ -4171,14 +4431,20 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         mock_members_res.data = [mock_member]
 
         connector.data_source = MagicMock()
-        connector.data_source.list_project_members_all = MagicMock(return_value=mock_members_res)
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=mock_members_res
+        )
 
         mock_permission = MagicMock()
-        connector._transform_restrictions_to_permisions = AsyncMock(return_value=mock_permission)
+        connector._transform_restrictions_to_permisions = AsyncMock(
+            return_value=mock_permission
+        )
 
         await connector._sync_project_members_as_pseudo(mock_project)
 
-        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][
+            0
+        ]
         (_, proj_perms), (_, work_perms), (_, code_perms), (_, mr_perms) = call_args
 
         assert mock_permission in proj_perms
@@ -4186,6 +4452,7 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         assert mock_permission not in code_perms
         assert mock_permission not in mr_perms
         connector.logger.warning.assert_called_once()
+
 
 class TestTransformRestrictionsToPermissions:
     """Tests for _transform_restrictions_to_permisions method."""
@@ -4229,7 +4496,9 @@ class TestTransformRestrictionsToPermissions:
         mock_member = MagicMock(spec=GroupMember)
         mock_member.id = 7
 
-        connector._create_permission_from_principal = AsyncMock(return_value=MagicMock())
+        connector._create_permission_from_principal = AsyncMock(
+            return_value=MagicMock()
+        )
 
         await connector._transform_restrictions_to_permisions(mock_member)
 
@@ -4305,17 +4574,20 @@ class TestTransformRestrictionsToPermissions:
         connector._create_permission_from_principal.assert_called_once()
         assert result is None
 
+
 class TestCreatePermissionFromPrincipal:
     """Unit tests for _create_permission_from_principal."""
 
-    def _make_tx_store(self, user=None, pseudo_group=None)->AsyncMock:
+    def _make_tx_store(self, user=None, pseudo_group=None) -> AsyncMock:
         """Helper to build a mock transaction store."""
         mock_tx_store = AsyncMock()
         mock_tx_store.get_user_by_source_id = AsyncMock(return_value=user)
-        mock_tx_store.get_user_group_by_external_id = AsyncMock(return_value=pseudo_group)
+        mock_tx_store.get_user_group_by_external_id = AsyncMock(
+            return_value=pseudo_group
+        )
         return mock_tx_store
 
-    def _attach_tx_store(self, connector, mock_tx_store)->None:
+    def _attach_tx_store(self, connector, mock_tx_store) -> None:
         """Attach a mock transaction store to the connector."""
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
@@ -4454,7 +4726,9 @@ class TestCreatePermissionFromPrincipal:
         assert result.entity_type == EntityType.GROUP
 
     @pytest.mark.asyncio
-    async def test_user_not_found_pseudo_group_creation_fails_returns_none(self) -> None:
+    async def test_user_not_found_pseudo_group_creation_fails_returns_none(
+        self,
+    ) -> None:
         """User not found + _create_pseudo_group returns None → method returns None."""
         connector = _make_connector()
 
@@ -4534,7 +4808,11 @@ class TestCreatePermissionFromPrincipal:
         """The permission_type arg is correctly set on the returned Permission."""
         connector = _make_connector()
 
-        for perm_type in [PermissionType.READ, PermissionType.WRITE, PermissionType.OWNER]:
+        for perm_type in [
+            PermissionType.READ,
+            PermissionType.WRITE,
+            PermissionType.OWNER,
+        ]:
             mock_user = MagicMock()
             mock_user.email = "user@example.com"
 
@@ -4546,6 +4824,7 @@ class TestCreatePermissionFromPrincipal:
             )
 
             assert result.type == perm_type
+
 
 class TestCreatePseudoGroup:
     """Unit tests for _create_pseudo_group."""
@@ -4685,10 +4964,11 @@ class TestCreatePseudoGroup:
 
         assert result is None
 
+
 class TestFetchIssuesBatched:
     """Unit tests for _fetch_issues_batched."""
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
         connector._build_issue_records = AsyncMock(return_value=[])
@@ -4696,7 +4976,7 @@ class TestFetchIssuesBatched:
         connector.data_source = MagicMock()
         return connector
 
-    def _make_issues_res(self, success=True, data=None)->MagicMock:
+    def _make_issues_res(self, success=True, data=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data
@@ -4844,10 +5124,13 @@ class TestFetchIssuesBatched:
 
         connector._get_issues_sync_checkpoint.assert_called_once_with(99)
 
+
 class TestProcessNewRecords:
     """Unit tests for _process_new_records."""
 
-    def _make_record_update(self, record_type, project_id="proj-1", updated_at="2024-01-01T00:00:00Z")->MagicMock:
+    def _make_record_update(
+        self, record_type, project_id="proj-1", updated_at="2024-01-01T00:00:00Z"
+    ) -> MagicMock:
         record = MagicMock()
         record.record_type = record_type
         record.source_updated_at = updated_at
@@ -4916,11 +5199,15 @@ class TestProcessNewRecords:
         connector._update_issues_sync_checkpoint = AsyncMock()
         connector._update_mrs_sync_checkpoint = AsyncMock()
 
-        ru = self._make_record_update(RecordType.TICKET, project_id="proj-1", updated_at="ts-1")
+        ru = self._make_record_update(
+            RecordType.TICKET, project_id="proj-1", updated_at="ts-1"
+        )
 
         await connector._process_new_records([ru])
 
-        connector._update_issues_sync_checkpoint.assert_called_once_with("proj-1", "ts-1")
+        connector._update_issues_sync_checkpoint.assert_called_once_with(
+            "proj-1", "ts-1"
+        )
         connector._update_mrs_sync_checkpoint.assert_not_called()
 
     @pytest.mark.asyncio
@@ -4930,7 +5217,9 @@ class TestProcessNewRecords:
         connector._update_issues_sync_checkpoint = AsyncMock()
         connector._update_mrs_sync_checkpoint = AsyncMock()
 
-        ru = self._make_record_update(RecordType.PULL_REQUEST, project_id="proj-2", updated_at="ts-2")
+        ru = self._make_record_update(
+            RecordType.PULL_REQUEST, project_id="proj-2", updated_at="ts-2"
+        )
 
         await connector._process_new_records([ru])
 
@@ -4980,7 +5269,9 @@ class TestProcessNewRecords:
         connector._update_issues_sync_checkpoint.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_exception_in_on_new_records_sets_need_sync_update_false(self) -> None:
+    async def test_exception_in_on_new_records_sets_need_sync_update_false(
+        self,
+    ) -> None:
         """When on_new_records raises, checkpoint update is suppressed for subsequent batches."""
         connector = _make_connector()
         connector.batch_size = 2
@@ -5018,12 +5309,18 @@ class TestProcessNewRecords:
         connector.batch_size = 10
         connector._update_issues_sync_checkpoint = AsyncMock()
 
-        ru1 = self._make_record_update(RecordType.TICKET, project_id="proj-A", updated_at="ts-A")
-        ru2 = self._make_record_update(RecordType.TICKET, project_id="proj-B", updated_at="ts-B")
+        ru1 = self._make_record_update(
+            RecordType.TICKET, project_id="proj-A", updated_at="ts-A"
+        )
+        ru2 = self._make_record_update(
+            RecordType.TICKET, project_id="proj-B", updated_at="ts-B"
+        )
 
         await connector._process_new_records([ru1, ru2])
 
-        connector._update_issues_sync_checkpoint.assert_called_once_with("proj-B", "ts-B")
+        connector._update_issues_sync_checkpoint.assert_called_once_with(
+            "proj-B", "ts-B"
+        )
 
     @pytest.mark.asyncio
     async def test_batches_are_sliced_correctly(self) -> None:
@@ -5032,28 +5329,39 @@ class TestProcessNewRecords:
         connector.batch_size = 2
         connector._update_issues_sync_checkpoint = AsyncMock()
 
-        ru1 = self._make_record_update(RecordType.TICKET, project_id="p1", updated_at="t1")
-        ru2 = self._make_record_update(RecordType.TICKET, project_id="p2", updated_at="t2")
-        ru3 = self._make_record_update(RecordType.TICKET, project_id="p3", updated_at="t3")
+        ru1 = self._make_record_update(
+            RecordType.TICKET, project_id="p1", updated_at="t1"
+        )
+        ru2 = self._make_record_update(
+            RecordType.TICKET, project_id="p2", updated_at="t2"
+        )
+        ru3 = self._make_record_update(
+            RecordType.TICKET, project_id="p3", updated_at="t3"
+        )
 
         await connector._process_new_records([ru1, ru2, ru3])
 
-        first_call = connector.data_entities_processor.on_new_records.call_args_list[0][0][0]
-        second_call = connector.data_entities_processor.on_new_records.call_args_list[1][0][0]
+        first_call = connector.data_entities_processor.on_new_records.call_args_list[0][
+            0
+        ][0]
+        second_call = connector.data_entities_processor.on_new_records.call_args_list[
+            1
+        ][0][0]
 
         assert len(first_call) == 2
         assert len(second_call) == 1
 
+
 class TestBuildIssueRecords:
     """Unit tests for _build_issue_records."""
 
-    def _make_issue(self, description="")->MagicMock:
+    def _make_issue(self, description="") -> MagicMock:
         issue = MagicMock(spec=ProjectIssue)
         issue.description = description
         issue.title = "Test Issue"
         return issue
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector._process_issue_incident_task_to_ticket = AsyncMock()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
@@ -5139,7 +5447,9 @@ class TestBuildIssueRecords:
         connector._process_issue_incident_task_to_ticket = AsyncMock(
             return_value=mock_record_update
         )
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], "cleaned"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([], "cleaned")
+        )
 
         issue = self._make_issue(description="no attachments here")
         await connector._build_issue_records([issue])
@@ -5246,7 +5556,9 @@ class TestBuildIssueRecords:
         assert result == [mock_record_update]
 
     @pytest.mark.asyncio
-    async def test_make_files_records_from_notes_called_with_issue_and_record(self) -> None:
+    async def test_make_files_records_from_notes_called_with_issue_and_record(
+        self,
+    ) -> None:
         """make_files_records_from_notes is called with the issue and the ticket record."""
         connector = self._setup_connector()
         mock_record = MagicMock()
@@ -5259,7 +5571,9 @@ class TestBuildIssueRecords:
         issue = self._make_issue()
         await connector._build_issue_records([issue])
 
-        connector.make_files_records_from_notes.assert_called_once_with(issue, mock_record)
+        connector.make_files_records_from_notes.assert_called_once_with(
+            issue, mock_record
+        )
 
     @pytest.mark.asyncio
     async def test_all_record_updates_combined_in_correct_order(self) -> None:
@@ -5305,6 +5619,7 @@ class TestBuildIssueRecords:
         assert ru2 in result
         assert connector._process_issue_incident_task_to_ticket.call_count == 2
 
+
 class TestProcessIssueIncidentTaskToTicket:
     """Unit tests for _process_issue_incident_task_to_ticket."""
 
@@ -5320,7 +5635,7 @@ class TestProcessIssueIncidentTaskToTicket:
         updated_at="2024-01-02T00:00:00Z",
         created_at="2024-01-01T00:00:00Z",
         description="some description",
-    )->MagicMock:
+    ) -> MagicMock:
         issue = MagicMock(spec=ProjectIssue)
         issue.id = issue_id
         issue.title = title
@@ -5334,9 +5649,11 @@ class TestProcessIssueIncidentTaskToTicket:
         issue.description = description
         return issue
 
-    def _attach_tx_store(self, connector, existing_record=None)->AsyncMock:
+    def _attach_tx_store(self, connector, existing_record=None) -> AsyncMock:
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=existing_record
+        )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
@@ -5362,7 +5679,9 @@ class TestProcessIssueIncidentTaskToTicket:
         connector = _make_connector()
         self._attach_tx_store(connector, existing_record=None)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.is_new is True
 
@@ -5375,7 +5694,9 @@ class TestProcessIssueIncidentTaskToTicket:
         existing.record_name = "Fix bug"
         self._attach_tx_store(connector, existing_record=existing)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.is_new is False
 
@@ -5388,7 +5709,9 @@ class TestProcessIssueIncidentTaskToTicket:
         existing.record_name = "Fix bug"
         self._attach_tx_store(connector, existing_record=existing)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.is_updated is True
 
@@ -5431,7 +5754,9 @@ class TestProcessIssueIncidentTaskToTicket:
         existing.record_name = "Fix bug"
         self._attach_tx_store(connector, existing_record=existing)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.content_changed is True
 
@@ -5444,7 +5769,9 @@ class TestProcessIssueIncidentTaskToTicket:
         existing.record_name = "Fix bug"
         self._attach_tx_store(connector, existing_record=existing)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.record.id == "reused-uuid"
 
@@ -5454,7 +5781,9 @@ class TestProcessIssueIncidentTaskToTicket:
         connector = _make_connector()
         self._attach_tx_store(connector, existing_record=None)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.record.id is not None
         assert len(result.record.id) > 0
@@ -5559,7 +5888,9 @@ class TestProcessIssueIncidentTaskToTicket:
         connector = _make_connector()
         self._attach_tx_store(connector, existing_record=None)
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result.is_new is True
         assert result.is_updated is False
@@ -5588,7 +5919,9 @@ class TestProcessIssueIncidentTaskToTicket:
         connector = _make_connector()
         mock_tx_store = self._attach_tx_store(connector, existing_record=None)
 
-        await connector._process_issue_incident_task_to_ticket(self._make_issue(issue_id=99))
+        await connector._process_issue_incident_task_to_ticket(
+            self._make_issue(issue_id=99)
+        )
 
         mock_tx_store.get_record_by_external_id.assert_called_once_with(
             connector_id="gitlab-conn-1", external_id="99"
@@ -5602,9 +5935,12 @@ class TestProcessIssueIncidentTaskToTicket:
             side_effect=Exception("connection error")
         )
 
-        result = await connector._process_issue_incident_task_to_ticket(self._make_issue())
+        result = await connector._process_issue_incident_task_to_ticket(
+            self._make_issue()
+        )
 
         assert result is None
+
 
 class TestBuildTicketBlocks:
     """Unit tests for _build_ticket_blocks."""
@@ -5615,7 +5951,7 @@ class TestBuildTicketBlocks:
         external_record_group_id="10-work-items",
         record_name="Fix bug",
         external_record_id="42",
-    )->MagicMock:
+    ) -> MagicMock:
         record = MagicMock(spec=Record)
         record.weburl = weburl
         record.external_record_group_id = external_record_group_id
@@ -5623,26 +5959,28 @@ class TestBuildTicketBlocks:
         record.external_record_id = external_record_id
         return record
 
-    def _make_issue_res(self, success=True, data=None, error=None)->MagicMock:
+    def _make_issue_res(self, success=True, data=None, error=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data
         res.error = error
         return res
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.embed_images_as_base64 = AsyncMock(return_value="embedded content")
         connector.make_child_records_of_attachments = AsyncMock(return_value=([], []))
         connector._build_comment_blocks = AsyncMock(return_value=([], []))
         connector._process_new_records = AsyncMock()
         connector.string_to_datetime = MagicMock(
-    return_value=datetime(2024, 1, 1, tzinfo=timezone.utc)
-)
+            return_value=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
         connector.data_source = MagicMock()
         return connector
 
-    def _make_issue_obj(self, title="Fix bug", description="desc", updated_at="2024-01-01T00:00:00Z")->MagicMock:
+    def _make_issue_obj(
+        self, title="Fix bug", description="desc", updated_at="2024-01-01T00:00:00Z"
+    ) -> MagicMock:
         issue = MagicMock()
         issue.title = title
         issue.description = description
@@ -5693,7 +6031,9 @@ class TestBuildTicketBlocks:
             await connector._build_ticket_blocks(record)
 
     @pytest.mark.asyncio
-    async def test_get_issue_called_with_parsed_project_id_and_issue_number(self) -> None:
+    async def test_get_issue_called_with_parsed_project_id_and_issue_number(
+        self,
+    ) -> None:
         """project_id and issue_iid are correctly parsed from the weburl."""
         connector = self._setup_connector()
         issue_obj = self._make_issue_obj()
@@ -5769,7 +6109,9 @@ class TestBuildTicketBlocks:
         )
 
     @pytest.mark.asyncio
-    async def test_make_child_records_called_with_raw_description_and_record(self) -> None:
+    async def test_make_child_records_called_with_raw_description_and_record(
+        self,
+    ) -> None:
         """make_child_records_of_attachments receives the raw (pre-embed) description."""
         connector = self._setup_connector()
         issue_obj = self._make_issue_obj(description="raw desc")
@@ -5792,7 +6134,9 @@ class TestBuildTicketBlocks:
         connector.data_source.get_issue = MagicMock(
             return_value=self._make_issue_res(success=True, data=issue_obj)
         )
-        record = self._make_record(weburl="https://gitlab.com/group/project/-/issues/42")
+        record = self._make_record(
+            weburl="https://gitlab.com/group/project/-/issues/42"
+        )
 
         await connector._build_ticket_blocks(record)
 
@@ -5842,6 +6186,7 @@ class TestBuildTicketBlocks:
     async def test_returned_bytes_is_valid_json(self) -> None:
         """The returned bytes can be decoded and parsed as JSON."""
         import json
+
         connector = self._setup_connector()
         issue_obj = self._make_issue_obj()
         connector.data_source.get_issue = MagicMock(
@@ -5871,13 +6216,17 @@ class TestBuildTicketBlocks:
             source_group_id="https://gitlab.com/-/issues/42#note_1",
             data="a comment",
         )
-        connector._build_comment_blocks = AsyncMock(return_value=([mock_comment_bg], []))
+        connector._build_comment_blocks = AsyncMock(
+            return_value=([mock_comment_bg], [])
+        )
 
         result = await connector._build_ticket_blocks(self._make_record())
 
         import json
+
         parsed = json.loads(result.decode("utf-8"))
         assert len(parsed["block_groups"]) == 2  # bg_0 (description) + comment
+
 
 class TestHandleRecordUpdates:
     """Unit tests for _handle_record_updates."""
@@ -5892,6 +6241,7 @@ class TestHandleRecordUpdates:
 
         assert result is None
 
+
 class TestReindexRecords:
     """Unit tests for reindex_records."""
 
@@ -5903,6 +6253,7 @@ class TestReindexRecords:
         result = await connector.reindex_records()
 
         assert result is None
+
 
 class TestRunIncrementalSync:
     """Unit tests for run_incremental_sync."""
@@ -5916,6 +6267,7 @@ class TestRunIncrementalSync:
 
         assert result is None
 
+
 class TestBuildCommentBlocks:
     """Unit tests for _build_comment_blocks."""
 
@@ -5923,26 +6275,26 @@ class TestBuildCommentBlocks:
         self,
         external_record_group_id="10-work-items",
         weburl="https://gitlab.com/group/project/-/issues/42",
-    )->MagicMock:
+    ) -> MagicMock:
         record = MagicMock(spec=Record)
         record.external_record_group_id = external_record_group_id
         record.weburl = weburl
         return record
 
-    def _make_comments_res(self, success=True, data=None, error=None)->MagicMock:
+    def _make_comments_res(self, success=True, data=None, error=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data if data is not None else []
         res.error = error
         return res
 
-    def _make_comment(self, body="comment body", username="alice")->MagicMock:
+    def _make_comment(self, body="comment body", username="alice") -> MagicMock:
         comment = MagicMock(spec=ProjectIssueNote)
         comment.body = body
         comment.author = {"username": username} if username else {}
         return comment
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.make_child_records_of_attachments = AsyncMock(return_value=([], []))
@@ -5982,7 +6334,9 @@ class TestBuildCommentBlocks:
         assert remaining == []
 
     @pytest.mark.asyncio
-    async def test_list_issue_notes_called_with_parsed_project_id_and_issue_number(self) -> None:
+    async def test_list_issue_notes_called_with_parsed_project_id_and_issue_number(
+        self,
+    ) -> None:
         """project_id and issue_iid are correctly parsed from record and URL respectively."""
         connector = self._setup_connector()
         connector.data_source.list_issue_notes = MagicMock(
@@ -6021,7 +6375,9 @@ class TestBuildCommentBlocks:
         """First BlockGroup index is parent_index + 1."""
         connector = self._setup_connector()
         connector.data_source.list_issue_notes = MagicMock(
-            return_value=self._make_comments_res(success=True, data=[self._make_comment()])
+            return_value=self._make_comments_res(
+                success=True, data=[self._make_comment()]
+            )
         )
 
         block_groups, _ = await connector._build_comment_blocks(
@@ -6193,25 +6549,30 @@ class TestBuildCommentBlocks:
         assert bg.requires_processing is True
         assert bg.parent_index == 0
 
+
 class TestBuildMergeRequestCommentBlocks:
     """Unit tests for _build_merge_request_comment_blocks."""
 
     _MR_URL = "https://gitlab.com/group/project/-/merge_requests/5"
 
-    def _make_record(self, external_record_group_id="10-merge-requests", record_name="My MR")->MagicMock:
+    def _make_record(
+        self, external_record_group_id="10-merge-requests", record_name="My MR"
+    ) -> MagicMock:
         record = MagicMock(spec=Record)
         record.external_record_group_id = external_record_group_id
         record.record_name = record_name
         return record
 
-    def _make_res(self, success=True, data=None, error=None)->MagicMock:
+    def _make_res(self, success=True, data=None, error=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data if data is not None else []
         res.error = error
         return res
 
-    def _make_regular_comment(self, body="a comment", username="alice", system=False)->MagicMock:
+    def _make_regular_comment(
+        self, body="a comment", username="alice", system=False
+    ) -> MagicMock:
         comment = MagicMock(spec=ProjectMergeRequestNote)
         comment.body = body
         comment.system = system
@@ -6221,7 +6582,9 @@ class TestBuildMergeRequestCommentBlocks:
         comment.created_at = "2024-01-01T00:00:00Z"
         return comment
 
-    def _make_review_comment(self, body="review", username="bob", file_path="src/main.py")->MagicMock:
+    def _make_review_comment(
+        self, body="review", username="bob", file_path="src/main.py"
+    ) -> MagicMock:
         comment = MagicMock(spec=ProjectMergeRequestNote)
         comment.body = body
         comment.system = False
@@ -6231,15 +6594,15 @@ class TestBuildMergeRequestCommentBlocks:
         comment.created_at = "2024-01-01T00:00:00Z"
         return comment
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.embed_images_as_base64 = AsyncMock(return_value="embedded")
         connector.make_child_records_of_attachments = AsyncMock(return_value=([], []))
         connector.make_block_comment_of_attachments = AsyncMock(return_value=([], []))
         connector.string_to_datetime = MagicMock(
-    return_value=datetime(2024, 1, 1, tzinfo=timezone.utc)
-)
+            return_value=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
         connector.data_source.list_merge_request_notes = MagicMock(
             return_value=self._make_res(success=True, data=[])
         )
@@ -6263,7 +6626,9 @@ class TestBuildMergeRequestCommentBlocks:
             return_value=self._make_res(success=False, error="timeout")
         )
 
-        with pytest.raises(Exception, match="Failed to fetch comments for merge request"):
+        with pytest.raises(
+            Exception, match="Failed to fetch comments for merge request"
+        ):
             await connector._build_merge_request_comment_blocks(
                 mr_url=self._MR_URL, parent_index=0, record=self._make_record()
             )
@@ -6309,7 +6674,8 @@ class TestBuildMergeRequestCommentBlocks:
         connector = self._setup_connector()
         connector.data_source.list_merge_request_notes = MagicMock(
             return_value=self._make_res(
-                success=True, data=[self._make_regular_comment(username="alice", system=False)]
+                success=True,
+                data=[self._make_regular_comment(username="alice", system=False)],
             )
         )
 
@@ -6325,7 +6691,8 @@ class TestBuildMergeRequestCommentBlocks:
         connector = self._setup_connector()
         connector.data_source.list_merge_request_notes = MagicMock(
             return_value=self._make_res(
-                success=True, data=[self._make_regular_comment(username="alice", system=True)]
+                success=True,
+                data=[self._make_regular_comment(username="alice", system=True)],
             )
         )
 
@@ -6341,7 +6708,8 @@ class TestBuildMergeRequestCommentBlocks:
         connector = self._setup_connector()
         connector.data_source.list_merge_request_notes = MagicMock(
             return_value=self._make_res(
-                success=True, data=[self._make_regular_comment(username=None, system=False)]
+                success=True,
+                data=[self._make_regular_comment(username=None, system=False)],
             )
         )
 
@@ -6357,7 +6725,8 @@ class TestBuildMergeRequestCommentBlocks:
         connector = self._setup_connector()
         connector.data_source.list_merge_request_notes = MagicMock(
             return_value=self._make_res(
-                success=True, data=[self._make_regular_comment(username=None, system=True)]
+                success=True,
+                data=[self._make_regular_comment(username=None, system=True)],
             )
         )
 
@@ -6489,7 +6858,9 @@ class TestBuildMergeRequestCommentBlocks:
             return_value=self._make_res(success=False, error="forbidden")
         )
 
-        with pytest.raises(Exception, match="Failed to fetch file changes for merge request"):
+        with pytest.raises(
+            Exception, match="Failed to fetch file changes for merge request"
+        ):
             await connector._build_merge_request_comment_blocks(
                 mr_url=self._MR_URL, parent_index=0, record=self._make_record()
             )
@@ -6499,12 +6870,26 @@ class TestBuildMergeRequestCommentBlocks:
         """One BlockGroup of PR_FILE_CHANGE sub_type is created per file change."""
         connector = self._setup_connector()
         file_content_res = self._make_res(success=True, data=MagicMock(content=""))
-        connector.data_source.get_file_content = MagicMock(return_value=file_content_res)
+        connector.data_source.get_file_content = MagicMock(
+            return_value=file_content_res
+        )
         changes = [
-            {"new_path": "a.py", "diff": "d1", "new_file": False, "deleted_file": False,
-             "generated_file": False, "too_large": False},
-            {"new_path": "b.py", "diff": "d2", "new_file": False, "deleted_file": False,
-             "generated_file": False, "too_large": False},
+            {
+                "new_path": "a.py",
+                "diff": "d1",
+                "new_file": False,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": False,
+            },
+            {
+                "new_path": "b.py",
+                "diff": "d2",
+                "new_file": False,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": False,
+            },
         ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
@@ -6514,7 +6899,9 @@ class TestBuildMergeRequestCommentBlocks:
             mr_url=self._MR_URL, parent_index=0, record=self._make_record()
         )
 
-        file_bgs = [bg for bg in block_groups if bg.sub_type == GroupSubType.PR_FILE_CHANGE]
+        file_bgs = [
+            bg for bg in block_groups if bg.sub_type == GroupSubType.PR_FILE_CHANGE
+        ]
         assert len(file_bgs) == 2
 
     @pytest.mark.asyncio
@@ -6524,8 +6911,16 @@ class TestBuildMergeRequestCommentBlocks:
         connector.data_source.get_file_content = MagicMock(
             return_value=self._make_res(success=True, data=MagicMock(content=""))
         )
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": True,
-                    "deleted_file": False, "generated_file": False, "too_large": False}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": True,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6540,8 +6935,16 @@ class TestBuildMergeRequestCommentBlocks:
     async def test_deleted_file_data_prefixed_correctly(self) -> None:
         """Data for a deleted file starts with '[Deleted file]'."""
         connector = self._setup_connector()
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": False,
-                    "deleted_file": True, "generated_file": False, "too_large": False}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": False,
+                "deleted_file": True,
+                "generated_file": False,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6559,8 +6962,16 @@ class TestBuildMergeRequestCommentBlocks:
         connector.data_source.get_file_content = MagicMock(
             return_value=self._make_res(success=True, data=MagicMock(content=""))
         )
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": False,
-                    "deleted_file": False, "generated_file": True, "too_large": False}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": False,
+                "deleted_file": False,
+                "generated_file": True,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6578,8 +6989,16 @@ class TestBuildMergeRequestCommentBlocks:
         connector.data_source.get_file_content = MagicMock(
             return_value=self._make_res(success=True, data=MagicMock(content=""))
         )
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": False,
-                    "deleted_file": False, "generated_file": False, "too_large": False}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": False,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6597,8 +7016,16 @@ class TestBuildMergeRequestCommentBlocks:
         connector.data_source.get_file_content = MagicMock(
             return_value=self._make_res(success=True, data=MagicMock(content=""))
         )
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": False,
-                    "deleted_file": False, "generated_file": False, "too_large": True}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": False,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": True,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6613,8 +7040,16 @@ class TestBuildMergeRequestCommentBlocks:
     async def test_file_content_fetch_skipped_for_deleted_file(self) -> None:
         """get_file_content is not called for deleted files."""
         connector = self._setup_connector()
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": False,
-                    "deleted_file": True, "generated_file": False, "too_large": False}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": False,
+                "deleted_file": True,
+                "generated_file": False,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6632,8 +7067,16 @@ class TestBuildMergeRequestCommentBlocks:
         connector.data_source.get_file_content = MagicMock(
             return_value=self._make_res(success=False, error="not found")
         )
-        changes = [{"new_path": "x.py", "diff": "d", "new_file": True,
-                    "deleted_file": False, "generated_file": False, "too_large": False}]
+        changes = [
+            {
+                "new_path": "x.py",
+                "diff": "d",
+                "new_file": True,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6642,7 +7085,9 @@ class TestBuildMergeRequestCommentBlocks:
             mr_url=self._MR_URL, parent_index=0, record=self._make_record()
         )
 
-        file_bgs = [bg for bg in block_groups if bg.sub_type == GroupSubType.PR_FILE_CHANGE]
+        file_bgs = [
+            bg for bg in block_groups if bg.sub_type == GroupSubType.PR_FILE_CHANGE
+        ]
         assert len(file_bgs) == 0
 
     @pytest.mark.asyncio
@@ -6662,8 +7107,16 @@ class TestBuildMergeRequestCommentBlocks:
         connector.data_source.get_file_content = MagicMock(
             return_value=self._make_res(success=True, data=MagicMock(content=""))
         )
-        changes = [{"new_path": "src/main.py", "diff": "d", "new_file": False,
-                    "deleted_file": False, "generated_file": False, "too_large": False}]
+        changes = [
+            {
+                "new_path": "src/main.py",
+                "diff": "d",
+                "new_file": False,
+                "deleted_file": False,
+                "generated_file": False,
+                "too_large": False,
+            }
+        ]
         connector.data_source.list_merge_request_changes = MagicMock(
             return_value=self._make_res(success=True, data={"changes": changes})
         )
@@ -6672,42 +7125,49 @@ class TestBuildMergeRequestCommentBlocks:
             mr_url=self._MR_URL, parent_index=0, record=self._make_record()
         )
 
-        file_bg = next(bg for bg in block_groups if bg.sub_type == GroupSubType.PR_FILE_CHANGE)
-        assert len(file_bg.comments) == 1               # one thread
+        file_bg = next(
+            bg for bg in block_groups if bg.sub_type == GroupSubType.PR_FILE_CHANGE
+        )
+        assert len(file_bg.comments) == 1  # one thread
         thread = file_bg.comments[0]
-        assert len(thread) == 1                          # one comment in the thread
+        assert len(thread) == 1  # one comment in the thread
         block_comment = thread[0]
         assert isinstance(block_comment, BlockComment)
-        assert block_comment.attachments == [real_attachment]   # real_attachment is inside it
+        assert block_comment.attachments == [
+            real_attachment
+        ]  # real_attachment is inside it
         assert block_comment.format == DataFormat.MARKDOWN
-        assert block_comment.text == "embedded"          # whatever embed_images_as_base64 returns
+        assert (
+            block_comment.text == "embedded"
+        )  # whatever embed_images_as_base64 returns
+
 
 class TestMakeFilesRecordsFromNotes:
     """Unit tests for make_files_records_from_notes."""
 
-    def _make_issue(self, project_id="42", iid=7, title="Test Issue")->MagicMock:
+    def _make_issue(self, project_id="42", iid=7, title="Test Issue") -> MagicMock:
         issue = MagicMock(spec=ProjectIssue)
         issue.project_id = project_id
         issue.iid = iid
         issue.title = title
         return issue
 
-    def _make_record(self)->MagicMock:
+    def _make_record(self) -> MagicMock:
         return MagicMock(spec=Record)
 
-    def _make_notes_res(self, success=True, data=None, error=None)->MagicMock:
+    def _make_notes_res(self, success=True, data=None, error=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data  # intentionally allow None to pass through
         res.error = error
         return res
 
-    def _make_note(self, body="note body")->MagicMock:
+    def _make_note(self, body="note body") -> MagicMock:
         note = MagicMock(spec=ProjectIssueNote)
         note.body = body
         return note
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
@@ -6787,7 +7247,9 @@ class TestMakeFilesRecordsFromNotes:
                 success=True, data=[self._make_note("plain text")]
             )
         )
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], "plain text"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([], "plain text")
+        )
 
         result = await connector.make_files_records_from_notes(
             issue=self._make_issue(), record=self._make_record()
@@ -6800,9 +7262,7 @@ class TestMakeFilesRecordsFromNotes:
         """make_file_records_from_list is not called when parse returns no attachments."""
         connector = self._setup_connector()
         connector.data_source.list_issue_notes = MagicMock(
-            return_value=self._make_notes_res(
-                success=True, data=[self._make_note()]
-            )
+            return_value=self._make_notes_res(success=True, data=[self._make_note()])
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
 
@@ -6845,9 +7305,7 @@ class TestMakeFilesRecordsFromNotes:
         record = self._make_record()
 
         connector.data_source.list_issue_notes = MagicMock(
-            return_value=self._make_notes_res(
-                success=True, data=[self._make_note()]
-            )
+            return_value=self._make_notes_res(success=True, data=[self._make_note()])
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([mock_attachment], "")
@@ -6862,13 +7320,13 @@ class TestMakeFilesRecordsFromNotes:
         )
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list_when_make_file_records_returns_empty(self) -> None:
+    async def test_returns_empty_list_when_make_file_records_returns_empty(
+        self,
+    ) -> None:
         """Empty list is returned when make_file_records_from_list yields nothing."""
         connector = self._setup_connector()
         connector.data_source.list_issue_notes = MagicMock(
-            return_value=self._make_notes_res(
-                success=True, data=[self._make_note()]
-            )
+            return_value=self._make_notes_res(success=True, data=[self._make_note()])
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([MagicMock()], "")
@@ -6981,32 +7439,33 @@ class TestMakeFilesRecordsFromNotes:
                 record=self._make_record(),
             )
 
+
 class TestMakeFilesRecordsFromNotesMr:
     """Unit tests for make_files_records_from_notes_mr."""
 
-    def _make_mr(self, project_id="42", iid=5, title="Test MR")->MagicMock:
+    def _make_mr(self, project_id="42", iid=5, title="Test MR") -> MagicMock:
         mr = MagicMock(spec=ProjectMergeRequest)
         mr.project_id = project_id
         mr.iid = iid
         mr.title = title
         return mr
 
-    def _make_record(self)->MagicMock:
+    def _make_record(self) -> MagicMock:
         return MagicMock(spec=Record)
 
-    def _make_notes_res(self, success=True, data=None, error=None)->MagicMock:
+    def _make_notes_res(self, success=True, data=None, error=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data  # intentionally allow None to pass through
         res.error = error
         return res
 
-    def _make_note(self, body="note body")->MagicMock:
+    def _make_note(self, body="note body") -> MagicMock:
         note = MagicMock(spec=ProjectMergeRequestNote)
         note.body = body
         return note
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
@@ -7086,7 +7545,9 @@ class TestMakeFilesRecordsFromNotesMr:
                 success=True, data=[self._make_note("plain text")]
             )
         )
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], "plain text"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([], "plain text")
+        )
 
         result = await connector.make_files_records_from_notes_mr(
             mr=self._make_mr(), record=self._make_record()
@@ -7099,9 +7560,7 @@ class TestMakeFilesRecordsFromNotesMr:
         """make_file_records_from_list is not called when parse returns no attachments."""
         connector = self._setup_connector()
         connector.data_source.list_merge_request_notes = MagicMock(
-            return_value=self._make_notes_res(
-                success=True, data=[self._make_note()]
-            )
+            return_value=self._make_notes_res(success=True, data=[self._make_note()])
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
 
@@ -7144,9 +7603,7 @@ class TestMakeFilesRecordsFromNotesMr:
         record = self._make_record()
 
         connector.data_source.list_merge_request_notes = MagicMock(
-            return_value=self._make_notes_res(
-                success=True, data=[self._make_note()]
-            )
+            return_value=self._make_notes_res(success=True, data=[self._make_note()])
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([mock_attachment], "")
@@ -7161,13 +7618,13 @@ class TestMakeFilesRecordsFromNotesMr:
         )
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list_when_make_file_records_returns_empty(self) -> None:
+    async def test_returns_empty_list_when_make_file_records_returns_empty(
+        self,
+    ) -> None:
         """Empty list is returned when make_file_records_from_list yields nothing."""
         connector = self._setup_connector()
         connector.data_source.list_merge_request_notes = MagicMock(
-            return_value=self._make_notes_res(
-                success=True, data=[self._make_note()]
-            )
+            return_value=self._make_notes_res(success=True, data=[self._make_note()])
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([MagicMock()], "")
@@ -7280,10 +7737,11 @@ class TestMakeFilesRecordsFromNotesMr:
                 record=self._make_record(),
             )
 
+
 class TestFetchPrsBatched:
     """Unit tests for _fetch_prs_batched."""
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector._get_mr_sync_checkpoint = AsyncMock(return_value=None)
         connector._build_pr_records = AsyncMock(return_value=[])
@@ -7291,7 +7749,7 @@ class TestFetchPrsBatched:
         connector.data_source = MagicMock()
         return connector
 
-    def _make_prs_res(self, success=True, data=None)->MagicMock:
+    def _make_prs_res(self, success=True, data=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data
@@ -7342,7 +7800,9 @@ class TestFetchPrsBatched:
     # ── sync checkpoint → updated_after conversion ────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_sync_checkpoint_none_passes_none_to_list_merge_requests(self) -> None:
+    async def test_sync_checkpoint_none_passes_none_to_list_merge_requests(
+        self,
+    ) -> None:
         """When checkpoint is None, updated_after=None is passed."""
         connector = self._setup_connector()
         connector._get_mr_sync_checkpoint = AsyncMock(return_value=None)
@@ -7492,16 +7952,17 @@ class TestFetchPrsBatched:
         assert connector._build_pr_records.call_count == 2
         assert connector._process_new_records.call_count == 2
 
+
 class TestBuildPrRecords:
     """Unit tests for _build_pr_records."""
 
-    def _make_pr(self, description="")->MagicMock:
+    def _make_pr(self, description="") -> MagicMock:
         pr = MagicMock(spec=ProjectMergeRequest)
         pr.description = description
         pr.title = "Test MR"
         return pr
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector._process_mr_to_pull_request = AsyncMock()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
@@ -7571,9 +8032,13 @@ class TestBuildPrRecords:
         mock_ru.record = MagicMock()
         connector._process_mr_to_pull_request = AsyncMock(return_value=mock_ru)
 
-        await connector._build_pr_records([self._make_pr(description="some **markdown**")])
+        await connector._build_pr_records(
+            [self._make_pr(description="some **markdown**")]
+        )
 
-        connector.parse_gitlab_uploads_clean_test.assert_called_once_with("some **markdown**")
+        connector.parse_gitlab_uploads_clean_test.assert_called_once_with(
+            "some **markdown**"
+        )
 
     # ── description attachments ───────────────────────────────────────────────
 
@@ -7584,14 +8049,18 @@ class TestBuildPrRecords:
         mock_ru = MagicMock(spec=RecordUpdate)
         mock_ru.record = MagicMock()
         connector._process_mr_to_pull_request = AsyncMock(return_value=mock_ru)
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], "cleaned"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([], "cleaned")
+        )
 
         await connector._build_pr_records([self._make_pr(description="no files")])
 
         connector.make_file_records_from_list.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_file_records_added_when_description_attachments_present(self) -> None:
+    async def test_file_records_added_when_description_attachments_present(
+        self,
+    ) -> None:
         """File RecordUpdates from make_file_records_from_list are included in the result."""
         connector = self._setup_connector()
         mock_ru = MagicMock(spec=RecordUpdate)
@@ -7606,13 +8075,17 @@ class TestBuildPrRecords:
             return_value=[mock_file_ru1, mock_file_ru2]
         )
 
-        result = await connector._build_pr_records([self._make_pr(description="![img](/uploads/img.png)")])
+        result = await connector._build_pr_records(
+            [self._make_pr(description="![img](/uploads/img.png)")]
+        )
 
         assert mock_file_ru1 in result
         assert mock_file_ru2 in result
 
     @pytest.mark.asyncio
-    async def test_make_file_records_called_with_attachments_and_pr_record(self) -> None:
+    async def test_make_file_records_called_with_attachments_and_pr_record(
+        self,
+    ) -> None:
         """make_file_records_from_list receives the parsed attachments and record_update.record."""
         connector = self._setup_connector()
         mock_record = MagicMock()
@@ -7656,7 +8129,9 @@ class TestBuildPrRecords:
         mock_ru.record = MagicMock()
         connector._process_mr_to_pull_request = AsyncMock(return_value=mock_ru)
         mock_note_ru = MagicMock(spec=RecordUpdate)
-        connector.make_files_records_from_notes_mr = AsyncMock(return_value=[mock_note_ru])
+        connector.make_files_records_from_notes_mr = AsyncMock(
+            return_value=[mock_note_ru]
+        )
 
         result = await connector._build_pr_records([self._make_pr()])
 
@@ -7689,7 +8164,9 @@ class TestBuildPrRecords:
         assert result == [mock_ru]
 
     @pytest.mark.asyncio
-    async def test_make_files_records_from_notes_mr_called_with_pr_and_record(self) -> None:
+    async def test_make_files_records_from_notes_mr_called_with_pr_and_record(
+        self,
+    ) -> None:
         """make_files_records_from_notes_mr is called with the PR and record_update.record."""
         connector = self._setup_connector()
         mock_record = MagicMock()
@@ -7700,7 +8177,9 @@ class TestBuildPrRecords:
         pr = self._make_pr()
         await connector._build_pr_records([pr])
 
-        connector.make_files_records_from_notes_mr.assert_called_once_with(pr, mock_record)
+        connector.make_files_records_from_notes_mr.assert_called_once_with(
+            pr, mock_record
+        )
 
     # ── combined ordering ─────────────────────────────────────────────────────
 
@@ -7720,7 +8199,9 @@ class TestBuildPrRecords:
         connector.make_file_records_from_list = AsyncMock(return_value=[mock_file_ru])
 
         mock_note_ru = MagicMock(spec=RecordUpdate)
-        connector.make_files_records_from_notes_mr = AsyncMock(return_value=[mock_note_ru])
+        connector.make_files_records_from_notes_mr = AsyncMock(
+            return_value=[mock_note_ru]
+        )
 
         result = await connector._build_pr_records([self._make_pr(description="desc")])
 
@@ -7760,6 +8241,7 @@ class TestBuildPrRecords:
         assert connector.parse_gitlab_uploads_clean_test.call_count == 1
         assert connector.make_files_records_from_notes_mr.call_count == 1
 
+
 class TestProcessMrToPullRequest:
     """Unit tests for _process_mr_to_pull_request."""
 
@@ -7777,7 +8259,7 @@ class TestProcessMrToPullRequest:
         reviewers=None,
         merged_by=None,
         merge_status="can_be_merged",
-    )->MagicMock:
+    ) -> MagicMock:
         pr = MagicMock(spec=ProjectMergeRequest)
         pr.id = pr_id
         pr.title = title
@@ -7793,9 +8275,11 @@ class TestProcessMrToPullRequest:
         pr.merge_status = merge_status
         return pr
 
-    def _attach_tx_store(self, connector, existing_record=None)->AsyncMock:
+    def _attach_tx_store(self, connector, existing_record=None) -> AsyncMock:
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=existing_record
+        )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
@@ -8140,6 +8624,7 @@ class TestProcessMrToPullRequest:
             await connector._process_mr_to_pull_request(self._make_pr())
         connector.logger.error.assert_called_once()
 
+
 class TestBuildPullRequestBlocks:
     """Unit tests for _build_pull_request_blocks."""
 
@@ -8151,7 +8636,7 @@ class TestBuildPullRequestBlocks:
         external_record_group_id="10-merge-requests",
         record_name="Add feature",
         external_record_id="42",
-    )->MagicMock:
+    ) -> MagicMock:
         record = MagicMock(spec=Record)
         record.weburl = weburl if weburl is not None else self._MR_URL
         record.external_record_group_id = external_record_group_id
@@ -8159,7 +8644,7 @@ class TestBuildPullRequestBlocks:
         record.external_record_id = external_record_id
         return record
 
-    def _make_res(self, success=True, data=None, error=None)->MagicMock:
+    def _make_res(self, success=True, data=None, error=None) -> MagicMock:
         res = MagicMock()
         res.success = success
         res.data = data
@@ -8168,14 +8653,21 @@ class TestBuildPullRequestBlocks:
 
     def _make_mr_obj(
         self, title="Add feature", description="desc", updated_at="2024-03-01T00:00:00Z"
-    )->MagicMock:
+    ) -> MagicMock:
         mr = MagicMock()
         mr.title = title
         mr.description = description
         mr.updated_at = updated_at
         return mr
 
-    def _make_commit(self, message="msg", title="title", web_url="http://c", commit_id="abc", committed_date="2024-03-01T00:00:00Z")->MagicMock:
+    def _make_commit(
+        self,
+        message="msg",
+        title="title",
+        web_url="http://c",
+        commit_id="abc",
+        committed_date="2024-03-01T00:00:00Z",
+    ) -> MagicMock:
         commit = MagicMock(spec=ProjectCommit)
         commit.message = message
         commit.title = title
@@ -8184,7 +8676,7 @@ class TestBuildPullRequestBlocks:
         commit.committed_date = committed_date
         return commit
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.embed_images_as_base64 = AsyncMock(return_value="embedded")
         connector.make_child_records_of_attachments = AsyncMock(return_value=([], []))
@@ -8224,7 +8716,9 @@ class TestBuildPullRequestBlocks:
     # ── get_merge_request call args ───────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_get_merge_request_called_with_parsed_project_id_and_mr_number(self) -> None:
+    async def test_get_merge_request_called_with_parsed_project_id_and_mr_number(
+        self,
+    ) -> None:
         """project_id comes from external_record_group_id prefix; mr_iid from URL index 7."""
         connector = self._setup_connector()
         record = self._make_record(
@@ -8269,7 +8763,9 @@ class TestBuildPullRequestBlocks:
         """embed_images_as_base64 receives the raw description and the base project URL."""
         connector = self._setup_connector()
         connector.data_source.get_merge_request = MagicMock(
-            return_value=self._make_res(success=True, data=self._make_mr_obj(description="raw markdown"))
+            return_value=self._make_res(
+                success=True, data=self._make_mr_obj(description="raw markdown")
+            )
         )
         record = self._make_record(
             weburl="https://gitlab.com/group/project/-/merge_requests/42",
@@ -8287,7 +8783,9 @@ class TestBuildPullRequestBlocks:
         """When mr.description is None, embed_images_as_base64 receives ''."""
         connector = self._setup_connector()
         connector.data_source.get_merge_request = MagicMock(
-            return_value=self._make_res(success=True, data=self._make_mr_obj(description=None))
+            return_value=self._make_res(
+                success=True, data=self._make_mr_obj(description=None)
+            )
         )
 
         await connector._build_pull_request_blocks(self._make_record())
@@ -8299,11 +8797,15 @@ class TestBuildPullRequestBlocks:
     # ── make_child_records_of_attachments ────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_make_child_records_called_with_raw_description_and_record(self) -> None:
+    async def test_make_child_records_called_with_raw_description_and_record(
+        self,
+    ) -> None:
         """make_child_records_of_attachments receives the raw (pre-embed) description."""
         connector = self._setup_connector()
         connector.data_source.get_merge_request = MagicMock(
-            return_value=self._make_res(success=True, data=self._make_mr_obj(description="raw desc"))
+            return_value=self._make_res(
+                success=True, data=self._make_mr_obj(description="raw desc")
+            )
         )
         record = self._make_record()
 
@@ -8330,7 +8832,9 @@ class TestBuildPullRequestBlocks:
     # ── list_merge_requests_commits call args ─────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_list_commits_called_with_correct_project_id_and_mr_number(self) -> None:
+    async def test_list_commits_called_with_correct_project_id_and_mr_number(
+        self,
+    ) -> None:
         """list_merge_requests_commits is called with the parsed project_id and mr_iid."""
         connector = self._setup_connector()
         record = self._make_record(
@@ -8361,6 +8865,7 @@ class TestBuildPullRequestBlocks:
     async def test_no_commit_blocks_when_commits_data_is_empty(self) -> None:
         """When commits data is empty, the commits BlockGroup has no blocks."""
         import json
+
         connector = self._setup_connector()
         connector.data_source.list_merge_requests_commits = MagicMock(
             return_value=self._make_res(success=True, data=[])
@@ -8377,6 +8882,7 @@ class TestBuildPullRequestBlocks:
     async def test_one_block_created_per_commit(self) -> None:
         """A Block is created for each commit in the commits list."""
         import json
+
         connector = self._setup_connector()
         commits = [self._make_commit(message="msg1"), self._make_commit(message="msg2")]
         connector.data_source.list_merge_requests_commits = MagicMock(
@@ -8392,6 +8898,7 @@ class TestBuildPullRequestBlocks:
     async def test_commit_block_fields_mapped_correctly(self) -> None:
         """Commit block carries the correct message, title, web_url, and id."""
         import json
+
         connector = self._setup_connector()
         commit = self._make_commit(
             message="feat: add login",
@@ -8416,6 +8923,7 @@ class TestBuildPullRequestBlocks:
     async def test_commit_block_sub_type_is_commit(self) -> None:
         """Each commit block has sub_type COMMIT."""
         import json
+
         connector = self._setup_connector()
         connector.data_source.list_merge_requests_commits = MagicMock(
             return_value=self._make_res(success=True, data=[self._make_commit()])
@@ -8430,6 +8938,7 @@ class TestBuildPullRequestBlocks:
     async def test_commit_block_indices_are_sequential(self) -> None:
         """Block indices increment sequentially across commits."""
         import json
+
         connector = self._setup_connector()
         commits = [self._make_commit(), self._make_commit(), self._make_commit()]
         connector.data_source.list_merge_requests_commits = MagicMock(
@@ -8448,6 +8957,7 @@ class TestBuildPullRequestBlocks:
     async def test_description_block_group_is_first(self) -> None:
         """The first BlockGroup (index 0) is the title+description group."""
         import json
+
         connector = self._setup_connector()
 
         result = await connector._build_pull_request_blocks(self._make_record())
@@ -8460,6 +8970,7 @@ class TestBuildPullRequestBlocks:
     async def test_comment_block_groups_included_in_container(self) -> None:
         """BlockGroups returned by _build_merge_request_comment_blocks appear in output."""
         import json
+
         connector = self._setup_connector()
         mock_comment_bg = BlockGroup(
             index=1,
@@ -8516,6 +9027,7 @@ class TestBuildPullRequestBlocks:
     async def test_returned_bytes_is_valid_json(self) -> None:
         """The returned bytes can be decoded and parsed as JSON."""
         import json
+
         connector = self._setup_connector()
 
         result = await connector._build_pull_request_blocks(self._make_record())
@@ -8524,6 +9036,7 @@ class TestBuildPullRequestBlocks:
         assert "block_groups" in parsed
         assert "blocks" in parsed
 
+
 class TestEmbedImagesAsBase64:
     """Unit tests for embed_images_as_base64."""
 
@@ -8531,11 +9044,13 @@ class TestEmbedImagesAsBase64:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _setup_connector(self)->GitLabConnector:
+    def _setup_connector(self) -> GitLabConnector:
         connector = _make_connector()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
         connector.data_source = MagicMock()
-        connector.data_source.get_img_bytes = AsyncMock(return_value=self._make_bytes_res(success=False))
+        connector.data_source.get_img_bytes = AsyncMock(
+            return_value=self._make_bytes_res(success=False)
+        )
         return connector
 
     def _make_img_bytes(self, fmt: str = "PNG") -> bytes:
@@ -8549,7 +9064,9 @@ class TestEmbedImagesAsBase64:
         res.data = data
         return res
 
-    def _img_attach(self, href: str = "/uploads/abc123abc123abc123abc123abc123ab/image.png") -> FileAttachment:
+    def _img_attach(
+        self, href: str = "/uploads/abc123abc123abc123abc123abc123ab/image.png"
+    ) -> FileAttachment:
         return FileAttachment(
             href=href,
             filename=href.rsplit("/", 1)[-1],
@@ -8557,7 +9074,9 @@ class TestEmbedImagesAsBase64:
             category="image",
         )
 
-    def _file_attach(self, href: str = "/uploads/abc123abc123abc123abc123abc123ab/doc.pdf") -> FileAttachment:
+    def _file_attach(
+        self, href: str = "/uploads/abc123abc123abc123abc123abc123ab/doc.pdf"
+    ) -> FileAttachment:
         return FileAttachment(
             href=href,
             filename="doc.pdf",
@@ -8571,7 +9090,9 @@ class TestEmbedImagesAsBase64:
     async def test_no_attachments_returns_cleaned_markdown(self) -> None:
         """When parse returns no attachments, the cleaned text is returned unchanged."""
         connector = self._setup_connector()
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], "plain text"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([], "plain text")
+        )
 
         result = await connector.embed_images_as_base64("plain text", self.BASE_URL)
 
@@ -8599,13 +9120,22 @@ class TestEmbedImagesAsBase64:
         connector = self._setup_connector()
         raw_bytes = self._make_img_bytes("PNG")
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
-            return_value=([self._img_attach("/uploads/abc123abc123abc123abc123abc123ab/image.png")], "description text")
+            return_value=(
+                [
+                    self._img_attach(
+                        "/uploads/abc123abc123abc123abc123abc123ab/image.png"
+                    )
+                ],
+                "description text",
+            )
         )
         connector.data_source.get_img_bytes = AsyncMock(
             return_value=self._make_bytes_res(success=True, data=raw_bytes)
         )
 
-        result = await connector.embed_images_as_base64("description text", self.BASE_URL)
+        result = await connector.embed_images_as_base64(
+            "description text", self.BASE_URL
+        )
 
         expected_b64 = base64.b64encode(raw_bytes).decode("utf-8")
         assert f"![Image](data:image/png;base64,{expected_b64})" in result
@@ -8617,7 +9147,14 @@ class TestEmbedImagesAsBase64:
         connector = self._setup_connector()
         raw_bytes = self._make_img_bytes("JPEG")
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
-            return_value=([self._img_attach("/uploads/abc123abc123abc123abc123abc123ab/photo.jpg")], "text")
+            return_value=(
+                [
+                    self._img_attach(
+                        "/uploads/abc123abc123abc123abc123abc123ab/photo.jpg"
+                    )
+                ],
+                "text",
+            )
         )
         connector.data_source.get_img_bytes = AsyncMock(
             return_value=self._make_bytes_res(success=True, data=raw_bytes)
@@ -8655,7 +9192,9 @@ class TestEmbedImagesAsBase64:
             self._img_attach("/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/img1.png"),
             self._img_attach("/uploads/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/img2.png"),
         ]
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=(attachments, "base text"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=(attachments, "base text")
+        )
         connector.data_source.get_img_bytes = AsyncMock(
             side_effect=[
                 self._make_bytes_res(success=True, data=raw1),
@@ -8678,7 +9217,9 @@ class TestEmbedImagesAsBase64:
             self._file_attach(),
             self._img_attach("/uploads/abc123abc123abc123abc123abc123ab/shot.png"),
         ]
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=(attachments, "text"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=(attachments, "text")
+        )
         connector.data_source.get_img_bytes = AsyncMock(
             return_value=self._make_bytes_res(success=True, data=raw_bytes)
         )
@@ -8731,7 +9272,9 @@ class TestEmbedImagesAsBase64:
             self._img_attach("/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bad.png"),
             self._img_attach("/uploads/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/good.png"),
         ]
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=(attachments, "text"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=(attachments, "text")
+        )
         connector.data_source.get_img_bytes = AsyncMock(
             side_effect=[
                 Exception("network error"),
@@ -8775,7 +9318,9 @@ class TestEmbedImagesAsBase64:
         mock_img = MagicMock()
         mock_img.format = None
 
-        with patch("app.connectors.sources.gitlab.connector.Image.open", return_value=mock_img):
+        with patch(
+            "app.connectors.sources.gitlab.connector.Image.open", return_value=mock_img
+        ):
             result = await connector.embed_images_as_base64("text", self.BASE_URL)
 
         assert "data:image/png;base64," in result
@@ -8803,6 +9348,7 @@ class TestEmbedImagesAsBase64:
 
         connector.parse_gitlab_uploads_clean_test.assert_awaited_once_with(body)
 
+
 class TestMakeFileRecordsFromList:
     """Unit tests for make_file_records_from_list."""
 
@@ -8827,7 +9373,9 @@ class TestMakeFileRecordsFromList:
         filetype: str = "pdf",
         category: str = "attachment",
     ) -> FileAttachment:
-        return FileAttachment(href=href, filename=filename, filetype=filetype, category=category)
+        return FileAttachment(
+            href=href, filename=filename, filetype=filetype, category=category
+        )
 
     def _img_attach(
         self,
@@ -8842,7 +9390,9 @@ class TestMakeFileRecordsFromList:
 
     def _attach_tx_store(self, connector, existing_record=None) -> AsyncMock:
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=existing_record
+        )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
@@ -8850,7 +9400,7 @@ class TestMakeFileRecordsFromList:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
         return mock_tx_store
 
-    def _setup_connector(self, existing_record=None)->GitLabConnector:
+    def _setup_connector(self, existing_record=None) -> GitLabConnector:
         connector = _make_connector()
         self._attach_tx_store(connector, existing_record=existing_record)
         return connector
@@ -8907,11 +9457,17 @@ class TestMakeFileRecordsFromList:
         """Two non-image attachments produce two RecordUpdates."""
         connector = self._setup_connector()
         attachments = [
-            self._file_attach(href="/uploads/aaa/a.pdf", filename="a.pdf", filetype="pdf"),
-            self._file_attach(href="/uploads/bbb/b.docx", filename="b.docx", filetype="docx"),
+            self._file_attach(
+                href="/uploads/aaa/a.pdf", filename="a.pdf", filetype="pdf"
+            ),
+            self._file_attach(
+                href="/uploads/bbb/b.docx", filename="b.docx", filetype="docx"
+            ),
         ]
 
-        result = await connector.make_file_records_from_list(attachments, self._make_record())
+        result = await connector.make_file_records_from_list(
+            attachments, self._make_record()
+        )
 
         assert len(result) == 2
 
@@ -8982,7 +9538,10 @@ class TestMakeFileRecordsFromList:
             [self._file_attach(href=href)], record
         )
 
-        assert result[0].record.external_record_id == f"https://gitlab.com/api/v4/projects/10{href}"
+        assert (
+            result[0].record.external_record_id
+            == f"https://gitlab.com/api/v4/projects/10{href}"
+        )
 
     @pytest.mark.asyncio
     async def test_record_update_external_record_id_matches_full_url(self) -> None:
@@ -8995,7 +9554,10 @@ class TestMakeFileRecordsFromList:
             [self._file_attach(href=href)], record
         )
 
-        assert result[0].external_record_id == f"https://gitlab.com/api/v4/projects/10{href}"
+        assert (
+            result[0].external_record_id
+            == f"https://gitlab.com/api/v4/projects/10{href}"
+        )
 
     @pytest.mark.asyncio
     async def test_filerecord_org_id_from_connector(self) -> None:
@@ -9025,7 +9587,9 @@ class TestMakeFileRecordsFromList:
         connector = self._setup_connector()
         record = self._make_record(external_record_id="99")
 
-        result = await connector.make_file_records_from_list([self._file_attach()], record)
+        result = await connector.make_file_records_from_list(
+            [self._file_attach()], record
+        )
 
         assert result[0].record.parent_external_record_id == "99"
 
@@ -9035,7 +9599,9 @@ class TestMakeFileRecordsFromList:
         connector = self._setup_connector()
         record = self._make_record(external_record_group_id="55-work-items")
 
-        result = await connector.make_file_records_from_list([self._file_attach()], record)
+        result = await connector.make_file_records_from_list(
+            [self._file_attach()], record
+        )
 
         assert result[0].record.external_record_group_id == "55-work-items"
 
@@ -9133,12 +9699,15 @@ class TestMakeFileRecordsFromList:
         href = "/uploads/abc123abc123abc123abc123abc123ab/file.pdf"
         record = self._make_record(external_record_group_id="10-work-items")
 
-        await connector.make_file_records_from_list([self._file_attach(href=href)], record)
+        await connector.make_file_records_from_list(
+            [self._file_attach(href=href)], record
+        )
 
         mock_tx_store.get_record_by_external_id.assert_awaited_once_with(
             connector_id="gitlab-conn-1",
             external_id=f"https://gitlab.com/api/v4/projects/10{href}",
         )
+
 
 class TestFetchAttachmentContent:
     """Unit tests for _fetch_attachment_content."""
@@ -9159,15 +9728,15 @@ class TestFetchAttachmentContent:
 
     async def _collect(self, connector, record) -> list[bytes]:
         """Drain the async generator and return all yielded chunks."""
-        return  [chunk async for chunk in connector._fetch_attachment_content(record)]
+        return [chunk async for chunk in connector._fetch_attachment_content(record)]
 
-    def _setup_connector(self, chunks: list[bytes] | None = None)->GitLabConnector:
+    def _setup_connector(self, chunks: list[bytes] | None = None) -> GitLabConnector:
         """Return a connector whose data_source streams the given chunks."""
         connector = _make_connector()
         connector.data_source = MagicMock()
 
-        async def _gen(_url)->AsyncGenerator[bytes, None]:
-            for c in (chunks or []):
+        async def _gen(_url) -> AsyncGenerator[bytes, None]:
+            for c in chunks or []:
                 yield c
 
         connector.data_source.get_attachment_files_content = _gen
@@ -9209,16 +9778,20 @@ class TestFetchAttachmentContent:
         connector = _make_connector()
         connector.data_source = MagicMock()
 
-        async def _spy(url)->AsyncGenerator[bytes, None]:
+        async def _spy(url) -> AsyncGenerator[bytes, None]:
             called_with.append(url)
             yield b"data"
 
         connector.data_source.get_attachment_files_content = _spy
-        record = self._make_record(weburl="https://gitlab.com/api/v4/projects/10/uploads/abc/f.pdf")
+        record = self._make_record(
+            weburl="https://gitlab.com/api/v4/projects/10/uploads/abc/f.pdf"
+        )
 
         await self._collect(connector, record)
 
-        assert called_with == ["https://gitlab.com/api/v4/projects/10/uploads/abc/f.pdf"]
+        assert called_with == [
+            "https://gitlab.com/api/v4/projects/10/uploads/abc/f.pdf"
+        ]
 
     # ── missing attachment_id ─────────────────────────────────────────────────
 
@@ -9243,7 +9816,9 @@ class TestFetchAttachmentContent:
                 pass
 
     @pytest.mark.asyncio
-    async def test_error_message_includes_record_id_for_missing_attachment_id(self) -> None:
+    async def test_error_message_includes_record_id_for_missing_attachment_id(
+        self,
+    ) -> None:
         """The error message contains the record id when external_record_id is absent."""
         connector = self._setup_connector()
         record = self._make_record(record_id="rec-99", external_record_id=None)
@@ -9292,7 +9867,7 @@ class TestFetchAttachmentContent:
         connector = _make_connector()
         connector.data_source = MagicMock()
 
-        async def _boom(_url)->AsyncGenerator[bytes, None]:
+        async def _boom(_url) -> AsyncGenerator[bytes, None]:
             raise RuntimeError("network timeout")
             yield  # make it a generator
 
@@ -9308,7 +9883,7 @@ class TestFetchAttachmentContent:
         connector = _make_connector()
         connector.data_source = MagicMock()
 
-        async def _boom(_url)->AsyncGenerator[bytes, None]:
+        async def _boom(_url) -> AsyncGenerator[bytes, None]:
             raise RuntimeError("disk error")
             yield
 
@@ -9320,6 +9895,7 @@ class TestFetchAttachmentContent:
 
         assert exc_info.value.__cause__ is not None
         assert "disk error" in str(exc_info.value.__cause__)
+
 
 class TestMakeChildRecordsOfAttachments:
     """Unit tests for make_child_records_of_attachments."""
@@ -9341,7 +9917,9 @@ class TestMakeChildRecordsOfAttachments:
         filetype: str = "pdf",
         category: str = "attachment",
     ) -> FileAttachment:
-        return FileAttachment(href=href, filename=filename, filetype=filetype, category=category)
+        return FileAttachment(
+            href=href, filename=filename, filetype=filetype, category=category
+        )
 
     def _img_attach(
         self,
@@ -9373,7 +9951,9 @@ class TestMakeChildRecordsOfAttachments:
 
     def _attach_tx_store(self, connector, existing_record=None) -> AsyncMock:
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=existing_record
+        )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
@@ -9381,7 +9961,7 @@ class TestMakeChildRecordsOfAttachments:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
         return mock_tx_store
 
-    def _setup_connector(self, existing_record=None)->GitLabConnector:
+    def _setup_connector(self, existing_record=None) -> GitLabConnector:
         connector = _make_connector()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
         connector.make_file_records_from_list = AsyncMock(return_value=[])
@@ -9457,12 +10037,16 @@ class TestMakeChildRecordsOfAttachments:
         assert len(remaining) == 1
 
     @pytest.mark.asyncio
-    async def test_make_file_records_from_list_called_with_single_attach_and_record(self) -> None:
+    async def test_make_file_records_from_list_called_with_single_attach_and_record(
+        self,
+    ) -> None:
         """make_file_records_from_list is called with a single-element list and the parent record."""
         connector = self._setup_connector(existing_record=None)
         attach = self._file_attach()
         record = self._make_record()
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([attach], "cleaned"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([attach], "cleaned")
+        )
         connector.make_file_records_from_list = AsyncMock(return_value=[])
 
         await connector.make_child_records_of_attachments("markdown", record)
@@ -9488,9 +10072,13 @@ class TestMakeChildRecordsOfAttachments:
     # ── existing record in DB ─────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_existing_record_creates_child_record_without_calling_make_file(self) -> None:
+    async def test_existing_record_creates_child_record_without_calling_make_file(
+        self,
+    ) -> None:
         """When a matching record exists in DB, make_file_records_from_list is never called."""
-        existing = self._make_existing_record(record_id="exist-1", record_name="old.pdf")
+        existing = self._make_existing_record(
+            record_id="exist-1", record_name="old.pdf"
+        )
         connector = self._setup_connector(existing_record=existing)
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([self._file_attach()], "cleaned")
@@ -9528,7 +10116,9 @@ class TestMakeChildRecordsOfAttachments:
         """full_attachment_url is built from project_id (split from group_id) and attach.href."""
         connector = self._setup_connector(existing_record=None)
         attach = self._file_attach(href="/uploads/abc/doc.pdf")
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([attach], "cleaned"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([attach], "cleaned")
+        )
         connector.make_file_records_from_list = AsyncMock(return_value=[])
 
         mock_tx_store = AsyncMock()
@@ -9556,8 +10146,12 @@ class TestMakeChildRecordsOfAttachments:
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=(
                 [
-                    self._file_attach(href="/uploads/aaa/a.pdf", filename="a.pdf", filetype="pdf"),
-                    self._file_attach(href="/uploads/bbb/b.docx", filename="b.docx", filetype="docx"),
+                    self._file_attach(
+                        href="/uploads/aaa/a.pdf", filename="a.pdf", filetype="pdf"
+                    ),
+                    self._file_attach(
+                        href="/uploads/bbb/b.docx", filename="b.docx", filetype="docx"
+                    ),
                 ],
                 "cleaned",
             )
@@ -9576,7 +10170,9 @@ class TestMakeChildRecordsOfAttachments:
     @pytest.mark.asyncio
     async def test_mixed_existing_and_new_files(self) -> None:
         """One existing and one new attachment: existing becomes ChildRecord, new goes through make_file_records."""
-        existing = self._make_existing_record(record_id="exist-99", record_name="exists.pdf")
+        existing = self._make_existing_record(
+            record_id="exist-99", record_name="exists.pdf"
+        )
         connector = self._setup_connector()
         ru_new = self._make_record_update(record_id="new-99", record_name="new.pdf")
 
@@ -9590,7 +10186,9 @@ class TestMakeChildRecordsOfAttachments:
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=(
                 [
-                    self._file_attach(href="/uploads/aaa/exists.pdf", filename="exists.pdf"),
+                    self._file_attach(
+                        href="/uploads/aaa/exists.pdf", filename="exists.pdf"
+                    ),
                     self._file_attach(href="/uploads/bbb/new.pdf", filename="new.pdf"),
                 ],
                 "cleaned",
@@ -9628,7 +10226,9 @@ class TestMakeBlockCommentOfAttachments:
         filetype: str = "pdf",
         category: str = "attachment",
     ) -> FileAttachment:
-        return FileAttachment(href=href, filename=filename, filetype=filetype, category=category)
+        return FileAttachment(
+            href=href, filename=filename, filetype=filetype, category=category
+        )
 
     def _img_attach(
         self,
@@ -9660,7 +10260,9 @@ class TestMakeBlockCommentOfAttachments:
 
     def _attach_tx_store(self, connector, existing_record=None) -> AsyncMock:
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=existing_record
+        )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store
@@ -9668,7 +10270,7 @@ class TestMakeBlockCommentOfAttachments:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
         return mock_tx_store
 
-    def _setup_connector(self, existing_record=None)->GitLabConnector:
+    def _setup_connector(self, existing_record=None) -> GitLabConnector:
         connector = _make_connector()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([], ""))
         connector.make_file_records_from_list = AsyncMock(return_value=[])
@@ -9682,9 +10284,10 @@ class TestMakeBlockCommentOfAttachments:
         """When parse returns no attachments, both output lists are empty."""
         connector = self._setup_connector()
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
-            "", self._make_record()
-        )
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments("", self._make_record())
 
         assert comment_attachments == []
         assert remaining == []
@@ -9697,7 +10300,10 @@ class TestMakeBlockCommentOfAttachments:
             return_value=([self._img_attach()], "cleaned")
         )
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "![img](/uploads/abc/img.png)", self._make_record()
         )
 
@@ -9714,7 +10320,10 @@ class TestMakeBlockCommentOfAttachments:
         )
         connector.make_file_records_from_list = AsyncMock(return_value=[mock_ru])
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "markdown", self._make_record()
         )
 
@@ -9724,7 +10333,9 @@ class TestMakeBlockCommentOfAttachments:
     # ── new record (no existing record in DB) ─────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_new_file_creates_comment_attachment_from_make_file_records(self) -> None:
+    async def test_new_file_creates_comment_attachment_from_make_file_records(
+        self,
+    ) -> None:
         """When no existing record is found, make_file_records_from_list result becomes a CommentAttachment."""
         connector = self._setup_connector(existing_record=None)
         mock_ru = self._make_record_update(record_id="new-1", record_name="report.pdf")
@@ -9733,7 +10344,10 @@ class TestMakeBlockCommentOfAttachments:
         )
         connector.make_file_records_from_list = AsyncMock(return_value=[mock_ru])
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "markdown", self._make_record()
         )
 
@@ -9743,12 +10357,16 @@ class TestMakeBlockCommentOfAttachments:
         assert len(remaining) == 1
 
     @pytest.mark.asyncio
-    async def test_make_file_records_from_list_called_with_single_attach_and_record(self) -> None:
+    async def test_make_file_records_from_list_called_with_single_attach_and_record(
+        self,
+    ) -> None:
         """make_file_records_from_list is called with a single-element list and the parent record."""
         connector = self._setup_connector(existing_record=None)
         attach = self._file_attach()
         record = self._make_record()
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([attach], "cleaned"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([attach], "cleaned")
+        )
         connector.make_file_records_from_list = AsyncMock(return_value=[])
 
         await connector.make_block_comment_of_attachments("markdown", record)
@@ -9756,7 +10374,9 @@ class TestMakeBlockCommentOfAttachments:
         connector.make_file_records_from_list.assert_called_once_with([attach], record)
 
     @pytest.mark.asyncio
-    async def test_make_file_records_returns_empty_no_comment_attachment_added(self) -> None:
+    async def test_make_file_records_returns_empty_no_comment_attachment_added(
+        self,
+    ) -> None:
         """When make_file_records_from_list returns [], no CommentAttachment is appended."""
         connector = self._setup_connector(existing_record=None)
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
@@ -9764,7 +10384,10 @@ class TestMakeBlockCommentOfAttachments:
         )
         connector.make_file_records_from_list = AsyncMock(return_value=[])
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "markdown", self._make_record()
         )
 
@@ -9774,15 +10397,22 @@ class TestMakeBlockCommentOfAttachments:
     # ── existing record in DB ─────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_existing_record_creates_comment_attachment_without_calling_make_file(self) -> None:
+    async def test_existing_record_creates_comment_attachment_without_calling_make_file(
+        self,
+    ) -> None:
         """When a matching record exists in DB, make_file_records_from_list is never called."""
-        existing = self._make_existing_record(record_id="exist-1", record_name="old.pdf")
+        existing = self._make_existing_record(
+            record_id="exist-1", record_name="old.pdf"
+        )
         connector = self._setup_connector(existing_record=existing)
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([self._file_attach()], "cleaned")
         )
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "markdown", self._make_record()
         )
 
@@ -9814,7 +10444,9 @@ class TestMakeBlockCommentOfAttachments:
         """full_attachment_url is built from project_id (split from group_id) and attach.href."""
         connector = self._setup_connector(existing_record=None)
         attach = self._file_attach(href="/uploads/abc/doc.pdf")
-        connector.parse_gitlab_uploads_clean_test = AsyncMock(return_value=([attach], "cleaned"))
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([attach], "cleaned")
+        )
         connector.make_file_records_from_list = AsyncMock(return_value=[])
 
         mock_tx_store = AsyncMock()
@@ -9834,7 +10466,9 @@ class TestMakeBlockCommentOfAttachments:
     # ── multiple attachments ──────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_multiple_new_files_produce_multiple_comment_attachments(self) -> None:
+    async def test_multiple_new_files_produce_multiple_comment_attachments(
+        self,
+    ) -> None:
         """Two new file attachments each produce a CommentAttachment and a RecordUpdate."""
         connector = self._setup_connector(existing_record=None)
         ru1 = self._make_record_update(record_id="new-1", record_name="a.pdf")
@@ -9842,15 +10476,22 @@ class TestMakeBlockCommentOfAttachments:
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=(
                 [
-                    self._file_attach(href="/uploads/aaa/a.pdf", filename="a.pdf", filetype="pdf"),
-                    self._file_attach(href="/uploads/bbb/b.docx", filename="b.docx", filetype="docx"),
+                    self._file_attach(
+                        href="/uploads/aaa/a.pdf", filename="a.pdf", filetype="pdf"
+                    ),
+                    self._file_attach(
+                        href="/uploads/bbb/b.docx", filename="b.docx", filetype="docx"
+                    ),
                 ],
                 "cleaned",
             )
         )
         connector.make_file_records_from_list = AsyncMock(side_effect=[[ru1], [ru2]])
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "markdown", self._make_record()
         )
 
@@ -9862,7 +10503,9 @@ class TestMakeBlockCommentOfAttachments:
     @pytest.mark.asyncio
     async def test_mixed_existing_and_new_files(self) -> None:
         """One existing and one new attachment: existing produces CommentAttachment, new goes through make_file_records."""
-        existing = self._make_existing_record(record_id="exist-99", record_name="exists.pdf")
+        existing = self._make_existing_record(
+            record_id="exist-99", record_name="exists.pdf"
+        )
         connector = self._setup_connector()
         ru_new = self._make_record_update(record_id="new-99", record_name="new.pdf")
 
@@ -9876,7 +10519,9 @@ class TestMakeBlockCommentOfAttachments:
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=(
                 [
-                    self._file_attach(href="/uploads/aaa/exists.pdf", filename="exists.pdf"),
+                    self._file_attach(
+                        href="/uploads/aaa/exists.pdf", filename="exists.pdf"
+                    ),
                     self._file_attach(href="/uploads/bbb/new.pdf", filename="new.pdf"),
                 ],
                 "cleaned",
@@ -9884,7 +10529,10 @@ class TestMakeBlockCommentOfAttachments:
         )
         connector.make_file_records_from_list = AsyncMock(return_value=[ru_new])
 
-        comment_attachments, remaining = await connector.make_block_comment_of_attachments(
+        (
+            comment_attachments,
+            remaining,
+        ) = await connector.make_block_comment_of_attachments(
             "markdown", self._make_record()
         )
 
@@ -9892,6 +10540,7 @@ class TestMakeBlockCommentOfAttachments:
         assert comment_attachments[0].id == "exist-99"
         assert comment_attachments[1].id == "new-99"
         assert len(remaining) == 1
+
 
 class TestGitlabConnectorCleanup:
     """Unit tests for cleanup."""
@@ -10086,6 +10735,7 @@ class TestGitlabConnectorCreateConnector:
                     created_by="user-1",
                 )
 
+
 class TestSyncRepoMain:
     """Unit tests for _sync_repo_main."""
 
@@ -10098,23 +10748,27 @@ class TestSyncRepoMain:
         end_cursor: str = "",
     ) -> str:
         """Build a JSON string mimicking the GraphQL repo-tree response."""
-        return json.dumps({
-            "data": {
-                "project": {
-                    "repository": {
-                        "paginatedTree": {
-                            "nodes": [{
-                                "trees": {"nodes": tree_nodes},
-                            }],
-                            "pageInfo": {
-                                "hasNextPage": has_next_page,
-                                "endCursor": end_cursor,
-                            },
+        return json.dumps(
+            {
+                "data": {
+                    "project": {
+                        "repository": {
+                            "paginatedTree": {
+                                "nodes": [
+                                    {
+                                        "trees": {"nodes": tree_nodes},
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": has_next_page,
+                                    "endCursor": end_cursor,
+                                },
+                            }
                         }
                     }
                 }
             }
-        })
+        )
 
     def _gql_file_response(
         self,
@@ -10126,23 +10780,31 @@ class TestSyncRepoMain:
         """Build a mock response for get_file_tree_g."""
         res = MagicMock()
         res.success = success
-        res.data = json.dumps({
-            "data": {
-                "project": {
-                    "repository": {
-                        "paginatedTree": {
-                            "nodes": [{
-                                "blobs": {"nodes": blob_nodes},
-                            }],
-                            "pageInfo": {
-                                "hasNextPage": has_next_page,
-                                "endCursor": end_cursor,
-                            },
+        res.data = (
+            json.dumps(
+                {
+                    "data": {
+                        "project": {
+                            "repository": {
+                                "paginatedTree": {
+                                    "nodes": [
+                                        {
+                                            "blobs": {"nodes": blob_nodes},
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": has_next_page,
+                                        "endCursor": end_cursor,
+                                    },
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }) if blob_nodes is not None else None
+            )
+            if blob_nodes is not None
+            else None
+        )
         res.error = None if success else "some error"
         return res
 
@@ -10180,9 +10842,13 @@ class TestSyncRepoMain:
             "webUrl": web_url,
         }
 
-    def _attach_tx_store(self, connector, existing_record=None, parent_record=None) -> AsyncMock:
+    def _attach_tx_store(
+        self, connector, existing_record=None, parent_record=None
+    ) -> AsyncMock:
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            return_value=existing_record
+        )
         mock_tx_store.get_record_by_path = AsyncMock(return_value=parent_record)
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
@@ -10191,12 +10857,16 @@ class TestSyncRepoMain:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
         return mock_tx_store
 
-    def _setup_connector(self, existing_record=None, parent_record=None)->GitLabConnector:
+    def _setup_connector(
+        self, existing_record=None, parent_record=None
+    ) -> GitLabConnector:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._process_new_records = AsyncMock()
         connector.build_code_file_records = AsyncMock()
-        self._attach_tx_store(connector, existing_record=existing_record, parent_record=parent_record)
+        self._attach_tx_store(
+            connector, existing_record=existing_record, parent_record=parent_record
+        )
         return connector
 
     # ── Phase 1: get_repo_tree_g early exits ──────────────────────────────────
@@ -10205,7 +10875,9 @@ class TestSyncRepoMain:
     async def test_returns_early_when_get_repo_tree_g_raises(self) -> None:
         """If get_repo_tree_g raises, the method logs an error and returns without processing."""
         connector = self._setup_connector()
-        connector.data_source.get_repo_tree_g = AsyncMock(side_effect=Exception("network"))
+        connector.data_source.get_repo_tree_g = AsyncMock(
+            side_effect=Exception("network")
+        )
 
         await connector._sync_repo_main(10, "my/project")
 
@@ -10231,12 +10903,20 @@ class TestSyncRepoMain:
         """If paginatedTree.nodes is empty, logs info and returns."""
         connector = self._setup_connector()
         tree_res = MagicMock()
-        tree_res.data = json.dumps({
-            "data": {"project": {"repository": {"paginatedTree": {
-                "nodes": [],
-                "pageInfo": {"hasNextPage": False},
-            }}}}
-        })
+        tree_res.data = json.dumps(
+            {
+                "data": {
+                    "project": {
+                        "repository": {
+                            "paginatedTree": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": False},
+                            }
+                        }
+                    }
+                }
+            }
+        )
         connector.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res)
 
         await connector._sync_repo_main(10, "my/project")
@@ -10327,19 +11007,25 @@ class TestSyncRepoMain:
         connector = self._setup_connector(existing_record=None)
 
         page1_data = self._gql_tree_response(
-            tree_nodes=[self._make_tree_node(path="dir1", name="dir1", web_path="/p/dir1")],
+            tree_nodes=[
+                self._make_tree_node(path="dir1", name="dir1", web_path="/p/dir1")
+            ],
             has_next_page=True,
             end_cursor="cursor-page2",
         )
         page2_data = self._gql_tree_response(
-            tree_nodes=[self._make_tree_node(path="dir2", name="dir2", web_path="/p/dir2")],
+            tree_nodes=[
+                self._make_tree_node(path="dir2", name="dir2", web_path="/p/dir2")
+            ],
             has_next_page=False,
         )
         page1_res = MagicMock()
         page1_res.data = page1_data
         page2_res = MagicMock()
         page2_res.data = page2_data
-        connector.data_source.get_repo_tree_g = AsyncMock(side_effect=[page1_res, page2_res])
+        connector.data_source.get_repo_tree_g = AsyncMock(
+            side_effect=[page1_res, page2_res]
+        )
 
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
@@ -10348,8 +11034,9 @@ class TestSyncRepoMain:
 
         assert connector.data_source.get_repo_tree_g.call_count == 2
         second_call_kwargs = connector.data_source.get_repo_tree_g.call_args_list[1]
-        assert second_call_kwargs == ({"project_id": "my/project", "ref": "HEAD", "after_cursor": "cursor-page2"},)  \
-            or "cursor-page2" in str(second_call_kwargs)
+        assert second_call_kwargs == (
+            {"project_id": "my/project", "ref": "HEAD", "after_cursor": "cursor-page2"},
+        ) or "cursor-page2" in str(second_call_kwargs)
 
     @pytest.mark.asyncio
     async def test_tree_pagination_stops_when_end_cursor_is_empty(self) -> None:
@@ -10380,7 +11067,9 @@ class TestSyncRepoMain:
         tree_data = self._gql_tree_response(
             tree_nodes=[
                 self._make_tree_node(path="src", name="src", web_path="/p/src"),
-                self._make_tree_node(path="src/utils", name="utils", web_path="/p/src/utils"),
+                self._make_tree_node(
+                    path="src/utils", name="utils", web_path="/p/src/utils"
+                ),
             ],
         )
         tree_res = MagicMock()
@@ -10420,7 +11109,9 @@ class TestSyncRepoMain:
 
         tree_data = self._gql_tree_response(
             tree_nodes=[
-                self._make_tree_node(path="src/utils", name="utils", web_path="/p/src/utils"),
+                self._make_tree_node(
+                    path="src/utils", name="utils", web_path="/p/src/utils"
+                ),
             ],
         )
         tree_res = MagicMock()
@@ -10444,7 +11135,8 @@ class TestSyncRepoMain:
         connector.build_code_file_records = AsyncMock()
 
         call_count = [0]
-        async def _tx_enter(*_)->AsyncMock:
+
+        async def _tx_enter(*_) -> AsyncMock:
             call_count[0] += 1
             mock = AsyncMock()
             if call_count[0] == 1:
@@ -10531,7 +11223,20 @@ class TestSyncRepoMain:
         tree_res = MagicMock()
         tree_res.data = tree_data
         # Phase 1 returns early (no project_nodes)
-        empty_json = json.dumps({"data": {"project": {"repository": {"paginatedTree": {"nodes": [], "pageInfo": {"hasNextPage": False}}}}}})
+        empty_json = json.dumps(
+            {
+                "data": {
+                    "project": {
+                        "repository": {
+                            "paginatedTree": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": False},
+                            }
+                        }
+                    }
+                }
+            }
+        )
         tree_res.data = empty_json
         connector.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res)
         # Phase 1 exits early because nodes=[], never reaches phase 2
@@ -10545,7 +11250,9 @@ class TestSyncRepoMain:
         tree_res3 = MagicMock()
         tree_res3.data = tree_data3
         connector3.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res3)
-        connector3.data_source.get_file_tree_g = AsyncMock(side_effect=Exception("file tree error"))
+        connector3.data_source.get_file_tree_g = AsyncMock(
+            side_effect=Exception("file tree error")
+        )
 
         await connector3._sync_repo_main(10, "my/project")
 
@@ -10621,12 +11328,20 @@ class TestSyncRepoMain:
 
         file_res = MagicMock()
         file_res.success = True
-        file_res.data = json.dumps({
-            "data": {"project": {"repository": {"paginatedTree": {
-                "nodes": [],
-                "pageInfo": {"hasNextPage": False},
-            }}}}
-        })
+        file_res.data = json.dumps(
+            {
+                "data": {
+                    "project": {
+                        "repository": {
+                            "paginatedTree": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": False},
+                            }
+                        }
+                    }
+                }
+            }
+        )
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
         await connector._sync_repo_main(10, "my/project")
@@ -10650,7 +11365,9 @@ class TestSyncRepoMain:
 
         await connector._sync_repo_main(10, "my/project")
 
-        connector.build_code_file_records.assert_called_once_with(blobs, 10, "my/project")
+        connector.build_code_file_records.assert_called_once_with(
+            blobs, 10, "my/project"
+        )
 
     @pytest.mark.asyncio
     async def test_phase2_empty_blobs_does_not_call_build(self) -> None:
@@ -10681,9 +11398,13 @@ class TestSyncRepoMain:
 
         blob1 = [self._make_blob_node(name="a.py")]
         blob2 = [self._make_blob_node(name="b.py")]
-        file_res_1 = self._gql_file_response(blob_nodes=blob1, has_next_page=True, end_cursor="file-cursor-2")
+        file_res_1 = self._gql_file_response(
+            blob_nodes=blob1, has_next_page=True, end_cursor="file-cursor-2"
+        )
         file_res_2 = self._gql_file_response(blob_nodes=blob2, has_next_page=False)
-        connector.data_source.get_file_tree_g = AsyncMock(side_effect=[file_res_1, file_res_2])
+        connector.data_source.get_file_tree_g = AsyncMock(
+            side_effect=[file_res_1, file_res_2]
+        )
 
         await connector._sync_repo_main(10, "my/project")
 
@@ -10698,7 +11419,9 @@ class TestSyncRepoMain:
         tree_res.data = tree_data
         connector.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res)
 
-        file_res = self._gql_file_response(blob_nodes=[self._make_blob_node()], has_next_page=True, end_cursor="")
+        file_res = self._gql_file_response(
+            blob_nodes=[self._make_blob_node()], has_next_page=True, end_cursor=""
+        )
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
         await connector._sync_repo_main(10, "my/project")
