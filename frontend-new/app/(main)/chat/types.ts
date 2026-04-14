@@ -129,6 +129,29 @@ export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrateg
   return strategy;
 }
 
+/** Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field). */
+const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
+  'auto',
+  'quick',
+  'verification',
+  'deep',
+];
+
+/**
+ * Map internal {@link StreamChatModePayload} to the plain `chatMode` string
+ * expected by POST `/api/v1/agents/.../stream` (Python agent routes).
+ */
+export function streamChatModeToAgentApiChatMode(
+  chatMode: StreamChatModePayload
+): AgentStrategyApiSegment {
+  if (chatMode === 'quick') return 'quick';
+  if (typeof chatMode === 'string' && chatMode.startsWith('agent:')) {
+    const rest = chatMode.slice(6) as AgentStrategyApiSegment;
+    if (AGENT_HTTP_CHAT_MODES.includes(rest)) return rest;
+  }
+  return 'auto';
+}
+
 /** Configuration for a single query mode option in the selector panel. */
 export interface QueryModeConfig {
   id: QueryMode;
