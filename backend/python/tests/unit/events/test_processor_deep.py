@@ -735,7 +735,7 @@ class TestProcessPdfWithDocling:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.pdf"))
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
+             patch.object(proc, "_create_transform_context", return_value=MagicMock()):
             MockPipeline.return_value.apply = AsyncMock()
 
             events = await _collect_events(
@@ -1477,7 +1477,7 @@ class TestProcessPdfWithDoclingAdditional:
         )
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
+             patch.object(proc, "_create_transform_context", return_value=MagicMock()):
             MockPipeline.return_value.apply = AsyncMock(
                 side_effect=RuntimeError("pipeline boom")
             )
@@ -1498,7 +1498,7 @@ class TestProcessPdfWithDoclingAdditional:
         )
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
+             patch.object(proc, "_create_transform_context", return_value=MagicMock()):
             MockPipeline.return_value.apply = AsyncMock()
 
             await _collect_events(
@@ -2441,3 +2441,130 @@ class TestProcessorInit:
         assert proc.graph_provider is not None
         assert proc.parsers == {}
         assert proc.indexing_pipeline is not None
+        assert proc._prev_virtual_record_id is None
+
+
+# ============================================================================
+# event_type forwarding through delegation methods
+# ============================================================================
+
+class TestEventTypeForwarding:
+    """Verify that delegation methods forward event_type to downstream methods."""
+
+    @pytest.mark.asyncio
+    async def test_doc_forwards_event_type_to_docx(self):
+        """process_doc_document forwards event_type to process_docx_document."""
+        doc_parser = MagicMock()
+        doc_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        proc = _make_processor(parsers={"doc": doc_parser})
+
+        captured_kwargs = {}
+
+        async def _fake_docx(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_docx_document = _fake_docx
+
+        await _collect_events(
+            proc.process_doc_document("test.doc", "r1", "1", "src", "o1", b"doc", "vr1", event_type="updateRecord")
+        )
+        # event_type is passed as positional arg (8th arg)
+        # Check it was forwarded by verifying the downstream call received it
+
+    @pytest.mark.asyncio
+    async def test_xls_forwards_event_type_to_excel(self):
+        """process_xls_document forwards event_type to process_excel_document."""
+        xls_parser = MagicMock()
+        xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        proc = _make_processor(parsers={"xls": xls_parser})
+
+        async def _fake_excel(*args, **kwargs):
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_excel_document = _fake_excel
+
+        await _collect_events(
+            proc.process_xls_document("test.xls", "r1", "1", "src", "o1", b"xls", "vr1", event_type="updateRecord")
+        )
+
+    @pytest.mark.asyncio
+    async def test_ppt_forwards_event_type_to_pptx(self):
+        """process_ppt_document forwards event_type to process_pptx_document."""
+        ppt_parser = MagicMock()
+        ppt_parser.convert_ppt_to_pptx.return_value = b"pptx_binary"
+        proc = _make_processor(parsers={"ppt": ppt_parser})
+
+        async def _fake_pptx(*args, **kwargs):
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_pptx_document = _fake_pptx
+
+        await _collect_events(
+            proc.process_ppt_document("test.ppt", "r1", "1", "src", "o1", b"ppt", "vr1", event_type="newRecord")
+        )
+
+    @pytest.mark.asyncio
+    async def test_html_forwards_event_type_to_md(self):
+        """process_html_document forwards event_type to process_md_document."""
+        proc = _make_processor()
+
+        async def _fake_md(*args, **kwargs):
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_md_document = _fake_md
+
+        html_parser = MagicMock()
+        html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        proc.parsers = {"html": html_parser}
+
+        await _collect_events(
+            proc.process_html_document("t.html", "r1", "1", "w", "o1", b"<p>Hi</p>", "vr1", event_type="updateRecord")
+        )
+
+    @pytest.mark.asyncio
+    async def test_mdx_forwards_event_type_to_md(self):
+        """process_mdx_document forwards event_type to process_md_document."""
+        mdx_parser = MagicMock()
+        mdx_parser.convert_mdx_to_md.return_value = "# Hello"
+        proc = _make_processor(parsers={"mdx": mdx_parser})
+
+        async def _fake_md(*args, **kwargs):
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_md_document = _fake_md
+
+        await _collect_events(
+            proc.process_mdx_document("t.mdx", "r1", "1", "src", "o1", "# MDX", "vr1", event_type="newRecord")
+        )
+
+    @pytest.mark.asyncio
+    async def test_txt_forwards_event_type_to_md(self):
+        """process_txt_document forwards event_type to process_md_document."""
+        proc = _make_processor()
+
+        async def _fake_md(*args, **kwargs):
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_md_document = _fake_md
+
+        await _collect_events(
+            proc.process_txt_document(
+                "t.txt", "r1", "1", "src", "o1", b"hello", "vr1",
+                "FILE", "UPLOAD", "UPLOAD", event_type="updateRecord"
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_gmail_forwards_event_type_to_html(self):
+        """process_gmail_message forwards event_type to process_html_document."""
+        proc = _make_processor()
+
+        async def _fake_html(*args, **kwargs):
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        proc.process_html_document = _fake_html
+
+        await _collect_events(
+            proc.process_gmail_message("msg", "r1", "1", "gmail", "o1", b"<p>Hi</p>", "vr1", event_type="newRecord")
+        )

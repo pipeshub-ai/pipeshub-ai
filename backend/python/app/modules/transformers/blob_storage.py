@@ -330,7 +330,9 @@ class BlobStorage(Transformer):
         # Calculate and log overall performance
         total_download_duration_ms = (time.time() - download_start_time) * 1000
         total_size_mb = total_size / (1024 * 1024)
-        effective_speed_mbps = total_size_mb / (total_download_duration_ms / 1000)
+        effective_speed_mbps = 0
+        if total_download_duration_ms > 0:
+            effective_speed_mbps = total_size_mb / (total_download_duration_ms / 1000)
 
         self.logger.info(
             "🚀 Parallel download complete: %.2f MB in %.0fms (%.2f MB/s, %d chunks)",

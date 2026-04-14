@@ -69,30 +69,6 @@ class RecordGroupWithPermissions:
 
 
 @dataclass
-class RecordRelation:
-    """
-    Represents a relation between two records.
-    
-    Used for creating custom record-to-record edges like:
-    - FOREIGN_KEY (database table relationships)
-    - DEPENDS_ON (view dependencies on tables)
-    - LINKED_TO (ticket linking)
-    
-    Attributes:
-        from_external_id: External ID of the source record
-        to_external_id: External ID of the target record
-        relation_type: Type of relation (from RecordRelations enum)
-        connector_id: Connector ID for looking up records
-        metadata: Optional additional metadata for the edge (e.g., constraint_name, column info)
-    """
-    from_external_id: str
-    to_external_id: str
-    relation_type: str
-    connector_id: str
-    metadata: Optional[dict] = None
-
-
-@dataclass
 class UserGroupWithMembers:
     user_group: AppUserGroup
     users: list[tuple[AppUser, Permission]]

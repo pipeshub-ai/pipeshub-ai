@@ -1891,13 +1891,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 "type": "text",
                 "text": rendered_form
             })
-            content.append({
-                "type": "text",
-                "text": (
-                    f"* Connector Name: {record.get('connector_name', '')}\n"
-                    f"* Connector Id: {record.get('connector_id', '')}\n"
-                )
-            })
+
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
@@ -2010,68 +2004,6 @@ def build_fk_info(result: dict[str, Any]) -> str:
     return fk_info
 
 
-def block_group_to_message_content(tool_result: dict[str, Any], final_results: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    content = []
-    block_group = tool_result.get("block_group", {})
-    block_group_index = block_group.get("index", 0)
-    record_number = tool_result.get("record_number", 1)
-    record_id = tool_result.get("record_id", "")
-    record_name = tool_result.get("record_name", "")
-    content.append({
-            "type": "text",
-            "text": f"""<record>
-            * Record Id: {record_id}
-            * Record Name: {record_name}
-            * Block Group:
-            """
-        })
-
-    child_results = []
-    blocks = block_group.get("blocks",[])
-    data = block_group.get("data", {})
-    table_summary = data.get("table_summary","")
-    ddl = data.get("ddl", "") or ""
-    if ddl:
-        table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
-    for block in blocks:
-        block_data = block.get("data", {})
-        if isinstance(block_data, dict):
-            row_text = block_data.get("row_natural_language_text", "")
-        else:
-            row_text = str(block_data)
-
-        child_results.append({
-            "content": row_text,
-            "block_index": block.get("index", 0),
-        })
-
-    if child_results:
-        template = Template(table_prompt)
-        rendered_form = template.render(
-            block_group_index=block_group_index,
-            table_summary=table_summary,
-            table_rows=child_results,
-            record_number=record_number,
-        )
-        content.append({
-            "type": "text",
-            "text": rendered_form
-        })
-    else:
-        content.append({
-            "type": "text",
-            "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}"
-        })
-    content.append({
-        "type": "text",
-        "text": """</record>
-        Now produce the final answer STRICTLY following the previously provided Output format.\n
-        CRITICAL REQUIREMENTS:\n
-        - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
-        - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
-        - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""
-    })
-    return content
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """

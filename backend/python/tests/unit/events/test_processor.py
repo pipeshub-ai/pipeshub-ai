@@ -279,6 +279,60 @@ class TestProcessorInit:
             )
             mock_docling.assert_called_once()
 
+    def test_prev_virtual_record_id_initialized_to_none(self):
+        """_prev_virtual_record_id is initialized to None."""
+        proc, _, _, _ = _make_processor()
+        assert proc._prev_virtual_record_id is None
+
+
+# ===========================================================================
+# Processor._create_transform_context
+# ===========================================================================
+
+
+class TestCreateTransformContext:
+    """Tests for Processor._create_transform_context."""
+
+    def test_creates_context_with_defaults(self):
+        """Creates TransformContext with record and defaults."""
+        proc, _, _, _ = _make_processor()
+        mock_record = MagicMock()
+
+        with patch("app.events.processor.TransformContext") as MockCtx:
+            proc._create_transform_context(mock_record)
+            MockCtx.assert_called_once_with(
+                record=mock_record,
+                event_type=None,
+                prev_virtual_record_id=None,
+            )
+
+    def test_creates_context_with_event_type(self):
+        """Creates TransformContext with event_type passed through."""
+        proc, _, _, _ = _make_processor()
+        mock_record = MagicMock()
+
+        with patch("app.events.processor.TransformContext") as MockCtx:
+            proc._create_transform_context(mock_record, event_type="updateRecord")
+            MockCtx.assert_called_once_with(
+                record=mock_record,
+                event_type="updateRecord",
+                prev_virtual_record_id=None,
+            )
+
+    def test_uses_prev_virtual_record_id_from_processor(self):
+        """Uses _prev_virtual_record_id set on the Processor instance."""
+        proc, _, _, _ = _make_processor()
+        proc._prev_virtual_record_id = "prev-vr-123"
+        mock_record = MagicMock()
+
+        with patch("app.events.processor.TransformContext") as MockCtx:
+            proc._create_transform_context(mock_record, event_type="newRecord")
+            MockCtx.assert_called_once_with(
+                record=mock_record,
+                event_type="newRecord",
+                prev_virtual_record_id="prev-vr-123",
+            )
+
 
 # ===========================================================================
 # Processor.process_image
@@ -413,7 +467,8 @@ class TestProcessPdfWithDocling:
             mock_dp_instance.process_pdf.return_value = []
             mock_dp.return_value = mock_dp_instance
 
-            with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
+            with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
+                 patch.object(proc, "_create_transform_context", return_value=MagicMock()):
                 mock_pipeline_instance = AsyncMock()
                 mock_pipeline.return_value = mock_pipeline_instance
 
@@ -1602,7 +1657,8 @@ class TestProcessPdfWithDocling:
         proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
         gp.get_document.return_value = _base_record_dict()
 
-        with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
+        with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
+             patch.object(proc, "_create_transform_context", return_value=MagicMock()):
             mock_pipeline.return_value = AsyncMock()
             events = await _collect(proc.process_pdf_with_docling(
                 "test.pdf", "rec-1", b"pdfdata", "vr-1"
@@ -3569,3 +3625,199 @@ class TestProcessGmailMessageCoverage:
             proc.process_gmail_message("msg", "r1", 1, "gmail", "o1", b"<p>Hello</p>", "vr1")
         )
         assert any(e.event == "parsing_complete" for e in events)
+
+
+# ===========================================================================
+# Processor.process_sql_structured_data
+# ===========================================================================
+
+
+class TestProcessSqlStructuredData:
+    """Tests for Processor.process_sql_structured_data."""
+
+    @pytest.mark.asyncio
+    async def test_sql_table_success(self):
+        """SQL_TABLE data is parsed and indexed successfully."""
+        from app.models.blocks import Block, BlockGroup, BlocksContainer, BlockType, DataFormat, GroupType
+
+        mock_parser = MagicMock()
+        mock_parser.parse_stream.return_value = BlocksContainer(
+            blocks=[Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="row data")],
+            block_groups=[BlockGroup(index=0, type=GroupType.TABLE)],
+        )
+        proc = _make_processor_cov()
+        proc.parsers = {"sql_table": mock_parser}
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="users_table")
+        )
+
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+             patch("app.events.processor.TransformContext"):
+            MockPipeline.return_value.apply = AsyncMock()
+
+            events = await _collect_events(
+                proc.process_sql_structured_data(
+                    "users_table", "r1", b'{"columns": []}', "vr1",
+                    record_type="SQL_TABLE", event_type="newRecord"
+                )
+            )
+
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_sql_view_success(self):
+        """SQL_VIEW data is parsed and indexed successfully."""
+        from app.models.blocks import Block, BlockGroup, BlocksContainer, BlockType, DataFormat, GroupType
+
+        mock_parser = MagicMock()
+        mock_parser.parse_stream.return_value = BlocksContainer(
+            blocks=[Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="view data")],
+            block_groups=[BlockGroup(index=0, type=GroupType.TABLE)],
+        )
+        proc = _make_processor_cov()
+        proc.parsers = {"sql_view": mock_parser}
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="active_users_view")
+        )
+
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+             patch("app.events.processor.TransformContext"):
+            MockPipeline.return_value.apply = AsyncMock()
+
+            events = await _collect_events(
+                proc.process_sql_structured_data(
+                    "active_users_view", "r1", b'{"columns": []}', "vr1",
+                    record_type="SQL_VIEW", event_type="newRecord"
+                )
+            )
+
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_unknown_record_type_marks_failed(self):
+        """Unknown record_type marks record as FAILED and yields both events."""
+        proc = _make_processor_cov()
+        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
+
+        events = await _collect_events(
+            proc.process_sql_structured_data(
+                "table1", "r1", b'{}', "vr1",
+                record_type="UNKNOWN_TYPE"
+            )
+        )
+
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_no_parser_found_marks_failed(self):
+        """When parser is not registered, marks record as FAILED."""
+        proc = _make_processor_cov()
+        proc.parsers = {}  # No parsers
+        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
+
+        events = await _collect_events(
+            proc.process_sql_structured_data(
+                "table1", "r1", b'{}', "vr1",
+                record_type="SQL_TABLE"
+            )
+        )
+
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_empty_blocks_marks_empty(self):
+        """When parser returns empty blocks, marks record as EMPTY."""
+        from app.models.blocks import BlocksContainer
+
+        mock_parser = MagicMock()
+        mock_parser.parse_stream.return_value = BlocksContainer(blocks=[], block_groups=[])
+        proc = _make_processor_cov()
+        proc.parsers = {"sql_table": mock_parser}
+        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
+
+        events = await _collect_events(
+            proc.process_sql_structured_data(
+                "empty_table", "r1", b'{}', "vr1",
+                record_type="SQL_TABLE"
+            )
+        )
+
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_raises(self):
+        """When record not found in DB, raises DocumentProcessingError."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        mock_parser = MagicMock()
+        mock_parser.parse_stream.return_value = BlocksContainer(
+            blocks=[Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="data")],
+            block_groups=[],
+        )
+        proc = _make_processor_cov()
+        proc.parsers = {"sql_table": mock_parser}
+        proc.graph_provider.get_document = AsyncMock(return_value=None)
+
+        with pytest.raises(DocumentProcessingError, match="Record not found"):
+            await _collect_events(
+                proc.process_sql_structured_data(
+                    "table1", "r1", b'{}', "vr1",
+                    record_type="SQL_TABLE"
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_string_json_content_converted_to_bytes(self):
+        """String json_content is encoded to bytes for the stream."""
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        mock_parser = MagicMock()
+        mock_parser.parse_stream.return_value = BlocksContainer(
+            blocks=[Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="data")],
+            block_groups=[],
+        )
+        proc = _make_processor_cov()
+        proc.parsers = {"sql_table": mock_parser}
+        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
+
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+             patch("app.events.processor.TransformContext"):
+            MockPipeline.return_value.apply = AsyncMock()
+
+            # Pass string instead of bytes - should not raise
+            events = await _collect_events(
+                proc.process_sql_structured_data(
+                    "table1", "r1", '{"columns": []}', "vr1",
+                    record_type="SQL_TABLE"
+                )
+            )
+
+        assert any(e.event == "parsing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_exception_propagated(self):
+        """Exceptions during processing propagate."""
+        mock_parser = MagicMock()
+        mock_parser.parse_stream.side_effect = RuntimeError("parse failed")
+        proc = _make_processor_cov()
+        proc.parsers = {"sql_table": mock_parser}
+
+        with pytest.raises(RuntimeError, match="parse failed"):
+            await _collect_events(
+                proc.process_sql_structured_data(
+                    "table1", "r1", b'{}', "vr1",
+                    record_type="SQL_TABLE"
+                )
+            )

@@ -29,8 +29,10 @@ def _make_tx_store():
     store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1"})
     store.get_nodes_by_filters = AsyncMock(return_value=[])
     store.get_edge = AsyncMock(return_value=None)
+    store.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
     store.batch_upsert_nodes = AsyncMock()
     store.batch_create_edges = AsyncMock()
+    store.batch_delete_edges = AsyncMock(return_value=0)
     return store
 
 
@@ -187,21 +189,10 @@ class TestSubcategoryChainThreeLevels:
         assert len(upsert_calls) == 2
 
     @pytest.mark.asyncio
-    async def test_hierarchy_edge_skipped_when_already_exists(self):
-        """When hierarchy edge already exists, it's not created again."""
+    async def test_hierarchy_edge_idempotent_when_already_exists(self):
+        """Hierarchy edges are created via UPSERT (idempotent) even when already present."""
         tx_store = _make_tx_store()
         tx_store.get_nodes_by_filters.return_value = []
-
-        edge_call_count = [0]
-
-        async def get_edge_side_effect(**kwargs):
-            edge_call_count[0] += 1
-            collection = kwargs.get("collection", "")
-            if collection == CollectionNames.INTER_CATEGORY_RELATIONS.value:
-                return {"_id": "existing-hierarchy-edge"}  # Already exists
-            return None
-
-        tx_store.get_edge = AsyncMock(side_effect=get_edge_side_effect)
         transformer, _ = _setup_transformer_with_tx(tx_store)
 
         metadata = _make_semantic_metadata(
@@ -210,13 +201,12 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should still complete without error
-        # Hierarchy edge should NOT be created since it already exists
+        # Hierarchy edge creation is idempotent (UPSERT) — still invoked
         inter_cat_edge_calls = [
             c for c in tx_store.batch_create_edges.call_args_list
             if len(c[0]) > 1 and c[0][1] == CollectionNames.INTER_CATEGORY_RELATIONS.value
         ]
-        assert len(inter_cat_edge_calls) == 0
+        assert len(inter_cat_edge_calls) >= 1
 
 
 # ===================================================================
@@ -291,28 +281,17 @@ class TestMissingDepartmentHandling:
 
     @pytest.mark.asyncio
     async def test_department_error_continues_processing(self):
-        """Error during department edge creation should not stop processing."""
+        """Error during department resolution should not stop processing."""
         logger = MagicMock()
         tx_store = _make_tx_store()
 
-        dept_call_done = [False]
-
         async def nodes_side_effect(collection, filters):
+            # Throw only when resolving the department; return empty otherwise
             if collection == CollectionNames.DEPARTMENTS.value:
-                return [{"_key": "dept-1"}]
+                raise Exception("dept lookup error")
             return []
 
         tx_store.get_nodes_by_filters = AsyncMock(side_effect=nodes_side_effect)
-
-        # Make edge check throw only for the department edge check
-        # (first call), then return None for subsequent calls (category, etc.)
-        async def get_edge_side_effect(**kwargs):
-            to_collection = kwargs.get("to_collection", "")
-            if to_collection == CollectionNames.DEPARTMENTS.value:
-                raise Exception("edge error")
-            return None
-
-        tx_store.get_edge = AsyncMock(side_effect=get_edge_side_effect)
         transformer, _ = _setup_transformer_with_tx(tx_store)
         transformer.logger = logger
 
@@ -415,11 +394,14 @@ class TestEmptyListsHandling:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
+        # Reconciliation batches all new edges into a single call
         lang_edge_calls = [
             c for c in tx_store.batch_create_edges.call_args_list
             if len(c[0]) > 1 and c[0][1] == CollectionNames.BELONGS_TO_LANGUAGE.value
         ]
-        assert len(lang_edge_calls) == 3
+        assert len(lang_edge_calls) == 1
+        # The single call should contain 3 edges (one per language)
+        assert len(lang_edge_calls[0][0][0]) == 3
 
     @pytest.mark.asyncio
     async def test_multiple_topics_create_separate_edges(self):
@@ -442,11 +424,13 @@ class TestEmptyListsHandling:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
+        # Reconciliation batches all new edges into a single call
         topic_edge_calls = [
             c for c in tx_store.batch_create_edges.call_args_list
             if len(c[0]) > 1 and c[0][1] == CollectionNames.BELONGS_TO_TOPIC.value
         ]
-        assert len(topic_edge_calls) == 3
+        assert len(topic_edge_calls) == 1
+        assert len(topic_edge_calls[0][0][0]) == 3
 
 
 # ===================================================================
@@ -498,13 +482,21 @@ class TestTransactionErrorPropagation:
 
     @pytest.mark.asyncio
     async def test_existing_category_edge_not_recreated(self):
-        """When category edge already exists, don't try to create it again."""
+        """When category edge already exists, reconciliation skips creation."""
         tx_store = _make_tx_store()
         tx_store.get_nodes_by_filters.return_value = [
             {"_key": "cat-1", "name": "Tech"}
         ]
-        # Edge already exists for category
-        tx_store.get_edge.return_value = {"_id": "existing-cat-edge"}
+        cat_to = f"{CollectionNames.CATEGORIES.value}/cat-1"
+
+        async def edges_side_effect(record_from, edge_collection):
+            if edge_collection == CollectionNames.BELONGS_TO_CATEGORY.value:
+                return [{"_to": cat_to, "name": "Tech"}]
+            return []
+
+        tx_store.get_edges_from_node_with_target_name = AsyncMock(
+            side_effect=edges_side_effect
+        )
         transformer, _ = _setup_transformer_with_tx(tx_store)
 
         metadata = _make_semantic_metadata(categories=["Tech"])
@@ -565,7 +557,7 @@ class TestTransactionErrorPropagation:
 
     @pytest.mark.asyncio
     async def test_existing_language_edge_not_recreated(self):
-        """When language edge already exists, it's not created again."""
+        """When language edge already exists, reconciliation skips creation."""
         tx_store = _make_tx_store()
 
         async def nodes_side_effect(collection, filters):
@@ -574,8 +566,17 @@ class TestTransactionErrorPropagation:
             return []
 
         tx_store.get_nodes_by_filters = AsyncMock(side_effect=nodes_side_effect)
-        # Return existing edge for all edge lookups
-        tx_store.get_edge.return_value = {"_id": "existing-edge"}
+
+        lang_to = f"{CollectionNames.LANGUAGES.value}/lang-en"
+
+        async def edges_side_effect(record_from, edge_collection):
+            if edge_collection == CollectionNames.BELONGS_TO_LANGUAGE.value:
+                return [{"_to": lang_to, "name": "English"}]
+            return []
+
+        tx_store.get_edges_from_node_with_target_name = AsyncMock(
+            side_effect=edges_side_effect
+        )
         transformer, _ = _setup_transformer_with_tx(tx_store)
 
         metadata = _make_semantic_metadata(

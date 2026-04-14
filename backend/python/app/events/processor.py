@@ -277,7 +277,7 @@ class Processor:
             self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
             raise
 
-    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF with Docling, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:

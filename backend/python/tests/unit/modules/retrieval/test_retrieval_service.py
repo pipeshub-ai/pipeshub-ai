@@ -560,6 +560,7 @@ class TestSearchWithFilters:
                 "webUrl": "https://example.com/doc",
                 "mimeType": "application/pdf",
                 "connectorName": "gdrive",
+                "connectorId": "conn-123",
                 "kbId": "kb1",
             }
         ]
@@ -581,6 +582,7 @@ class TestSearchWithFilters:
         assert sr["metadata"]["recordId"] == "rec1"
         assert sr["metadata"]["origin"] == "google_drive"
         assert sr["metadata"]["recordName"] == "Test Doc"
+        assert sr["metadata"]["connectorId"] == "conn-123"
         assert sr["metadata"]["mimeType"] == "application/pdf"
 
     @pytest.mark.asyncio

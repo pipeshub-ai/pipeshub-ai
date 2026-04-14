@@ -26,7 +26,6 @@ from app.config.constants.arangodb import (
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
-    RecordRelation,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
@@ -56,7 +55,6 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.snowflake.apps import SnowflakeApp
 from app.connectors.sources.snowflake.data_fetcher import (
-    ForeignKey,
     SnowflakeDataFetcher,
     SnowflakeDatabase,
     SnowflakeFile,
@@ -72,6 +70,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    RelatedExternalRecord,
     SQLTableRecord,
     SQLViewRecord,
 )
@@ -691,9 +690,6 @@ class SnowflakeConnector(BaseConnector):
                         )
                         self.sync_stats.files_new += len([f for f in files if not f.is_folder])
 
-            await self._create_foreign_key_relations(hierarchy.foreign_keys)
-            await self._create_view_dependency_relations(hierarchy)
-
             self.logger.info("✅ [Full Sync] Snowflake full sync completed")
         except Exception as e:
             self.sync_stats.errors += 1
@@ -1276,10 +1272,6 @@ class SnowflakeConnector(BaseConnector):
             if tables_to_reindex:
                 await self._mark_records_for_reindex(tables_to_reindex, reason="stream_cdc_changes")
 
-            # Create relations for new objects
-            await self._create_foreign_key_relations(hierarchy.foreign_keys)
-            await self._create_view_dependency_relations(hierarchy)
-
             # Save new sync state
             await self.record_sync_point.update_sync_point(
                 self._sync_state_key,
@@ -1512,7 +1504,26 @@ class SnowflakeConnector(BaseConnector):
                     version=1,
                     inherit_permissions=True,  # Inherit from parent namespace
                 )
-                
+
+                if table.foreign_keys:
+                    for fk in table.foreign_keys:
+                        target_schema = fk.get("references_schema", schema_name)
+                        if fk.get("references_table"):
+                            target_fqn = f"{database_name}.{target_schema}.{fk['references_table']}"
+                            record.related_external_records.append(
+                                RelatedExternalRecord(
+                                    external_record_id=target_fqn,
+                                    record_type=RecordType.SQL_TABLE,
+                                    record_name=fk["references_table"],
+                                    relation_type=RecordRelations.FOREIGN_KEY,
+                                    source_column=fk.get("column"),
+                                    target_column=fk.get("references_column"),
+                                    child_table_name=fqn,
+                                    parent_table_name=target_fqn,
+                                    constraint_name=fk.get("constraint_name"),
+                                )
+                            )
+
                 # Use the correct filter key as defined in connector config
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
                     record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -1576,8 +1587,26 @@ class SnowflakeConnector(BaseConnector):
                     definition=definition,
                     source_tables=source_tables,
                     version=1,
-                    inherit_permissions=True,  
+                    inherit_permissions=True,
                 )
+
+                if source_tables:
+                    for source_table in source_tables:
+                        if "." not in source_table:
+                            table_fqn = f"{database_name}.{schema_name}.{source_table}"
+                        elif source_table.count(".") == 1:
+                            table_fqn = f"{database_name}.{source_table}"
+                        else:
+                            table_fqn = source_table
+                        record.related_external_records.append(
+                            RelatedExternalRecord(
+                                external_record_id=table_fqn,
+                                record_type=RecordType.SQL_TABLE,
+                                record_name=source_table.split(".")[-1],
+                                relation_type=RecordRelations.DEPENDS_ON,
+                            )
+                        )
+
                 # Use the correct filter key as defined in connector config
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.VIEWS.value):
                     record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -2176,104 +2205,6 @@ class SnowflakeConnector(BaseConnector):
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         return None
-
-    async def _create_foreign_key_relations(self, foreign_keys: List[ForeignKey]) -> None:
-        """
-        Create foreign key relations between tables using the entities processor.
-        
-        This creates FOREIGN_KEY edges in the graph database to represent
-        database table relationships for lineage and dependency tracking.
-        """
-        if not foreign_keys:
-            self.logger.info("No foreign keys to create relations for")
-            return
-
-        self.logger.info(f"Processing {len(foreign_keys)} foreign key relations")
-        
-        # Build RecordRelation objects for the entities processor
-        relations = [
-            RecordRelation(
-                from_external_id=fk.source_fqn,  # database.schema.table
-                to_external_id=fk.target_fqn,    # database.schema.table
-                relation_type=RecordRelations.FOREIGN_KEY.value,
-                connector_id=self.connector_id,
-                metadata={
-                    "constraintName": fk.constraint_name,
-                    "sourceColumn": fk.source_column,
-                    "targetColumn": fk.target_column,
-                }
-            )
-            for fk in foreign_keys
-        ]
-        
-        await self.data_entities_processor.on_new_record_relations(relations)
-
-    async def _create_view_dependency_relations(self, hierarchy) -> None:
-        """
-        Create view dependency relations using the entities processor.
-        
-        This creates DEPENDS_ON edges from views to their source tables
-        for lineage and dependency tracking.
-        """
-        relations = []
-        views_processed = 0
-        views_with_sources = 0
-        views_without_definition = 0
-        
-        self.logger.info("Starting view dependency relation creation")
-        
-        for db in hierarchy.databases:
-            for schema in hierarchy.schemas.get(db.name, []):
-                schema_key = f"{db.name}.{schema.name}"
-                views_in_schema = hierarchy.views.get(schema_key, [])
-                self.logger.debug(f"Processing {len(views_in_schema)} views in {schema_key}")
-                
-                for view in views_in_schema:
-                    views_processed += 1
-                    view_fqn = f"{db.name}.{schema.name}.{view.name}"
-
-                    if not view.definition:
-                        views_without_definition += 1
-                        self.logger.debug(f"View {view_fqn} has no definition")
-                        continue
-                        
-                    if not view.source_tables:
-                        self.logger.debug(
-                            f"View {view_fqn} has definition but no parsed source_tables. "
-                            f"Definition preview: {view.definition[:200] if view.definition else 'None'}..."
-                        )
-                        continue
-                    
-                    views_with_sources += 1
-                    self.logger.info(f"View {view_fqn} depends on {len(view.source_tables)} tables: {view.source_tables}")
-
-                    for source_table in view.source_tables:
-                        # Build the full FQN for the source table
-                        if "." not in source_table:
-                            # Just table name, assume same database and schema
-                            table_fqn = f"{db.name}.{schema.name}.{source_table}"
-                        elif source_table.count(".") == 1:
-                            # schema.table format, add database
-                            table_fqn = f"{db.name}.{source_table}"
-                        else:
-                            # Already fully qualified
-                            table_fqn = source_table
-
-                        relations.append(RecordRelation(
-                            from_external_id=view_fqn,
-                            to_external_id=table_fqn,
-                            relation_type=RecordRelations.DEPENDS_ON.value,
-                            connector_id=self.connector_id,
-                        ))
-        
-        self.logger.info(
-            f"View dependency analysis: views_processed={views_processed}, "
-            f"with_sources={views_with_sources}, no_definition={views_without_definition}, "
-            f"relations_to_create={len(relations)}"
-        )
-        
-        if relations:
-            await self.data_entities_processor.on_new_record_relations(relations)
 
     async def test_connection_and_access(self) -> bool:
         if not self.data_source:

@@ -322,6 +322,13 @@ class MockTransactionStore:
             "relationType": relation_type,
         })
 
+    async def batch_upsert_record_relations(self, edges: List[Dict]) -> None:
+        for edge in edges:
+            stored = dict(edge)
+            if "relationshipType" in stored and "relationType" not in stored:
+                stored["relationType"] = stored["relationshipType"]
+            self._s.add_edge(CollectionNames.RECORD_RELATIONS.value, stored)
+
     async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
         self._s.add_edge(CollectionNames.INHERIT_PERMISSIONS.value, {
             "from_id": record_id,

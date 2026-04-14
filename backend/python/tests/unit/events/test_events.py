@@ -6,6 +6,7 @@ these tests provide additional coverage for edge cases and boundary conditions.
 """
 
 import hashlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -829,11 +830,11 @@ class TestOnEventExtensionDispatch:
 
 
 class TestCheckDuplicateMd5StringContent:
-    """Test md5 calculation with string content (lines 85-90)."""
+    """Test md5 calculation with string content — uses _normalize_content_for_dedup."""
 
     @pytest.mark.asyncio
     async def test_string_content_md5_calculated(self):
-        """String content is encoded to bytes for MD5 calculation."""
+        """String content is encoded to bytes, normalized, then hashed."""
         ep, _, _, gp = _make_event_processor()
         gp.find_duplicate_records.return_value = []
         doc = {"_key": "r1", "recordType": "FILE"}
@@ -842,14 +843,14 @@ class TestCheckDuplicateMd5StringContent:
 
         assert result is False
         assert doc.get("md5Checksum") is not None
-        # Verify correct MD5 hash
-        import hashlib
-        expected = hashlib.md5(b"hello world").hexdigest()
+        # Content goes through _normalize_content_for_dedup (plain text returns as-is)
+        normalized = ep._normalize_content_for_dedup(b"hello world", record_type="FILE")
+        expected = hashlib.md5(normalized).hexdigest()
         assert doc["md5Checksum"] == expected
 
     @pytest.mark.asyncio
     async def test_bytes_content_md5_calculated(self):
-        """Bytes content has MD5 calculated directly."""
+        """Bytes content is normalized then hashed."""
         ep, _, _, gp = _make_event_processor()
         gp.find_duplicate_records.return_value = []
         doc = {"_key": "r1", "recordType": "FILE"}
@@ -857,8 +858,8 @@ class TestCheckDuplicateMd5StringContent:
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
 
         assert result is False
-        import hashlib
-        expected = hashlib.md5(b"hello world").hexdigest()
+        normalized = ep._normalize_content_for_dedup(b"hello world", record_type="FILE")
+        expected = hashlib.md5(normalized).hexdigest()
         assert doc["md5Checksum"] == expected
 
 
@@ -868,30 +869,129 @@ class TestCheckDuplicateMd5StringContent:
 
 
 class TestOnEventUpdateEvent:
-    """Test UPDATE_RECORD event creates new virtual_record_id."""
+    """Test UPDATE_RECORD / REINDEX_RECORD reconciliation logic."""
 
     @pytest.mark.asyncio
-    async def test_update_event_creates_new_virtual_record_id(self):
+    async def test_update_non_reconciliation_type_generates_new_vrid(self):
+        """Non-reconciliation types (e.g. XLSX) get a new UUID on update."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {
             "_key": "rec-1",
             "recordType": "FILE",
             "virtualRecordId": "old-vr-id",
         }
-        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
             event_data = _make_event_payload(
-                extension=ExtensionTypes.DOCX.value,
+                extension=ExtensionTypes.XLSX.value,
                 event_type=EventTypes.UPDATE_RECORD.value,
                 virtual_record_id="old-vr-id",
             )
             events = await _drain(ep.on_event(event_data))
 
-        call_kwargs = processor.process_docx_document.call_args[1]
-        # Should have a new UUID, not the old one
+        call_kwargs = processor.process_excel_document.call_args[1]
         assert call_kwargs["virtual_record_id"] != "old-vr-id"
-        assert len(call_kwargs["virtual_record_id"]) == 36  # UUID format
+        assert len(call_kwargs["virtual_record_id"]) == 36
+
+    @pytest.mark.asyncio
+    async def test_update_reconciliation_type_1to1_keeps_vrid(self):
+        """Reconciliation type with 1:1 mapping keeps existing vrid."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "existing-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="existing-vrid",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] == "existing-vrid"
+        assert processor._prev_virtual_record_id == "existing-vrid"
+
+    @pytest.mark.asyncio
+    async def test_update_reconciliation_type_nto1_isolates_vrid(self):
+        """Reconciliation type with N:1 mapping generates new vrid."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[
+            {"_key": "rec-1"}, {"_key": "rec-2"},
+        ])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] != "shared-vrid"
+        assert len(call_kwargs["virtual_record_id"]) == 36
+
+    @pytest.mark.asyncio
+    async def test_reindex_event_uses_same_reconciliation_logic(self):
+        """REINDEX_RECORD follows the same reconciliation path as UPDATE_RECORD."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_VIEW",
+            "virtualRecordId": "reindex-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_VIEW.value,
+                extension=ExtensionTypes.SQL_VIEW.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="reindex-vrid",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] == "reindex-vrid"
+
+    @pytest.mark.asyncio
+    async def test_reconciliation_type_no_existing_vrid_treats_as_new(self):
+        """Reconciliation type with no existing vrid treats as new."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": None,
+        }
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id=None,
+            )
+            await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert len(call_kwargs["virtual_record_id"]) == 36
 
 
 # ===========================================================================
@@ -1050,13 +1150,17 @@ class TestOnEventEarlyReturns:
         assert events == []
 
     @pytest.mark.asyncio
-    async def test_no_buffer_returns_early(self):
-        """No buffer in event data (lines 280-281)."""
-        ep, logger, _, gp = _make_event_processor()
+    async def test_no_buffer_proceeds_with_none_content(self):
+        """None buffer proceeds (no early return), duplicate check runs with None content."""
+        ep, logger, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
-        event_data = _make_event_payload(buffer=None)
-        events = await _drain(ep.on_event(event_data))
-        assert events == []
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(buffer=None, extension=ExtensionTypes.DOCX.value)
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
 
 
 # ===========================================================================
@@ -1134,3 +1238,325 @@ class TestOnEventOcrPath:
             events = await _drain(ep.on_event(event_data))
 
         processor.process_pdf_document_with_ocr.assert_called_once()
+
+
+# ===========================================================================
+# _normalize_content_for_dedup
+# ===========================================================================
+
+
+class TestNormalizeContentForDedup:
+    """Tests for _normalize_content_for_dedup."""
+
+    def test_plain_bytes_returned_as_is(self):
+        """Non-JSON, non-HTML bytes are returned unchanged."""
+        ep, _, _, _ = _make_event_processor()
+        content = b"just plain text"
+        result = ep._normalize_content_for_dedup(content)
+        assert result == content
+
+    def test_html_mime_type_strips_scripts_and_extracts_text(self):
+        """HTML content strips script/style tags and extracts text."""
+        ep, _, _, _ = _make_event_processor()
+        html = b"<html><script>var x=1;</script><body><p>Hello</p></body></html>"
+        result = ep._normalize_content_for_dedup(html, mime_type="text/html")
+        assert b"var x=1" not in result
+        assert b"Hello" in result
+
+    def test_html_strips_local_id_and_emoji_attrs(self):
+        """HTML normalization removes local-id, id, data-emoji-* attributes."""
+        ep, _, _, _ = _make_event_processor()
+        html = b'<div local-id="abc" id="x" data-emoji-id="e1" data-emoji-fallback="f">Text</div>'
+        result = ep._normalize_content_for_dedup(html, mime_type="text/html")
+        assert b"Text" in result
+        assert b"abc" not in result
+
+    def test_confluence_page_record_type_triggers_html_normalization(self):
+        """CONFLUENCE_PAGE record type triggers HTML normalization even without HTML mime."""
+        ep, _, _, _ = _make_event_processor()
+        html = b"<p>Confluence content</p><style>.x{}</style>"
+        result = ep._normalize_content_for_dedup(html, record_type="CONFLUENCE_PAGE")
+        assert b".x{}" not in result
+        assert b"Confluence content" in result
+
+    def test_confluence_blogpost_triggers_html_normalization(self):
+        ep, _, _, _ = _make_event_processor()
+        html = b"<p>Blog</p>"
+        result = ep._normalize_content_for_dedup(html, record_type="CONFLUENCE_BLOGPOST")
+        assert b"Blog" in result
+
+    def test_comment_record_type_triggers_html_normalization(self):
+        ep, _, _, _ = _make_event_processor()
+        html = b"<p>A comment</p>"
+        result = ep._normalize_content_for_dedup(html, record_type="COMMENT")
+        assert b"A comment" in result
+
+    def test_inline_comment_record_type_triggers_html_normalization(self):
+        ep, _, _, _ = _make_event_processor()
+        html = b"<p>Inline</p>"
+        result = ep._normalize_content_for_dedup(html, record_type="INLINE_COMMENT")
+        assert b"Inline" in result
+
+    def test_html_with_empty_text_returns_original(self):
+        """HTML that produces empty text returns original content."""
+        ep, _, _, _ = _make_event_processor()
+        html = b"<script>only scripts</script>"
+        result = ep._normalize_content_for_dedup(html, mime_type="text/html")
+        assert result == html
+
+    def test_json_with_block_groups_extracts_data(self):
+        """JSON with block_groups extracts data fields."""
+        ep, _, _, _ = _make_event_processor()
+        payload = {
+            "block_groups": [
+                {"data": {"text": "hello"}},
+                {"data": {"text": "world"}},
+            ]
+        }
+        content = json.dumps(payload).encode("utf-8")
+        result = ep._normalize_content_for_dedup(content)
+        assert b"hello" in result
+        assert b"world" in result
+
+    def test_json_with_blocks_extracts_data(self):
+        """JSON with blocks key extracts data fields."""
+        ep, _, _, _ = _make_event_processor()
+        payload = {"blocks": [{"data": {"val": 42}}]}
+        content = json.dumps(payload).encode("utf-8")
+        result = ep._normalize_content_for_dedup(content)
+        assert b"42" in result
+
+    def test_json_block_groups_with_null_data_skipped(self):
+        """Block groups with None data are skipped."""
+        ep, _, _, _ = _make_event_processor()
+        payload = {"block_groups": [{"data": None}, {"data": {"x": 1}}]}
+        content = json.dumps(payload).encode("utf-8")
+        result = ep._normalize_content_for_dedup(content)
+        assert b'"x": 1' in result
+
+    def test_json_block_groups_all_null_data_returns_original(self):
+        """Block groups where all data is None returns original content."""
+        ep, _, _, _ = _make_event_processor()
+        payload = {"block_groups": [{"data": None}]}
+        content = json.dumps(payload).encode("utf-8")
+        result = ep._normalize_content_for_dedup(content)
+        assert result == content
+
+    def test_plain_json_dict_sorted(self):
+        """Plain JSON dict is re-serialized with sorted keys."""
+        ep, _, _, _ = _make_event_processor()
+        payload = {"z": 1, "a": 2}
+        content = json.dumps(payload).encode("utf-8")
+        result = ep._normalize_content_for_dedup(content)
+        assert result == json.dumps({"a": 2, "z": 1}, sort_keys=True).encode("utf-8")
+
+    def test_json_list_returns_original(self):
+        """JSON that parses to a list (not dict) returns original content."""
+        ep, _, _, _ = _make_event_processor()
+        content = b"[1, 2, 3]"
+        result = ep._normalize_content_for_dedup(content)
+        assert result == content
+
+    def test_invalid_json_returns_original(self):
+        """Invalid JSON returns original content."""
+        ep, _, _, _ = _make_event_processor()
+        content = b"not json at all"
+        result = ep._normalize_content_for_dedup(content)
+        assert result == content
+
+
+# ===========================================================================
+# _check_duplicate_by_md5 - source key fallback to "id"
+# ===========================================================================
+
+
+class TestCheckDuplicateSourceKeyFallback:
+    """Test processed_duplicate source key falls back to 'id' field."""
+
+    @pytest.mark.asyncio
+    async def test_processed_duplicate_uses_id_when_key_missing(self):
+        """copy_document_relationships uses processed_duplicate['id'] when _key is missing."""
+        ep, _, _, gp = _make_event_processor()
+        processed = {
+            "id": "dup-src-id",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-1",
+        }
+        gp.find_duplicate_records.return_value = [processed]
+        doc = {"_key": "target", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=200):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result is True
+        gp.copy_document_relationships.assert_awaited_once_with("dup-src-id", "target")
+
+
+# ===========================================================================
+# on_event - SQL_TABLE / SQL_VIEW routing
+# ===========================================================================
+
+
+class TestOnEventSqlRouting:
+    """Tests for SQL_TABLE and SQL_VIEW dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_sql_table_mime_routes_to_sql_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_TABLE"}
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(mime_type=MimeTypes.SQL_TABLE.value)
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["record_type"] == "SQL_TABLE"
+
+    @pytest.mark.asyncio
+    async def test_sql_table_extension_routes_to_sql_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_TABLE"}
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(extension=ExtensionTypes.SQL_TABLE.value)
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        processor.process_sql_structured_data.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sql_view_mime_routes_to_sql_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_VIEW"}
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(mime_type=MimeTypes.SQL_VIEW.value)
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["record_type"] == "SQL_VIEW"
+
+    @pytest.mark.asyncio
+    async def test_sql_view_extension_routes_to_sql_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_VIEW"}
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(extension=ExtensionTypes.SQL_VIEW.value)
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        processor.process_sql_structured_data.assert_called_once()
+
+
+# ===========================================================================
+# on_event - event_type passed to processors
+# ===========================================================================
+
+
+class TestOnEventPassesEventType:
+    """Verify event_type is forwarded to processor methods."""
+
+    @pytest.mark.asyncio
+    async def test_event_type_passed_to_docx_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension=ExtensionTypes.DOCX.value,
+                event_type=EventTypes.NEW_RECORD.value,
+            )
+            await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_docx_document.call_args[1]
+        assert call_kwargs["event_type"] == EventTypes.NEW_RECORD.value
+
+    @pytest.mark.asyncio
+    async def test_event_type_passed_to_image_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_image = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension=ExtensionTypes.PNG.value,
+                event_type=EventTypes.NEW_RECORD.value,
+            )
+            await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_image.call_args[1]
+        assert call_kwargs["event_type"] == EventTypes.NEW_RECORD.value
+
+    @pytest.mark.asyncio
+    async def test_event_type_passed_to_google_slides(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pptx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.GOOGLE_SLIDES.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+            )
+            await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_pptx_document.call_args[1]
+        assert call_kwargs["event_type"] == EventTypes.UPDATE_RECORD.value
+
+
+# ===========================================================================
+# on_event - prev_virtual_record_id set on processor
+# ===========================================================================
+
+
+class TestOnEventPrevVirtualRecordId:
+    """Verify prev_virtual_record_id is set on processor."""
+
+    @pytest.mark.asyncio
+    async def test_new_record_sets_prev_vrid_to_none(self):
+        """NEW_RECORD event sets prev_virtual_record_id to None."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension=ExtensionTypes.DOCX.value,
+                event_type=EventTypes.NEW_RECORD.value,
+            )
+            await _drain(ep.on_event(event_data))
+
+        assert processor._prev_virtual_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_update_reconciliation_type_sets_prev_vrid(self):
+        """UPDATE on reconciliation type sets prev_virtual_record_id."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "prev-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"_key": "rec-1"}])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="prev-vrid",
+            )
+            await _drain(ep.on_event(event_data))
+
+        assert processor._prev_virtual_record_id == "prev-vrid"
