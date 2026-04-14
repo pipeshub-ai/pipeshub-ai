@@ -6,7 +6,6 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from io import BytesIO
 from logging import Logger
 from typing import Any
 from urllib.parse import unquote
@@ -21,7 +20,6 @@ from gitlab.v4.objects import (
     ProjectMergeRequest,
     ProjectMergeRequestNote,
 )
-from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
@@ -2067,6 +2065,16 @@ class GitLabConnector(BaseConnector):
 
     # ---------------------------Attachment functions-----------------------------------#
 
+    EXTENSION_TO_MIME: dict[str, str] = {
+        "png": "png",
+        "jpg": "jpeg",
+        "jpeg": "jpeg",
+        "gif": "gif",
+        "webp": "webp",
+        "bmp": "bmp",
+        "svg": "svg+xml",
+    }
+
     async def embed_images_as_base64(
         self, body_content: str, base_project_url: str
     ) -> str:
@@ -2088,17 +2096,14 @@ class GitLabConnector(BaseConnector):
             attachment_url = attach.href
             full_attachment_url = f"{base_project_url}{attachment_url}"
             try:
-                image_bytes = await self.data_source.get_img_bytes(full_attachment_url)
-                if image_bytes.success and image_bytes.data:
-                    # to get image format as in attachment data just an image
-                    image_bytes = image_bytes.data
-                    img = Image.open(BytesIO(image_bytes))
-                    fmt = img.format.lower() if img.format else "png"
-                    base64_data = base64.b64encode(image_bytes).decode("utf-8")
+                response = await self.data_source.get_img_bytes(full_attachment_url)
+                if response.success and response.data:
+                    fmt = self.EXTENSION_TO_MIME.get(attach.filetype, "png")
+                    base64_data = base64.b64encode(response.data).decode("utf-8")
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
             except Exception as e:
-                self.logger.error(f"Error embedding image from {attachment_url}: {e}")
+                self.logger.warning(f"Error embedding image from {attachment_url}: {e}")
                 continue
         return markdown_content_clean
 

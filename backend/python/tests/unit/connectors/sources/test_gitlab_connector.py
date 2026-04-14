@@ -9284,12 +9284,12 @@ class TestEmbedImagesAsBase64:
 
         result = await connector.embed_images_as_base64("text", self.BASE_URL)
 
-        connector.logger.error.assert_called_once()
+        connector.logger.warning.assert_called_once()
         assert "base64," in result
 
     @pytest.mark.asyncio
-    async def test_exception_during_pil_open_logs_error_and_continues(self) -> None:
-        """A PIL.Image.open failure is caught, logged, and does not crash the method."""
+    async def test_non_image_bytes_still_embedded_without_pil(self) -> None:
+        """Non-image bytes are still base64-encoded using the file extension for MIME type."""
         connector = self._setup_connector()
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([self._img_attach()], "text")
@@ -9300,30 +9300,76 @@ class TestEmbedImagesAsBase64:
 
         result = await connector.embed_images_as_base64("text", self.BASE_URL)
 
-        connector.logger.error.assert_called_once()
-        assert result == "text"
+        expected_b64 = base64.b64encode(b"not-an-image").decode("utf-8")
+        assert f"data:image/png;base64,{expected_b64}" in result
 
-    # ── PIL format fallback ───────────────────────────────────────────────────
+    # ── extension-based format mapping ────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_unknown_pil_format_falls_back_to_png(self) -> None:
-        """When PIL cannot determine the format, 'png' is used as the MIME type."""
+    async def test_unknown_extension_falls_back_to_png(self) -> None:
+        """When file extension is not in EXTENSION_TO_MIME, 'png' is used as fallback."""
         connector = self._setup_connector()
+        attach = FileAttachment(
+            href="/uploads/abc123abc123abc123abc123abc123ab/image.tiff",
+            filename="image.tiff",
+            filetype="tiff",
+            category="image",
+        )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
-            return_value=([self._img_attach()], "text")
+            return_value=([attach], "text")
         )
         connector.data_source.get_img_bytes = AsyncMock(
-            return_value=self._make_bytes_res(success=True, data=self._make_img_bytes())
+            return_value=self._make_bytes_res(success=True, data=b"tiff-data")
         )
-        mock_img = MagicMock()
-        mock_img.format = None
 
-        with patch(
-            "app.connectors.sources.gitlab.connector.Image.open", return_value=mock_img
-        ):
-            result = await connector.embed_images_as_base64("text", self.BASE_URL)
+        result = await connector.embed_images_as_base64("text", self.BASE_URL)
 
         assert "data:image/png;base64," in result
+
+    @pytest.mark.asyncio
+    async def test_svg_image_embedded_with_correct_mime(self) -> None:
+        """SVG images are embedded with 'image/svg+xml' MIME type."""
+        connector = self._setup_connector()
+        svg_bytes = b'<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>'
+        attach = FileAttachment(
+            href="/uploads/abc123abc123abc123abc123abc123ab/diagram.svg",
+            filename="diagram.svg",
+            filetype="svg",
+            category="image",
+        )
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([attach], "text")
+        )
+        connector.data_source.get_img_bytes = AsyncMock(
+            return_value=self._make_bytes_res(success=True, data=svg_bytes)
+        )
+
+        result = await connector.embed_images_as_base64("text", self.BASE_URL)
+
+        expected_b64 = base64.b64encode(svg_bytes).decode("utf-8")
+        assert f"data:image/svg+xml;base64,{expected_b64}" in result
+
+    @pytest.mark.asyncio
+    async def test_jpg_extension_maps_to_jpeg_mime(self) -> None:
+        """A .jpg file uses 'image/jpeg' (not 'image/jpg') as the MIME type."""
+        connector = self._setup_connector()
+        raw_bytes = self._make_img_bytes("JPEG")
+        attach = FileAttachment(
+            href="/uploads/abc123abc123abc123abc123abc123ab/photo.jpg",
+            filename="photo.jpg",
+            filetype="jpg",
+            category="image",
+        )
+        connector.parse_gitlab_uploads_clean_test = AsyncMock(
+            return_value=([attach], "text")
+        )
+        connector.data_source.get_img_bytes = AsyncMock(
+            return_value=self._make_bytes_res(success=True, data=raw_bytes)
+        )
+
+        result = await connector.embed_images_as_base64("text", self.BASE_URL)
+
+        assert "data:image/jpeg;base64," in result
 
     # ── edge inputs ───────────────────────────────────────────────────────────
 
