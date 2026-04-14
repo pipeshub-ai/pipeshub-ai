@@ -22,6 +22,10 @@ import type {
   OAuthGrantTypeValue,
   OAuthScopeItem,
 } from '../types';
+import {
+  isValidHttpUrl,
+  isValidOAuthRedirectUri,
+} from '../redirect-uri-validation';
 
 // ========================================
 // Constants
@@ -72,17 +76,6 @@ const CREDENTIAL_MONO: React.CSSProperties = {
 // ========================================
 // Helpers
 // ========================================
-
-function isValidHttpUrl(s: string): boolean {
-  const t = s.trim();
-  if (!t) return false;
-  try {
-    const u = new URL(t);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
 
 function optionalUrlOrEmpty(s: string): string | undefined {
   const t = s.trim();
@@ -296,7 +289,7 @@ export function CreateOAuthApplicationPanel({
       if (uris.length === 0) {
         errors.redirectUris = t('workspace.oauth2.create.errorRedirectRequired');
       } else {
-        const bad = uris.some((u) => !isValidHttpUrl(u));
+        const bad = uris.some((u) => !isValidOAuthRedirectUri(u));
         if (bad) {
           errors.redirectUris = t('workspace.oauth2.create.errorRedirectInvalid');
         }
@@ -430,7 +423,9 @@ export function CreateOAuthApplicationPanel({
     () => redirectUris.map((u) => u.trim()).filter(Boolean),
     [redirectUris]
   );
-  const hasValidRedirect = trimmedRedirectUris.some((u) => isValidHttpUrl(u));
+  const hasValidRedirect = trimmedRedirectUris.some((u) =>
+    isValidOAuthRedirectUri(u)
+  );
 
   const primaryDisabledGeneral =
     !name.trim() ||

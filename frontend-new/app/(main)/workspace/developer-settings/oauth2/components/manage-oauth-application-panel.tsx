@@ -24,6 +24,10 @@ import {
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
 import type { OAuthClient, OAuthGrantTypeValue, OAuthScopeItem } from '../types';
+import {
+  isValidHttpUrl,
+  isValidOAuthRedirectUri,
+} from '../redirect-uri-validation';
 
 const GRANT_OPTIONS: { value: OAuthGrantTypeValue; labelKey: string }[] = [
   {
@@ -52,17 +56,6 @@ const CARD_STYLE: React.CSSProperties = {
   borderRadius: 'var(--radius-2)',
   padding: 'var(--space-4)',
 };
-
-function isValidHttpUrl(s: string): boolean {
-  const t = s.trim();
-  if (!t) return false;
-  try {
-    const u = new URL(t);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
 
 const OAUTH_SUSPEND_CONFIRMATION_KEYWORD = 'SUSPEND';
 
@@ -477,7 +470,7 @@ export function ManageOAuthApplicationPanel({
       const uris = redirectUris.map((u) => u.trim()).filter(Boolean);
       if (uris.length === 0) {
         errors.redirectUris = t('workspace.oauth2.create.errorRedirectRequired');
-      } else if (uris.some((u) => !isValidHttpUrl(u))) {
+      } else if (uris.some((u) => !isValidOAuthRedirectUri(u))) {
         errors.redirectUris = t('workspace.oauth2.create.errorRedirectInvalid');
       }
     }
@@ -512,7 +505,9 @@ export function ManageOAuthApplicationPanel({
     () => redirectUris.map((u) => u.trim()).filter(Boolean),
     [redirectUris]
   );
-  const hasValidRedirect = trimmedRedirectUris.some((u) => isValidHttpUrl(u));
+  const hasValidRedirect = trimmedRedirectUris.some((u) =>
+    isValidOAuthRedirectUri(u)
+  );
 
   const formStructurallyValid =
     Boolean(name.trim()) &&

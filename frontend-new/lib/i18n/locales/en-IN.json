@@ -451,7 +451,16 @@
         "editInvite": "Edit Invite",
         "cancelInvite": "Cancel Invite",
         "comingSoonTitle": "Not supported",
-        "comingSoonDescription": "This Action is coming Soon"
+        "comingSoonDescription": "This Action is coming Soon",
+        "unblock": "Unblock",
+        "unblockTypedConfirmTitle": "Unblock {{name}}?",
+        "unblockTypedConfirmBodyLine1": "This will restore sign-in access for {{name}}.",
+        "unblockTypedConfirmBodyLine2": "Type the user's display name exactly to confirm.",
+        "typeNameToConfirm": "Type {{keyword}} to confirm",
+        "unblockConfirmAction": "Unblock",
+        "unblockSuccess": "User unblocked successfully",
+        "unblockError": "Failed to unblock user",
+        "unblocking": "Unblocking…"
       },
       "profile": {
         "title": "Profile",
@@ -474,7 +483,8 @@
         "active": "Active",
         "pending": "Pending",
         "expired": "Expired",
-        "deactivated": "Deactivated"
+        "deactivated": "Deactivated",
+        "blocked": "Blocked"
       },
       "invite": {
         "title": "Invite Users",
@@ -953,5 +963,24 @@
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
     "nodeTemplateChatResponseDesc": "Sends the reply to the user"
+  },
+  "oauthConsent": {
+    "loading": "Loading authorization request\u2026",
+    "missingParams": "Missing required OAuth parameters (client_id, redirect_uri).",
+    "noData": "No authorization data available.",
+    "noRedirect": "No redirect URL received from server.",
+    "errorTitle": "Authorization error",
+    "signedInAs": "Signed in as {{display}}",
+    "requestHeading": "This application is requesting access to:",
+    "legalNotice": "By clicking \u201cAllow\u201d, you authorize {{appName}} to access your data as described above.",
+    "privacyPolicy": "Privacy Policy",
+    "deny": "Deny",
+    "allow": "Allow",
+    "submitting": "Processing\u2026",
+    "outcomeSuccessTitle": "Connected",
+    "outcomeSuccessLine1": "Authentication succeeded.",
+    "outcomeSuccessLine2": "You can close this window.",
+    "outcomeErrorTitle": "Couldn\u2019t connect",
+    "tryAgain": "Try Again"
   }
 }

@@ -451,7 +451,16 @@
         "editInvite": "आमंत्रण संपादित करें",
         "cancelInvite": "आमंत्रण रद्द करें",
         "comingSoonTitle": "समर्थित नहीं",
-        "comingSoonDescription": "यह कार्रवाई जल्द आ रही है"
+        "comingSoonDescription": "यह कार्रवाई जल्द आ रही है",
+        "unblock": "अनब्लॉक करें",
+        "unblockTypedConfirmTitle": "{{name}} को अनब्लॉक करें?",
+        "unblockTypedConfirmBodyLine1": "इससे {{name}} के लिए साइन-इन पहुंच बहाल हो जाएगी।",
+        "unblockTypedConfirmBodyLine2": "पुष्टि के लिए उपयोगकर्ता का प्रदर्शन नाम ठीक वैसे ही टाइप करें।",
+        "typeNameToConfirm": "पुष्टि के लिए {{keyword}} टाइप करें",
+        "unblockConfirmAction": "अनब्लॉक करें",
+        "unblockSuccess": "उपयोगकर्ता सफलतापूर्वक अनब्लॉक किया गया",
+        "unblockError": "उपयोगकर्ता को अनब्लॉक करने में विफल",
+        "unblocking": "अनब्लॉक हो रहा है…"
       },
       "profile": {
         "title": "प्रोफ़ाइल",
@@ -474,7 +483,8 @@
         "active": "सक्रिय",
         "pending": "लंबित",
         "expired": "समाप्त",
-        "deactivated": "निष्क्रिय"
+        "deactivated": "निष्क्रिय",
+        "blocked": "अवरोधित"
       },
       "invite": {
         "title": "उपयोगकर्ताओं को आमंत्रित करें",
@@ -953,5 +963,24 @@
     "toolInlineSuffix": "{{name}} टूल",
     "paletteToolGroupLabel": "{{app}} टूल",
     "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
+  },
+  "oauthConsent": {
+    "loading": "प्राधिकरण अनुरोध लोड हो रहा है\u2026",
+    "missingParams": "आवश्यक OAuth पैरामीटर गुम हैं (client_id, redirect_uri)।",
+    "noData": "कोई प्राधिकरण डेटा उपलब्ध नहीं है।",
+    "noRedirect": "सर्वर से कोई रीडायरेक्ट URL नहीं मिला।",
+    "errorTitle": "प्राधिकरण त्रुटि",
+    "signedInAs": "{{display}} के रूप में साइन इन",
+    "requestHeading": "यह ऐप्लिकेशन इस तक पहुँच माँग रहा है:",
+    "legalNotice": "\u201cअनुमति दें\u201d पर क्लिक करके, आप {{appName}} को ऊपर वर्णित अनुसार अपने डेटा तक पहुँच की अनुमति देते हैं।",
+    "privacyPolicy": "गोपनीयता नीति",
+    "deny": "अस्वीकार करें",
+    "allow": "अनुमति दें",
+    "submitting": "प्रक्रिया जारी है\u2026",
+    "outcomeSuccessTitle": "जुड़ गया",
+    "outcomeSuccessLine1": "प्रमाणीकरण सफल रहा।",
+    "outcomeSuccessLine2": "आप इस विंडो को बंद कर सकते हैं।",
+    "outcomeErrorTitle": "कनेक्ट नहीं हो सका",
+    "tryAgain": "पुनः प्रयास करें"
   }
 }

@@ -28,6 +28,20 @@ export interface User {
   groupCount?: number;
   /** Inline groups from with-groups API */
   userGroups?: Array<{ _id?: string; name: string; type: string }>;
+
+  /** Account blocked (credentials); from GET /api/v1/users?blocked=true merge */
+  isBlocked?: boolean;
+}
+
+/** Single row from GET /api/v1/users?blocked=true */
+export interface BlockedUserRecord {
+  _id: string;
+  email: string;
+  fullName?: string;
+  hasLoggedIn?: boolean;
+  orgId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // ========================================
@@ -74,7 +88,7 @@ import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 export interface UsersFilter {
   roles?: string[];
   groups?: string[];
-  statuses?: ('Active' | 'Pending')[];
+  statuses?: ('Active' | 'Pending' | 'Blocked')[];
   lastActiveAfter?: string;
   lastActiveBefore?: string;
   lastActiveDateType?: DateFilterType;
