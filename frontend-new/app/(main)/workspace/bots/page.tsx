@@ -5,12 +5,24 @@ import { toast } from '@/lib/store/toast-store';
 import { useBotsStore } from './store';
 import { BotsApi } from './api';
 import { BotPageLayout, BotConfigPanel } from './components';
+import { useRouter } from 'next/navigation';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+
 
 // ========================================
 // Page
 // ========================================
 
 export default function BotsPage() {
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   const {
     slackBotConfigs,
     agents,

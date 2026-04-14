@@ -58,7 +58,7 @@ export function BotConfigPanel() {
       color="gray"
       size="1"
       style={{ cursor: 'pointer', gap: 4 }}
-      onClick={() => window.open('https://docs.pipeshub.com/bots', '_blank')}
+      onClick={() => window.open('https://docs.pipeshub.com/integrations', '_blank')}
     >
       <MaterialIcon name="open_in_new" size={14} color="var(--slate-11)" />
       Documentation

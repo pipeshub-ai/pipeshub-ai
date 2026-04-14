@@ -1,6 +1,17 @@
 import { apiClient } from '@/lib/api';
 import { GROUP_TYPES, USER_ROLES } from '../constants';
-import type { User, UsersListResponse, WithGroupsUser } from './types';
+import type {
+  BlockedUserRecord,
+  User,
+  UsersListResponse,
+  WithGroupsUser,
+} from './types';
+
+function parseIsoToMs(iso?: string): number | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? undefined : t;
+}
 
 /**
  * Get all groups for a specific user by their MongoDB _id.
@@ -52,7 +63,27 @@ export const UsersApi = {
   },
 
   /**
-   * Fetch merged users: server-paginates via graph/list, enriches with with-groups.
+   * Blocked user profiles (credentials blocked). GET /api/v1/users?blocked=true
+   */
+  async fetchBlockedUsers(): Promise<BlockedUserRecord[]> {
+    const { data } = await apiClient.get<BlockedUserRecord[] | { users?: BlockedUserRecord[] }>(
+      BASE_URL,
+      { params: { blocked: 'true' } }
+    );
+    if (Array.isArray(data)) return data;
+    return (data as { users?: BlockedUserRecord[] }).users ?? [];
+  },
+
+  /**
+   * Unblock a user. PUT /api/v1/users/:userId/unblock (admin)
+   */
+  async unblockUser(userId: string): Promise<void> {
+    await apiClient.put(`${BASE_URL}/${userId}/unblock`);
+  },
+
+  /**
+   * Fetch merged users: server-paginates via graph/list, enriches with with-groups,
+   * merges blocked state from GET ?blocked=true, and appends blocked-only rows.
    * - graph/list  → id (UUID), email, timestamps, server pagination
    * - with-groups → hasLoggedIn, inline groups array (role + raw count)
    */
@@ -61,12 +92,14 @@ export const UsersApi = {
     limit?: number;
     search?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
-    const [graphResult, withGroupsUsers] = await Promise.all([
+    const [graphResult, withGroupsUsers, blockedRecords] = await Promise.all([
       UsersApi.listUsers(params),
       UsersApi.fetchUsersWithGroups(),
+      UsersApi.fetchBlockedUsers(),
     ]);
 
-    // Build lookup from MongoDB _id → with-groups user
+    const blockedIds = new Set(blockedRecords.map((b) => String(b._id)));
+
     const wgByUserId = new Map<string, WithGroupsUser>();
     for (const wgUser of withGroupsUsers) {
       wgByUserId.set(wgUser._id, wgUser);
@@ -82,17 +115,43 @@ export const UsersApi = {
         name: user.name || wgUser?.fullName,
         hasLoggedIn,
         isActive: user.isActive ?? hasLoggedIn,
-        // Pending users have no meaningful timestamps — omit so UI renders "-"
         createdAtTimestamp: hasLoggedIn ? user.createdAtTimestamp : undefined,
         updatedAtTimestamp: hasLoggedIn ? user.updatedAtTimestamp : undefined,
         role: groups.some((g) => g.type === GROUP_TYPES.ADMIN) ? USER_ROLES.ADMIN : USER_ROLES.MEMBER,
-        // Use the raw groups array size, excluding the "everyone" system group
         groupCount: groups.filter((g) => g.type !== GROUP_TYPES.EVERYONE).length,
         userGroups: groups,
+        isBlocked: blockedIds.has(String(user.userId)),
       };
     });
 
-    return { users: mergedUsers, totalCount: graphResult.totalCount };
+    const seenIds = new Set(mergedUsers.map((u) => String(u.userId)));
+    for (const b of blockedRecords) {
+      const id = String(b._id);
+      if (seenIds.has(id)) continue;
+      const wgUser = wgByUserId.get(id);
+      const groups = wgUser?.groups ?? [];
+      const hasLoggedIn = wgUser?.hasLoggedIn ?? b.hasLoggedIn ?? false;
+      mergedUsers.push({
+        id,
+        userId: id,
+        name: b.fullName || wgUser?.fullName,
+        email: b.email,
+        hasLoggedIn,
+        isActive: false,
+        isBlocked: true,
+        createdAtTimestamp: parseIsoToMs(b.createdAt),
+        updatedAtTimestamp: parseIsoToMs(b.updatedAt),
+        role: groups.some((g) => g.type === GROUP_TYPES.ADMIN) ? USER_ROLES.ADMIN : USER_ROLES.MEMBER,
+        groupCount: groups.filter((g) => g.type !== GROUP_TYPES.EVERYONE).length,
+        userGroups: groups,
+      });
+      seenIds.add(id);
+    }
+
+    const appended = mergedUsers.length - graphResult.users.length;
+    const totalCount = graphResult.totalCount + appended;
+
+    return { users: mergedUsers, totalCount };
   },
 
   /**
