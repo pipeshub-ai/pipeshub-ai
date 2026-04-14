@@ -79,6 +79,7 @@ export const getKnowledgeHubNodes =
         view: 'view',
         page: 'page',
         limit: 'limit',
+        cursor: 'cursor',
         sortBy: 'sort_by',
         sortOrder: 'sort_order',
         q: 'q',
@@ -91,6 +92,7 @@ export const getKnowledgeHubNodes =
         createdAt: 'created_at',
         updatedAt: 'updated_at',
         size: 'size',
+        flattened: 'flattened',
         include: 'include',
       };
 

@@ -129,6 +129,11 @@ class ConnectorConfigBuilder:
         self.config["hideConnector"] = hide
         return self
 
+    def with_has_restriction(self, has_restriction: bool = True) -> 'ConnectorConfigBuilder':
+        """Set whether the connector has restrictions in permission model"""
+        self.config["hasRestriction"] = has_restriction
+        return self
+
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
         """Add documentation link"""
         self.config["documentationLinks"].append({

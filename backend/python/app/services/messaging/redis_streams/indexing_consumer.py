@@ -3,7 +3,9 @@ import json
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Optional, override
+from typing import Optional
+
+from typing_extensions import override
 
 from redis.asyncio import Redis
 

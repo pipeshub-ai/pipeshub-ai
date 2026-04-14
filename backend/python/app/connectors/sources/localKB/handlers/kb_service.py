@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Union
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    RecordRelations,
 )
 from app.connectors.services.kafka_service import KafkaService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -137,6 +138,17 @@ class KnowledgeBaseService:
                 CollectionNames.BELONGS_TO.value,
                 transaction=txn_id,
             )
+
+            # Create RECORD_RELATION edge from App to KB RecordGroup with PARENT_CHILD relationship
+            await self.graph_provider.create_node_relation(
+                from_id=kb_connector_id,
+                to_id=kb_key,
+                from_collection=CollectionNames.APPS.value,
+                to_collection=CollectionNames.RECORD_GROUPS.value,
+                relationship_type=RecordRelations.PARENT_CHILD.value,
+                transaction=txn_id,
+            )
+
             await self.graph_provider.commit_transaction(txn_id)
 
             result = {"success": True}

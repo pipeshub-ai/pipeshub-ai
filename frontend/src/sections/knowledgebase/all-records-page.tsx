@@ -1,5 +1,5 @@
 // all-records-page.tsx - Standalone All Records page with hierarchical navigation
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { paths } from 'src/routes/paths';
@@ -9,10 +9,9 @@ export default function AllRecordsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   
-  // Parse all URL params
+  const cursor = searchParams.get('cursor') || undefined;
   const nodeType = searchParams.get('nodeType') || undefined;
   const nodeId = searchParams.get('nodeId') || undefined;
-  const page = searchParams.get('page') || '1'; // 1-indexed page
   const limit = searchParams.get('limit') || '20';
   const q = searchParams.get('q') || undefined;
   const sortBy = searchParams.get('sortBy') || undefined;
@@ -23,17 +22,43 @@ export default function AllRecordsPage() {
   const kbIds = searchParams.get('kbIds') || undefined;
   const indexingStatus = searchParams.get('indexingStatus') || undefined;
   
-  // Navigation helper - updates URL with new params
   const updateUrl = useCallback((params: Record<string, string | undefined>) => {
-    const newParams = new URLSearchParams();
+    const newParams = new URLSearchParams(searchParams);
     Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== '') {
+      if (value === undefined || value === null || value === '') {
+        newParams.delete(key);
+      } else {
         newParams.set(key, value);
       }
     });
     navigate(`${paths.dashboard.allRecords}?${newParams.toString()}`);
-  }, [navigate]);
-  
+  }, [navigate, searchParams]);
+
+  const CURSOR_ONLY_EXTRA_KEYS = [
+    'q',
+    'sortBy',
+    'sortOrder',
+    'recordTypes',
+    'origins',
+    'connectorIds',
+    'kbIds',
+    'indexingStatus',
+    'limit',
+  ] as const;
+
+  useEffect(() => {
+    if (!cursor) return;
+    if (!CURSOR_ONLY_EXTRA_KEYS.some((k) => searchParams.has(k))) return;
+
+    const newParams = new URLSearchParams();
+    newParams.set('cursor', cursor);
+    const nt = searchParams.get('nodeType');
+    const nid = searchParams.get('nodeId');
+    if (nt) newParams.set('nodeType', nt);
+    if (nid) newParams.set('nodeId', nid);
+    navigate(`${paths.dashboard.allRecords}?${newParams.toString()}`, { replace: true });
+  }, [cursor, navigate, searchParams]);
+
   const handleNavigateToRecord = (recordId: string) => {
     window.open(`/record/${recordId}`, '_blank');
   };
@@ -41,9 +66,9 @@ export default function AllRecordsPage() {
   return (
     <Box>
       <AllRecordsView
+        cursor={cursor}
         nodeType={nodeType}
         nodeId={nodeId}
-        page={parseInt(page, 10)}
         limit={parseInt(limit, 10)}
         q={q}
         sortBy={sortBy}
