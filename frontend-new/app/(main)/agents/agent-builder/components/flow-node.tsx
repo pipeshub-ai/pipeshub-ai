@@ -5,7 +5,12 @@ import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
-import { formattedProvider, normalizeDisplayName } from '../display-utils';
+import {
+  formattedProvider,
+  normalizeDisplayName,
+  resolveNodeHeaderIconErrorFallback,
+  resolveNodeHeaderIconUrl,
+} from '../display-utils';
 import { NodeHandles } from './node-handles';
 import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
@@ -119,7 +124,12 @@ export const FlowNode = React.memo(function FlowNode({
         ? t('agentBuilder.nodeLabelChatOutput')
         : normalizeDisplayName(data.label);
   const icon = data.icon as string | undefined;
-  const isIconUrl = typeof icon === 'string' && (icon.startsWith('/') || icon.startsWith('http'));
+  const trimmedIcon = typeof icon === 'string' ? icon.trim() : '';
+  const headerIconUrl = resolveNodeHeaderIconUrl(data);
+  const isIconUrl = Boolean(headerIconUrl);
+  const materialIconName =
+    trimmedIcon && !trimmedIcon.startsWith('/') && !trimmedIcon.startsWith('http') ? trimmedIcon : 'widgets';
+  const headerIconErrorFallback = resolveNodeHeaderIconErrorFallback(data);
 
   let groupBody: React.ReactNode = null;
   if (data.type === 'app-group') {
@@ -227,9 +237,19 @@ export const FlowNode = React.memo(function FlowNode({
                 aria-hidden
               >
                 {isIconUrl ? (
-                  <img src={icon} width={22} height={22} alt="" style={{ objectFit: 'contain', display: 'block' }} />
+                  <img
+                    src={headerIconUrl}
+                    width={22}
+                    height={22}
+                    alt=""
+                    style={{ objectFit: 'contain', display: 'block' }}
+                    onError={(e) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = headerIconErrorFallback;
+                    }}
+                  />
                 ) : (
-                  <MaterialIcon name={icon || 'widgets'} size={22} color={chrome.iconColor} />
+                  <MaterialIcon name={materialIconName} size={22} color={chrome.iconColor} />
                 )}
               </Flex>
               <Flex direction="column" gap="1" style={{ minWidth: 0 }}>

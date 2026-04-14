@@ -6,7 +6,19 @@ import { Handle, Position, useReactFlow, useStore, useNodeConnections } from '@x
 import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
-import { normalizeDisplayName } from '../display-utils';
+import {
+  AGENT_KNOWLEDGE_FALLBACK_ICON,
+  AGENT_TOOLSET_FALLBACK_ICON,
+  normalizeDisplayName,
+  resolveNodeHeaderIconUrl,
+} from '../display-utils';
+
+type ChipIconKind = 'knowledge' | 'toolset';
+
+const CHIP_ICON_FALLBACK: Record<ChipIconKind, string> = {
+  knowledge: AGENT_KNOWLEDGE_FALLBACK_ICON,
+  toolset: AGENT_TOOLSET_FALLBACK_ICON,
+};
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL } from '../flow-theme';
 
 function CoreHandle({
@@ -84,11 +96,17 @@ function ConnectionChip({
   label,
   variant = 'default',
   onClick,
+  iconSrc,
+  iconFallbackSrc = AGENT_KNOWLEDGE_FALLBACK_ICON,
 }: {
   label: string;
   variant?: 'default' | 'more';
   /** When set (e.g. overflow chip), the chip is keyboard-activatable and expands/collapses the list. */
   onClick?: () => void;
+  /** Connector / collection icon (legacy agent builder parity). */
+  iconSrc?: string;
+  /** Replacement if the image fails to load (knowledge vs toolsets use different neutrals). */
+  iconFallbackSrc?: string;
 }) {
   const isMore = variant === 'more';
   const surfaceStyle: React.CSSProperties = {
@@ -106,6 +124,21 @@ function ConnectionChip({
     font: 'inherit',
     color: 'inherit',
   };
+
+  const iconEl =
+    iconSrc && variant === 'default' ? (
+      <img
+        src={iconSrc}
+        width={14}
+        height={14}
+        alt=""
+        style={{ objectFit: 'contain', flexShrink: 0 }}
+        onError={(e) => {
+          e.currentTarget.onerror = null;
+          e.currentTarget.src = iconFallbackSrc;
+        }}
+      />
+    ) : null;
 
   const text = (
     <Text
@@ -125,6 +158,13 @@ function ConnectionChip({
     </Text>
   );
 
+  const body = (
+    <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+      {iconEl}
+      {text}
+    </Flex>
+  );
+
   if (onClick) {
     return (
       <button
@@ -135,14 +175,14 @@ function ConnectionChip({
         onClick={onClick}
         style={surfaceStyle}
       >
-        {text}
+        {body}
       </button>
     );
   }
 
   return (
     <Box className="agent-core-connection-chip" title={label} style={surfaceStyle}>
-      {text}
+      {body}
     </Box>
   );
 }
@@ -153,10 +193,13 @@ function ConnectedChips({
   nodes,
   max,
   labelOf,
+  chipIconKind,
 }: {
   nodes: FlowNodeData[];
   max: number;
   labelOf: (n: FlowNodeData) => string;
+  /** When set, chips show connector/collection icons with the correct error fallback. */
+  chipIconKind?: ChipIconKind;
 }) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
@@ -164,10 +207,19 @@ function ConnectedChips({
   const overflow = nodes.length - max;
   const limit = showAll ? nodes.length : max;
   const shown = nodes.slice(0, limit);
+  const iconFallback = chipIconKind ? CHIP_ICON_FALLBACK[chipIconKind] : undefined;
+  const iconSrcFor = chipIconKind
+    ? (node: FlowNodeData) => resolveNodeHeaderIconUrl(node) ?? CHIP_ICON_FALLBACK[chipIconKind]
+    : undefined;
   return (
     <Flex wrap="wrap" gap="2" style={{ alignSelf: 'stretch' }}>
       {shown.map((n) => (
-        <ConnectionChip key={n.id} label={labelOf(n)} />
+        <ConnectionChip
+          key={n.id}
+          label={labelOf(n)}
+          iconSrc={iconSrcFor?.(n)}
+          iconFallbackSrc={iconFallback}
+        />
       ))}
       {overflow > 0 ? (
         <ConnectionChip
@@ -255,7 +307,6 @@ export function AgentCoreNode({
     setStartMessage((data.config?.startMessage as string) || t('agentBuilder.defaultStartMessage'));
     setPromptOpen(true);
   };
-
 
   return (
     <>
@@ -426,6 +477,7 @@ export function AgentCoreNode({
                     (n.config?.kbName as string) || (n.config?.appName as string) || n.label
                   )
                 }
+                chipIconKind="knowledge"
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
@@ -441,6 +493,7 @@ export function AgentCoreNode({
                 nodes={connected.toolsets}
                 max={MAX_VISIBLE.toolsets}
                 labelOf={(n) => (n.config?.displayName as string) || n.label}
+                chipIconKind="toolset"
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
