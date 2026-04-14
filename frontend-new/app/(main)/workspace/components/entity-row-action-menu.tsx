@@ -297,12 +297,14 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
         }}
       >
         <Flex direction="column" gap="1">
-          {/* ── Card 1: Action items ── */}
-          <ActionCard
-            actions={visibleActions}
-            onActionClick={() => setShowRolePicker((v) => !v)}
-            onClose={() => handleOpenChange(false)}
-          />
+          {/* ── Card 1: Action items (hidden when role picker is open) ── */}
+          {!showRolePicker && (
+            <ActionCard
+              actions={visibleActions}
+              onActionClick={() => setShowRolePicker((v) => !v)}
+              onClose={() => handleOpenChange(false)}
+            />
+          )}
 
           {/* ── Card 2: Role picker (visible when "Change Role" is clicked) ── */}
           {showRolePicker && subMenuAction?.subMenu && (
