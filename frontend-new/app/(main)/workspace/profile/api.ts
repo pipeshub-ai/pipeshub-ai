@@ -66,11 +66,11 @@ export const ProfileApi = {
     await apiClient.put(`${USERS_URL}/${userId}`, payload);
   },
 
-  /** GET /api/v1/users/{userId}/dp — download avatar and return a data URL */
+  /** GET /api/v1/users/dp — download avatar and return a data URL */
   async getAvatar(userId?: string | null): Promise<string | null> {
     if (!userId) return null;
     try {
-      const response = await apiClient.get<ArrayBuffer>(`${USERS_URL}/${userId}/dp`, {
+      const response = await apiClient.get<ArrayBuffer>(`${USERS_URL}/dp`, {
         responseType: 'arraybuffer',
         headers: { Accept: 'image/*, */*' },
       });

@@ -223,6 +223,31 @@ export function useProfilePage() {
     [userId, addToast]
   );
 
+  // ── Avatar delete ──────────────────────────────────────────────
+
+  const handleAvatarDelete = useCallback(async () => {
+    if (!userId) return;
+    setAvatarUploading(true);
+    try {
+      await ProfileApi.deleteAvatar();
+      setAvatarUrl(null);
+      addToast({
+        variant: 'success',
+        title: 'Profile picture removed',
+        description: 'Your profile picture has been removed',
+      });
+    } catch (err: unknown) {
+      const errMessage = isProcessedError(err) ? err.message : undefined;
+      addToast({
+        variant: 'error',
+        title: 'Remove failed',
+        description: errMessage || 'Could not remove profile picture',
+      });
+    } finally {
+      setAvatarUploading(false);
+    }
+  }, [userId, addToast]);
+
   // ── Computed ──────────────────────────────────────────────────
 
   const avatarInitial = form.fullName
@@ -263,5 +288,6 @@ export function useProfilePage() {
     handleDiscard,
     handleDiscardConfirm,
     handleAvatarChange,
+    handleAvatarDelete,
   };
 }
