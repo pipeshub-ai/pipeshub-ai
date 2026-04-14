@@ -409,7 +409,7 @@ def get_vectorDb_limit(context_length: int) -> int:
             return limit
     return DEFAULT_VECTOR_DB_LIMIT
 
-async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs) -> Dict[str, Any]:
+async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs) -> dict[str, Any]:
     """Execute a single tool and return result with metadata"""
     if tool is None:
         logger.warning("execute_tool_calls: unknown tool requested name=%s", tool_name)
@@ -1127,7 +1127,7 @@ def extract_json_from_string(input_string: str) -> "dict[str, Any]":
         input_string (str): The input string containing JSON data
 
     Returns:
-        Dict[str, Any]: The extracted JSON object.
+        dict[str, Any]: The extracted JSON object.
 
     Raises:
         ValueError: If no valid JSON object is found in the input string.
@@ -1794,7 +1794,7 @@ async def call_aiter_llm_stream(
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     ref_to_url: dict[str, str] | None = None,
     web_records=None,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
 
     Args:
@@ -2232,12 +2232,12 @@ async def invoke_with_structured_output_and_reflection(
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
-                logger.debug("Dict with content response validated successfully")
+                logger.debug("dict with content response validated successfully")
             else:
                 logger.debug("Response is a dict, validating directly")
                 response_content = json.dumps(response)
                 parsed_response = schema.model_validate(response)
-                logger.debug("Dict response validated successfully")
+                logger.debug("dict response validated successfully")
         else:
             if hasattr(response, 'content'):
                 # Response is an AIMessage or string

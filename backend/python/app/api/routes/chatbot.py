@@ -495,13 +495,13 @@ async def askAIStream(
                         blob_store=blob_store,
                     ))
 
-                    messages.append({
-                        "role": "user",
-                        "content": Template(web_search_user_prompt).render(
-                            query=original_query,
-                            mode=query_info.mode,
-                        ),
-                    })
+                messages.append({
+                    "role": "user",
+                    "content": Template(web_search_user_prompt).render(
+                        query=original_query,
+                        mode=query_info.mode,
+                    ),
+                })
 
             except HTTPException as e:
                 logger.error(f"HTTPException: {str(e)}", exc_info=True)
