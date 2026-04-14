@@ -153,8 +153,10 @@ function TeamsPageContent() {
   }, [page, limit, searchQuery, setTeams, setLoading, setError]);
 
   useEffect(() => {
-    fetchTeams();
-  }, [fetchTeams]);
+    if (isProfileInitialized && isAdmin) {
+      fetchTeams();
+    }
+  }, [fetchTeams, isProfileInitialized, isAdmin]);
 
   // ── URL ↔ Store panel sync (see docs/url-driven-panel-state.md) ──
   const pendingUrlRef = useRef<string | null>(null);
@@ -487,6 +489,7 @@ function TeamsPageContent() {
               name={creator.userName}
               email={creator.userEmail}
               isSelf={currentUser?.id === creator.id || currentUser?.email === creator.userEmail}
+              profilePicture={creator.profilePicture}
             />
           );
         },

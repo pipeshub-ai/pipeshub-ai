@@ -14,6 +14,7 @@ import {
 import type { CheckboxOption } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import type { GroupUser } from '../types';
 import { UsersApi } from '../../users/api';
 import { useUsersStore } from '../../users/store';
 
@@ -38,7 +39,6 @@ export function GroupDetailSidebar({
     editGroupDescription,
     editAddUserIds,
     isSavingEdit,
-    userDps,
     closeDetailPanel,
     enterEditMode,
     exitEditMode,
@@ -49,13 +49,16 @@ export function GroupDetailSidebar({
     setDetailGroup,
   } = useGroupsStore();
 
-  // Shared users cache from the users store
+  // Shared users cache from the users store (for add-users dropdown)
   const allUsers = useUsersStore((s) => s.allUsers);
   const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
   const setAllUsers = useUsersStore((s) => s.setAllUsers);
   const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
 
   const [isDeleting, setIsDeleting] = useState(false);
+  // Group members fetched via paginated API
+  const [groupMembers, setGroupMembers] = useState<GroupUser[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
 
   // Track user IDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -69,10 +72,32 @@ export function GroupDetailSidebar({
     }
   }, [isEditMode, isDetailPanelOpen]);
 
-  // Load all users into the shared store when panel opens (skip if already loaded)
+  // Fetch group members when panel opens or group changes
+  const fetchGroupMembers = useCallback(async () => {
+    if (!detailGroup) return;
+    setIsLoadingMembers(true);
+    try {
+      const result = await GroupsApi.getGroupUsers(detailGroup._id, { limit: 100 });
+      setGroupMembers(result.users);
+    } catch {
+      // handled by global interceptor
+    } finally {
+      setIsLoadingMembers(false);
+    }
+  }, [detailGroup]);
+
   useEffect(() => {
-    if (!isDetailPanelOpen) return;
-    if (allUsers.length > 0) return; // already cached
+    if (!isDetailPanelOpen || !detailGroup) {
+      setGroupMembers([]);
+      return;
+    }
+    fetchGroupMembers();
+  }, [isDetailPanelOpen, detailGroup?._id]);
+
+  // Load all users for the add-users dropdown (edit mode)
+  useEffect(() => {
+    if (!isDetailPanelOpen || !isEditMode) return;
+    if (allUsers.length > 0) return;
 
     let cancelled = false;
     const load = async () => {
@@ -90,21 +115,13 @@ export function GroupDetailSidebar({
     };
 
     load();
-    return () => {
-      cancelled = true;
-    };
-  }, [isDetailPanelOpen, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // Resolve group member user IDs to user objects
-  const groupMembers = useMemo(() => {
-    if (!detailGroup) return [];
-    return allUsers.filter((u) => detailGroup.users.includes(u.userId));
-  }, [allUsers, detailGroup]);
+    return () => { cancelled = true; };
+  }, [isDetailPanelOpen, isEditMode, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
 
   // User options for add-users dropdown (exclude already-added users)
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailGroup) return [];
-    const memberIds = new Set(detailGroup.users);
+    const memberIds = new Set(groupMembers.map((u) => u._id));
 
     return allUsers
       .filter((u) => !memberIds.has(u.userId))
@@ -113,7 +130,7 @@ export function GroupDetailSidebar({
         label: u.name || u.email || 'Unknown User',
         subtitle: u.email,
       }));
-  }, [allUsers, detailGroup]);
+  }, [allUsers, groupMembers, detailGroup]);
 
   // Toggle a user for pending removal (deferred — applied on Save Edits)
   const handleRemoveUser = useCallback(
@@ -187,9 +204,10 @@ export function GroupDetailSidebar({
         await GroupsApi.addUsersToGroups(editAddUserIds, [detailGroup._id]);
       }
 
-      // Refresh the group data
+      // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
       setDetailGroup(updatedGroup);
+      await fetchGroupMembers();
 
       addToast({
         variant: 'success',
@@ -416,17 +434,17 @@ export function GroupDetailSidebar({
             {t('workspace.groups.detail.users', 'Users')}
           </Text>
 
-          {groupMembers.length === 0 ? (
+          {groupMembers.length === 0 && !isLoadingMembers ? (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.groups.detail.noUsers', 'No users in this group')}
             </Text>
           ) : (
             <Flex direction="column" gap="3">
               {groupMembers.map((user) => {
-                const isPendingRemove = pendingRemoveUserIds.has(user.userId);
+                const isPendingRemove = pendingRemoveUserIds.has(user._id);
                 return (
                   <Flex
-                    key={user.userId}
+                    key={user._id}
                     align="center"
                     justify="between"
                     style={{
@@ -435,16 +453,16 @@ export function GroupDetailSidebar({
                     }}
                   >
                     <AvatarCell
-                      name={user.name || user.email || 'Unknown'}
-                      email={user.email}
+                      name={user.fullName || user.email || 'Unknown'}
+                      email={user.email ?? undefined}
                       avatarSize={32}
-                      isSelf={user.userId === currentUser?.id}
-                      profilePicture={userDps[user.userId]}
+                      isSelf={user._id === currentUser?.id}
+                      profilePicture={user.profilePicture ?? undefined}
                     />
                     {isEditMode && (
                       <Text
                         size="1"
-                        onClick={() => handleRemoveUser(user.userId)}
+                        onClick={() => handleRemoveUser(user._id)}
                         style={{
                           color: isPendingRemove
                             ? 'var(--accent-11)'

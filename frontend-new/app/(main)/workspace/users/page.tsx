@@ -147,11 +147,14 @@ function UsersPageContent() {
     closeProfilePanel,
   } = useUsersStore();
 
-  // Groups for the filter dropdown — fetched independently of user list
+  // ── Paginated group filter state ──
   const groupsRef = useRef<Group[]>([]);
   const [groupOptions, setGroupOptions] = useState<{ value: string; label: string; icon: string }[]>([]);
-  // User display pictures map (userId → data URI)
-  const [userDps, setUserDps] = useState<Record<string, string>>({});
+  const [groupFilterPage, setGroupFilterPage] = useState(1);
+  const [groupFilterHasMore, setGroupFilterHasMore] = useState(false);
+  const [groupFilterLoading, setGroupFilterLoading] = useState(false);
+  const [groupFilterSearch, setGroupFilterSearch] = useState('');
+  const GROUP_FILTER_LIMIT = 25;
 
   // Capture userId from initial URL load so we can restore the profile panel
   // after fetchUsers completes (users list is empty on first render).
@@ -163,29 +166,65 @@ function UsersPageContent() {
     pendingProfileUserIdRef.current = (panel === 'profile' && userId) ? userId : null;
   }, []);
 
-  // ── Fetch groups once on mount (for filter dropdown) ──────────────────
-  useEffect(() => {
-    let cancelled = false;
-    GroupsApi.listGroups()
-      .then(({ groups, userDps: dps }) => {
-        if (!cancelled) {
+  // Fetch groups for filter dropdown (paginated + searchable)
+  const fetchGroupOptions = useCallback(
+    async (search: string, pageNum: number, append: boolean) => {
+      setGroupFilterLoading(true);
+      try {
+        const { groups, totalCount } = await GroupsApi.listGroups({
+          page: pageNum,
+          limit: GROUP_FILTER_LIMIT,
+          search: search || undefined,
+        });
+
+        // Also cache the admin group for role changes (from first page, no search)
+        if (!search && pageNum === 1) {
           groupsRef.current = groups;
           adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
-          setUserDps(dps);
-          setGroupOptions(
-            groups
-              .filter((g) => g.type !== GROUP_TYPES.EVERYONE)
-              .map((g) => ({
-                value: g._id,
-                label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
-                icon: 'group',
-              }))
-          );
+        } else if (append) {
+          groupsRef.current = [...groupsRef.current, ...groups];
         }
-      })
-      .catch(() => { /* filter dropdown degrades gracefully */ });
-    return () => { cancelled = true; };
-  }, []);
+
+        const newOptions = groups
+          .filter((g) => g.type !== GROUP_TYPES.EVERYONE)
+          .map((g) => ({
+            value: g._id,
+            label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
+            icon: 'group',
+          }));
+
+        setGroupOptions((prev) => (append ? [...prev, ...newOptions] : newOptions));
+        setGroupFilterHasMore(pageNum * GROUP_FILTER_LIMIT < totalCount);
+      } catch {
+        /* filter dropdown degrades gracefully */
+      } finally {
+        setGroupFilterLoading(false);
+      }
+    },
+    []
+  );
+
+  // Initial load
+  useEffect(() => {
+    fetchGroupOptions('', 1, false);
+  }, [fetchGroupOptions]);
+
+  // Handle search from FilterDropdown
+  const handleGroupFilterSearch = useCallback(
+    (query: string) => {
+      setGroupFilterSearch(query);
+      setGroupFilterPage(1);
+      fetchGroupOptions(query, 1, false);
+    },
+    [fetchGroupOptions]
+  );
+
+  // Handle scroll-to-bottom from FilterDropdown
+  const handleGroupFilterLoadMore = useCallback(() => {
+    const nextPage = groupFilterPage + 1;
+    setGroupFilterPage(nextPage);
+    fetchGroupOptions(groupFilterSearch, nextPage, true);
+  }, [groupFilterPage, groupFilterSearch, fetchGroupOptions]);
 
   // ── Fetch users (server-paginated, enriched with with-groups) ──────────────────
   const fetchUsers = useCallback(async () => {
@@ -326,6 +365,10 @@ function UsersPageContent() {
               selectedValues={filters.groups || []}
               onSelectionChange={(values) => setFilters({ groups: values })}
               searchable
+              onSearch={handleGroupFilterSearch}
+              onLoadMore={handleGroupFilterLoadMore}
+              isLoadingMore={groupFilterLoading}
+              hasMore={groupFilterHasMore}
             />
           );
         case 'status':
@@ -398,7 +441,7 @@ function UsersPageContent() {
           return null;
       }
     },
-    [filters, setFilters, groupOptions]
+    [filters, setFilters, groupOptions, handleGroupFilterSearch, handleGroupFilterLoadMore, groupFilterLoading, groupFilterHasMore]
   );
 
   // ── Client-side search + filter ──
@@ -424,9 +467,7 @@ function UsersPageContent() {
     if (filters.groups?.length) {
       const selectedGroupIds = new Set(filters.groups);
       result = result.filter((u) =>
-        groupsRef.current.some(
-          (g) => selectedGroupIds.has(g._id) && g.users.includes(u.userId)
-        )
+        u.userGroups?.some((ug) => ug._id && selectedGroupIds.has(ug._id))
       );
     }
 
@@ -610,7 +651,7 @@ function UsersPageContent() {
             name={user.name || user.email || '-'}
             email={user.name ? user.email : undefined}
             isSelf={currentUser?.id === user.id || currentUser?.email === user.email}
-            profilePicture={userDps[user.userId]}
+            profilePicture={user.profilePicture}
           />
         ),
       },
@@ -667,7 +708,7 @@ function UsersPageContent() {
         ),
       },
     ],
-    [t, currentUser, userDps]
+    [t, currentUser]
   );
 
   // ── Row actions ────────────

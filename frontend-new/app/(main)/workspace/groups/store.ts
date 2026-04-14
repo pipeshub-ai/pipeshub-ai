@@ -15,14 +15,13 @@ enableMapSet();
 interface GroupsState {
   /** Group list data */
   groups: Group[];
-  /** Map of userId → data URI for user display pictures */
-  userDps: Record<string, string>;
   /** Selected group IDs */
   selectedGroups: Set<string>;
 
-  /** Pagination (client-side) */
+  /** Pagination */
   page: number;
   limit: number;
+  totalCount: number;
 
   /** Search */
   searchQuery: string;
@@ -61,8 +60,7 @@ interface GroupsState {
 // ========================================
 
 interface GroupsActions {
-  setGroups: (groups: Group[]) => void;
-  setUserDps: (dps: Record<string, string>) => void;
+  setGroups: (groups: Group[], totalCount?: number) => void;
   setSelectedGroups: (ids: Set<string>) => void;
   toggleSelectGroup: (id: string) => void;
   setPage: (page: number) => void;
@@ -123,10 +121,10 @@ const initialDetailState = {
 
 const initialState: GroupsState = {
   groups: [],
-  userDps: {},
   selectedGroups: new Set<string>(),
   page: 1,
   limit: 25,
+  totalCount: 0,
   searchQuery: '',
   filters: {},
   sort: { field: 'name', order: 'asc' },
@@ -145,14 +143,12 @@ export const useGroupsStore = create<GroupsStore>()(
     immer((set) => ({
       ...initialState,
 
-      setGroups: (groups) =>
+      setGroups: (groups, totalCount) =>
         set((state) => {
           state.groups = groups;
-        }),
-
-      setUserDps: (dps) =>
-        set((state) => {
-          state.userDps = dps;
+          if (totalCount !== undefined) {
+            state.totalCount = totalCount;
+          }
         }),
 
       setSelectedGroups: (ids) =>

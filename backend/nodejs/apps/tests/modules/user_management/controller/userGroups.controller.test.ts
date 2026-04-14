@@ -143,57 +143,56 @@ describe('UserGroupController', () => {
   });
 
   describe('getAllUserGroups', () => {
-    it('should return groups and userDps map', async () => {
-      const userId1 = new mongoose.Types.ObjectId();
-      const userId2 = new mongoose.Types.ObjectId();
+    it('should return paginated groups with userCount', async () => {
       const mockGroups = [
-        { _id: 'g1', name: 'admin', type: 'admin', users: [userId1] },
-        { _id: 'g2', name: 'everyone', type: 'everyone', users: [userId1, userId2] },
+        { _id: 'g1', name: 'admin', type: 'admin', orgId, slug: 'g-1', isDeleted: false, users: ['u1', 'u2'], createdAt: '2026-01-01', updatedAt: '2026-01-01' },
+        { _id: 'g2', name: 'everyone', type: 'everyone', orgId, slug: 'g-2', isDeleted: false, users: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' },
       ];
 
       sinon.stub(UserGroups, 'find').returns({
-        lean: sinon.stub().returns({
-          exec: sinon.stub().resolves(mockGroups),
+        skip: sinon.stub().returns({
+          limit: sinon.stub().returns({
+            lean: sinon.stub().returns({
+              exec: sinon.stub().resolves(mockGroups),
+            }),
+          }),
         }),
       } as any);
+      sinon.stub(UserGroups, 'countDocuments').resolves(2);
 
-      const mockDpDocs = [
-        { userId: userId1, pic: 'base64data', mimeType: 'image/jpeg' },
-      ];
-
-      sinon.stub(UserDisplayPicture, 'find').returns({
-        lean: sinon.stub().returns({
-          exec: sinon.stub().resolves(mockDpDocs),
-        }),
-      } as any);
-
+      req.query = { page: '1', limit: '25' };
       await controller.getAllUserGroups(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
       const responseArg = res.json.firstCall.args[0];
-      expect(responseArg).to.have.property('groups').that.deep.equals(mockGroups);
-      expect(responseArg).to.have.property('userDps');
-      expect(responseArg.userDps[userId1.toString()]).to.equal('data:image/jpeg;base64,base64data');
-      expect(responseArg.userDps[userId2.toString()]).to.be.undefined;
+      expect(responseArg).to.have.property('groups').that.is.an('array').with.lengthOf(2);
+      expect(responseArg.groups[0]).to.have.property('userCount', 2);
+      expect(responseArg.groups[1]).to.have.property('userCount', 0);
+      expect(responseArg.groups[0]).to.not.have.property('users');
+      expect(responseArg).to.have.property('pagination');
+      expect(responseArg.pagination).to.deep.include({ page: 1, limit: 25, totalCount: 2 });
     });
 
-    it('should return empty userDps when no groups have users', async () => {
-      const mockGroups = [
-        { _id: 'g1', name: 'admin', type: 'admin', users: [] },
-      ];
-
+    it('should filter groups by search query', async () => {
       sinon.stub(UserGroups, 'find').returns({
-        lean: sinon.stub().returns({
-          exec: sinon.stub().resolves(mockGroups),
+        skip: sinon.stub().returns({
+          limit: sinon.stub().returns({
+            lean: sinon.stub().returns({
+              exec: sinon.stub().resolves([]),
+            }),
+          }),
         }),
       } as any);
+      sinon.stub(UserGroups, 'countDocuments').resolves(0);
 
+      req.query = { search: 'admin' };
       await controller.getAllUserGroups(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      const responseArg = res.json.firstCall.args[0];
-      expect(responseArg).to.have.property('groups').that.deep.equals(mockGroups);
-      expect(responseArg).to.have.property('userDps').that.deep.equals({});
+      // Verify regex filter was applied
+      const findCall = (UserGroups.find as sinon.SinonStub).firstCall.args[0];
+      expect(findCall).to.have.property('name');
+      expect(findCall.name).to.have.property('$regex', 'admin');
     });
   });
 
@@ -516,24 +515,64 @@ describe('UserGroupController', () => {
   });
 
   describe('getUsersInGroup', () => {
-    it('should return users in a group', async () => {
+    it('should return paginated users with profilePicture', async () => {
       req.params.groupId = 'g1';
+      req.query = { page: '1', limit: '25' };
+      const userId1 = new mongoose.Types.ObjectId();
 
-      sinon.stub(UserGroups, 'findOne').resolves({
-        _id: 'g1',
-        users: ['u1', 'u2'],
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({ _id: 'g1', users: [userId1] }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([
+                  { _id: userId1, fullName: 'Alice', email: 'alice@test.com' },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+
+      sinon.stub(Users, 'countDocuments').resolves(1);
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: userId1, pic: 'b64pic', mimeType: 'image/jpeg' },
+          ]),
+        }),
       } as any);
 
       await controller.getUsersInGroup(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith({ users: ['u1', 'u2'] })).to.be.true;
+      const responseArg = res.json.firstCall.args[0];
+      expect(responseArg).to.have.property('users').that.is.an('array').with.lengthOf(1);
+      expect(responseArg.users[0]).to.deep.include({
+        _id: userId1.toString(),
+        fullName: 'Alice',
+        email: 'alice@test.com',
+        profilePicture: 'data:image/jpeg;base64,b64pic',
+      });
+      expect(responseArg).to.have.property('pagination');
+      expect(responseArg.pagination).to.deep.include({ page: 1, totalCount: 1 });
     });
 
     it('should throw NotFoundError when group not found', async () => {
       req.params.groupId = 'nonexistent';
 
-      sinon.stub(UserGroups, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(null),
+        }),
+      } as any);
 
       try {
         await controller.getUsersInGroup(req, res);

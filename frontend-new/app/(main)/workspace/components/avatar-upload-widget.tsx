@@ -63,7 +63,7 @@ export function AvatarUploadWidget({
             <DropdownMenu.Item onClick={onEditClick}>
               <Flex align="center" gap="2">
                 <MaterialIcon name="upload" size={14} color="var(--gray-11)" />
-                Change
+                Upload
               </Flex>
             </DropdownMenu.Item>
             <DropdownMenu.Item color="red" onClick={onDeleteClick}>

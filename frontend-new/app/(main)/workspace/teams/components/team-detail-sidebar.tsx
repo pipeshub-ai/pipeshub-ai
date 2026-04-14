@@ -17,7 +17,7 @@ import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
 import { UsersApi } from '../../users/api';
 import { useUsersStore } from '../../users/store';
-import type { TeamMemberRole } from '../types';
+import type { TeamMember, TeamMemberRole } from '../types';
 import { ROLE_OPTIONS } from '../constants';
 
 // ========================================
@@ -59,6 +59,9 @@ export function TeamDetailSidebar({
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [addMemberRole, setAddMemberRole] = useState<TeamMemberRole>('READER');
+  // Team members fetched via API (with profile pictures)
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
 
   // Track member UUIDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -73,10 +76,32 @@ export function TeamDetailSidebar({
     }
   }, [isEditMode, isDetailPanelOpen]);
 
-  // Load all users into the shared store when panel opens (skip if already loaded)
+  // Fetch team members with profile pictures when panel opens
+  const fetchTeamMembers = useCallback(async () => {
+    if (!detailTeam) return;
+    setIsLoadingMembers(true);
+    try {
+      const members = await TeamsApi.getTeamUsers(detailTeam.id);
+      setTeamMembers(members);
+    } catch {
+      // handled by global interceptor
+    } finally {
+      setIsLoadingMembers(false);
+    }
+  }, [detailTeam]);
+
   useEffect(() => {
-    if (!isDetailPanelOpen) return;
-    if (allUsers.length > 0) return; // already cached
+    if (!isDetailPanelOpen || !detailTeam) {
+      setTeamMembers([]);
+      return;
+    }
+    fetchTeamMembers();
+  }, [isDetailPanelOpen, detailTeam?.id]);
+
+  // Load all users for the add-users dropdown (edit mode only)
+  useEffect(() => {
+    if (!isDetailPanelOpen || !isEditMode) return;
+    if (allUsers.length > 0) return;
 
     let cancelled = false;
     const load = async () => {
@@ -94,15 +119,13 @@ export function TeamDetailSidebar({
     };
 
     load();
-    return () => {
-      cancelled = true;
-    };
-  }, [isDetailPanelOpen, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
+    return () => { cancelled = true; };
+  }, [isDetailPanelOpen, isEditMode, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
 
   // User options for add-users dropdown (exclude already-added members by UUID)
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailTeam) return [];
-    const memberUuids = new Set(detailTeam.members?.map((m) => m.id) ?? []);
+    const memberUuids = new Set(teamMembers.map((m) => m.id));
 
     return allUsers
       .filter((u) => !memberUuids.has(u.id))
@@ -111,7 +134,7 @@ export function TeamDetailSidebar({
         label: u.name || u.email || 'Unknown User',
         subtitle: u.email,
       }));
-  }, [allUsers, detailTeam]);
+  }, [allUsers, teamMembers, detailTeam]);
 
   // Toggle a user for pending removal (deferred — applied on Save Edits)
   const handleRemoveUser = useCallback(
@@ -186,9 +209,10 @@ export function TeamDetailSidebar({
         updateUserRoles: updateUserRoles.length > 0 ? updateUserRoles : undefined,
       });
 
-      // Refresh the team data and re-open detail panel in view mode
+      // Refresh the team data, members, and re-open detail panel in view mode
       const updatedTeam = await TeamsApi.getTeam(detailTeam.id);
       openDetailPanel(updatedTeam);
+      await fetchTeamMembers();
 
       addToast({
         variant: 'success',
@@ -247,11 +271,11 @@ export function TeamDetailSidebar({
 
   const panelTitle = detailTeam?.name || 'Team';
 
-  // Find the creator member
+  // Find the creator member from fetched team members
   const creatorMember = useMemo(() => {
-    if (!detailTeam?.createdBy || !detailTeam?.members?.length) return null;
-    return detailTeam.members.find((m) => m.id === detailTeam.createdBy) ?? null;
-  }, [detailTeam]);
+    if (!detailTeam?.createdBy || !teamMembers.length) return null;
+    return teamMembers.find((m) => m.id === detailTeam.createdBy) ?? null;
+  }, [detailTeam, teamMembers]);
 
   return (
     <WorkspaceRightPanel
@@ -403,6 +427,7 @@ export function TeamDetailSidebar({
               email={creatorMember.userEmail}
               avatarSize={32}
               isSelf={currentUser?.id === creatorMember.id}
+              profilePicture={creatorMember.profilePicture}
             />
           ) : (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -432,17 +457,17 @@ export function TeamDetailSidebar({
               {t('workspace.teams.detail.members', 'Members')}
             </Text>
             <Badge variant="soft" color="gray" size="1">
-              {detailTeam?.members?.length ?? 0}
+              {teamMembers.length}
             </Badge>
           </Flex>
 
-          {(!detailTeam?.members || detailTeam.members.length === 0) ? (
+          {teamMembers.length === 0 && !isLoadingMembers ? (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.teams.detail.noMembers', 'No members in this team')}
             </Text>
           ) : (
             <Flex direction="column" gap="3">
-              {detailTeam.members.map((member) => {
+              {teamMembers.map((member) => {
                 const isPendingRemove = pendingRemoveUserIds.has(member.id);
                 return (
                   <Flex
@@ -460,6 +485,7 @@ export function TeamDetailSidebar({
                         email={member.userEmail}
                         avatarSize={32}
                         isSelf={currentUser?.id === member.id}
+                        profilePicture={member.profilePicture}
                       />
                       <Badge variant="soft" color="gray" size="1" style={{ flexShrink: 0 }}>
                         {member.role}

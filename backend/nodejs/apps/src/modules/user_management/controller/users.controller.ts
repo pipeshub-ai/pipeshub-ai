@@ -31,6 +31,10 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { UserGroups } from '../schema/userGroup.schema';
+import type {
+  GraphUserListResponse,
+  UserGroupSummary,
+} from '../types/user_management.types';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
@@ -1569,13 +1573,85 @@ export class UserController {
         },
         method: HttpMethod.GET,
       };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiCommand = new AIServiceCommand<GraphUserListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw new BadRequestError('Failed to get users');
       }
-      const users = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(users);
+      const data = aiResponse.data;
+      const usersArray = data?.users ?? [];
+
+      const userMongoIds = usersArray.map((u) => u.userId).filter(Boolean);
+
+      if (userMongoIds.length > 0) {
+        const orgIdObj = new mongoose.Types.ObjectId(orgId);
+
+        // Parallel: fetch DPs, mongo user docs (hasLoggedIn), and group memberships
+        const [dpDocs, mongoUsers, groupDocs] = await Promise.all([
+          UserDisplayPicture.find({
+            orgId,
+            userId: { $in: userMongoIds },
+            pic: { $ne: null },
+          }).lean().exec(),
+          Users.find({
+            _id: { $in: userMongoIds },
+            orgId: orgIdObj,
+          }).select('_id hasLoggedIn fullName').lean().exec(),
+          UserGroups.find({
+            orgId: orgIdObj,
+            isDeleted: false,
+            users: { $in: userMongoIds.map((id: string) => new mongoose.Types.ObjectId(id)) },
+          }).select('_id name type users').lean().exec(),
+        ]);
+
+        // Build lookup maps
+        const dpMap = new Map<string, string>();
+        for (const dp of dpDocs) {
+          if (dp.userId && dp.pic) {
+            const mime = dp.mimeType || 'image/jpeg';
+            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+          }
+        }
+
+        const mongoUserMap = new Map<string, { hasLoggedIn?: boolean; fullName?: string }>();
+        for (const mu of mongoUsers) {
+          mongoUserMap.set(mu._id.toString(), { hasLoggedIn: mu.hasLoggedIn, fullName: mu.fullName });
+        }
+
+        // Build per-user groups
+        const userGroupsMap = new Map<string, UserGroupSummary[]>();
+        for (const g of groupDocs) {
+          for (const uid of g.users) {
+            const uidStr = uid.toString();
+            if (!userGroupsMap.has(uidStr)) {
+              userGroupsMap.set(uidStr, []);
+            }
+            userGroupsMap.get(uidStr)!.push({
+              _id: g._id.toString(),
+              name: g.name,
+              type: g.type,
+            });
+          }
+        }
+
+        // Enrich each user
+        for (const user of usersArray) {
+          const uid = user.userId;
+          if (!uid) continue;
+          if (dpMap.has(uid)) user.profilePicture = dpMap.get(uid);
+          const mu = mongoUserMap.get(uid);
+          if (mu) {
+            user.hasLoggedIn = mu.hasLoggedIn ?? true;
+            if (!user.name && mu.fullName) user.name = mu.fullName;
+          }
+          const groups = userGroupsMap.get(uid) ?? [];
+          user.userGroups = groups;
+          user.groupCount = groups.filter((g) => g.type !== 'everyone').length;
+          user.role = groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member';
+        }
+      }
+
+      res.status(HTTP_STATUS.OK).json(data);
     } catch (error: any) {
       this.logger.error('Error getting users', {
         requestId,

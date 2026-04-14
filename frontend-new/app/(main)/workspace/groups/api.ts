@@ -1,17 +1,23 @@
 import { apiClient } from '@/lib/api';
-import type { Group, GroupsListResponse } from './types';
+import type { Group, GroupsListResponse, GroupUsersResponse, GroupUser } from './types';
 
 const BASE_URL = '/api/v1/userGroups';
 
 export const GroupsApi = {
   /**
-   * List all groups with user display pictures.
-   * GET /api/v1/userGroups
-   * Returns { groups, userDps } where userDps maps userId → data URI.
+   * List groups with server-side pagination.
+   * GET /api/v1/userGroups?page=&limit=&search=
    */
-  async listGroups(): Promise<{ groups: Group[]; userDps: Record<string, string> }> {
-    const { data } = await apiClient.get<GroupsListResponse>(BASE_URL);
-    return { groups: data.groups ?? [], userDps: data.userDps ?? {} };
+  async listGroups(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+  }): Promise<{ groups: Group[]; totalCount: number }> {
+    const { data } = await apiClient.get<GroupsListResponse>(BASE_URL, { params });
+    return {
+      groups: data.groups ?? [],
+      totalCount: data.pagination?.totalCount ?? data.groups?.length ?? 0,
+    };
   },
 
   /**
@@ -21,6 +27,24 @@ export const GroupsApi = {
   async getGroup(id: string): Promise<Group> {
     const { data } = await apiClient.get<Group>(`${BASE_URL}/${id}`);
     return data;
+  },
+
+  /**
+   * Get users in a group with pagination and profile pictures.
+   * GET /api/v1/userGroups/:groupId/users?page=&limit=&search=
+   */
+  async getGroupUsers(
+    groupId: string,
+    params?: { page?: number; limit?: number; search?: string }
+  ): Promise<{ users: GroupUser[]; totalCount: number }> {
+    const { data } = await apiClient.get<GroupUsersResponse>(
+      `${BASE_URL}/${groupId}/users`,
+      { params }
+    );
+    return {
+      users: data.users ?? [],
+      totalCount: data.pagination?.totalCount ?? data.users?.length ?? 0,
+    };
   },
 
   /**

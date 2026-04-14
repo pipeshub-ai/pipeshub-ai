@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/api';
 import type {
   Team,
+  TeamMember,
   TeamsListResponse,
   CreateTeamPayload,
   UpdateTeamPayload,
@@ -66,6 +67,17 @@ export const TeamsApi = {
       return (data as { team: Team }).team;
     }
     return data as Team;
+  },
+
+  /**
+   * Get team members with profile pictures.
+   * GET /api/v1/teams/:teamId/users
+   */
+  async getTeamUsers(teamId: string): Promise<TeamMember[]> {
+    const { data } = await apiClient.get<{ members: TeamMember[] }>(
+      `${BASE_URL}/${teamId}/users`
+    );
+    return data?.members ?? [];
   },
 
   /**

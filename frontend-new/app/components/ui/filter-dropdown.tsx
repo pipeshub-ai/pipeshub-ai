@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Flex, Box, Text, Badge, Button, Popover, Checkbox, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -40,6 +40,21 @@ export interface FilterDropdownProps {
   disabled?: boolean;
   /** Plural label shown in the applied state chip, e.g. "Types", "Statuses" */
   pluralLabel?: string;
+  /**
+   * Async search callback. When provided, search is server-side:
+   * the component calls this instead of filtering `options` locally.
+   * Should update `options` externally.
+   */
+  onSearch?: (query: string) => void;
+  /**
+   * Called when the user scrolls to the bottom of the options list.
+   * Use this to load the next page of options.
+   */
+  onLoadMore?: () => void;
+  /** Whether more options are being loaded (shows a spinner at the bottom) */
+  isLoadingMore?: boolean;
+  /** Whether there are more options to load */
+  hasMore?: boolean;
 }
 
 /**
@@ -86,20 +101,58 @@ export function FilterDropdown({
   searchable = false,
   disabled = false,
   pluralLabel,
+  onSearch,
+  onLoadMore,
+  isLoadingMore = false,
+  hasMore = false,
 }: FilterDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hasSelection = selectedValues.length > 0;
+  const isServerSearch = !!onSearch;
 
-  // Filter options by search query
+  // Filter options by search query (only when not using server search)
   const filteredOptions = useMemo(() => {
+    if (isServerSearch) return options; // server already filtered
     if (!searchQuery.trim()) return options;
     const lowerQuery = searchQuery.toLowerCase();
     return options.filter((option) =>
       option.label.toLowerCase().includes(lowerQuery)
     );
-  }, [options, searchQuery]);
+  }, [options, searchQuery, isServerSearch]);
+
+  // Debounced search for server-side mode
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      if (isServerSearch) {
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = setTimeout(() => onSearch!(value), 300);
+      }
+    },
+    [isServerSearch, onSearch]
+  );
+
+  // Infinite scroll: load more when near bottom
+  const handleScroll = useCallback(() => {
+    if (!onLoadMore || !hasMore || isLoadingMore) return;
+    const el = listRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+      onLoadMore();
+    }
+  }, [onLoadMore, hasMore, isLoadingMore]);
+
+  // Reset search when dropdown closes
+  useEffect(() => {
+    if (!isOpen) {
+      setSearchQuery('');
+      if (isServerSearch) onSearch!('');
+    }
+  }, [isOpen]);
 
   // Toggle option selection
   const toggleOption = (value: string) => {
@@ -255,7 +308,7 @@ export function FilterDropdown({
               size="1"
               placeholder="Search"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
             >
               <TextField.Slot>
                 <MaterialIcon name="search" size={14} color="var(--slate-9)" />
@@ -266,9 +319,11 @@ export function FilterDropdown({
 
         {/* Options list */}
         <Flex
+          ref={listRef}
           direction="column"
           gap="1"
           className="no-scrollbar"
+          onScroll={handleScroll}
           style={{ maxHeight: '200px', overflowY: 'auto' }}
         >
           {filteredOptions.map((option) => (
@@ -306,7 +361,12 @@ export function FilterDropdown({
               </Text>
             </Flex>
           ))}
-          {filteredOptions.length === 0 && (
+          {isLoadingMore && (
+            <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px', textAlign: 'center' }}>
+              Loading...
+            </Text>
+          )}
+          {filteredOptions.length === 0 && !isLoadingMore && (
             <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>
               No results found
             </Text>

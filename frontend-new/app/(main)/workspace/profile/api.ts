@@ -66,9 +66,8 @@ export const ProfileApi = {
     await apiClient.put(`${USERS_URL}/${userId}`, payload);
   },
 
-  /** GET /api/v1/users/dp — download avatar and return a data URL */
-  async getAvatar(userId?: string | null): Promise<string | null> {
-    if (!userId) return null;
+  /** GET /api/v1/users/dp — download current user's avatar (resolved from JWT) */
+  async getAvatar(): Promise<string | null> {
     try {
       const response = await apiClient.get<ArrayBuffer>(`${USERS_URL}/dp`, {
         responseType: 'arraybuffer',
@@ -88,15 +87,15 @@ export const ProfileApi = {
     }
   },
 
-  /** PUT /api/v1/users/dp — upload avatar (multipart/form-data, field: 'file') */
-  async uploadAvatar(userId: string, file: File): Promise<string | null> {
+  /** PUT /api/v1/users/dp — upload avatar (multipart/form-data, field: 'file'). User resolved from JWT. */
+  async uploadAvatar(file: File): Promise<string | null> {
     const formData = new FormData();
     formData.append('file', file);
     await apiClient.put(`${USERS_URL}/dp`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     // Fetch back the processed image from server (EXIF stripped, compressed)
-    return this.getAvatar(userId);
+    return this.getAvatar();
   },
 
   /** DELETE /api/v1/users/dp — user resolved from JWT */

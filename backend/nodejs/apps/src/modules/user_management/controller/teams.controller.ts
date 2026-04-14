@@ -19,6 +19,11 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { UserDisplayPicture } from '../schema/userDp.schema';
+import type {
+  TeamUsersResponse,
+  TeamsListResponse,
+} from '../types/user_management.types';
 
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
@@ -467,14 +472,42 @@ export class TeamsController {
           'Content-Type': 'application/json',
         },
       };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiCommand = new AIServiceCommand<TeamUsersResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Getting team users',
-        'Team users not found',
-      );
+
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+        res.status(aiResponse.statusCode).json(aiResponse.data);
+        return;
+      }
+
+      const data = aiResponse.data;
+      const members = data?.members ?? [];
+
+      // Inject profilePicture into each member
+      const memberUserIds = members.map((m) => m.userId).filter(Boolean);
+      if (memberUserIds.length > 0) {
+        const dpDocs = await UserDisplayPicture.find({
+          orgId,
+          userId: { $in: memberUserIds },
+          pic: { $ne: null },
+        }).lean().exec();
+
+        const dpMap = new Map<string, string>();
+        for (const dp of dpDocs) {
+          if (dp.userId && dp.pic) {
+            const mime = dp.mimeType || 'image/jpeg';
+            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+          }
+        }
+
+        for (const member of members) {
+          if (member.userId && dpMap.has(member.userId)) {
+            member.profilePicture = dpMap.get(member.userId);
+          }
+        }
+      }
+
+      res.status(HTTP_STATUS.OK).json(data);
     } catch (error: any) {
       this.logger.error('Error getting team users', {
         requestId,
@@ -534,14 +567,15 @@ export class TeamsController {
           'Content-Type': 'application/json',
         },
       };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(HTTP_STATUS.OK).json({ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } });
         return;
       }
-      const teams = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(teams);
+      const teamsData = aiResponse.data;
+
+      res.status(HTTP_STATUS.OK).json(teamsData);
     } catch (error: any) {
       this.logger.error('Error getting user teams', {
         requestId,

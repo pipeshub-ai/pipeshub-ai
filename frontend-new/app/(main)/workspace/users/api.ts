@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api';
 import { GROUP_TYPES, USER_ROLES } from '../constants';
 import type {
   BlockedUserRecord,
+  GraphUsersListResponse,
   User,
   UsersListResponse,
   WithGroupsUser,
@@ -34,15 +35,38 @@ const BASE_URL = '/api/v1/users';
 
 export const UsersApi = {
   /**
-   * List users with pagination from the graph API.
-   * GET /api/v1/users/graph/list
+   * List users with pagination and server-side filters.
+   * GET /api/v1/users?page=&limit=&search=&hasLoggedIn=&groupIds=
+   * Queries MongoDB directly with filters applied at the database level.
    */
   async listUsers(params?: {
     page?: number;
     limit?: number;
     search?: string;
+    hasLoggedIn?: string;
+    groupIds?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
     const { data } = await apiClient.get<UsersListResponse>(
+      BASE_URL,
+      { params }
+    );
+    return {
+      users: data.users ?? [],
+      totalCount: data.pagination?.totalCount ?? data.users?.length ?? 0,
+    };
+  },
+
+  /**
+   * List users from the graph API (returns graph UUID as `id`).
+   * Use this when you need the graph key that matches team.createdBy.
+   * GET /api/v1/users/graph/list
+   */
+  async listGraphUsers(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+  }): Promise<{ users: User[]; totalCount: number }> {
+    const { data } = await apiClient.get<GraphUsersListResponse>(
       `${BASE_URL}/graph/list`,
       { params }
     );
@@ -58,7 +82,6 @@ export const UsersApi = {
    */
   async fetchUsersWithGroups(): Promise<WithGroupsUser[]> {
     const { data } = await apiClient.get(`${BASE_URL}/fetch/with-groups`);
-    // Response may be a direct array or wrapped in an object
     return Array.isArray(data) ? data : (data as { users: WithGroupsUser[] }).users ?? [];
   },
 
@@ -82,15 +105,15 @@ export const UsersApi = {
   },
 
   /**
-   * Fetch merged users: server-paginates via graph/list, enriches with with-groups,
-   * merges blocked state from GET ?blocked=true, and appends blocked-only rows.
-   * - graph/list  → id (UUID), email, timestamps, server pagination
-   * - with-groups → hasLoggedIn, inline groups array (role + raw count)
+   * Fetch merged users: server-paginates via GET /api/v1/users (MongoDB),
+   * enriches with with-groups, merges blocked state, and appends blocked-only rows.
    */
   async fetchMergedUsers(params?: {
     page?: number;
     limit?: number;
     search?: string;
+    hasLoggedIn?: string;
+    groupIds?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
     const [graphResult, withGroupsUsers, blockedRecords] = await Promise.all([
       UsersApi.listUsers(params),
@@ -107,7 +130,7 @@ export const UsersApi = {
 
     const mergedUsers: User[] = graphResult.users.map((user) => {
       const wgUser = wgByUserId.get(user.userId);
-      const hasLoggedIn = wgUser?.hasLoggedIn ?? true;
+      const hasLoggedIn = wgUser?.hasLoggedIn ?? user.hasLoggedIn ?? true;
       const groups = wgUser?.groups ?? [];
 
       return {
@@ -115,10 +138,8 @@ export const UsersApi = {
         name: user.name || wgUser?.fullName,
         hasLoggedIn,
         isActive: user.isActive ?? hasLoggedIn,
-        createdAtTimestamp: hasLoggedIn ? user.createdAtTimestamp : undefined,
-        updatedAtTimestamp: hasLoggedIn ? user.updatedAtTimestamp : undefined,
         role: groups.some((g) => g.type === GROUP_TYPES.ADMIN) ? USER_ROLES.ADMIN : USER_ROLES.MEMBER,
-        groupCount: groups.filter((g) => g.type !== GROUP_TYPES.EVERYONE).length,
+        groupCount: user.groupCount ?? groups.filter((g) => g.type !== GROUP_TYPES.EVERYONE).length,
         userGroups: groups,
         isBlocked: blockedIds.has(String(user.userId)),
       };
@@ -193,10 +214,6 @@ export const UsersApi = {
 
   // ── Bulk operations ───────────────────────────────────────────
 
-  /**
-   * Remove multiple users from the workspace in parallel.
-   * Uses Promise.allSettled so partial failures don't block others.
-   */
   async bulkRemoveUsers(
     userIds: string[]
   ): Promise<{ succeeded: number; failed: number }> {
@@ -207,9 +224,6 @@ export const UsersApi = {
     return { succeeded, failed: results.length - succeeded };
   },
 
-  /**
-   * Resend invites to multiple pending users in parallel.
-   */
   async bulkResendInvites(
     userIds: string[]
   ): Promise<{ succeeded: number; failed: number }> {
@@ -220,10 +234,6 @@ export const UsersApi = {
     return { succeeded, failed: results.length - succeeded };
   },
 
-  /**
-   * Cancel invites for multiple pending users in parallel.
-   * Cancelling an invite is effectively deleting the pending user.
-   */
   async bulkCancelInvites(
     userIds: string[]
   ): Promise<{ succeeded: number; failed: number }> {

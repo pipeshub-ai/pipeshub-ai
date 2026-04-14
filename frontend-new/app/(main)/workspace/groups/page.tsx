@@ -95,13 +95,12 @@ function GroupsPageContent() {
     selectedGroups,
     page,
     limit,
+    totalCount,
     searchQuery,
     filters,
     isLoading,
     error: _error,
     setGroups,
-    setUserDps,
-    userDps,
     setSelectedGroups,
     setPage,
     setLimit,
@@ -132,20 +131,25 @@ function GroupsPageContent() {
     setLoading(true);
     setError(null);
     try {
-      const { groups: fetchedGroups, userDps: fetchedDps } = await GroupsApi.listGroups();
-      setGroups(fetchedGroups);
-      setUserDps(fetchedDps);
+      const result = await GroupsApi.listGroups({
+        page,
+        limit,
+        search: searchQuery || undefined,
+      });
+      setGroups(result.groups, result.totalCount);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load groups';
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [setGroups, setUserDps, setLoading, setError]);
+  }, [page, limit, searchQuery, setGroups, setLoading, setError]);
 
   useEffect(() => {
-    fetchGroups();
-  }, [fetchGroups]);
+    if (isProfileInitialized && isAdmin) {
+      fetchGroups();
+    }
+  }, [fetchGroups, isProfileInitialized, isAdmin]);
 
   // URL ↔ Store panel sync — see docs/url-driven-panel-state.md
   const pendingUrlRef = useRef<string | null>(null);
@@ -353,21 +357,10 @@ function GroupsPageContent() {
     [filters, setFilters]
   );
 
-  // ── Client-side search + filter ──
+  // ── Client-side date filter (search + pagination are server-side) ──
   const filteredGroups = useMemo(() => {
     let result = groups;
 
-    // Search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (g) =>
-          g.name?.toLowerCase().includes(q) ||
-          g.type?.toLowerCase().includes(q)
-      );
-    }
-
-    // Created On date filter
     if (filters.createdAfter || filters.createdBefore) {
       result = result.filter((g) =>
         isInDateRange(
@@ -380,13 +373,7 @@ function GroupsPageContent() {
     }
 
     return result;
-  }, [groups, searchQuery, filters]);
-
-  // ── Client-side pagination ──
-  const paginatedGroups = useMemo(() => {
-    const start = (page - 1) * limit;
-    return filteredGroups.slice(start, start + limit);
-  }, [filteredGroups, page, limit]);
+  }, [groups, filters]);
 
   // ── Column definitions ──────────────────
 
@@ -417,7 +404,7 @@ function GroupsPageContent() {
         width: '80px',
         render: (group) => (
           <Badge variant="soft" color="gray" size="1">
-            {group.users?.length ?? 0}
+            {group.userCount ?? 0}
           </Badge>
         ),
       },
@@ -551,7 +538,7 @@ function GroupsPageContent() {
             {/* Data table */}
             <EntityDataTable<Group>
               columns={columns}
-              data={paginatedGroups}
+              data={filteredGroups}
               getItemId={(g) => g._id}
               selectedIds={selectedGroups}
               onSelectionChange={setSelectedGroups}
@@ -564,7 +551,7 @@ function GroupsPageContent() {
             <EntityPagination
               page={page}
               limit={limit}
-              totalCount={filteredGroups.length}
+              totalCount={totalCount}
               onPageChange={setPage}
               onLimitChange={setLimit}
             />

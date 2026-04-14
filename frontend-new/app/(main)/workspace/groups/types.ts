@@ -11,26 +11,47 @@ export interface Group {
   /** Group type: admin, everyone, standard, custom */
   type: GroupType | string;
   orgId: string;
-  /** Array of MongoDB user IDs (matches User.userId) */
-  users: string[];
+  /** Number of users in this group */
+  userCount: number;
   isDeleted: boolean;
   /** ISO date string */
   createdAt: string;
   /** ISO date string */
   updatedAt: string;
   slug: string;
-  __v?: number;
+}
+
+/** A user within a group (returned by GET /userGroups/:groupId/users) */
+export interface GroupUser {
+  _id: string;
+  fullName: string | null;
+  email: string | null;
+  profilePicture: string | null;
 }
 
 // ========================================
 // API response shapes
 // ========================================
 
+export interface GroupsPagination {
+  page: number;
+  limit: number;
+  totalCount: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
 /** Response from GET /api/v1/userGroups */
 export interface GroupsListResponse {
   groups: Group[];
-  /** Map of userId → data URI (e.g. "data:image/jpeg;base64,...") */
-  userDps: Record<string, string>;
+  pagination: GroupsPagination;
+}
+
+/** Response from GET /api/v1/userGroups/:groupId/users */
+export interface GroupUsersResponse {
+  users: GroupUser[];
+  pagination: GroupsPagination;
 }
 
 // ========================================

@@ -68,7 +68,7 @@ export function useProfilePage() {
       try {
         const [userData, avatarObjectUrl] = await Promise.all([
           ProfileApi.getUser(uid),
-          ProfileApi.getAvatar(uid),
+          ProfileApi.getAvatar(),
         ]);
 
         setForm({
@@ -199,7 +199,7 @@ export function useProfilePage() {
       setAvatarUrl(previewUrl);
 
       try {
-        const processedUrl = await ProfileApi.uploadAvatar(userId, file);
+        const processedUrl = await ProfileApi.uploadAvatar(file);
         URL.revokeObjectURL(previewUrl);
         if (processedUrl) setAvatarUrl(processedUrl);
         addToast({
