@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import os
-from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from app.utils.logger import create_logger
@@ -36,7 +35,7 @@ def get_mime_type_from_base64(b64: str) -> str | None:
 def get_extension_from_mimetype(mime_type) -> str | None:
     return mime_to_extension.get(mime_type)
 
-def get_image_info_from_url(url: str) -> Tuple[Optional[str], Optional[str]]:
+def get_image_info_from_url(url: str) -> tuple[str | None, str | None]:
     """
     Extract image extension and guessed MIME type from URL only.
     Does NOT make any network request.
@@ -66,7 +65,7 @@ def get_image_info_from_url(url: str) -> Tuple[Optional[str], Optional[str]]:
 supported_mime_types = ["image/png", "image/jpeg", "image/webp"]
 
 
-async def _fetch_image_as_base64(img_url: str) -> Optional[Tuple[str, str]]:
+async def _fetch_image_as_base64(img_url: str) -> tuple[str, str] | None:
     """
     Fetch an image from http(s) URL and return (base64_string, mime_type).
     Returns None on failure.

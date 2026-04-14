@@ -1,10 +1,11 @@
 import asyncio
+import base64
+import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from uuid import uuid4
-import base64
-import re
+
 from jinja2 import Template
 
 from app.config.constants.arangodb import CollectionNames
@@ -78,7 +79,7 @@ def is_base64_image(s: str) -> bool:
     # Handle data URL format
     data_url_pattern = r'^data:image/(png|jpeg|jpg|gif|webp|bmp|svg\+xml|tiff);base64,(.+)$'
     match = re.match(data_url_pattern, s.strip(), re.IGNORECASE)
-    
+
     if match:
         b64_data = match.group(2)
     else:
@@ -1355,8 +1356,8 @@ def _find_first_block_index_recursive(block_groups: list[dict[str, Any]], childr
     """Recursively search through the first child to find the first block_index.
 
     Args:
-        block_groups: List of block groups
-        children: BlockGroupChildren object or List of child container indices (old format)
+        block_groups: list of block groups
+        children: BlockGroupChildren object or list of child container indices (old format)
 
     Returns:
         First block_index found in the first child, or None if not found
@@ -1410,9 +1411,9 @@ def _extract_text_content_recursive(
     """Recursively extract text content from children and nested children.
 
     Args:
-        block_groups: List of block groups
-        blocks: List of blocks
-        children: BlockGroupChildren object or List of child container indices (old format)
+        block_groups: list of block groups
+        blocks: list of blocks
+        children: BlockGroupChildren object or list of child container indices (old format)
         virtual_record_id: Optional virtual record ID for tracking seen chunks
         seen_chunks: Optional set to track seen chunks
 
@@ -1509,7 +1510,7 @@ def get_group_label_n_first_child(block_groups: list[dict[str, Any]], parent_ind
 
     parent_block = block_groups[parent_index]
     label = parent_block.get("type")
-    
+
 
     if label not in valid_group_labels:
         return None
@@ -1560,7 +1561,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                 if blocks[block_index].get("type") == BlockType.IMAGE.value:
                     continue
                 result_blocks.append(blocks[block_index])
-    
+
     child_results = []
     meta = result.get("metadata", {})
     for block in result_blocks:
@@ -2044,7 +2045,7 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:
     Supports both dict messages and LangChain message objects.
 
     Args:
-        messages: List of message dictionaries or LangChain message objects
+        messages: list of message dictionaries or LangChain message objects
 
     Returns:
         Total number of tokens across all messages

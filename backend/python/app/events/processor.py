@@ -1,7 +1,8 @@
 import io
 import json
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -16,7 +17,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -38,6 +38,11 @@ from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.llm import get_embedding_model_config, get_llm
@@ -902,8 +907,8 @@ class Processor:
             raise
 
     def _separate_block_groups_by_index(
-        self, block_groups: List[BlockGroup]
-    ) -> Tuple[List[BlockGroup], List[BlockGroup]]:
+        self, block_groups: list[BlockGroup]
+    ) -> tuple[list[BlockGroup], list[BlockGroup]]:
         """
         Separate block groups into those with valid index and those without.
 
@@ -913,8 +918,8 @@ class Processor:
         Returns:
             Tuple of (block_groups_with_index, block_groups_without_index)
         """
-        block_groups_with_index: List[BlockGroup] = []
-        block_groups_without_index: List[BlockGroup] = []
+        block_groups_with_index: list[BlockGroup] = []
+        block_groups_without_index: list[BlockGroup] = []
 
         for bg in block_groups:
             if bg.index is not None:
@@ -926,7 +931,7 @@ class Processor:
 
     async def _process_blockgroup_images(
         self, markdown_data: str, block_group_index: int
-    ) -> Tuple[str, Dict[str, str]]:
+    ) -> tuple[str, dict[str, str]]:
         """
         Extract images from markdown and convert URLs to base64.
 
@@ -937,7 +942,7 @@ class Processor:
         Returns:
             Tuple of (modified_markdown, caption_map) where caption_map maps alt text to base64 URIs
         """
-        caption_map: Dict[str, str] = {}
+        caption_map: dict[str, str] = {}
         modified_markdown = markdown_data
 
         md_parser = self.parsers.get(ExtensionTypes.MD.value)
@@ -966,7 +971,7 @@ class Processor:
         return modified_markdown, caption_map
 
     def _map_base64_images_to_blocks(
-        self, blocks: List[Block], caption_map: Dict[str, str], block_group_index: int
+        self, blocks: list[Block], caption_map: dict[str, str], block_group_index: int
     ) -> None:
         """
         Map base64 images to image blocks using captions.
@@ -1002,8 +1007,8 @@ class Processor:
         block_group: BlockGroup,
         record_name: str,
         processor: DoclingProcessor,
-        md_parser: Optional[MarkdownParser]
-    ) -> Tuple[List[BlockGroup], List[Block]]:
+        md_parser: MarkdownParser | None
+    ) -> tuple[list[BlockGroup], list[Block]]:
         """
         Process a single block group through docling.
 
@@ -1068,9 +1073,9 @@ class Processor:
 
     def _calculate_index_shift_map(
         self,
-        block_groups_with_index: List[BlockGroup],
-        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]]
-    ) -> Dict[int, int]:
+        block_groups_with_index: list[BlockGroup],
+        processing_results: dict[int, tuple[list[BlockGroup], list[Block]]]
+    ) -> dict[int, int]:
         """
         Calculate index shift mappings for block groups.
 
@@ -1084,7 +1089,7 @@ class Processor:
         Returns:
             Dictionary mapping original_index to shift amount
         """
-        index_shift_map: Dict[int, int] = {}
+        index_shift_map: dict[int, int] = {}
         cumulative_shift = 0
 
         for bg in block_groups_with_index:
@@ -1101,10 +1106,10 @@ class Processor:
     def _build_updated_blocks_container(
         self,
         block_containers: BlocksContainer,
-        block_groups_with_index: List[BlockGroup],
-        block_groups_without_index: List[BlockGroup],
-        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]],
-        index_shift_map: Dict[int, int],
+        block_groups_with_index: list[BlockGroup],
+        block_groups_without_index: list[BlockGroup],
+        processing_results: dict[int, tuple[list[BlockGroup], list[Block]]],
+        index_shift_map: dict[int, int],
         initial_block_count: int
     ) -> BlocksContainer:
         """
@@ -1127,13 +1132,13 @@ class Processor:
         Returns:
             New BlocksContainer with processed blocks merged in
         """
-        new_block_groups: List[BlockGroup] = []
-        new_blocks: List[Block] = []
+        new_block_groups: list[BlockGroup] = []
+        new_blocks: list[Block] = []
         processed_indices = set(processing_results.keys())
 
         # Group existing blocks by their original parent_index
         # (before any shifting is applied to BlockGroup indices)
-        existing_blocks_by_parent: Dict[int, List[Block]] = {}
+        existing_blocks_by_parent: dict[int, list[Block]] = {}
         for block in block_containers.blocks:
             parent_idx = block.parent_index
             if parent_idx is not None:
@@ -1335,7 +1340,7 @@ class Processor:
 
         # ========== PHASE 1: Process all BlockGroups and collect results ==========
         # Map: parent_index -> (new_block_groups, new_blocks)
-        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
+        processing_results: dict[int, tuple[list[BlockGroup], list[Block]]] = {}
         processor = DoclingProcessor(logger=self.logger, config=self.config_service)
         initial_block_count = len(block_containers.blocks)
 

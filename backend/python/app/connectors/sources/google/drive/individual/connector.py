@@ -3,10 +3,10 @@ import io
 import os
 import tempfile
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -202,9 +202,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
 
         # Google Drive client and data source (initialized in init())
-        self.google_client: Optional[GoogleClient] = None
-        self.drive_data_source: Optional[GoogleDriveDataSource] = None
-        self.config: Optional[Dict] = None
+        self.google_client: GoogleClient | None = None
+        self.drive_data_source: GoogleDriveDataSource | None = None
+        self.config: dict | None = None
 
     async def init(self) -> bool:
         """Initialize the Google Drive connector with credentials and services."""
@@ -324,7 +324,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         user_id: str,
         user_email: str,
         drive_id: str
-    ) -> Optional[RecordUpdate]:
+    ) -> RecordUpdate | None:
         """
         Process a single Google Drive file and detect changes.
 
@@ -483,7 +483,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             return None
 
-    def _parse_datetime(self, dt_obj) -> Optional[int]:
+    def _parse_datetime(self, dt_obj) -> int | None:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         if not dt_obj:
             return None
@@ -643,11 +643,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _process_drive_items_generator(
         self,
-        files: List[dict],
+        files: list[dict],
         user_id: str,
         user_email: str,
         drive_id: str
-    ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
+    ) -> AsyncGenerator[tuple[FileRecord | None, list[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
         Generator for non-blocking processing of large datasets.
@@ -1101,7 +1101,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"Error during conversion: {str(conv_error)}")
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
-    async def _get_file_metadata_from_drive(self, file_id: str) -> Dict:
+    async def _get_file_metadata_from_drive(self, file_id: str) -> dict:
         """
         Get file metadata from Google Drive API via ``files.get``.
 
@@ -1136,11 +1136,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 detail=f"Error getting file metadata: {str(e)}"
             )
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         """Get a signed URL for a specific record."""
         raise NotImplementedError("get_signed_url is not yet implemented for Google Drive")
 
-    async def stream_record(self, record: Record, convertTo: Optional[str] = None) -> StreamingResponse:
+    async def stream_record(self, record: Record, convertTo: str | None = None) -> StreamingResponse:
         """
         Stream a record from Google Drive.
 
@@ -1307,7 +1307,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
         return record_group
 
-    async def _create_app_user(self, user_about: Dict) -> None:
+    async def _create_app_user(self, user_about: dict) -> None:
         try:
 
             user = AppUser(
@@ -1368,7 +1368,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         await self._sync_user_personal_drive()
         self.logger.info("Incremental sync completed for Google Drive Individual")
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from Google Drive."""
         raise NotImplementedError("handle_webhook_notification is not yet implemented for Google Drive")
 
@@ -1392,7 +1392,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}")
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex records for Google Drive."""
         try:
             if not records:
@@ -1447,7 +1447,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record, user_id: str, user_email: str
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from Google Drive and return data for reindexing if changed."""
         try:
             file_id = record.external_record_id
@@ -1508,8 +1508,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """Google Drive connector does not support dynamic filter options."""
         raise NotImplementedError("Google Drive connector does not support dynamic filter options")

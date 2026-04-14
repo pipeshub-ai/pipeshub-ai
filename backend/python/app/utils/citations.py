@@ -1,13 +1,15 @@
-import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import quote
 
 from app.models.blocks import BlockType, GroupType
-from app.utils.chat_helpers import get_enhanced_metadata, is_base64_image, valid_group_labels
+from app.utils.chat_helpers import (
+    get_enhanced_metadata,
+    is_base64_image,
+    valid_group_labels,
+)
 from app.utils.logger import create_logger
-from urllib.parse import quote
 
 # Initialize logger
 logger = create_logger(__name__)
@@ -24,7 +26,7 @@ class ChatDocCitation:
     metadata: dict[str, Any]
     chunkindex: int
 
-def extract_start_end_text(snippet: Optional[str]) -> Tuple[str, str]:
+def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
     if not snippet:
         return "", ""
 

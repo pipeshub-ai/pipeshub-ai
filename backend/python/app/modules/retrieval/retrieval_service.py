@@ -1,7 +1,7 @@
 import asyncio
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -98,7 +98,7 @@ class RetrievalService:
         # import-time on Python 3.10+ (no running loop required).
         self._embedding_model_lock = asyncio.Lock()
 
-    async def get_llm_instance(self, use_cache: bool = True) -> Optional[BaseChatModel]:
+    async def get_llm_instance(self, use_cache: bool = True) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
@@ -135,7 +135,7 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
+    async def get_embedding_model_instance(self, use_cache: bool = True) -> Embeddings | None:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
 
@@ -207,7 +207,7 @@ class RetrievalService:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    async def get_current_embedding_model_name(self, use_cache: bool = True) -> Optional[str]:
+    async def get_current_embedding_model_name(self, use_cache: bool = True) -> str | None:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
@@ -227,7 +227,7 @@ class RetrievalService:
             self.logger.error(f"Error getting current embedding model name: {str(e)}")
             return DEFAULT_EMBEDDING_MODEL
 
-    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
+    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> str | None:
         if hasattr(dense_embeddings, "model_name"):
             return dense_embeddings.model_name
         elif hasattr(dense_embeddings, "model"):
@@ -275,10 +275,10 @@ class RetrievalService:
         queries: list[str],
         user_id: str,
         org_id: str,
-        filter_groups: Optional[dict[str, list[str]]] = None,
+        filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
-        virtual_record_ids_from_tool: Optional[list[str]] = None,
-        graph_provider: Optional[IGraphDBProvider] = None,
+        virtual_record_ids_from_tool: list[str] | None = None,
+        graph_provider: IGraphDBProvider | None = None,
         knowledge_search:bool = False,
         is_agent:bool = False,
     ) -> dict[str, Any]:
@@ -615,7 +615,7 @@ class RetrievalService:
             user_id=user_id, org_id=org_id, filters=filters
         )
 
-    async def _get_user_cached(self, user_id: str) -> Optional[dict[str, Any]]:
+    async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """
         OPTIMIZATION: Get user data with caching to avoid repeated DB calls.
         Cache expires after USER_CACHE_TTL seconds (default 5 minutes).

@@ -13,7 +13,7 @@ Usage:
 import asyncio
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
@@ -40,7 +40,7 @@ class ToolResultHandler(ABC):
     """
 
     @abstractmethod
-    async def format_message(self, tool_result: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """
         Format tool result for ToolMessage content.
 
@@ -53,7 +53,7 @@ class ToolResultHandler(ABC):
         """
         pass
 
-    def extract_records(self, tool_result: Dict[str, Any], org_id: Optional[str]=None) -> List[Dict[str, Any]]:
+    def extract_records(self, tool_result: dict[str, Any], org_id: str | None=None) -> list[dict[str, Any]]:
         """
         Extract records from tool result for citation tracking.
 
@@ -80,7 +80,7 @@ class ToolResultHandler(ABC):
 class ContentHandler(ToolResultHandler):
     """Default handler for generic content results."""
 
-    async def format_message(self, tool_result: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": True,
             "content": tool_result.get("content", str(tool_result)),
@@ -90,7 +90,7 @@ class ContentHandler(ToolResultHandler):
 class RecordsHandler(ToolResultHandler):
     """Handler for fetch_full_record style results with document records."""
 
-    async def format_message(self, tool_result: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         message_contents = context.get("message_contents", [])
         # return {
         #     "ok": True,
@@ -102,7 +102,7 @@ class RecordsHandler(ToolResultHandler):
         return flattened_message_contents
 
 
-    def extract_records(self, tool_result: Dict[str, Any], org_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def extract_records(self, tool_result: dict[str, Any], org_id: str | None = None) -> list[dict[str, Any]]:
         return tool_result.get("records", [])
 
     def needs_token_management(self) -> bool:
@@ -111,7 +111,7 @@ class RecordsHandler(ToolResultHandler):
 class WebSearchHandler(ToolResultHandler):
     """Handler for web search results."""
 
-    async def format_message(self, tool_result: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         web_results = tool_result.get("web_results", [])
         if not isinstance(web_results, list):
             web_results = []
@@ -141,7 +141,7 @@ content: {snippet}""",
 
         return formatted_blocks
 
-    def extract_records(self, tool_result: Dict[str, Any], org_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def extract_records(self, tool_result: dict[str, Any], org_id: str | None = None) -> list[dict[str, Any]]:
         web_results = tool_result.get("web_results", [])
         if not isinstance(web_results, list):
             return []
@@ -171,7 +171,7 @@ content: {snippet}""",
 class UrlContentHandler(ToolResultHandler):
     """Handler for fetched URL content with block structure."""
 
-    async def format_message(self, tool_result: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         url_number = tool_result.get("url_number", 1)
         blocks = tool_result.get("blocks", [])
         include_images = context.get("include_images")
@@ -266,7 +266,7 @@ content: {block.content}'''
 
         return formatted_blocks
 
-    def extract_records(self, tool_result: Dict[str, Any], org_id: Optional[str]=None) -> List[Dict[str, Any]]:
+    def extract_records(self, tool_result: dict[str, Any], org_id: str | None=None) -> list[dict[str, Any]]:
         """Extract URL blocks as records for citation tracking."""
         url = tool_result.get("url", "")
         url_number = tool_result.get("url_number", 1)
@@ -295,7 +295,7 @@ class ToolHandlerRegistry:
     Falls back to ContentHandler for unknown types.
     """
 
-    _handlers: Dict[str, ToolResultHandler] = {}
+    _handlers: dict[str, ToolResultHandler] = {}
     _default_handler: ToolResultHandler = ContentHandler()
 
     @classmethod
@@ -311,7 +311,7 @@ class ToolHandlerRegistry:
         logger.debug(f"Registered tool handler for result_type: {result_type}")
 
     @classmethod
-    def get_handler(cls, tool_result: Dict[str, Any]) -> ToolResultHandler:
+    def get_handler(cls, tool_result: dict[str, Any]) -> ToolResultHandler:
         """
         Get appropriate handler for a tool result.
 
@@ -340,7 +340,7 @@ class ToolHandlerRegistry:
         return cls._default_handler
 
     @classmethod
-    def list_handlers(cls) -> List[str]:
+    def list_handlers(cls) -> list[str]:
         """List all registered handler types."""
         return list(cls._handlers.keys())
 

@@ -1,12 +1,12 @@
-from typing import Any, Dict, List
+from typing import Any
 
 
 def build_connector_stats_response(
-    rows: List[Dict[str, Any]],
-    statuses: List[str],
+    rows: list[dict[str, Any]],
+    statuses: list[str],
     org_id: str,
     connector_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Build connector stats response from aggregated query rows.
 
@@ -23,7 +23,7 @@ def build_connector_stats_response(
         Formatted stats response dictionary
     """
     indexing_status_counts = dict.fromkeys(statuses, 0)
-    record_type_counts: Dict[str, Dict[str, Any]] = {}
+    record_type_counts: dict[str, dict[str, Any]] = {}
     total = 0
 
     for row in rows:
