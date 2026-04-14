@@ -211,13 +211,13 @@ class LocalFsApp(App):
         .add_sync_custom_field(
             CustomField(
                 name=SYNC_ROOT_PATH_KEY,
-                display_name="Local folder path",
-                field_type="TEXT",
-                required=False,
+                display_name="Local folder",
+                field_type="FOLDER",
+                required=True,
                 description=(
-                    "Absolute path on the host where the connector backend runs "
-                    "(e.g. /Users/you/Documents or C:\\\\Users\\\\you\\\\Documents). "
-                    "Set it here in the app and run a manual sync — the CLI is not required."
+                    "Choose the folder on this machine where the connector service runs. "
+                    "Use “Choose folder” — then save and run a manual sync. "
+                    "The CLI is optional."
                 ),
             )
         )
