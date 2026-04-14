@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback, useEffect, useState } from 'react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
@@ -136,6 +136,8 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
     widthRef.current = sidebarWidth;
   }, [sidebarWidth]);
 
+  const [dragHandleHovered, setDragHandleHovered] = useState(false);
+
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     isDragging.current = true;
@@ -229,6 +231,8 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       {/* Drag handle */}
       <Box
         onMouseDown={handleMouseDown}
+        onMouseEnter={() => setDragHandleHovered(true)}
+        onMouseLeave={() => setDragHandleHovered(false)}
         style={{
           position: 'absolute',
           top: 0,
@@ -240,7 +244,6 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         }}
       >
         <Box
-          className="sidebar-drag-handle"
           style={{
             position: 'absolute',
             top: 0,
@@ -249,7 +252,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
             height: '100%',
             borderRadius: 1,
             transition: 'opacity 0.15s',
-            opacity: 0,
+            opacity: dragHandleHovered ? 1 : 0,
             backgroundColor: 'var(--olive-8)',
           }}
         />
