@@ -9492,37 +9492,43 @@ paths:
         - User Groups
       summary: Get all user groups
       description: |
-        Retrieve all user groups in the organization.<br><br>
+        Retrieve all user groups in the organization along with display pictures for member users.<br><br>
         <b>Response Details:</b><br>
         <ul>
         <li>Returns all groups including admin, standard, everyone, and custom types</li>
         <li>Groups are returned with their member counts</li>
         <li>Soft-deleted groups are excluded by default</li>
+        <li>Includes a <code>userDps</code> map of user display pictures (userId → data URI) for all members across groups</li>
         </ul>
         <b>Use Cases:</b><br>
         <ul>
         <li>Populating group selection dropdowns</li>
         <li>Managing group memberships</li>
         <li>Access control configuration</li>
+        <li>Rendering user avatars in group member lists</li>
         </ul>
       operationId: getAllUserGroups
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: List of user groups retrieved successfully
+          description: List of user groups with member display pictures retrieved successfully
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
+                  groups:
                     type: array
                     items:
                       $ref: '#/components/schemas/UserGroup'
+                  userDps:
+                    type: object
+                    description: Map of userId to base64-encoded data URI (e.g. "data:image/jpeg;base64,..."). Only users with a display picture are included.
+                    additionalProperties:
+                      type: string
+                    example:
+                      "60d5ec49f1a2c8b1f8e4e1a1": "data:image/jpeg;base64,/9j/4AAQ..."
         '401':
           description: Unauthorized - Valid authentication required
         '403':

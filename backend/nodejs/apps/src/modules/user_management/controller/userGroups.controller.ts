@@ -9,6 +9,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
 import { groupTypes, UserGroups } from '../schema/userGroup.schema';
+import { UserDisplayPicture } from '../schema/userDp.schema';
 
 @injectable()
 export class UserGroupController {
@@ -79,7 +80,29 @@ export class UserGroupController {
       .lean()
       .exec();
 
-    res.status(200).json(groups);
+    // Collect all unique user IDs across groups
+    const allUserIds = [...new Set(groups.flatMap((g) => g.users.map((u) => u.toString())))];
+
+    // Bulk-fetch DPs for those users
+    const userDps: Record<string, string> = {};
+    if (allUserIds.length > 0) {
+      const dpDocs = await UserDisplayPicture.find({
+        orgId,
+        userId: { $in: allUserIds },
+        pic: { $ne: null },
+      })
+        .lean()
+        .exec();
+
+      for (const dp of dpDocs) {
+        if (dp.userId && dp.pic) {
+          const mime = dp.mimeType || 'image/jpeg';
+          userDps[dp.userId.toString()] = `data:${mime};base64,${dp.pic}`;
+        }
+      }
+    }
+
+    res.status(200).json({ groups, userDps });
   }
 
   async getUserGroupById(

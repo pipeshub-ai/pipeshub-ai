@@ -1,19 +1,17 @@
 import { apiClient } from '@/lib/api';
-import type { Group } from './types';
+import type { Group, GroupsListResponse } from './types';
 
 const BASE_URL = '/api/v1/userGroups';
 
 export const GroupsApi = {
   /**
-   * List all groups.
+   * List all groups with user display pictures.
    * GET /api/v1/userGroups
-   * Returns all groups — no server-side pagination.
-   *
-   * // TODO: Add server-side pagination when backend supports it
+   * Returns { groups, userDps } where userDps maps userId → data URI.
    */
-  async listGroups(): Promise<Group[]> {
-    const { data } = await apiClient.get<Group[]>(BASE_URL);
-    return Array.isArray(data) ? data : [];
+  async listGroups(): Promise<{ groups: Group[]; userDps: Record<string, string> }> {
+    const { data } = await apiClient.get<GroupsListResponse>(BASE_URL);
+    return { groups: data.groups ?? [], userDps: data.userDps ?? {} };
   },
 
   /**

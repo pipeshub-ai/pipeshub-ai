@@ -38,6 +38,7 @@ export function GroupDetailSidebar({
     editGroupDescription,
     editAddUserIds,
     isSavingEdit,
+    userDps,
     closeDetailPanel,
     enterEditMode,
     exitEditMode,
@@ -438,6 +439,7 @@ export function GroupDetailSidebar({
                       email={user.email}
                       avatarSize={32}
                       isSelf={user.userId === currentUser?.id}
+                      profilePicture={userDps[user.userId]}
                     />
                     {isEditMode && (
                       <Text

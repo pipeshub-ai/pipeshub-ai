@@ -150,6 +150,8 @@ function UsersPageContent() {
   // Groups for the filter dropdown — fetched independently of user list
   const groupsRef = useRef<Group[]>([]);
   const [groupOptions, setGroupOptions] = useState<{ value: string; label: string; icon: string }[]>([]);
+  // User display pictures map (userId → data URI)
+  const [userDps, setUserDps] = useState<Record<string, string>>({});
 
   // Capture userId from initial URL load so we can restore the profile panel
   // after fetchUsers completes (users list is empty on first render).
@@ -165,10 +167,11 @@ function UsersPageContent() {
   useEffect(() => {
     let cancelled = false;
     GroupsApi.listGroups()
-      .then((groups) => {
+      .then(({ groups, userDps: dps }) => {
         if (!cancelled) {
           groupsRef.current = groups;
           adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
+          setUserDps(dps);
           setGroupOptions(
             groups
               .filter((g) => g.type !== GROUP_TYPES.EVERYONE)
@@ -607,6 +610,7 @@ function UsersPageContent() {
             name={user.name || user.email || '-'}
             email={user.name ? user.email : undefined}
             isSelf={currentUser?.id === user.id || currentUser?.email === user.email}
+            profilePicture={userDps[user.userId]}
           />
         ),
       },
@@ -663,7 +667,7 @@ function UsersPageContent() {
         ),
       },
     ],
-    [t, currentUser]
+    [t, currentUser, userDps]
   );
 
   // ── Row actions ────────────

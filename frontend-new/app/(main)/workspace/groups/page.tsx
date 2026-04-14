@@ -90,18 +90,6 @@ function GroupsPageContent() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
   const {
     groups,
     selectedGroups,
@@ -112,6 +100,8 @@ function GroupsPageContent() {
     isLoading,
     error: _error,
     setGroups,
+    setUserDps,
+    userDps,
     setSelectedGroups,
     setPage,
     setLimit,
@@ -131,20 +121,27 @@ function GroupsPageContent() {
     detailGroup,
   } = useGroupsStore();
 
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   // ── Fetch groups on mount ──────────────────
   const fetchGroups = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await GroupsApi.listGroups();
-      setGroups(result);
+      const { groups: fetchedGroups, userDps: fetchedDps } = await GroupsApi.listGroups();
+      setGroups(fetchedGroups);
+      setUserDps(fetchedDps);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load groups';
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [setGroups, setLoading, setError]);
+  }, [setGroups, setUserDps, setLoading, setError]);
 
   useEffect(() => {
     fetchGroups();
@@ -491,6 +488,11 @@ function GroupsPageContent() {
 
   // ── Empty state ──
   const isEmpty = !isLoading && groups.length === 0;
+
+  // Guard: don't render until profile is resolved / redirect non-admin users
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── Render ──────────────────────────────
 

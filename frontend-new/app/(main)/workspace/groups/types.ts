@@ -26,8 +26,12 @@ export interface Group {
 // API response shapes
 // ========================================
 
-/** Response from GET /api/v1/userGroups — returns a plain array */
-export type GroupsListResponse = Group[];
+/** Response from GET /api/v1/userGroups */
+export interface GroupsListResponse {
+  groups: Group[];
+  /** Map of userId → data URI (e.g. "data:image/jpeg;base64,...") */
+  userDps: Record<string, string>;
+}
 
 // ========================================
 // Filters

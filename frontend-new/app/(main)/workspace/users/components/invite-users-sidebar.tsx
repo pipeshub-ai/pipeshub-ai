@@ -91,7 +91,7 @@ export function InviteUsersSidebar({
     const fetchGroups = async () => {
       setIsLoadingGroups(true);
       try {
-        const data = await GroupsApi.listGroups();
+        const { groups: data } = await GroupsApi.listGroups();
         if (!cancelled) {
           // Filter out system groups and deleted groups
           setGroups(

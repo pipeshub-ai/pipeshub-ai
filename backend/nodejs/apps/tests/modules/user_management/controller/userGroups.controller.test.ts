@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { UserGroupController } from '../../../../src/modules/user_management/controller/userGroups.controller';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 
 describe('UserGroupController', () => {
   let controller: UserGroupController;
@@ -142,10 +143,43 @@ describe('UserGroupController', () => {
   });
 
   describe('getAllUserGroups', () => {
-    it('should return all non-deleted groups for the org', async () => {
+    it('should return groups and userDps map', async () => {
+      const userId1 = new mongoose.Types.ObjectId();
+      const userId2 = new mongoose.Types.ObjectId();
       const mockGroups = [
-        { _id: 'g1', name: 'admin', type: 'admin' },
-        { _id: 'g2', name: 'everyone', type: 'everyone' },
+        { _id: 'g1', name: 'admin', type: 'admin', users: [userId1] },
+        { _id: 'g2', name: 'everyone', type: 'everyone', users: [userId1, userId2] },
+      ];
+
+      sinon.stub(UserGroups, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(mockGroups),
+        }),
+      } as any);
+
+      const mockDpDocs = [
+        { userId: userId1, pic: 'base64data', mimeType: 'image/jpeg' },
+      ];
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(mockDpDocs),
+        }),
+      } as any);
+
+      await controller.getAllUserGroups(req, res);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      const responseArg = res.json.firstCall.args[0];
+      expect(responseArg).to.have.property('groups').that.deep.equals(mockGroups);
+      expect(responseArg).to.have.property('userDps');
+      expect(responseArg.userDps[userId1.toString()]).to.equal('data:image/jpeg;base64,base64data');
+      expect(responseArg.userDps[userId2.toString()]).to.be.undefined;
+    });
+
+    it('should return empty userDps when no groups have users', async () => {
+      const mockGroups = [
+        { _id: 'g1', name: 'admin', type: 'admin', users: [] },
       ];
 
       sinon.stub(UserGroups, 'find').returns({
@@ -157,7 +191,9 @@ describe('UserGroupController', () => {
       await controller.getAllUserGroups(req, res);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockGroups)).to.be.true;
+      const responseArg = res.json.firstCall.args[0];
+      expect(responseArg).to.have.property('groups').that.deep.equals(mockGroups);
+      expect(responseArg).to.have.property('userDps').that.deep.equals({});
     });
   });
 

@@ -98,18 +98,6 @@ function TeamsPageContent() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
   const {
     teams,
     selectedTeams,
@@ -138,6 +126,12 @@ function TeamsPageContent() {
     isEditMode,
     detailTeam,
   } = useTeamsStore();
+
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
 
   // ── Fetch teams on mount and on page/search change ──
   const fetchTeams = useCallback(async () => {
@@ -553,6 +547,11 @@ function TeamsPageContent() {
 
   // ── Empty state ──
   const isEmpty = !isLoading && teams.length === 0;
+
+  // Guard: don't render until profile is resolved / redirect non-admin users
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── Render ──────────────────────────────
 

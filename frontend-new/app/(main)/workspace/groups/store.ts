@@ -15,6 +15,8 @@ enableMapSet();
 interface GroupsState {
   /** Group list data */
   groups: Group[];
+  /** Map of userId → data URI for user display pictures */
+  userDps: Record<string, string>;
   /** Selected group IDs */
   selectedGroups: Set<string>;
 
@@ -60,6 +62,7 @@ interface GroupsState {
 
 interface GroupsActions {
   setGroups: (groups: Group[]) => void;
+  setUserDps: (dps: Record<string, string>) => void;
   setSelectedGroups: (ids: Set<string>) => void;
   toggleSelectGroup: (id: string) => void;
   setPage: (page: number) => void;
@@ -120,6 +123,7 @@ const initialDetailState = {
 
 const initialState: GroupsState = {
   groups: [],
+  userDps: {},
   selectedGroups: new Set<string>(),
   page: 1,
   limit: 25,
@@ -144,6 +148,11 @@ export const useGroupsStore = create<GroupsStore>()(
       setGroups: (groups) =>
         set((state) => {
           state.groups = groups;
+        }),
+
+      setUserDps: (dps) =>
+        set((state) => {
+          state.userDps = dps;
         }),
 
       setSelectedGroups: (ids) =>
