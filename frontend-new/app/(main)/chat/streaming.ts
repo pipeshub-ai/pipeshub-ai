@@ -18,10 +18,35 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore } from './store';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages } from './runtime';
-import type { StreamChatRequest, StatusMessage, ModelOverride } from './types';
+import type { StreamChatRequest, StatusMessage, ModelOverride, SSEConnectedEvent } from './types';
+import { i18n } from '@/lib/i18n';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
+
+function statusMessageFromConnectedEvent(data: SSEConnectedEvent): StatusMessage {
+  const raw = typeof data?.message === 'string' ? data.message.trim() : '';
+  const looksTechnical =
+    raw.length === 0 ||
+    /^sse\b/i.test(raw) ||
+    /\bconnection\s+established\b/i.test(raw);
+  return {
+    id: 'status-connected',
+    status: 'connected',
+    message: looksTechnical ? 'Connected — working on your request…' : raw,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** Clear partial stream output when the backend emits `restreaming` (citation verify / re-parse). */
+function statusMessageRestreaming(): StatusMessage {
+  return {
+    id: `status-restreaming-${Date.now()}`,
+    status: 'restreaming',
+    message: i18n.t('chatStream.refiningResponse'),
+    timestamp: new Date().toISOString(),
+  };
+}
 
 /**
  * Stream a message for a specific slot.
@@ -101,6 +126,7 @@ export async function streamMessageForSlot(
   let lastCitationKey = ''; // JSON.stringify key for dedup
   let lastFlushTime = 0;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let clearedStatusWhenAnswerVisible = false;
 
   function flushContentToStore() {
     debugLog.rafFlush();
@@ -136,8 +162,26 @@ export async function streamMessageForSlot(
 
   try {
     await ChatApi.streamMessage(request, {
-      onConnected: () => {
-        // No action needed — stream is established
+      onConnected: (data) => {
+        useChatStore.getState().updateSlot(slotId, {
+          currentStatusMessage: statusMessageFromConnectedEvent(data),
+        });
+      },
+
+      onRestreaming: () => {
+        if (flushTimer !== null) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        accumulatedContent = '';
+        lastCitationKey = '';
+        clearedStatusWhenAnswerVisible = false;
+        pendingCitationMaps = null;
+        useChatStore.getState().updateSlot(slotId, {
+          streamingContent: '',
+          streamingCitationMaps: null,
+          currentStatusMessage: statusMessageRestreaming(),
+        });
       },
 
       onStatus: (data) => {
@@ -155,6 +199,10 @@ export async function streamMessageForSlot(
       onChunk: (data) => {
         debugLog.chunk();
         accumulatedContent = data.accumulated;
+        if (!clearedStatusWhenAnswerVisible && data.accumulated.length > 0) {
+          clearedStatusWhenAnswerVisible = true;
+          useChatStore.getState().updateSlot(slotId, { currentStatusMessage: null });
+        }
         // Deduplicate citation maps: only stage a new maps object when
         // the serialized key changes (citations grow monotonically).
         if (data.citations && data.citations.length > 0) {
@@ -342,6 +390,7 @@ export async function streamRegenerateForSlot(
   let lastCitationKey = '';
   let lastFlushTime = 0;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let clearedStatusWhenAnswerVisible = false;
 
   function flushContentToStore() {
     debugLog.rafFlush();
@@ -381,6 +430,28 @@ export async function streamRegenerateForSlot(
   const reloadViaAgentId = threadAgentId;
 
   const regenerateCallbacks: StreamMessageCallbacks = {
+    onConnected: (data) => {
+      useChatStore.getState().updateSlot(slotId, {
+        currentStatusMessage: statusMessageFromConnectedEvent(data),
+      });
+    },
+
+    onRestreaming: () => {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      accumulatedContent = '';
+      lastCitationKey = '';
+      clearedStatusWhenAnswerVisible = false;
+      pendingCitationMaps = null;
+      useChatStore.getState().updateSlot(slotId, {
+        streamingContent: '',
+        streamingCitationMaps: null,
+        currentStatusMessage: statusMessageRestreaming(),
+      });
+    },
+
     onStatus: (data) => {
       useChatStore.getState().updateSlot(slotId, {
         currentStatusMessage: {
@@ -395,6 +466,10 @@ export async function streamRegenerateForSlot(
     onChunk: (data) => {
       debugLog.chunk();
       accumulatedContent = data.accumulated;
+      if (!clearedStatusWhenAnswerVisible && data.accumulated.length > 0) {
+        clearedStatusWhenAnswerVisible = true;
+        useChatStore.getState().updateSlot(slotId, { currentStatusMessage: null });
+      }
       if (data.citations && data.citations.length > 0) {
         const key = JSON.stringify(data.citations);
         if (key !== lastCitationKey) {
