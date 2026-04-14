@@ -170,8 +170,9 @@ describe('EncryptionService', () => {
       const service = EncryptionService.getInstance(algorithm, secretKey)
       const encrypted = service.encrypt('sensitive data')
       const parts = encrypted.split(':')
-      // Tamper with the ciphertext
-      parts[1] = 'ff' + parts[1]!.substring(2)
+      // Tamper with the ciphertext (flip the first hex char to guarantee a change)
+      const firstChar = parts[1]![0]
+      parts[1] = (firstChar === 'f' ? '0' : 'f') + parts[1]!.substring(1)
       const tampered = parts.join(':')
       try {
         service.decrypt(tampered)
@@ -185,8 +186,9 @@ describe('EncryptionService', () => {
       const service = EncryptionService.getInstance(algorithm, secretKey)
       const encrypted = service.encrypt('sensitive data')
       const parts = encrypted.split(':')
-      // Tamper with the auth tag
-      parts[2] = 'ff' + parts[2]!.substring(2)
+      // Tamper with the auth tag (flip the first hex char to guarantee a change)
+      const firstChar = parts[2]![0]
+      parts[2] = (firstChar === 'f' ? '0' : 'f') + parts[2]!.substring(1)
       const tampered = parts.join(':')
       try {
         service.decrypt(tampered)

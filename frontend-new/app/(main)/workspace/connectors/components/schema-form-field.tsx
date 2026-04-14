@@ -29,7 +29,10 @@ interface SchemaFormFieldProps {
 
 const inputStyle: React.CSSProperties = {
   height: 32,
-  padding: '6px 8px',
+  paddingTop: 6,
+  paddingBottom: 6,
+  paddingLeft: 8,
+  paddingRight: 8,
   backgroundColor: 'var(--color-surface)',
   border: '1px solid var(--gray-a5)',
   borderRadius: 'var(--radius-2)',
@@ -49,7 +52,10 @@ const textareaStyle: React.CSSProperties = {
 
 const focusStyle: React.CSSProperties = {
   border: '2px solid var(--accent-8)',
-  padding: '5px 7px',
+  paddingTop: 5,
+  paddingBottom: 5,
+  paddingLeft: 7,
+  paddingRight: 7,
 };
 
 // ========================================

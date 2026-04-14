@@ -25,7 +25,10 @@ export function AgentBuilderHeader(props: {
   onSave: () => void;
   shareWithOrg: boolean;
   onShareWithOrgChange: (v: boolean) => void;
-  isReadOnly: boolean;
+  /** When true, the flow and palette structure are read-only (e.g. existing agent with `can_edit` false). */
+  isFlowStructureLocked: boolean;
+  /** False when the opened agent exists and `can_edit` is false (save / convert disabled). */
+  canPersist: boolean;
   isServiceAccount: boolean;
   editing: boolean;
   /** Open service-account confirmation (create or convert). */
@@ -43,7 +46,8 @@ export function AgentBuilderHeader(props: {
     onSave,
     shareWithOrg,
     onShareWithOrgChange,
-    isReadOnly,
+    isFlowStructureLocked,
+    canPersist,
     isServiceAccount,
     editing,
     onEnableServiceAccount,
@@ -94,7 +98,7 @@ export function AgentBuilderHeader(props: {
                 value={agentName}
                 onChange={(e) => onAgentNameChange(e.target.value)}
                 placeholder={t('agentBuilder.agentNamePlaceholder')}
-                disabled={isReadOnly}
+                disabled={isFlowStructureLocked}
                 size="2"
                 style={{ width: '100%' }}
               >
@@ -122,7 +126,7 @@ export function AgentBuilderHeader(props: {
                   {t('agentBuilder.serviceAccountBadge')}
                 </Badge>
               </Tooltip>
-            ) : onEnableServiceAccount && !isReadOnly ? (
+            ) : onEnableServiceAccount ? (
               <Tooltip
                 content={
                   editing
@@ -217,14 +221,14 @@ export function AgentBuilderHeader(props: {
             <Switch
               checked={shareWithOrg || isServiceAccount}
               onCheckedChange={onShareWithOrgChange}
-              disabled={isReadOnly || isServiceAccount}
+              disabled={isFlowStructureLocked || isServiceAccount}
             />
           </Flex>
         </Tooltip>
         <Button
           size="2"
           onClick={onSave}
-          disabled={saving || isReadOnly || !agentName.trim()}
+          disabled={saving || !canPersist || !agentName.trim()}
           style={{ minWidth: 132 }}
         >
           <Flex align="center" gap="2">

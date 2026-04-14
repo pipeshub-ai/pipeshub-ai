@@ -24,6 +24,14 @@ import CustomEdge from './custom-edge';
 import { handleFlowCanvasDrop } from './canvas-drop-handler';
 import { FLOW_EDGE } from '../flow-theme';
 
+/** Framing when the flow first loads (existing agents start from an empty graph, then hydrate). */
+const AGENT_BUILDER_FLOW_FIT = {
+  padding: 0.08,
+  minZoom: 0.25,
+  maxZoom: 1.38,
+  duration: 0,
+} as const;
+
 function CanvasControlsInner() {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
   const { t } = useTranslation();
@@ -48,7 +56,7 @@ function CanvasControlsInner() {
       <button
         type="button"
         className="react-flow__controls-button"
-        onClick={() => fitView({ padding: 0.28, maxZoom: 0.92 })}
+        onClick={() => fitView({ ...AGENT_BUILDER_FLOW_FIT })}
         aria-label={t('agentBuilder.fitViewAria')}
       >
         <MaterialIcon name="fit_screen" size={20} color="currentColor" />
@@ -98,6 +106,8 @@ export function AgentBuilderCanvas(props: {
 
   const { t } = useTranslation();
   const rfRef = useRef<ReactFlowInstance<Node<FlowNodeData>> | null>(null);
+  /** After `nodes` hydrate from the server, fit once (initial `fitView` on an empty graph does not update). */
+  const needsInitialFlowFitRef = useRef(true);
 
   const onDeleteRef = useRef(onNodeDelete);
   useEffect(() => {
@@ -160,6 +170,36 @@ export function AgentBuilderCanvas(props: {
     ]
   );
 
+  useEffect(() => {
+    if (nodes.length === 0) {
+      needsInitialFlowFitRef.current = true;
+      return;
+    }
+    if (!needsInitialFlowFitRef.current) return;
+    const inst = rfRef.current;
+    if (!inst) return;
+
+    let cancelled = false;
+    let didFit = false;
+    const run = () => {
+      if (cancelled) return;
+      inst.fitView({ ...AGENT_BUILDER_FLOW_FIT });
+      didFit = true;
+      needsInitialFlowFitRef.current = false;
+    };
+    // Wait one extra frame so node dimensions are measured before bounds are computed.
+    let innerRaf = 0;
+    const outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(run);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(outerRaf);
+      if (innerRaf) cancelAnimationFrame(innerRaf);
+      if (!didFit) needsInitialFlowFitRef.current = true;
+    };
+  }, [nodes.length]);
+
   return (
     <Box
       style={{
@@ -184,13 +224,7 @@ export function AgentBuilderCanvas(props: {
         onEdgeClick={readOnly ? undefined : onEdgeClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        fitView
-        fitViewOptions={{
-          padding: 0.28,
-          minZoom: 0.25,
-          maxZoom: 0.92,
-        }}
-        defaultViewport={{ x: 0, y: 0, zoom: 0.52 }}
+        defaultViewport={{ x: 0, y: 0, zoom: 0.88 }}
         minZoom={0.25}
         maxZoom={2}
         snapToGrid

@@ -29,6 +29,11 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 
+// Space reserved below content views to clear the absolutely-positioned chat input.
+const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 160 };
+// Extra breathing room above the chat input for the search results list.
+const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
+
 // Background decorative pattern
 const BackgroundPattern = ({ showNewChatView }: { showNewChatView: boolean }) => (
   <Box
@@ -735,7 +740,14 @@ function ChatContent() {
       )}
       {showSearchView ? (
         /* Search Results View */
-        <SearchResultsView />
+        <Flex direction="column" style={{
+          flex: 1,
+          width: '100%',
+          overflow: 'hidden',
+          marginBottom: `${(isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop) + (isMobile ? SEARCH_RESULTS_EXTRA_OFFSET.mobile : SEARCH_RESULTS_EXTRA_OFFSET.desktop)}px`,
+        }}>
+          <SearchResultsView />
+        </Flex>
       ) : showNewChatView ? (
         /* New Chat View */
         <Flex
@@ -873,7 +885,7 @@ function ChatContent() {
             zIndex: 10,
             width: '100%',
             overflow: 'hidden',
-            marginBottom: isMobile ? '120px' : '160px',
+            marginBottom: `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`,
             paddingTop: isMobile ? (agentId ? '76px' : '60px') : agentId ? '72px' : '56px',
           }}
         >
