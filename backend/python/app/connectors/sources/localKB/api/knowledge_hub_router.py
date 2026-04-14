@@ -188,7 +188,7 @@ def _parse_size_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]
 async def get_knowledge_hub_root_nodes(
     request: Request,
     only_containers: bool = Query(False, description="Only return nodes with children (for sidebar)"),
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    cursor: Optional[str] = Query(None, description="Pagination cursor (null for first page, contains complete state)"),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     sort_by: str = Query("updatedAt", description="Sort field: name, createdAt, updatedAt, size, type"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
@@ -210,6 +210,10 @@ async def get_knowledge_hub_root_nodes(
 
     For browsing children of a specific node, use:
     GET /nodes/{parent_type}/{parent_id}
+
+    Pagination uses cursor-based approach:
+    - First page: no cursor, use query params for filters
+    - Subsequent pages: pass cursor from response (contains complete state)
     """
     return await _handle_get_nodes(
         request=request,
@@ -217,7 +221,7 @@ async def get_knowledge_hub_root_nodes(
         parent_id=None,
         parent_type=None,
         only_containers=only_containers,
-        page=page,
+        cursor=cursor,
         limit=limit,
         sort_by=sort_by,
         sort_order=sort_order,
@@ -249,7 +253,7 @@ async def get_knowledge_hub_children_nodes(
     parent_type: str,
     parent_id: str,
     only_containers: bool = Query(False, description="Only return nodes with children (for sidebar)"),
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    cursor: Optional[str] = Query(None, description="Pagination cursor (null for first page, contains complete state)"),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     sort_by: str = Query("updatedAt", description="Sort field: name, createdAt, updatedAt, size, type"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
@@ -270,6 +274,10 @@ async def get_knowledge_hub_children_nodes(
     Get children of a specific node.
 
     parent_type must be one of: app, recordGroup, folder, record
+
+    Pagination uses cursor-based approach:
+    - First page: no cursor, use query params for filters
+    - Subsequent pages: pass cursor from response (contains complete state including parent context)
     """
     valid_types = {"app", "recordGroup", "folder", "record"}
     if parent_type not in valid_types:
@@ -283,7 +291,7 @@ async def get_knowledge_hub_children_nodes(
         parent_id=parent_id,
         parent_type=parent_type,
         only_containers=only_containers,
-        page=page,
+        cursor=cursor,
         limit=limit,
         sort_by=sort_by,
         sort_order=sort_order,
@@ -307,7 +315,7 @@ async def _handle_get_nodes(
     parent_id: Optional[str],
     parent_type: Optional[str],
     only_containers: bool,
-    page: int,
+    cursor: Optional[str],
     limit: int,
     sort_by: str,
     sort_order: str,
@@ -323,7 +331,12 @@ async def _handle_get_nodes(
     flattened: bool,
     include: Optional[str],
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
-    """Shared handler for both root and children node retrieval."""
+    """
+    Shared handler for both root and children node retrieval.
+
+    When cursor is provided, it contains complete state (filters, sort, parent context).
+    Query params are only used for first page requests (no cursor).
+    """
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
@@ -334,12 +347,12 @@ async def _handle_get_nodes(
                 detail="userId and orgId are required"
             )
 
-        # Validate parent_id format if provided
-        if parent_id:
+        # Validate parent_id format if provided (only for first page, cursor has its own)
+        if parent_id and not cursor:
             _validate_uuid_format(parent_id, "parent_id")
 
-        # Validate and sanitize search query
-        if q:
+        # Validate and sanitize search query (only for first page)
+        if q and not cursor:
             q = q.strip()
             if len(q) < MIN_SEARCH_QUERY_LENGTH:
                 raise HTTPException(
@@ -352,57 +365,50 @@ async def _handle_get_nodes(
                     detail=f"Search query too long (max: {MAX_SEARCH_QUERY_LENGTH} characters)"
                 )
 
-        # Parse comma-separated parameters
-        parsed_node_types = _parse_comma_separated_str(node_types)
-        parsed_record_types = _parse_comma_separated_str(record_types)
-        parsed_origins = _parse_comma_separated_str(origins)
-        parsed_connector_ids = _parse_comma_separated_str(connector_ids)
-        parsed_indexing_status = _parse_comma_separated_str(indexing_status)
-        parsed_include = _parse_comma_separated_str(include)
+        # Parse comma-separated parameters (only used for first page)
+        parsed_node_types = _parse_comma_separated_str(node_types) if not cursor else None
+        parsed_record_types = _parse_comma_separated_str(record_types) if not cursor else None
+        parsed_origins = _parse_comma_separated_str(origins) if not cursor else None
+        parsed_connector_ids = _parse_comma_separated_str(connector_ids) if not cursor else None
+        parsed_indexing_status = _parse_comma_separated_str(indexing_status) if not cursor else None
+        parsed_include = _parse_comma_separated_str(include)  # include is always from query params
 
         # Validate enum-based filters (lenient - invalid values are filtered out)
-        parsed_node_types = _validate_enum_values(
-            parsed_node_types, _get_enum_values(NodeType), "node_types"
-        )
-        parsed_record_types = _validate_enum_values(
-            parsed_record_types, _get_enum_values(RecordType), "record_types"
-        )
-        parsed_origins = _validate_enum_values(
-            parsed_origins, _get_enum_values(OriginType), "origins"
-        )
-        # connector_ids is dynamic, no enum validation needed
-        parsed_indexing_status = _validate_enum_values(
-            parsed_indexing_status, _get_enum_values(ProgressStatus), "indexing_status"
-        )
+        if not cursor:
+            parsed_node_types = _validate_enum_values(parsed_node_types, _get_enum_values(NodeType), "node_types")
+            parsed_record_types = _validate_enum_values(parsed_record_types, _get_enum_values(RecordType), "record_types")
+            parsed_origins = _validate_enum_values(parsed_origins, _get_enum_values(OriginType), "origins")
+            # connector_ids is dynamic, no enum validation needed
+            parsed_indexing_status = _validate_enum_values(parsed_indexing_status, _get_enum_values(ProgressStatus), "indexing_status")
+        
         parsed_include = _validate_enum_values(
             parsed_include, _get_enum_values(IncludeOption), "include"
         )
 
-        # Validate sort_by
-        if sort_by not in _get_enum_values(SortField):
+        # Validate sort_by (only for first page)
+        if not cursor and sort_by not in _get_enum_values(SortField):
             sort_by = SortField.NAME.value
 
-        # Validate sort_order
-        if sort_order.lower() not in _get_enum_values(SortOrder):
+        # Validate sort_order (only for first page)
+        if not cursor and sort_order.lower() not in _get_enum_values(SortOrder):
             sort_order = SortOrder.ASC.value
 
-        # Parse date and size ranges
-        parsed_created_at = _parse_date_range(created_at)
-        parsed_updated_at = _parse_date_range(updated_at)
-        parsed_size = _parse_size_range(size)
+        # Parse date and size ranges (only for first page)
+        parsed_created_at = _parse_date_range(created_at) if not cursor else None
+        parsed_updated_at = _parse_date_range(updated_at) if not cursor else None
+        parsed_size = _parse_size_range(size) if not cursor else None
 
-        # Call service
         result = await knowledge_hub_service.get_nodes(
             user_id=user_id,
             org_id=org_id,
             parent_id=parent_id,
             parent_type=parent_type,
-            only_containers=only_containers,
-            page=page,
-            limit=limit,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            q=q,
+            only_containers=only_containers if not cursor else False,
+            cursor=cursor,
+            limit=limit if not cursor else 50,
+            sort_by=sort_by if not cursor else "updatedAt",
+            sort_order=sort_order if not cursor else "desc",
+            q=q if not cursor else None,
             node_types=parsed_node_types,
             record_types=parsed_record_types,
             origins=parsed_origins,
@@ -411,7 +417,7 @@ async def _handle_get_nodes(
             created_at=parsed_created_at,
             updated_at=parsed_updated_at,
             size=parsed_size,
-            flattened=flattened,
+            flattened=flattened if not cursor else False,  # cursor has flattened
             include=parsed_include,
         )
 

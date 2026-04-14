@@ -183,6 +183,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
+        .with_has_restriction(True)
         .add_filter_field(FilterField(
             name="space_keys",
             display_name="Space Name",
@@ -734,13 +735,14 @@ class ConfluenceConnector(BaseConnector):
 
                         # Fetch permissions for this space
                         permissions = await self._fetch_space_permissions(space_id, space_name)
+                        permissions = [p for p in permissions if p.type == PermissionType.READ]
                         total_permissions_synced += len(permissions)
 
                         # Create RecordGroup for space
                         record_group = self._transform_to_space_record_group(space_data, base_url)
                         if not record_group:
                             continue
-
+                        record_group.has_restriction = len(permissions) > 0
                         # Add to batch
                         record_groups_with_permissions.append((record_group, permissions))
                         record_groups.append(record_group)
@@ -938,6 +940,9 @@ class ConfluenceConnector(BaseConnector):
 
                         # Fetch page permissions
                         permissions = await self._fetch_page_permissions(item_id)
+
+                        # Filter permissions to only include READ permissions
+                        permissions = [p for p in permissions if p.type == PermissionType.READ]
                         total_permissions_synced += len(permissions)
 
                         # Transform to WebpageRecord with update tracking
@@ -954,11 +959,11 @@ class ConfluenceConnector(BaseConnector):
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
+                        # set has_restriction to True if there are any read permissions
+                        # read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                        if len(permissions) > 0:
+                            # webpage_record.inherit_permissions = False 
+                            webpage_record.has_restriction = True
 
                         # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
@@ -1331,13 +1336,16 @@ class ConfluenceConnector(BaseConnector):
 
                         # Fetch current permissions
                         permissions = await self._fetch_page_permissions(item_id)
+                        
+                        # Filter permissions to only include READ permissions
+                        permissions = [p for p in permissions if p.type == PermissionType.READ]
                         total_permissions += len(permissions)
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
+                        # set has_restriction to True if there are any read permissions
+                        # read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                        if len(permissions) > 0:
+                            # webpage_record.inherit_permissions = False
+                            webpage_record.has_restriction = True
 
                         # Add to batch for update
                         records_with_permissions.append((webpage_record, permissions))
@@ -2258,6 +2266,7 @@ class ConfluenceConnector(BaseConnector):
                 web_url=web_url,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,  # Confluence doesn't provide updated timestamp for spaces
+                inherit_permissions=True,
             )
 
         except Exception as e:
@@ -3211,11 +3220,13 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # Filter permissions to only include READ permissions
+            permissions = [p for p in permissions if p.type == PermissionType.READ]
+            # set has_restriction to True if there are any read permissions
+            # read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+            if len(permissions) > 0:
+                # webpage_record.inherit_permissions = False
+                webpage_record.has_restriction = True
 
             return (webpage_record, permissions)
 
@@ -3266,11 +3277,13 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # Filter permissions to only include READ permissions
+            permissions = [p for p in permissions if p.type == PermissionType.READ]
+            # set has_restriction to True if there are any read permissions
+            # read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+            if len(permissions) > 0:
+                # webpage_record.inherit_permissions = False
+                webpage_record.has_restriction = True
 
             return (webpage_record, permissions)
 

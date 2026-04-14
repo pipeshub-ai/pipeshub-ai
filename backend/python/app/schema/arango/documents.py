@@ -154,6 +154,7 @@ app_schema = {
             "isAgentActive": {"type": "boolean", "default": False},
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
+            "hasRestriction": {"type": "boolean", "default": False},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
@@ -213,6 +214,7 @@ record_schema = {
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
+            "hasRestriction": {"type": "boolean", "default": False},
             "indexingStatus": {
                 "type": "string",
                 "enum": [
@@ -564,6 +566,7 @@ record_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "hasRestriction": {"type": "boolean", "default": False},
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},

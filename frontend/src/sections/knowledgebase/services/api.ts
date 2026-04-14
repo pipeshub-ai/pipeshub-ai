@@ -406,8 +406,9 @@ export class KnowledgeBaseAPI {
 
   // Knowledge Hub API - Hierarchical navigation for all records
   // Get top-level nodes (KBs and Connectors)
+  // Uses cursor-based pagination: first page has no cursor, subsequent pages use cursor from response
   static async getKnowledgeHubNodes(params?: {
-    page?: number;
+    cursor?: string;  // Pagination cursor (contains complete state)
     limit?: number;
     include?: string;
     sortBy?: string;
@@ -416,9 +417,12 @@ export class KnowledgeBaseAPI {
     nodeTypes?: string;
     recordTypes?: string;
     origins?: string;
-    connectors?: string;
-    kbs?: string;
+    connectorIds?: string;
     indexingStatus?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    size?: string;
+    flattened?: boolean;
   }): Promise<any> {
     const response = await axios.get(`${API_BASE}/knowledge-hub/nodes`, { params });
     if (!response.data) throw new Error('Failed to fetch knowledge hub nodes');
@@ -426,10 +430,27 @@ export class KnowledgeBaseAPI {
   }
 
   // Get children of a specific node
+  // Uses cursor-based pagination: first page has no cursor, subsequent pages use cursor from response
   static async getKnowledgeHubNodeChildren(
     nodeType: string,
     nodeId: string,
-    params?: any
+    params?: {
+      cursor?: string;  // Pagination cursor (contains complete state including parent context)
+      limit?: number;
+      include?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+      q?: string;
+      nodeTypes?: string;
+      recordTypes?: string;
+      origins?: string;
+      connectorIds?: string;
+      indexingStatus?: string;
+      createdAt?: string;
+      updatedAt?: string;
+      size?: string;
+      flattened?: boolean;
+    }
   ): Promise<any> {
     const response = await axios.get(
       `${API_BASE}/knowledge-hub/nodes/${nodeType}/${nodeId}`,

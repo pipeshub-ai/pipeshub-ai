@@ -72,7 +72,6 @@ import {
   TextField,
   Typography,
   IconButton,
-  Pagination,
   Breadcrumbs,
   Link,
   Chip,
@@ -93,18 +92,15 @@ import { getReindexButtonText } from './buttons';
 import { ORIGIN } from '../constants/knowledge-search';
 import { getExtensionFromMimeType, getFileIcon, getFileIconColor } from '../utils/utils';
 
-// New Props Interface - receives state from URL via parent
 interface AllRecordsViewProps {
-  // Current navigation state from URL
+  cursor?: string;
   nodeType?: string;
   nodeId?: string;
-  page: number;
   limit: number;
   q?: string;
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
   filters: AppliedFilters;
-  // Callbacks
   onUpdateUrl: (params: Record<string, string | undefined>) => void;
   onNavigateToRecord: (recordId: string) => void;
 }
@@ -404,9 +400,9 @@ const DataGridSkeleton: React.FC<{ rowCount?: number }> = ({ rowCount = 10 }) =>
 };
 
 const AllRecordsView: React.FC<AllRecordsViewProps> = ({
+  cursor,
   nodeType,
   nodeId,
-  page,
   limit,
   q,
   sortBy,
@@ -426,21 +422,23 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   const [availableFilters, setAvailableFilters] = useState<AvailableFilters>({});
   const [permissions, setPermissions] = useState<any>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
+  
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [prevCursor, setPrevCursor] = useState<string | null>(null);
+  const [startIndex, setStartIndex] = useState<number>(0);
+  const [endIndex, setEndIndex] = useState<number>(0);
 
-  // UI state
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQueryLocal, setSearchQueryLocal] = useState(q || '');
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null);
   const [menuItems, setMenuItems] = useState<ActionMenuItem[]>([]);
 
-  // Delete dialog state
   const [deleteDialogData, setDeleteDialogData] = useState({
     open: false,
     recordId: '',
     recordName: '',
   });
 
-  // Force reindex dialog state
   const [forceReindexDialog, setForceReindexDialog] = useState({
     open: false,
     id: '',
@@ -448,65 +446,62 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     type: 'record' as 'record' | 'recordGroup',
   });
 
-  // Snackbar state
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
     severity: 'success' as 'success' | 'error' | 'warning',
   });
 
-  // Sync search input with URL param
   useEffect(() => {
     setSearchQueryLocal(q || '');
   }, [q]);
 
-  // Load data whenever any dependency changes
   useEffect(() => {
-    // Clear items immediately to prevent showing stale data
     setItems([]);
     setTotalCount(0);
+    setNextCursor(null);
+    setPrevCursor(null);
+    setStartIndex(0);
+    setEndIndex(0);
     setLoading(true);
 
     const fetchData = async () => {
       try {
         const params: any = {
-          page,
-          limit,
           include: 'counts,permissions,breadcrumbs,availableFilters',
-          q: q || undefined,
         };
 
-        // Add sort params if they exist
-        if (sortBy) {
-          params.sortBy = sortBy;
-        }
-        if (sortOrder) {
-          params.sortOrder = sortOrder;
+        if (cursor) {
+          params.cursor = cursor;
+        } else {
+          params.limit = limit;
+          if (q) params.q = q;
+          if (sortBy) params.sortBy = sortBy;
+          if (sortOrder) params.sortOrder = sortOrder;
+          if (filters.recordTypes && filters.recordTypes.length > 0) {
+            params.recordTypes = filters.recordTypes.join(',');
+          }
+          if (filters.origins && filters.origins.length > 0) {
+            params.origins = filters.origins.join(',');
+          }
+          if (filters.connectorIds && filters.connectorIds.length > 0) {
+            params.connectorIds = filters.connectorIds.join(',');
+          }
+          if (filters.kbIds && filters.kbIds.length > 0) {
+            params.kbIds = filters.kbIds.join(',');
+          }
+          if (filters.indexingStatus && filters.indexingStatus.length > 0) {
+            params.indexingStatus = filters.indexingStatus.join(',');
+          }
         }
 
-        // Add filters if they exist and have values
-        if (filters.recordTypes && filters.recordTypes.length > 0) {
-          params.recordTypes = filters.recordTypes.join(',');
-        }
-        if (filters.origins && filters.origins.length > 0) {
-          params.origins = filters.origins.join(',');
-        }
-        if (filters.connectorIds && filters.connectorIds.length > 0) {
-          params.connectorIds = filters.connectorIds.join(',');
-        }
-        if (filters.kbIds && filters.kbIds.length > 0) {
-          params.kbIds = filters.kbIds.join(',');
-        }
-        if (filters.indexingStatus && filters.indexingStatus.length > 0) {
-          params.indexingStatus = filters.indexingStatus.join(',');
-        }
-
+        // Always use path (nodeType/nodeId) when in a folder so backend gets parent and we avoid reload/context loss
         let data;
         if (!nodeType || !nodeId) {
-          // Load root level nodes
+          // Root level (first or subsequent page)
           data = await KnowledgeBaseAPI.getKnowledgeHubNodes(params);
         } else {
-          // Load specific node children
+          // Inside a node - use children endpoint (first or subsequent page; cursor can be present)
           data = await KnowledgeBaseAPI.getKnowledgeHubNodeChildren(nodeType, nodeId, params);
         }
 
@@ -517,10 +512,20 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         setCounts(data.counts);
         setAvailableFilters(data.filters?.available || {});
         setPermissions(data.permissions || null);
+        
+        // Store cursors and display range for pagination
+        setNextCursor(data.pagination?.nextCursor || null);
+        setPrevCursor(data.pagination?.prevCursor || null);
+        setStartIndex(data.pagination?.startIndex ?? 0);
+        setEndIndex(data.pagination?.endIndex ?? 0);
       } catch (error) {
         console.error('Failed to load data:', error);
         setItems([]);
         setTotalCount(0);
+        setNextCursor(null);
+        setPrevCursor(null);
+        setStartIndex(0);
+        setEndIndex(0);
         setSnackbar({
           open: true,
           message: 'Failed to load data. Please try again.',
@@ -532,21 +537,19 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     };
 
     fetchData();
-  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, refreshCounter]);
+  }, [cursor, nodeType, nodeId, limit, sortBy, sortOrder, q, filters, refreshCounter]);
 
   // Navigation handlers
   const handleRowClick = (node: HubNode) => {
     if (node.hasChildren) {
-      // Navigate into node
       onUpdateUrl({
         nodeType: node.nodeType,
         nodeId: node.id,
-        page: '1',
         limit: limit.toString(),
         sortBy,
         sortOrder,
         q: undefined,
-         // Clear filters and search query
+        // Clear filters and search query
         recordTypes: undefined,
         origins: undefined,
         connectorIds: undefined,
@@ -560,14 +563,15 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
   const handleBreadcrumbClick = (breadcrumb: Breadcrumb | null, index: number) => {
     if (index === 0 || breadcrumb === null) {
-      // Navigate to root
+      // Navigate to root (home) - clear cursor and node context so we show top-level KBs/Apps
       onUpdateUrl({
-        page: '1',
+        nodeType: undefined,
+        nodeId: undefined,
+        cursor: undefined,
         limit: limit.toString(),
         sortBy,
         sortOrder,
         q: q || undefined,
-        // Keep filters, remove nodeType/nodeId
         recordTypes: filters.recordTypes?.join(',') || undefined,
         origins: filters.origins?.join(',') || undefined,
         connectorIds: filters.connectorIds?.join(',') || undefined,
@@ -575,11 +579,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         indexingStatus: filters.indexingStatus?.join(',') || undefined,
       });
     } else {
-      // Navigate to specific breadcrumb
       onUpdateUrl({
         nodeType: breadcrumb.nodeType,
         nodeId: breadcrumb.id,
-        page: '1',
         limit: limit.toString(),
         sortBy,
         sortOrder,
@@ -594,28 +596,35 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     }
   };
 
-  const handlePageChange = (event: unknown, newPage: number) => {
-    onUpdateUrl({
-      nodeType,
-      nodeId,
-      page: newPage.toString(), // 1-indexed page
-      limit: limit.toString(),
-      sortBy,
-      sortOrder,
-      q: q || undefined,
-      recordTypes: filters.recordTypes?.join(',') || undefined,
-      origins: filters.origins?.join(',') || undefined,
-      connectorIds: filters.connectorIds?.join(',') || undefined,
-      kbIds: filters.kbIds?.join(',') || undefined,
-      indexingStatus: filters.indexingStatus?.join(',') || undefined,
-    });
+  const stripParamsRedundantWithCursor = () => ({
+    q: undefined,
+    sortBy: undefined,
+    sortOrder: undefined,
+    recordTypes: undefined,
+    origins: undefined,
+    connectorIds: undefined,
+    kbIds: undefined,
+    indexingStatus: undefined,
+    limit: undefined,
+  });
+
+  const handleNextPage = () => {
+    if (nextCursor) {
+      onUpdateUrl({ cursor: nextCursor, ...stripParamsRedundantWithCursor() });
+    }
+  };
+
+  const handlePrevPage = () => {
+    if (prevCursor) {
+      onUpdateUrl({ cursor: prevCursor, ...stripParamsRedundantWithCursor() });
+    }
   };
 
   const handleLimitChange = (event: any) => {
     onUpdateUrl({
+      cursor: undefined,
       nodeType,
       nodeId,
-      page: '1', // Reset to page 1 when changing limit
       limit: event.target.value,
       sortBy,
       sortOrder,
@@ -630,9 +639,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
   const handleSearchSubmit = () => {
     onUpdateUrl({
+      cursor: undefined,
       nodeType,
       nodeId,
-      page: '1',
       limit: limit.toString(),
       sortBy,
       sortOrder,
@@ -648,13 +657,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   const handleClearSearch = () => {
     setSearchQueryLocal('');
     onUpdateUrl({
+      cursor: undefined,
       nodeType,
       nodeId,
-      page: '1',
       limit: limit.toString(),
       sortBy,
       sortOrder,
-      q: undefined, // Explicitly clear the search query param
+      q: undefined,
       recordTypes: filters.recordTypes?.join(',') || undefined,
       origins: filters.origins?.join(',') || undefined,
       connectorIds: filters.connectorIds?.join(',') || undefined,
@@ -669,9 +678,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
   const handleFilterChange = (newFilters: AppliedFilters) => {
     onUpdateUrl({
+      cursor: undefined,
       nodeType,
       nodeId,
-      page: '1', // Reset to page 1 when filters change
       limit: limit.toString(),
       sortBy: newFilters.sortBy || undefined,
       sortOrder: newFilters.sortOrder || undefined,
@@ -691,7 +700,6 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     return `/assets/icons/connectors/${connectorType.replace(' ', '').toLowerCase()}.svg`;
   };
 
-  // Get MDI icon and color for node types (kb, folder, recordGroup)
   const getNodeTypeIcon = (type: string, hasChildren: boolean): { icon: any; color: string } => {
     switch (type) {
       case 'kb':
@@ -871,7 +879,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       sortable: false,
       renderCell: (params) => {
         const rowIndex = params.api.getRowIndexRelativeToVisibleRows(params.row.id);
-        const rowNumber = (page - 1) * limit + rowIndex + 1;
+        // With cursor-based pagination, show row index within current page
+        const rowNumber = rowIndex + 1;
         return (
           <Typography variant="caption" sx={{ color: 'text.disabled', fontWeight: 500 }}>
             {rowNumber}
@@ -1982,27 +1991,37 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                       <Typography variant="body2" color="text.secondary" fontWeight={500}>
                         {totalCount === 0
                           ? 'No records found'
-                          : `Showing ${(page - 1) * limit + 1}-${Math.min(page * limit, totalCount)} of ${totalCount} records`}
+                          : `Showing ${startIndex}-${endIndex} of ${totalCount} records`}
                       </Typography>
 
                       <Stack direction="row" spacing={2} alignItems="center">
-                        <Pagination
-                          count={Math.ceil(totalCount / limit)}
-                          page={page}
-                          onChange={handlePageChange}
-                          color="primary"
-                          size="medium"
-                          shape="rounded"
+                        {/* Cursor-based pagination: Next/Previous buttons */}
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          disabled={!prevCursor}
+                          onClick={handlePrevPage}
                           sx={{
-                            '& .MuiPaginationItem-root': {
-                              fontWeight: 500,
-                              borderRadius: 2,
-                            },
-                            '& .Mui-selected': {
-                              fontWeight: 700,
-                            },
+                            borderRadius: 2,
+                            fontWeight: 500,
+                            minWidth: 90,
                           }}
-                        />
+                        >
+                          Previous
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          disabled={!nextCursor}
+                          onClick={handleNextPage}
+                          sx={{
+                            borderRadius: 2,
+                            fontWeight: 500,
+                            minWidth: 90,
+                          }}
+                        >
+                          Next
+                        </Button>
                         <Select
                           value={limit}
                           onChange={handleLimitChange}

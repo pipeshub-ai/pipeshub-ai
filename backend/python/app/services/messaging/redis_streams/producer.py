@@ -1,7 +1,9 @@
 import asyncio
 import json
 from logging import Logger
-from typing import Optional, override
+from typing import Optional
+
+from typing_extensions import override
 
 from pydantic import JsonValue
 from redis.asyncio import Redis
