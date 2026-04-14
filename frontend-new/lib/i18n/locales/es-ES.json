@@ -7,6 +7,10 @@
     "missingAgentKey": "Falta la clave del agente. Abra un agente desde la barra lateral del chat o use un enlace válido.",
     "loading": "Cargando\u2026"
   },
+  "chatStream": {
+    "thinkingFallback": "Pensando\u2026",
+    "refiningResponse": "Refinando la respuesta\u2026"
+  },
   "nav": {
     "collections": "Colecciones",
     "allRecords": "Todos los registros",
@@ -735,6 +739,7 @@
     "oauthSignInSuccess": "Conjunto de herramientas conectado correctamente.",
     "oauthSignInIncomplete": "El inicio de sesión no terminó. Es posible que se cerrara la ventana antes de completar — inténtelo de nuevo cuando esté listo.",
     "oauthSignInCancelled": "Inicio de sesión cancelado.",
+    "toolsetOAuthCompletingTitle": "Completando el inicio de sesión del conjunto de herramientas...",
     "toolsetOAuthProcessing": "Completando el inicio de sesión del conjunto de herramientas\u2026",
     "toolsetOAuthProcessingHint": "Puede mantener esta ventana abierta hasta que se cierre automáticamente.",
     "toolsetOAuthProviderError": "Error de OAuth: {{error}}",
@@ -742,8 +747,10 @@
     "toolsetOAuthNoState": "No se devolvió el parámetro state.",
     "toolsetOAuthBackendRejected": "El servidor no confirmó la autenticación.",
     "toolsetOAuthSuccessTitle": "Conectado",
-    "toolsetOAuthSuccessBody": "La autenticación se realizó correctamente. Esta ventana se cerrará automáticamente.",
-    "toolsetOAuthFailedTitle": "Error al iniciar sesión",
+    "toolsetOAuthSuccessBody": "La autenticaci\u00f3n se realiz\u00f3 correctamente. La ventana se cerrar\u00e1 autom\u00e1ticamente.",
+    "toolsetOAuthFailedTitle": "No se pudo conectar",
+    "toolsetOAuthErrorRetryHint": "La autenticaci\u00f3n ha fallado. Vuelva a intentarlo m\u00e1s tarde.",
+    "toolsetOAuthTryAgain": "Volver a intentar",
     "toolsetOAuthCloseWindow": "Cerrar ventana",
     "showFewerTools": "Mostrar menos",
     "oauthPopupBlocked": "Ventana emergente bloqueada. Permita ventanas emergentes para este sitio e inténtelo de nuevo.",

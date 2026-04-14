@@ -7,6 +7,10 @@
     "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
     "loading": "Wird geladen\u2026"
   },
+  "chatStream": {
+    "thinkingFallback": "Denken\u2026",
+    "refiningResponse": "Antwort wird verfeinert\u2026"
+  },
   "nav": {
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
@@ -341,6 +345,19 @@
     "toolsetNotReadyNotify": "{{name}} ist {{reason}}. Konfigurieren Sie es, bevor Sie es auf die Arbeitsfl\u00e4che ziehen.",
     "toolsetDuplicateNotify": "Es kann jeweils nur ein {{name}}-Toolset auf der Arbeitsfl\u00e4che sein.",
     "toolsetAuthUpdated": "Toolset-Authentifizierung aktualisiert.",
+    "toolsetOAuthCompletingTitle": "Toolset-Anmeldung wird abgeschlossen...",
+    "toolsetOAuthProcessing": "Toolset-Anmeldung wird abgeschlossen\u2026",
+    "toolsetOAuthProcessingHint": "Sie k\u00f6nnen dieses Fenster ge\u00f6ffnet lassen, bis es sich automatisch schlie\u00dft.",
+    "toolsetOAuthProviderError": "OAuth-Fehler: {{error}}",
+    "toolsetOAuthNoCode": "Es wurde kein Autorisierungscode zur\u00fcckgegeben.",
+    "toolsetOAuthNoState": "Es wurde kein State-Parameter zur\u00fcckgegeben.",
+    "toolsetOAuthBackendRejected": "Der Server hat die Authentifizierung nicht best\u00e4tigt.",
+    "toolsetOAuthSuccessTitle": "Verbunden",
+    "toolsetOAuthSuccessBody": "Authentifizierung erfolgreich. Das Fenster schlie\u00dft sich automatisch.",
+    "toolsetOAuthFailedTitle": "Verbindung nicht m\u00f6glich",
+    "toolsetOAuthErrorRetryHint": "Authentifizierung fehlgeschlagen. Bitte versuchen Sie es sp\u00e4ter erneut.",
+    "toolsetOAuthTryAgain": "Erneut versuchen",
+    "toolsetOAuthCloseWindow": "Fenster schlie\u00dfen",
     "loadMore": "Mehr laden",
     "loadingMore": "Wird geladen\u2026",
     "notConfiguredReason": "nicht konfiguriert",

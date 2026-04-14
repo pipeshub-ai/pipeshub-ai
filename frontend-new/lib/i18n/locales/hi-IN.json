@@ -7,6 +7,10 @@
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
     "loading": "लोड हो रहा है\u2026"
   },
+  "chatStream": {
+    "thinkingFallback": "सोच रहा है\u2026",
+    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है\u2026"
+  },
   "nav": {
     "collections": "कलेक्शन",
     "allRecords": "सभी रिकॉर्ड",
@@ -735,6 +739,7 @@
     "oauthSignInSuccess": "टूलसेट सफलतापूर्वक कनेक्ट हो गया।",
     "oauthSignInIncomplete": "साइन-इन पूरा नहीं हुआ। पूर्णता से पहले विंडो बंद हो गई हो — तैयार होने पर पुनः प्रयास करें।",
     "oauthSignInCancelled": "साइन-इन रद्द कर दिया गया।",
+    "toolsetOAuthCompletingTitle": "टूलसेट साइन-इन पूरा किया जा रहा है...",
     "toolsetOAuthProcessing": "टूलसेट साइन-इन पूरा किया जा रहा है\u2026",
     "toolsetOAuthProcessingHint": "यह विंडो स्वचालित रूप से बंद होने तक खुली रख सकते हैं।",
     "toolsetOAuthProviderError": "OAuth त्रुटि: {{error}}",
@@ -742,8 +747,10 @@
     "toolsetOAuthNoState": "कोई state पैरामीटर नहीं मिला।",
     "toolsetOAuthBackendRejected": "सर्वर ने प्रमाणीकरण की पुष्टि नहीं की।",
     "toolsetOAuthSuccessTitle": "कनेक्ट हो गया",
-    "toolsetOAuthSuccessBody": "प्रमाणीकरण सफल रहा। यह विंडो स्वचालित रूप से बंद हो जाएगी।",
-    "toolsetOAuthFailedTitle": "साइन-इन विफल",
+    "toolsetOAuthSuccessBody": "प्रमाणीकरण सफल रहा। विंडो स्वचालित रूप से बंद हो जाएगी।",
+    "toolsetOAuthFailedTitle": "कनेक्ट नहीं हो सका",
+    "toolsetOAuthErrorRetryHint": "प्रमाणीकरण विफल रहा। कृपया बाद में पुनः प्रयास करें।",
+    "toolsetOAuthTryAgain": "फिर से कोशिश करें",
     "toolsetOAuthCloseWindow": "विंडो बंद करें",
     "showFewerTools": "कम दिखाएँ",
     "oauthPopupBlocked": "पॉपअप अवरुद्ध। इस साइट के लिए पॉपअप की अनुमति दें और पुनः प्रयास करें।",

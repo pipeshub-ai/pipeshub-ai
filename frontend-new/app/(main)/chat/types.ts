@@ -184,21 +184,29 @@ export interface UploadedFile {
 export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
 
 // SSE Event Types
-export type SSEEventType = 
-  | 'connected' 
-  | 'status' 
-  | 'answer_chunk' 
-  | 'complete' 
-  | 'tool_call' 
+export type SSEEventType =
+  | 'connected'
+  | 'status'
+  | 'answer_chunk'
+  | 'complete'
+  | 'tool_call'
   | 'tool_success'
+  | 'tool_error'
+  /** Internal tool round-trip — UI ignores (same as legacy chat) */
+  | 'tool_calls'
+  /** Agent / deep flows — UI ignores */
+  | 'tool_result'
+  | 'metadata'
+  | 'restreaming'
   | 'error';
 
 export interface SSEConnectedEvent {
   message: string;
 }
 
+/** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
 export interface SSEStatusEvent {
-  status: 'started' | 'searching' | 'processing';
+  status: string;
   message: string;
 }
 
@@ -342,7 +350,8 @@ export interface SSEErrorEvent {
 // Status message for display during streaming
 export interface StatusMessage {
   id: string;
-  status: 'started' | 'searching' | 'processing';
+  /** Mirrors SSE status when applicable (`connected`, `planning`, `executing`, …) */
+  status: string;
   message: string;
   timestamp: string;
 }

@@ -378,74 +378,9 @@ export function AgentBuilderToolsetsSection(props: {
 
       {!loading
         ? Object.entries(toolsetsByType).map(([toolsetType, typeToolsets]) => {
-            const isSingle = typeToolsets.length === 1;
             const first = typeToolsets[0];
             const typeKey = `toolset-type-${toolsetType}`;
-            const isTypeExpanded = expandedApps[typeKey] ?? isSingle;
-
-            if (isSingle) {
-              const ts = first;
-              const toolsetKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
-              const isExpanded = expandedApps[toolsetKey] ?? false;
-              const ui = buildUiState(ts);
-              const {
-                needsConfiguration,
-                dragPayload,
-                dragBlocked,
-                dragType,
-                showCfg,
-                cfgClickable,
-                configureLocked,
-                onDragAttempt,
-              } = getToolsetPaletteRowState(
-                ts,
-                ui,
-                normalizedActive,
-                structureLocked,
-                orgCredentialUiLocked,
-                isServiceAccount,
-                notifyStructureDragBlocked,
-                () => handleDuplicateDrag(ts),
-                () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-              );
-
-              return (
-                <SidebarCategoryRow
-                  key={ts.instanceId || ts.displayName}
-                  groupLabel={ts.displayName}
-                  groupIcon={ts.iconPath}
-                  itemCount={ts.tools.length}
-                  isExpanded={isExpanded}
-                  onToggle={() => onAppToggle(toolsetKey)}
-                  dragType={dragType}
-                  dragData={dragBlocked ? undefined : dragPayload}
-                  onDragAttempt={onDragAttempt}
-                  showConfigureIcon={showCfg}
-                  onConfigureClick={cfgClickable ? () => void handleConfigureClick(ts) : undefined}
-                  configureDisabled={configureLocked}
-                  configureDisabledTooltip={orgCredentialLockedTooltip}
-                  configureTooltip={ui.configureTooltip}
-                  configureUseKeyIcon={ui.configureUseKeyIcon}
-                  configureIconColor={ui.configureIconColor}
-                  toolsetStatus={getToolsetSidebarStatus(ts)}
-                >
-                  {ts.tools.map((tool) => (
-                    <ToolDragRow
-                      key={tool.fullName || tool.name}
-                      tool={tool}
-                      toolset={ts}
-                      needsConfiguration={needsConfiguration}
-                      structureLocked={structureLocked}
-                      onBlocked={
-                        structureLocked
-                          ? notifyStructureDragBlocked
-                          : () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
-                      }
-                    />
-                  ))}
-                </SidebarCategoryRow>
-              );
-            }
+            const isTypeExpanded = expandedApps[typeKey] ?? true;
 
             return (
               <Box key={toolsetType} mb="2">
@@ -457,8 +392,8 @@ export function AgentBuilderToolsetsSection(props: {
                   onToggle={() => onAppToggle(typeKey)}
                 >
                   {typeToolsets.map((ts) => {
-                    const instKey = `toolset-${ts.instanceId || ''}`;
-                    const isExpanded = expandedApps[instKey];
+                    const instKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
+                    const isInstanceExpanded = expandedApps[instKey] ?? true;
                     const ui = buildUiState(ts);
                     const {
                       needsConfiguration,
@@ -487,7 +422,7 @@ export function AgentBuilderToolsetsSection(props: {
                         groupLabel={ts.instanceName || ts.displayName}
                         groupIcon={ts.iconPath}
                         itemCount={ts.tools.length}
-                        isExpanded={Boolean(isExpanded)}
+                        isExpanded={isInstanceExpanded}
                         onToggle={() => onAppToggle(instKey)}
                         dragType={dragType}
                         dragData={dragBlocked ? undefined : dragPayload}

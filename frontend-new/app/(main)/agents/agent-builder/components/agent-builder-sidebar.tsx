@@ -305,49 +305,15 @@ export function AgentBuilderSidebar(props: {
                       {t('agentBuilder.noConnectors')}
                     </Text>
                   ) : (
-                    Object.entries(groupedConnectors).map(([typeName, { instances, icon }]) => {
-                      const expandKey = `knowledge-connector-${typeName}`;
-                      if (instances.length === 1) {
-                        const inst = instances[0];
-                        const tmpl = nodeTemplates.find(
-                          (n) => n.type === `app-${inst.name.toLowerCase().replace(/\s+/g, '-')}`
-                        );
-                        if (!tmpl) return null;
-                        const dragData = prepareDragData(tmpl, 'connectors', {
-                          connectorId: inst._key || '',
-                          connectorType: inst.type || '',
-                          scope: inst.scope || 'personal',
-                        });
-                        return (
-                          <DraggableRow
-                            key={typeName}
-                            comfortable
-                            data={dragData}
-                            disabled={paletteStructureLocked}
-                            onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
-                          >
-                            {icon ? (
-                              <img
-                                src={icon}
-                                width={PALETTE_ICON_SIZE}
-                                height={PALETTE_ICON_SIZE}
-                                alt=""
-                                style={{ objectFit: 'contain', flexShrink: 0 }}
-                              />
-                            ) : (
-                              <MaterialIcon name="cloud" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />
-                            )}
-                            <span style={paletteRowLabelStyle}>{typeName}</span>
-                          </DraggableRow>
-                        );
-                      }
+                    Object.entries(groupedConnectors).map(([connectorTypeLabel, { instances, icon }]) => {
+                      const expandKey = `knowledge-connector-${connectorTypeLabel}`;
                       return (
                         <SidebarCategoryRow
-                          key={typeName}
-                          groupLabel={typeName}
+                          key={connectorTypeLabel}
+                          groupLabel={connectorTypeLabel}
                           groupIcon={icon || undefined}
                           itemCount={instances.length}
-                          isExpanded={expanded[expandKey] ?? false}
+                          isExpanded={expanded[expandKey] ?? true}
                           onToggle={() => toggle(expandKey)}
                         >
                           {instances.map((inst) => {
@@ -362,7 +328,7 @@ export function AgentBuilderSidebar(props: {
                             });
                             return (
                               <DraggableRow
-                                key={inst._key}
+                                key={inst._key || `${connectorTypeLabel}-${inst.name}`}
                                 comfortable
                                 data={dragData}
                                 disabled={paletteStructureLocked}
@@ -379,7 +345,9 @@ export function AgentBuilderSidebar(props: {
                                 ) : (
                                   <MaterialIcon name="cloud" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />
                                 )}
-                                <span style={paletteRowLabelStyle}>{inst.name}</span>
+                                <span style={paletteRowLabelStyle}>
+                                  {inst.name?.trim() || connectorTypeLabel}
+                                </span>
                               </DraggableRow>
                             );
                           })}

@@ -7,6 +7,10 @@
     "missingAgentKey": "Agentenschlüssel fehlt. Öffnen Sie einen Agenten über die Chat-Seitenleiste oder verwenden Sie einen gültigen Link.",
     "loading": "Wird geladen\u2026"
   },
+  "chatStream": {
+    "thinkingFallback": "Denken\u2026",
+    "refiningResponse": "Antwort wird verfeinert\u2026"
+  },
   "nav": {
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
@@ -834,6 +838,7 @@
     "oauthSignInSuccess": "Toolset erfolgreich verbunden.",
     "oauthSignInIncomplete": "Anmeldung nicht abgeschlossen. Das Fenster wurde m\u00f6glicherweise zu fr\u00fch geschlossen \u2014 versuchen Sie es erneut, wenn Sie bereit sind.",
     "oauthSignInCancelled": "Anmeldung abgebrochen.",
+    "toolsetOAuthCompletingTitle": "Toolset-Anmeldung wird abgeschlossen...",
     "toolsetOAuthProcessing": "Toolset-Anmeldung wird abgeschlossen\u2026",
     "toolsetOAuthProcessingHint": "Sie können dieses Fenster geöffnet lassen, bis es sich automatisch schließt.",
     "toolsetOAuthProviderError": "OAuth-Fehler: {{error}}",
@@ -841,8 +846,10 @@
     "toolsetOAuthNoState": "Es wurde kein State-Parameter zurückgegeben.",
     "toolsetOAuthBackendRejected": "Der Server hat die Authentifizierung nicht bestätigt.",
     "toolsetOAuthSuccessTitle": "Verbunden",
-    "toolsetOAuthSuccessBody": "Authentifizierung erfolgreich. Dieses Fenster schließt sich automatisch.",
-    "toolsetOAuthFailedTitle": "Anmeldung fehlgeschlagen",
+    "toolsetOAuthSuccessBody": "Authentifizierung erfolgreich. Das Fenster schlie\u00dft sich automatisch.",
+    "toolsetOAuthFailedTitle": "Verbindung nicht m\u00f6glich",
+    "toolsetOAuthErrorRetryHint": "Authentifizierung fehlgeschlagen. Bitte versuchen Sie es sp\u00e4ter erneut.",
+    "toolsetOAuthTryAgain": "Erneut versuchen",
     "toolsetOAuthCloseWindow": "Fenster schließen",
     "showFewerTools": "Weniger anzeigen",
     "oauthPopupBlocked": "Popup blockiert. Erlauben Sie Popups f\u00fcr diese Website und versuchen Sie es erneut.",
