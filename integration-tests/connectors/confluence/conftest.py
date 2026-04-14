@@ -197,8 +197,28 @@ async def confluence_connector(
         interval=5,
         max_rounds=20,
     )
-    state["full_sync_count"] = full_count
-    
+
+    # One verification sync: lets the connector finish background work and leaves it
+    # idle before tests run. Without this, the first test can toggle_sync while the
+    # connector is still mid-cycle, which can break incremental sync (TC-INCR-001).
+    pipeshub_client.toggle_sync(connector_id, enable=False)
+    pipeshub_client.wait(5)
+    pipeshub_client.toggle_sync(connector_id, enable=True)
+    verified_count = await async_wait_for_stable_record_count(
+        graph_provider,
+        connector_id,
+        stability_checks=3,
+        interval=5,
+        max_rounds=20,
+    )
+    if verified_count != full_count:
+        logger.info(
+            "SETUP: Verification sync adjusted record count %d -> %d",
+            full_count,
+            verified_count,
+        )
+    state["full_sync_count"] = verified_count
+
     yield state
     
     # ========== TEARDOWN ==========
