@@ -7,6 +7,7 @@ import {
 } from '@/lib/store/auth-store';
 import { extractApiErrorMessage, processError } from './api-error';
 import { showErrorToast } from './error-toast';
+import { getApiBaseUrl, isElectron } from '@/lib/utils/api-base-url';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -14,11 +15,6 @@ declare module 'axios' {
   }
 }
 
-// Default to '' (same origin). Axios itself treats undefined baseURL the same
-// way, but `refreshAccessToken()` below does a raw `fetch(\`${API_BASE_URL}...\`)`
-// — template-concatenating `undefined` would produce the literal string
-// "undefined" in the URL and 404 via the Node.js backend's static handler.
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 const API_TIMEOUT = 20000;
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
@@ -75,11 +71,10 @@ function isTokenExpired(token: string | null): boolean {
   const decoded = decodeToken(token);
   if (!decoded || typeof decoded.exp !== 'number') return false;
   const nowSeconds = Date.now() / 1000;
-return decoded.exp < nowSeconds + 30;
+  return decoded.exp < nowSeconds + 30;
 }
 
 export const apiClient = axios.create({
-  baseURL: API_BASE_URL,
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',
@@ -87,15 +82,19 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
-// Request interceptor - add auth token, proactively refresh if expired.
+// Request interceptor — dynamic base URL, Electron cookie policy, proactive refresh, auth header
 apiClient.interceptors.request.use(
   async (config) => {
+    config.baseURL = getApiBaseUrl();
+    if (isElectron()) {
+      config.withCredentials = false;
+    }
+
     // Skip token handling for the refresh endpoint itself to avoid loops.
     if (config.url?.includes(REFRESH_TOKEN_ENDPOINT)) {
       return config;
     }
 
-    // Allow callers to pre-set their own Authorization header.
     const authHeader =
       (config.headers?.Authorization as string | undefined) ??
       (config.headers?.authorization as string | undefined);
@@ -111,7 +110,6 @@ apiClient.interceptors.request.use(
       if (refreshed) {
         accessToken = useAuthStore.getState().accessToken;
       } else {
-        // Refresh failed - clear auth and redirect.
         handleAuthFailure();
         return Promise.reject(new Error(SESSION_EXPIRED_LOGOUT_MESSAGE));
       }
@@ -223,7 +221,7 @@ async function refreshAccessToken(): Promise<boolean> {
       }
 
       // Call refresh endpoint - using fetch to avoid interceptor loop
-      const response = await fetch(`${API_BASE_URL}${REFRESH_TOKEN_ENDPOINT}`, {
+      const response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

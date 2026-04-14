@@ -7,6 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { isElectron } from '@/lib/utils/api-base-url';
+import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
@@ -253,12 +255,22 @@ function TeamConnectorsPageContent() {
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
     (connector: Connector) => {
+      if (isLocalFsConnectorType(connector.type) && !isElectron()) {
+        addToast({
+          variant: 'info',
+          title: 'Desktop app required',
+          description:
+            'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
+          duration: 5000,
+        });
+        return;
+      }
       // For active connectors (have _key), open in edit mode
       // For registry connectors (no _key), open in create mode
       const connectorId = connector._key;
       openPanel(connector, connectorId, 'team');
     },
-    [openPanel]
+    [openPanel, addToast]
   );
 
   /** "+" on catalog cards must create a new instance, not edit whichever instance supplied `_key`. */
@@ -314,11 +326,21 @@ function TeamConnectorsPageContent() {
 
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
+    if (isLocalFsConnectorType(connectorTypeInfo.type) && !isElectron()) {
+      addToast({
+        variant: 'info',
+        title: 'Desktop app required',
+        description:
+          'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
+        duration: 5000,
+      });
+      return;
+    }
     const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
     const base = registry ?? connectorTypeInfo;
     const { _key: _omitInstanceKey, ...template } = base;
     openPanel(template, undefined, 'team');
-  }, [connectorTypeInfo, registryConnectors, openPanel]);
+  }, [connectorTypeInfo, registryConnectors, openPanel, addToast]);
 
   const handleOpenDocs = useCallback(() => {
     // Try config.documentationLinks first, then fall back to connectorInfo

@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { isElectron } from '@/lib/utils/api-base-url';
+import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
@@ -233,10 +235,20 @@ function PersonalConnectorsPageContent() {
   // ── Handlers (list view) ───────────────────────────────────
   const handleSetup = useCallback(
     (connector: Connector) => {
+      if (isLocalFsConnectorType(connector.type) && !isElectron()) {
+        addToast({
+          variant: 'info',
+          title: 'Desktop app required',
+          description:
+            'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
+          duration: 5000,
+        });
+        return;
+      }
       const connectorId = connector._key;
       openPanel(connector, connectorId, 'personal');
     },
-    [openPanel]
+    [openPanel, addToast]
   );
 
   const handleAddInstanceFromCatalog = useCallback(
@@ -286,11 +298,21 @@ function PersonalConnectorsPageContent() {
 
   const handleAddInstance = useCallback(() => {
     if (!connectorTypeInfo) return;
+    if (isLocalFsConnectorType(connectorTypeInfo.type) && !isElectron()) {
+      addToast({
+        variant: 'info',
+        title: 'Desktop app required',
+        description:
+          'Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector.',
+        duration: 5000,
+      });
+      return;
+    }
     const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
     const base = registry ?? connectorTypeInfo;
     const { _key: _omitInstanceKey, ...template } = base;
     openPanel(template, undefined, 'personal');
-  }, [connectorTypeInfo, registryConnectors, openPanel]);
+  }, [connectorTypeInfo, registryConnectors, openPanel, addToast]);
 
   const handleOpenDocs = useCallback(() => {
     // Try config.documentationLinks first, then fall back to connectorInfo
