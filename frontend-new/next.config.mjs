@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    output: 'export',
+    // output: 'export',
     trailingSlash: true,
     webpack: (config) => {
         // pdfjs-dist (bundled by react-pdf-highlighter) has a Node.js code path

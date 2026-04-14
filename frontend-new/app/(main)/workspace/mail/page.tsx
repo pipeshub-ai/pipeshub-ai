@@ -28,22 +28,16 @@ export default function MailPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
+  const [isConfigured, setIsConfigured] = useState(false);
+  const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
+
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
   }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
-  const [isConfigured, setIsConfigured] = useState(false);
-  const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [panelOpen, setPanelOpen] = useState(false);
 
   // ── Load SMTP status ──────────────────────────────────────
   const loadSmtpConfig = useCallback(async () => {
@@ -60,8 +54,9 @@ export default function MailPage() {
   }, []);
 
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     loadSmtpConfig();
-  }, [loadSmtpConfig]);
+  }, [isProfileInitialized, isAdmin, loadSmtpConfig]);
 
   // ── Save SMTP config ──────────────────────────────────────
   const handleSave = useCallback(
@@ -83,6 +78,11 @@ export default function MailPage() {
       description: 'Your email server settings have been updated',
     });
   }, [addToast]);
+
+  // Prevent rendering while profile is unresolved or for non-admin (redirect above).
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── Render ────────────────────────────────────────────────
   return (
