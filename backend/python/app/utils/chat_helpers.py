@@ -1721,6 +1721,35 @@ Record blocks (sorted):\n\n"""
             else:
                 continue
 
+        fk_parent = record.get("fk_parent_record_ids")
+        fk_child = record.get("fk_child_record_ids")
+        if fk_parent or fk_child:
+            fk_lines = ["\nForeign Key Related Tables:"]
+            if fk_parent:
+                for fk in fk_parent:
+                    parent_table = fk.get("parentTable", "")
+                    src_col = fk.get("sourceColumn", "")
+                    tgt_col = fk.get("targetColumn", "")
+                    rid = fk.get("record_id", "")
+                    fk_lines.append(
+                        f"  - Parent Table: {parent_table} (Record ID: {rid}, "
+                        f"FK: {src_col} -> {tgt_col})"
+                    )
+            if fk_child:
+                for fk in fk_child:
+                    child_table = fk.get("childTable", "")
+                    src_col = fk.get("sourceColumn", "")
+                    tgt_col = fk.get("targetColumn", "")
+                    rid = fk.get("record_id", "")
+                    fk_lines.append(
+                        f"  - Child Table: {child_table} (Record ID: {rid}, "
+                        f"FK: {src_col} -> {tgt_col})"
+                    )
+            content.append({
+                "type": "text",
+                "text": "\n".join(fk_lines) + "\n"
+            })
+
         return content, ref_mapper
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
