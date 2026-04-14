@@ -458,7 +458,16 @@
         "editInvite": "Editar invitación",
         "cancelInvite": "Cancelar invitación",
         "comingSoonTitle": "No compatible",
-        "comingSoonDescription": "Esta acción estará disponible pronto"
+        "comingSoonDescription": "Esta acción estará disponible pronto",
+        "unblock": "Desbloquear",
+        "unblockTypedConfirmTitle": "¿Desbloquear a {{name}}?",
+        "unblockTypedConfirmBodyLine1": "Esto restaurará el acceso de inicio de sesión para {{name}}.",
+        "unblockTypedConfirmBodyLine2": "Escribe el nombre para mostrar del usuario exactamente para confirmar.",
+        "typeNameToConfirm": "Escribe {{keyword}} para confirmar",
+        "unblockConfirmAction": "Desbloquear",
+        "unblockSuccess": "Usuario desbloqueado correctamente",
+        "unblockError": "No se pudo desbloquear al usuario",
+        "unblocking": "Desbloqueando…"
       },
       "profile": {
         "title": "Perfil",
@@ -481,7 +490,8 @@
         "active": "Activo",
         "pending": "Pendiente",
         "expired": "Expirado",
-        "deactivated": "Desactivado"
+        "deactivated": "Desactivado",
+        "blocked": "Bloqueado"
       },
       "invite": {
         "title": "Invitar usuarios",
@@ -986,5 +996,24 @@
     "toolInlineSuffix": "Herramienta {{name}}",
     "paletteToolGroupLabel": "Herramientas de {{app}}",
     "nodeTemplateChatResponseDesc": "Envía la respuesta al usuario"
+  },
+  "oauthConsent": {
+    "loading": "Cargando solicitud de autorizaci\u00f3n\u2026",
+    "missingParams": "Faltan par\u00e1metros OAuth obligatorios (client_id, redirect_uri).",
+    "noData": "No hay datos de autorizaci\u00f3n disponibles.",
+    "noRedirect": "No se recibi\u00f3 URL de redirecci\u00f3n del servidor.",
+    "errorTitle": "Error de autorizaci\u00f3n",
+    "signedInAs": "Sesi\u00f3n iniciada como {{display}}",
+    "requestHeading": "Esta aplicaci\u00f3n solicita acceso a:",
+    "legalNotice": "Al hacer clic en \u00abPermitir\u00bb, autoriza a {{appName}} a acceder a sus datos seg\u00fan lo descrito arriba.",
+    "privacyPolicy": "Pol\u00edtica de privacidad",
+    "deny": "Denegar",
+    "allow": "Permitir",
+    "submitting": "Procesando\u2026",
+    "outcomeSuccessTitle": "Conectado",
+    "outcomeSuccessLine1": "La autenticaci\u00f3n se realiz\u00f3 correctamente.",
+    "outcomeSuccessLine2": "Puede cerrar esta ventana.",
+    "outcomeErrorTitle": "No se pudo conectar",
+    "tryAgain": "Intentar de nuevo"
   }
 }

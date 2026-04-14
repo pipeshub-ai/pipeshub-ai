@@ -487,7 +487,16 @@
         "editInvite": "Einladung bearbeiten",
         "cancelInvite": "Einladung abbrechen",
         "comingSoonTitle": "Nicht unterstützt",
-        "comingSoonDescription": "Diese Aktion ist in Kürze verfügbar"
+        "comingSoonDescription": "Diese Aktion ist in Kürze verfügbar",
+        "unblock": "Entsperren",
+        "unblockTypedConfirmTitle": "{{name}} entsperren?",
+        "unblockTypedConfirmBodyLine1": "Damit wird der Anmeldezugriff für {{name}} wiederhergestellt.",
+        "unblockTypedConfirmBodyLine2": "Geben Sie den exakten Anzeigenamen des Benutzers ein, um zu bestätigen.",
+        "typeNameToConfirm": "Geben Sie {{keyword}} ein, um zu bestätigen",
+        "unblockConfirmAction": "Entsperren",
+        "unblockSuccess": "Benutzer erfolgreich entsperrt",
+        "unblockError": "Benutzer konnte nicht entsperrt werden",
+        "unblocking": "Wird entsperrt…"
       },
       "profile": {
         "title": "Profil",
@@ -510,7 +519,8 @@
         "active": "Aktiv",
         "pending": "Ausstehend",
         "expired": "Abgelaufen",
-        "deactivated": "Deaktiviert"
+        "deactivated": "Deaktiviert",
+        "blocked": "Gesperrt"
       },
       "invite": {
         "title": "Benutzer einladen",
@@ -1124,5 +1134,24 @@
     "toolInlineSuffix": "{{name}}-Tool",
     "paletteToolGroupLabel": "{{app}}-Tools",
     "nodeTemplateChatResponseDesc": "Sendet die Antwort an den Nutzer"
+  },
+  "oauthConsent": {
+    "loading": "Autorisierungsanfrage wird geladen\u2026",
+    "missingParams": "Fehlende erforderliche OAuth-Parameter (client_id, redirect_uri).",
+    "noData": "Keine Autorisierungsdaten verf\u00fcgbar.",
+    "noRedirect": "Keine Weiterleitungs-URL vom Server erhalten.",
+    "errorTitle": "Autorisierungsfehler",
+    "signedInAs": "Angemeldet als {{display}}",
+    "requestHeading": "Diese Anwendung fordert Zugriff auf:",
+    "legalNotice": "Mit Klick auf \u201eZulassen\u201c autorisieren Sie {{appName}}, auf Ihre Daten wie oben beschrieben zuzugreifen.",
+    "privacyPolicy": "Datenschutzerkl\u00e4rung",
+    "deny": "Ablehnen",
+    "allow": "Zulassen",
+    "submitting": "Wird verarbeitet\u2026",
+    "outcomeSuccessTitle": "Verbunden",
+    "outcomeSuccessLine1": "Authentifizierung erfolgreich.",
+    "outcomeSuccessLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen.",
+    "outcomeErrorTitle": "Verbindung nicht m\u00f6glich",
+    "tryAgain": "Erneut versuchen"
   }
 }
