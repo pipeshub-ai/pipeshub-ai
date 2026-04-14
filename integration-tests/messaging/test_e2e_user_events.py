@@ -187,10 +187,10 @@ def user_client(pipeshub_client: PipeshubClient) -> UserClient:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestUserFullPipeline:
     """Complete user lifecycle: API → DB → Neo4j at every stage."""
 
-    @pytest.mark.asyncio
     async def test_user_lifecycle_pipeline(
         self, user_client: UserClient, graph_provider: GraphProviderProtocol,
     ):
@@ -339,10 +339,10 @@ class TestUserFullPipeline:
 
 @pytest.mark.skip(reason="Org update tests skipped for now")
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestOrgUpdatePipeline:
     """Update org name → verify via API → verify in Neo4j → restore."""
 
-    @pytest.mark.asyncio
     async def test_org_update_pipeline(
         self, user_client: UserClient, graph_provider: GraphProviderProtocol,
     ):
@@ -390,10 +390,10 @@ class TestOrgUpdatePipeline:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestMultiUserPipeline:
     """Add multiple users, verify all appear in DB and graph, then clean up."""
 
-    @pytest.mark.asyncio
     async def test_add_multiple_users_pipeline(
         self, user_client: UserClient, graph_provider: GraphProviderProtocol,
     ):

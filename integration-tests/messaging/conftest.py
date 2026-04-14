@@ -46,7 +46,7 @@ def _redis_password() -> str | None:
 # Kafka fixtures
 # ---------------------------------------------------------------------------
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def kafka_producer() -> AsyncGenerator[AIOKafkaProducer, None]:
     producer = AIOKafkaProducer(
         bootstrap_servers=_kafka_brokers(),
@@ -58,7 +58,7 @@ async def kafka_producer() -> AsyncGenerator[AIOKafkaProducer, None]:
     await producer.stop()
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def kafka_consumer_factory():
     """Factory that creates a consumer subscribed to given topics with a unique group."""
     consumers: list[AIOKafkaConsumer] = []
@@ -87,7 +87,7 @@ async def kafka_consumer_factory():
 # Redis fixtures
 # ---------------------------------------------------------------------------
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def redis_client() -> AsyncGenerator[Redis, None]:
     client = Redis(
         host=_redis_host(),
@@ -100,7 +100,7 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
     await client.aclose()
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def redis_stream_cleanup(redis_client: Redis):
     """Returns a list; append stream names to auto-delete after the test."""
     streams: list[str] = []

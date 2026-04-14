@@ -255,10 +255,10 @@ def test_kb(kb_client: KBClient):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRecordDatabaseStage:
     """Validate that uploaded records appear in the database with correct fields."""
 
-    @pytest.mark.asyncio
     async def test_record_exists_after_upload(
         self, kb_client: KBClient, test_kb: dict,
     ):
@@ -289,7 +289,6 @@ class TestRecordDatabaseStage:
             except Exception:
                 pass
 
-    @pytest.mark.asyncio
     async def test_record_initial_status(
         self, kb_client: KBClient, test_kb: dict,
     ):
@@ -314,10 +313,10 @@ class TestRecordDatabaseStage:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRecordIndexingStage:
     """Validate that records progress through the indexing pipeline."""
 
-    @pytest.mark.asyncio
     async def test_indexing_reaches_terminal_status(
         self, kb_client: KBClient, test_kb: dict,
     ):
@@ -353,7 +352,6 @@ class TestRecordIndexingStage:
             except Exception:
                 pass
 
-    @pytest.mark.asyncio
     async def test_completed_record_has_metadata(
         self, kb_client: KBClient, test_kb: dict,
     ):
@@ -403,10 +401,10 @@ class TestRecordIndexingStage:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRecordGraphStage:
     """Validate that indexed records appear in the Neo4j graph."""
 
-    @pytest.mark.asyncio
     async def test_record_appears_in_graph(
         self, kb_client: KBClient, test_kb: dict, graph_provider: GraphProviderProtocol,
     ):
@@ -464,10 +462,10 @@ class TestRecordGraphStage:
                 pass
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRecordCleanupStage:
     """Validate that deleted records are removed from DB and graph."""
 
-    @pytest.mark.asyncio
     async def test_deleted_record_not_in_api(
         self, kb_client: KBClient, test_kb: dict,
     ):
@@ -512,7 +510,6 @@ class TestRecordCleanupStage:
         else:
             logger.info("Record %s returns HTTP %d after delete", record_id, resp.status_code)
 
-    @pytest.mark.asyncio
     async def test_deleted_record_removed_from_graph(
         self, kb_client: KBClient, test_kb: dict, graph_provider: GraphProviderProtocol,
     ):
@@ -569,10 +566,10 @@ class TestRecordCleanupStage:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRecordFullPipeline:
     """Single test that validates the complete pipeline end-to-end."""
 
-    @pytest.mark.asyncio
     async def test_full_pipeline_upload_to_cleanup(
         self, kb_client: KBClient, test_kb: dict, graph_provider: GraphProviderProtocol,
     ):
