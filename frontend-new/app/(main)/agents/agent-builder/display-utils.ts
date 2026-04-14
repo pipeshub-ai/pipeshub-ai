@@ -1,4 +1,11 @@
 import type { FlowNodeData } from './types';
+import {
+  AGENT_LLM_FALLBACK_ICON,
+  AGENT_LLM_ICONS_BASE,
+  resolveLlmProviderIconPath,
+} from '@/lib/utils/llm-provider-icons';
+
+export { AGENT_LLM_FALLBACK_ICON, AGENT_LLM_ICONS_BASE, resolveLlmProviderIconPath };
 
 /** Used when no collection artwork is available (legacy agent builder parity). */
 export const AGENT_KNOWLEDGE_FALLBACK_ICON = '/assets/icons/connectors/collections-gray.svg';
@@ -25,11 +32,10 @@ function isAppConnectorNodeType(type: string): boolean {
   return type.startsWith('app-') && !type.startsWith('app-group');
 }
 
-/**
- * `<img onError>` replacement: collection gray for KB nodes, neutral connector default elsewhere.
- */
+/** Icon URL used when the primary asset fails to load (aligned with `resolveNodeHeaderIconUrl`). */
 export function resolveNodeHeaderIconErrorFallback(data: FlowNodeData): string {
   const { type } = data;
+  if (type.startsWith('llm-')) return AGENT_LLM_FALLBACK_ICON;
   if (type.startsWith('kb-') && type !== 'kb-group') return AGENT_KNOWLEDGE_FALLBACK_ICON;
   return AGENT_TOOLSET_FALLBACK_ICON;
 }
@@ -45,6 +51,11 @@ export function resolveNodeHeaderIconUrl(data: FlowNodeData): string | undefined
 
   const fromDataIcon = typeof data.icon === 'string' ? data.icon.trim() : '';
   if (fromDataIcon && isIconPathString(fromDataIcon)) return fromDataIcon;
+
+  if (data.type.startsWith('llm-')) {
+    const raw = typeof cfg.provider === 'string' ? cfg.provider.trim() : '';
+    return resolveLlmProviderIconPath(raw || undefined);
+  }
 
   if (isAppConnectorNodeType(data.type)) {
     const connectorType =

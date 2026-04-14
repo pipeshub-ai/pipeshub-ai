@@ -9,12 +9,18 @@ import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { BuilderSidebarToolset } from '../../toolsets-api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
+import { toggleKeyedBoolean } from '../sidebar-expand-utils';
+import { AGENT_LLM_FALLBACK_ICON, AGENT_TOOLSET_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 
 const PALETTE_ROW_MIN_HEIGHT = 44;
 const PALETTE_ICON_SIZE = 20;
+
+/** Matches `expanded[k] ?? true` for keys not seeded in `useState` (e.g. `knowledge-connector-*`). */
+const DEFAULT_KNOWLEDGE_NEST_EXPANDED = true;
 
 const paletteRowLabelStyle: React.CSSProperties = {
   flex: 1,
@@ -158,7 +164,12 @@ export function AgentBuilderSidebar(props: {
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
 
-  const toggle = (k: string) => setExpanded((p) => ({ ...p, [k]: !p[k] }));
+  const toggle = useCallback(
+    (key: string, defaultWhenUnset: boolean = DEFAULT_KNOWLEDGE_NEST_EXPANDED) => {
+      setExpanded((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
+    },
+    []
+  );
 
   if (!open) return null;
 
@@ -261,18 +272,28 @@ export function AgentBuilderSidebar(props: {
               </Box>
             ) : (
               <Box className="agent-builder-palette-nest">
-                {llmTemplates.map((t) => (
-                  <DraggableRow
-                    key={t.type}
-                    comfortable
-                    data={prepareDragData(t)}
-                    disabled={paletteStructureLocked}
-                    onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
-                  >
-                    <MaterialIcon name="psychology" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />
-                    <span style={paletteRowLabelStyle}>{t.label}</span>
-                  </DraggableRow>
-                ))}
+                {llmTemplates.map((t) => {
+                  const provider =
+                    typeof t.defaultConfig?.provider === 'string' ? t.defaultConfig.provider : '';
+                  const llmIconSrc = resolveLlmProviderIconPath(provider || undefined);
+                  return (
+                    <DraggableRow
+                      key={t.type}
+                      comfortable
+                      data={prepareDragData(t)}
+                      disabled={paletteStructureLocked}
+                      onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
+                    >
+                      <ThemeableAssetIcon
+                        {...themeableAssetIconPresets.agentBuilderSidebar}
+                        src={llmIconSrc}
+                        size={PALETTE_ICON_SIZE}
+                        fallbackSrc={AGENT_LLM_FALLBACK_ICON}
+                      />
+                      <span style={paletteRowLabelStyle}>{t.label}</span>
+                    </DraggableRow>
+                  );
+                })}
               </Box>
             )
           ) : null}
@@ -335,12 +356,11 @@ export function AgentBuilderSidebar(props: {
                                 onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
                               >
                                 {icon ? (
-                                  <img
+                                  <ThemeableAssetIcon
+                                    {...themeableAssetIconPresets.agentBuilderSidebar}
                                     src={icon}
-                                    width={PALETTE_ICON_SIZE}
-                                    height={PALETTE_ICON_SIZE}
-                                    alt=""
-                                    style={{ objectFit: 'contain', flexShrink: 0 }}
+                                    size={PALETTE_ICON_SIZE}
+                                    fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
                                   />
                                 ) : (
                                   <MaterialIcon name="cloud" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />

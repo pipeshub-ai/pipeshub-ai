@@ -4,6 +4,8 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
+import { AGENT_TOOLSET_FALLBACK_ICON } from '../display-utils';
 import type { ToolsetSidebarStatus } from '../sidebar-toolset-utils';
 
 function applyDragPayload(e: React.DragEvent, dragType: string, dragData?: Record<string, string>) {
@@ -57,6 +59,8 @@ function StatusGlyphTooltip({ label, children }: { label: string; children: Reac
 export function SidebarCategoryRow(props: {
   groupLabel: string;
   groupIcon?: string;
+  /** Used when `groupIcon` URL fails (connector / toolset artwork). */
+  groupIconFallbackSrc?: string;
   groupMaterialIcon?: string;
   itemCount: number;
   isExpanded: boolean;
@@ -79,6 +83,7 @@ export function SidebarCategoryRow(props: {
   const {
     groupLabel,
     groupIcon,
+    groupIconFallbackSrc = AGENT_TOOLSET_FALLBACK_ICON,
     groupMaterialIcon,
     itemCount,
     isExpanded,
@@ -195,12 +200,11 @@ export function SidebarCategoryRow(props: {
           }}
         >
           {groupIcon ? (
-            <img
+            <ThemeableAssetIcon
+              {...themeableAssetIconPresets.agentBuilderCategoryRow}
               src={groupIcon}
-              alt=""
-              width={18}
-              height={18}
-              style={{ objectFit: 'contain', flexShrink: 0, display: 'block' }}
+              size={18}
+              fallbackSrc={groupIconFallbackSrc}
             />
           ) : groupMaterialIcon ? (
             <MaterialIcon name={groupMaterialIcon} size={18} color="var(--slate-11)" style={{ flexShrink: 0 }} />

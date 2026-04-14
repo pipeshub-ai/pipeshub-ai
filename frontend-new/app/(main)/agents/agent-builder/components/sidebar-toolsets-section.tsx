@@ -18,6 +18,12 @@ import { SidebarCategoryRow } from './sidebar-category-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import { toggleKeyedBoolean } from '../sidebar-expand-utils';
+
+/** Toolset type row (e.g. Slack): expanded by default so instance rows are listed. */
+const DEFAULT_TOOLSET_TYPE_EXPANDED = true;
+/** Toolset instance row: collapsed by default; user expands to see tools (Knowledge stops at instance rows). */
+const DEFAULT_TOOLSET_INSTANCE_EXPANDED = false;
 
 function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
   e.dataTransfer.effectAllowed = 'move';
@@ -189,8 +195,8 @@ export function AgentBuilderToolsetsSection(props: {
 
   const normalizedActive = useMemo(() => activeToolsetTypes.map(normalizeToolsetTypeKey), [activeToolsetTypes]);
 
-  const onAppToggle = useCallback((key: string) => {
-    setExpandedApps((p) => ({ ...p, [key]: !p[key] }));
+  const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
+    setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
   }, []);
 
   const handleSearchChange = useCallback(
@@ -380,7 +386,7 @@ export function AgentBuilderToolsetsSection(props: {
         ? Object.entries(toolsetsByType).map(([toolsetType, typeToolsets]) => {
             const first = typeToolsets[0];
             const typeKey = `toolset-type-${toolsetType}`;
-            const isTypeExpanded = expandedApps[typeKey] ?? true;
+            const isTypeExpanded = expandedApps[typeKey] ?? DEFAULT_TOOLSET_TYPE_EXPANDED;
 
             return (
               <Box key={toolsetType} mb="2">
@@ -389,11 +395,12 @@ export function AgentBuilderToolsetsSection(props: {
                   groupIcon={first.iconPath}
                   itemCount={typeToolsets.length}
                   isExpanded={isTypeExpanded}
-                  onToggle={() => onAppToggle(typeKey)}
+                  onToggle={() => onAppToggle(typeKey, DEFAULT_TOOLSET_TYPE_EXPANDED)}
                 >
                   {typeToolsets.map((ts) => {
                     const instKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
-                    const isInstanceExpanded = expandedApps[instKey] ?? true;
+                    const isInstanceExpanded =
+                      expandedApps[instKey] ?? DEFAULT_TOOLSET_INSTANCE_EXPANDED;
                     const ui = buildUiState(ts);
                     const {
                       needsConfiguration,
@@ -423,7 +430,7 @@ export function AgentBuilderToolsetsSection(props: {
                         groupIcon={ts.iconPath}
                         itemCount={ts.tools.length}
                         isExpanded={isInstanceExpanded}
-                        onToggle={() => onAppToggle(instKey)}
+                        onToggle={() => onAppToggle(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED)}
                         dragType={dragType}
                         dragData={dragBlocked ? undefined : dragPayload}
                         onDragAttempt={onDragAttempt}

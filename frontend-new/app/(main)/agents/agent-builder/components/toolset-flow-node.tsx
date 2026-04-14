@@ -6,7 +6,8 @@ import { Box, Flex, Text, IconButton, Popover, Separator, Badge } from '@radix-u
 import { useReactFlow } from '@xyflow/react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
-import { normalizeDisplayName } from '../display-utils';
+import { AGENT_TOOLSET_FALLBACK_ICON, normalizeDisplayName } from '../display-utils';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { NodeHandles } from './node-handles';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
@@ -160,7 +161,13 @@ export function ToolsetFlowNode({
           <Flex align="center" gap="2" style={{ minWidth: 0 }}>
             <Flex align="center" justify="center" style={{ flexShrink: 0, lineHeight: 0 }} aria-hidden>
               {isIconUrl(icon) ? (
-                <img src={icon} alt="" width={22} height={22} style={{ objectFit: 'contain', display: 'block' }} />
+                <ThemeableAssetIcon
+                  {...themeableAssetIconPresets.flowNodeHeader}
+                  src={icon}
+                  size={22}
+                  color={chrome.iconColor}
+                  fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
+                />
               ) : (
                 <MaterialIcon name={icon} size={22} color={chrome.iconColor} />
               )}

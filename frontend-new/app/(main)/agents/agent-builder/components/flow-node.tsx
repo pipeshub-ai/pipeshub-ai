@@ -6,11 +6,13 @@ import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
 import {
+  AGENT_TOOLSET_FALLBACK_ICON,
   formattedProvider,
   normalizeDisplayName,
   resolveNodeHeaderIconErrorFallback,
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { NodeHandles } from './node-handles';
 import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
@@ -161,7 +163,12 @@ export const FlowNode = React.memo(function FlowNode({
               }}
             >
               {app.iconPath ? (
-                <img src={app.iconPath} width={12} height={12} alt="" style={{ objectFit: 'contain', flexShrink: 0 }} />
+                <ThemeableAssetIcon
+                  {...themeableAssetIconPresets.flowNodeWell}
+                  src={app.iconPath}
+                  size={12}
+                  fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
+                />
               ) : (
                 <MaterialIcon name="cloud" size={12} color="var(--agent-flow-text-muted)" />
               )}
@@ -237,16 +244,12 @@ export const FlowNode = React.memo(function FlowNode({
                 aria-hidden
               >
                 {isIconUrl ? (
-                  <img
+                  <ThemeableAssetIcon
+                    {...themeableAssetIconPresets.flowNodeHeader}
                     src={headerIconUrl}
-                    width={22}
-                    height={22}
-                    alt=""
-                    style={{ objectFit: 'contain', display: 'block' }}
-                    onError={(e) => {
-                      e.currentTarget.onerror = null;
-                      e.currentTarget.src = headerIconErrorFallback;
-                    }}
+                    size={22}
+                    color={chrome.iconColor}
+                    fallbackSrc={headerIconErrorFallback}
                   />
                 ) : (
                   <MaterialIcon name={materialIconName} size={22} color={chrome.iconColor} />

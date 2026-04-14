@@ -5,21 +5,24 @@ import { useTranslation } from 'react-i18next';
 import { Handle, Position, useReactFlow, useStore, useNodeConnections } from '@xyflow/react';
 import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import type { FlowNodeData } from '../types';
 import {
   AGENT_KNOWLEDGE_FALLBACK_ICON,
+  AGENT_LLM_FALLBACK_ICON,
   AGENT_TOOLSET_FALLBACK_ICON,
   normalizeDisplayName,
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
+import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL } from '../flow-theme';
 
-type ChipIconKind = 'knowledge' | 'toolset';
+type ChipIconKind = 'knowledge' | 'toolset' | 'llm';
 
 const CHIP_ICON_FALLBACK: Record<ChipIconKind, string> = {
   knowledge: AGENT_KNOWLEDGE_FALLBACK_ICON,
   toolset: AGENT_TOOLSET_FALLBACK_ICON,
+  llm: AGENT_LLM_FALLBACK_ICON,
 };
-import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL } from '../flow-theme';
 
 function CoreHandle({
   type,
@@ -127,16 +130,12 @@ function ConnectionChip({
 
   const iconEl =
     iconSrc && variant === 'default' ? (
-      <img
+      <ThemeableAssetIcon
+        {...themeableAssetIconPresets.flowNodeWell}
         src={iconSrc}
-        width={14}
-        height={14}
-        alt=""
-        style={{ objectFit: 'contain', flexShrink: 0 }}
-        onError={(e) => {
-          e.currentTarget.onerror = null;
-          e.currentTarget.src = iconFallbackSrc;
-        }}
+        size={14}
+        color="var(--agent-flow-text)"
+        fallbackSrc={iconFallbackSrc}
       />
     ) : null;
 
@@ -458,6 +457,7 @@ export function AgentCoreNode({
                 nodes={connected.llms}
                 max={MAX_VISIBLE.models}
                 labelOf={(n) => getModelLabel(n.config) || n.label}
+                chipIconKind="llm"
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
