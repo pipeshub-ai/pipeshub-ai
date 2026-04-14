@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useCallback } from 'react';
-import { toast, useToastStore } from '@/lib/store/toast-store';
+import { toast } from '@/lib/store/toast-store';
 import { useBotsStore } from './store';
 import { BotsApi } from './api';
 import { BotPageLayout, BotConfigPanel } from './components';

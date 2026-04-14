@@ -1014,6 +1014,15 @@
     "outcomeSuccessLine1": "La autenticaci\u00f3n se realiz\u00f3 correctamente.",
     "outcomeSuccessLine2": "Puede cerrar esta ventana.",
     "outcomeErrorTitle": "No se pudo conectar",
-    "tryAgain": "Intentar de nuevo"
+    "tryAgain": "Intentar de nuevo",
+    "permissionsReviewHeading": "Permisos",
+    "permissionStatusAllowed": "Permitido",
+    "permissionStatusDenied": "Denegado",
+    "outcomeAllowedTitle": "Permisos concedidos",
+    "outcomeAllowedLine1": "La aplicaci\u00f3n puede acceder a lo que usted aprob\u00f3.",
+    "outcomeAllowedLine2": "Puede cerrar esta ventana.",
+    "outcomeDeniedTitle": "Permisos denegados",
+    "outcomeDeniedLine1": "No se concedi\u00f3 acceso a la aplicaci\u00f3n.",
+    "outcomeDeniedLine2": "Puede cerrar esta ventana."
   }
 }

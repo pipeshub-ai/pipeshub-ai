@@ -1022,6 +1022,15 @@
     "outcomeSuccessLine1": "Authentication succeeded.",
     "outcomeSuccessLine2": "You can close this window.",
     "outcomeErrorTitle": "Couldn\u2019t connect",
-    "tryAgain": "Try Again"
+    "tryAgain": "Try Again",
+    "permissionsReviewHeading": "Permissions",
+    "permissionStatusAllowed": "Allowed",
+    "permissionStatusDenied": "Denied",
+    "outcomeAllowedTitle": "Permissions allowed",
+    "outcomeAllowedLine1": "The application can access what you approved.",
+    "outcomeAllowedLine2": "You can close this window.",
+    "outcomeDeniedTitle": "Permissions denied",
+    "outcomeDeniedLine1": "The application was not granted access.",
+    "outcomeDeniedLine2": "You can close this window."
   }
 }
