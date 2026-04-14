@@ -68,6 +68,9 @@ jobs:
     environment:
       name: integration-test-dev
 
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
