@@ -443,11 +443,7 @@ def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
             from app.utils.fetch_full_record import (
                 create_fetch_full_record_tool,
             )
-            fetch_tool = create_fetch_full_record_tool(
-                virtual_record_map,
-                org_id=state.get("org_id", ""),
-                graph_provider=state.get("graph_provider"),
-            )
+            fetch_tool = create_fetch_full_record_tool()
             tools.append(fetch_tool)
 
             state_logger = state.get("logger")
@@ -633,11 +629,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 from app.utils.fetch_full_record import (
                     create_fetch_full_record_tool,
                 )
-                fetch_tool = create_fetch_full_record_tool(
-                    virtual_record_map,
-                    org_id=state.get("org_id", ""),
-                    graph_provider=state.get("graph_provider"),
-                )
+                fetch_tool = create_fetch_full_record_tool()
                 structured_tools.append(fetch_tool)
 
                 state_logger = state.get("logger")

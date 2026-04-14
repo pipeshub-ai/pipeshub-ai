@@ -55,28 +55,28 @@ qna_prompt_instructions_1 = """
 </task>
 
 <tools>
-  **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
+  **YOU MUST USE the "fetch_full_records" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
 
   This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
 
-  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_record BEFORE answering.**
+  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_records BEFORE answering.**
 
-  **You MUST call fetch_full_record when ANY of these are true:**
+  **You MUST call fetch_full_records when ANY of these are true:**
   1. The blocks contain only partial information — there are gaps or missing sections
   2. The query asks for comprehensive, full, or complete details about a topic
   3. You are not confident you can give a thorough answer from the blocks alone
   4. The user asks about a specific document and you only have a few blocks from it
   5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
 
-  **How to call fetch_full_record:**
+  **How to call fetch_full_records:**
   - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
-  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
+  - Pass a LIST of those exact Record IDs: fetch_full_records(record_ids=["<Record ID from context>", ...])
   - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
   - Include a reason explaining why you need the full records
   - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
   - The tool returns the complete content of all requested records
 
-  **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+  **DO NOT answer with partial information when you could call fetch_full_records to get the full picture.**
 </tools>
 
 <context>
@@ -121,8 +121,8 @@ Answer the query clearly and comprehensively using relevant context.
 
 
 ### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
-- **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details
-- **When in doubt, ALWAYS call fetch_full_record** — giving an incomplete answer is NOT acceptable when the tool is available
+- **You MUST call fetch_full_records** when the provided blocks are insufficient, or when the query asks for full/comprehensive details
+- **When in doubt, ALWAYS call fetch_full_records** — giving an incomplete answer is NOT acceptable when the tool is available
 - After fetching, seamlessly integrate the fetched content with existing blocks in your answer
 - Do NOT skip the tool call just to respond faster — completeness is more important than speed
 

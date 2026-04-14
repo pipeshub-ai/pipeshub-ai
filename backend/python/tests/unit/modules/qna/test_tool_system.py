@@ -779,7 +779,7 @@ class TestGetAgentTools:
 
     @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
     def test_fetch_tool_with_org_and_graph(self, mock_load):
-        """Passes org_id and graph_provider when creating fetch tool."""
+        """Fetch tool factory has no ctor args; org/graph are injected at tool run time."""
         mock_load.return_value = []
         state = {
             "virtual_record_id_to_result": {"vr1": {}},
@@ -791,8 +791,7 @@ class TestGetAgentTools:
         with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
             get_agent_tools(state)
-            call_kwargs = mock_create.call_args
-            assert call_kwargs[1]["org_id"] == "org-123"
+            mock_create.assert_called_once_with()
 
     @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
     def test_no_fetch_tool_when_empty_map(self, mock_load):
@@ -1132,7 +1131,7 @@ class TestGetAgentToolsWithSchemas:
 
     @patch("app.modules.agents.qna.tool_system.get_agent_tools")
     def test_virtual_record_map_with_org_id(self, mock_get_tools):
-        """Passes org_id and graph_provider when creating fetch tool in schema tools."""
+        """Schema path still uses parameterless fetch tool factory when a map is present."""
         mock_get_tools.return_value = []
         state = {
             "virtual_record_id_to_result": {"vr1": {}},
@@ -1144,8 +1143,7 @@ class TestGetAgentToolsWithSchemas:
         with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
             result = get_agent_tools_with_schemas(state)
-            call_kwargs = mock_create.call_args
-            assert call_kwargs[1]["org_id"] == "org-456"
+            mock_create.assert_called_once_with()
 
 
 # ============================================================================

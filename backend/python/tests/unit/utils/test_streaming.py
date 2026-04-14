@@ -2485,7 +2485,6 @@ class TestStreamLlmResponseWithTools:
             is_multimodal_llm=False,
             context_length=10000,
             tools=[MagicMock()],
-            tool_runtime_kwargs={"key": "val"},
             mode="simple",
         ):
             events.append(event)
@@ -2685,7 +2684,6 @@ class TestExecuteToolCalls:
                 llm=MagicMock(),
                 messages=[],
                 tools=[],
-                tool_runtime_kwargs={},
                 final_results=[],
                 virtual_record_id_to_result={},
                 blob_store=MagicMock(),
@@ -2742,7 +2740,6 @@ class TestExecuteToolCalls:
             llm=mock_llm,
             messages=[HumanMessage(content="find something")],
             tools=[mock_tool],
-            tool_runtime_kwargs={},
             final_results=[],
             virtual_record_id_to_result={},
             blob_store=MagicMock(),
@@ -3424,7 +3421,6 @@ class TestExecuteToolCallsCoverage:
                 llm=MagicMock(),
                 messages=[],
                 tools=[],
-                tool_runtime_kwargs={},
                 final_results=[],
                 virtual_record_id_to_result={},
                 blob_store=MagicMock(),
@@ -3460,7 +3456,6 @@ class TestExecuteToolCallsCoverage:
                         llm=mock_llm,
                         messages=[],
                         tools=[mock_tool],
-                        tool_runtime_kwargs={},
                         final_results=[],
                         virtual_record_id_to_result={},
                         blob_store=MagicMock(),
@@ -3494,7 +3489,6 @@ class TestExecuteToolCallsCoverage:
                     llm=mock_llm,
                     messages=[],
                     tools=[mock_tool],
-                    tool_runtime_kwargs={},
                     final_results=[],
                     virtual_record_id_to_result={},
                     blob_store=MagicMock(),
@@ -3534,7 +3528,6 @@ class TestExecuteToolCallsCoverage:
                         llm=mock_llm,
                         messages=[],
                         tools=[mock_tool],
-                        tool_runtime_kwargs={},
                         final_results=[],
                         virtual_record_id_to_result={},
                         blob_store=MagicMock(),
@@ -3576,7 +3569,6 @@ class TestExecuteToolCallsCoverage:
                         llm=mock_llm,
                         messages=[],
                         tools=[mock_tool],
-                        tool_runtime_kwargs={},
                         final_results=[],
                         virtual_record_id_to_result={},
                         blob_store=MagicMock(),
@@ -4031,7 +4023,6 @@ class TestStreamLlmResponseWithToolsCoverage:
                 is_multimodal_llm=False,
                 context_length=128000,
                 tools=[MagicMock()],
-                tool_runtime_kwargs={"key": "val"},
                 mode="no_tools",
             ):
                 events.append(event)
@@ -4063,7 +4054,6 @@ class TestStreamLlmResponseWithToolsCoverage:
                 is_multimodal_llm=False,
                 context_length=128000,
                 tools=[MagicMock()],
-                tool_runtime_kwargs={"key": "val"},
                 mode="json",
             ):
                 events.append(event)
@@ -4108,7 +4098,6 @@ class TestStreamLlmResponseWithToolsCoverage:
                     is_multimodal_llm=False,
                     context_length=128000,
                     tools=[MagicMock()],
-                    tool_runtime_kwargs={"key": "val"},
                     mode="json",
                 ):
                     events.append(event)
@@ -4654,7 +4643,6 @@ class TestStreamLlmResponseWithToolsRecordExtraction:
                     is_multimodal_llm=False,
                     context_length=128000,
                     tools=[MagicMock()],
-                    tool_runtime_kwargs={"key": "val"},
                     mode="json",
                 ):
                     events.append(event)
@@ -4693,7 +4681,6 @@ class TestStreamLlmResponseWithToolsEventForwarding:
                 is_multimodal_llm=False,
                 context_length=128000,
                 tools=[MagicMock()],
-                tool_runtime_kwargs={"key": "val"},
                 mode="json",
             ):
                 events.append(event)
@@ -4727,7 +4714,6 @@ class TestStreamLlmResponseWithToolsEventForwarding:
                 is_multimodal_llm=False,
                 context_length=128000,
                 tools=[MagicMock()],
-                tool_runtime_kwargs={"key": "val"},
                 mode="json",
             ):
                 events.append(event)
@@ -4771,7 +4757,6 @@ class TestStreamLlmResponseWithToolsEventForwarding:
                     is_multimodal_llm=False,
                     context_length=128000,
                     tools=[MagicMock()],
-                    tool_runtime_kwargs={"key": "val"},
                     mode="json",
                 ):
                     events.append(event)
@@ -4804,7 +4789,6 @@ class TestStreamLlmResponseWithToolsEventForwarding:
                     is_multimodal_llm=False,
                     context_length=128000,
                     tools=[MagicMock()],
-                    tool_runtime_kwargs={"key": "val"},
                     mode="json",
                     conversation_id="conv-1",
                 ):
@@ -4893,7 +4877,6 @@ class TestExecuteToolCallsNoToolCalls:
                         llm=MagicMock(),
                         messages=[],
                         tools=[MagicMock(name="tool1")],
-                        tool_runtime_kwargs={},
                         final_results=[],
                         virtual_record_id_to_result={},
                         blob_store=MagicMock(),
@@ -4943,7 +4926,6 @@ class TestExecuteToolCallsInvalidTool:
                         llm=MagicMock(),
                         messages=[],
                         tools=[mock_tool],
-                        tool_runtime_kwargs={},
                         final_results=[],
                         virtual_record_id_to_result={},
                         blob_store=MagicMock(),
@@ -5010,7 +4992,6 @@ class TestExecuteToolCallsInvalidToolName:
                 llm=MagicMock(),
                 messages=[],
                 tools=[mock_tool],
-                tool_runtime_kwargs={},
                 final_results=[],
                 virtual_record_id_to_result={},
                 blob_store=MagicMock(),
@@ -5073,7 +5054,6 @@ class TestExecuteToolCallsTokenThreshold:
                     llm=MagicMock(),
                     messages=[],
                     tools=[mock_tool],
-                    tool_runtime_kwargs={},
                     final_results=[],
                     virtual_record_id_to_result={},
                     blob_store=MagicMock(),

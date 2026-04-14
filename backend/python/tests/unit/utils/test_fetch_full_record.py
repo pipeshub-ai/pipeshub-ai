@@ -118,26 +118,36 @@ class TestCreateFetchFullRecordTool:
     def test_creates_tool(self):
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
-        records_map = {"vr1": {"id": "r1", "content": "data"}}
-        tool = create_fetch_full_record_tool(records_map)
-        assert tool.name == "fetch_full_record"
+        tool = create_fetch_full_record_tool()
+        assert tool.name == "fetch_full_records"
 
     @pytest.mark.asyncio
     async def test_tool_invocation_success(self):
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
         records_map = {"vr1": {"id": "r1", "content": "data"}}
-        tool = create_fetch_full_record_tool(records_map)
-        result = await tool.ainvoke({"record_ids": ["r1"], "reason": "test"})
+        tool = create_fetch_full_record_tool()
+        result = await tool.ainvoke(
+            {
+                "record_ids": ["r1"],
+                "reason": "test",
+                "virtual_record_id_to_result": records_map,
+            }
+        )
         assert result["ok"] is True
 
     @pytest.mark.asyncio
     async def test_tool_invocation_not_found(self):
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
-        records_map = {}
-        tool = create_fetch_full_record_tool(records_map)
-        result = await tool.ainvoke({"record_ids": ["missing"], "reason": "test"})
+        tool = create_fetch_full_record_tool()
+        result = await tool.ainvoke(
+            {
+                "record_ids": ["missing"],
+                "reason": "test",
+                "virtual_record_id_to_result": {},
+            }
+        )
         assert result["ok"] is False
 
     @pytest.mark.asyncio
@@ -148,13 +158,19 @@ class TestCreateFetchFullRecordTool:
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
         records_map = {"vr1": {"id": "r1", "content": "data"}}
-        tool = create_fetch_full_record_tool(records_map)
+        tool = create_fetch_full_record_tool()
 
         with _patch(
             "app.utils.fetch_full_record._fetch_multiple_records_impl",
             side_effect=RuntimeError("unexpected failure"),
         ):
-            result = await tool.ainvoke({"record_ids": ["r1"], "reason": "test"})
+            result = await tool.ainvoke(
+                {
+                    "record_ids": ["r1"],
+                    "reason": "test",
+                    "virtual_record_id_to_result": records_map,
+                }
+            )
 
         assert result["ok"] is False
         assert "Failed to fetch records" in result["error"]
@@ -167,34 +183,19 @@ class TestCreateFetchFullRecordTool:
 
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
-        records_map = {}
-        tool = create_fetch_full_record_tool(records_map)
+        tool = create_fetch_full_record_tool()
 
         with _patch(
             "app.utils.fetch_full_record._fetch_multiple_records_impl",
             side_effect=ValueError("bad value"),
         ):
-            result = await tool.ainvoke({"record_ids": ["x"], "reason": "test"})
+            result = await tool.ainvoke(
+                {
+                    "record_ids": ["x"],
+                    "reason": "test",
+                    "virtual_record_id_to_result": {},
+                }
+            )
 
         assert result["ok"] is False
         assert "bad value" in result["error"]
-
-
-class TestCreateRecordForFetchBlockGroup:
-    def test_creates_record(self):
-        from app.utils.fetch_full_record import create_record_for_fetch_block_group
-
-        record = {"id": "r1", "name": "test"}
-        block_group = {"group_number": 1}
-        blocks = [{"text": "block1"}, {"text": "block2"}]
-        result = create_record_for_fetch_block_group(record, block_group, blocks)
-        assert "block_containers" in result
-        assert len(result["block_containers"]["blocks"]) == 2
-        assert result["block_containers"]["block_groups"] == [block_group]
-
-    def test_empty_blocks(self):
-        from app.utils.fetch_full_record import create_record_for_fetch_block_group
-
-        record = {"id": "r1"}
-        result = create_record_for_fetch_block_group(record, {"g": 1}, [])
-        assert result["block_containers"]["blocks"] == []
