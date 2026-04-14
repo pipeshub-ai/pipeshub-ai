@@ -68,7 +68,7 @@ dependencies = [
   "langgraph-prebuilt==1.0.8",
   "linkedin-api-client>=0.3.0",
   "mail-parser-reply==1.36",
-  "markdown==3.8",
+  "markdown==3.8.1",
   "mmh3==4.1.0",
   "monday-api-python-sdk>=0.1.0",
   "msgspec==0.20.0",
