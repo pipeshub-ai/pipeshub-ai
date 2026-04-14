@@ -132,21 +132,34 @@ describe('AzureBlobStorageAdapter - branch coverage', () => {
   // getBufferFromStorageService - version branches
   // =========================================================================
   describe('getBufferFromStorageService - version branches', () => {
-    it('should use current URL when version is undefined or 0', () => {
+    it('should use current URL when version is undefined', () => {
       const doc = {
         azureBlob: { url: 'https://account.blob.core.windows.net/container/current.pdf' },
-        versionHistory: {
-          1: { azureBlob: { url: 'https://account.blob.core.windows.net/container/v1.pdf' } },
-        },
+        versionHistory: [
+          { azureBlob: { url: 'https://account.blob.core.windows.net/container/v0.pdf' } },
+        ],
       } as any
 
-      // version === undefined
-      const urlUndefined = doc.azureBlob?.url
-      expect(urlUndefined).to.include('current.pdf')
+      const version = undefined
+      const url = version === undefined
+        ? doc.azureBlob?.url
+        : doc.versionHistory?.[version]?.azureBlob?.url
+      expect(url).to.include('current.pdf')
+    })
 
-      // version === 0
-      const url0 = (0 === undefined || 0 === 0) ? doc.azureBlob?.url : doc.versionHistory?.[0]?.azureBlob?.url
-      expect(url0).to.include('current.pdf')
+    it('should use versionHistory URL when version is 0', () => {
+      const doc = {
+        azureBlob: { url: 'https://account.blob.core.windows.net/container/current.pdf' },
+        versionHistory: [
+          { azureBlob: { url: 'https://account.blob.core.windows.net/container/v0.pdf' } },
+        ],
+      } as any
+
+      const version = 0
+      const url = version === undefined
+        ? doc.azureBlob?.url
+        : doc.versionHistory?.[version]?.azureBlob?.url
+      expect(url).to.include('v0.pdf')
     })
 
     it('should use versionHistory URL for specific version', () => {
@@ -158,7 +171,7 @@ describe('AzureBlobStorageAdapter - branch coverage', () => {
       } as any
 
       const version = 1
-      const url = (version === undefined || version === 0)
+      const url = version === undefined
         ? doc.azureBlob?.url
         : doc.versionHistory?.[version]?.azureBlob?.url
       expect(url).to.equal('v1.pdf')
@@ -171,7 +184,7 @@ describe('AzureBlobStorageAdapter - branch coverage', () => {
       } as any
 
       const version = 5
-      const url = (version === undefined || version === 0)
+      const url = version === undefined
         ? doc.azureBlob?.url
         : doc.versionHistory?.[version]?.azureBlob?.url
       expect(url).to.be.undefined
