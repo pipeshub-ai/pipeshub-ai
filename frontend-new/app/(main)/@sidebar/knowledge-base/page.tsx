@@ -284,7 +284,7 @@ function KnowledgeBaseSidebarSlotContent() {
   // All Records mode: when no specific node is selected (root view), reset
   // sidebar selection back to "All" and clear currentFolderId so no tree item
   // remains highlighted from a previous navigation.
-  const prevAllRecordsNodeIdRef = useRef<string | null>(undefined as unknown as null);
+  const prevAllRecordsNodeIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (!isAllRecordsMode) return;
     const nodeId = searchParams.get('nodeId');
