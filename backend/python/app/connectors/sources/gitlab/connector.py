@@ -994,8 +994,10 @@ class GitLabConnector(BaseConnector):
                     permission_merge_requests_level.append(permission)
                     permission_code_repo_level.append(permission)
                 else:
-                    self.logger.warning(f"Member {member.name} has unrecognized access level {external_member_level}, skipping")
-                
+                    self.logger.warning(
+                        f"Member {member.name} has unrecognized access level {external_member_level}, skipping"
+                    )
+
         project_record_group = RecordGroup(
             org_id=self.data_entities_processor.org_id,
             name=project.path_with_namespace,
@@ -1050,11 +1052,11 @@ class GitLabConnector(BaseConnector):
         principal_id = str(member.id)
         permission_type = PermissionType.OWNER.value
         permission = await self._create_permission_from_principal(
-                "user",
-                principal_id,
-                permission_type,
-                create_pseudo_group_if_missing=True,  # Enable pseudo-group creation for record-level permissions
-            )
+            "user",
+            principal_id,
+            permission_type,
+            create_pseudo_group_if_missing=True,  # Enable pseudo-group creation for record-level permissions
+        )
         if permission:
             return permission
         return None
@@ -1659,7 +1661,9 @@ class GitLabConnector(BaseConnector):
             self.logger.error(
                 f"❌❌ Failed to fetch file changes for merge request {mr_url}: {file_changes_res.error}"
             )
-            raise
+            raise Exception(
+                f"❌❌ Failed to fetch file changes for merge request {mr_url}: {file_changes_res.error}"
+            )
         if not file_changes_res.data:
             self.logger.info(f"No file changes found for merge request {mr_url}")
         file_changes = file_changes_res.data
@@ -2309,7 +2313,7 @@ class GitLabConnector(BaseConnector):
             list[FileAttachment]: List of file attachments
             str: Cleaned markdown content
         """
-        IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp","svg"}
+        IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
         UPLOAD_PATTERN = re.compile(
             r"""
                 (?P<full>
