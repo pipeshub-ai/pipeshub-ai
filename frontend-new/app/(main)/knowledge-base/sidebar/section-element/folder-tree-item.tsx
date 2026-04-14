@@ -267,7 +267,8 @@ export function FolderTreeItem({
                 textAlign: 'left',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
-                maxWidth: '110px',
+                flex: 1,
+                minWidth: 0,
               }}
             >
               {node.name}

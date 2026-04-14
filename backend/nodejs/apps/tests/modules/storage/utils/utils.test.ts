@@ -16,6 +16,11 @@ import {
   generatePresignedUrlForDirectUpload,
   createPlaceholderDocument,
   serveFileFromLocalStorage,
+  normalizeExtension,
+  getFullDocumentPath,
+  getVersionFilePath,
+  getCurrentFilePath,
+  getDocumentRootPath,
 } from '../../../../src/modules/storage/utils/utils'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
 import { BadRequestError, NotFoundError, InternalServerError } from '../../../../src/libs/errors/http.errors'
@@ -435,7 +440,7 @@ describe('storage/utils/utils', () => {
   describe('createPlaceholderDocument', () => {
     it('should create document and return it', async () => {
       const savedDoc = { _id: 'doc-1', documentName: 'test' }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      const createStub = sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
       const next = sinon.stub()
 
       const req = {
@@ -446,6 +451,40 @@ describe('storage/utils/utils', () => {
       const result = await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
       expect(result).to.exist
       expect(result!.document).to.deep.equal(savedDoc)
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
+    })
+
+    it('should prefix org and PipesHub when documentPath is provided', async () => {
+      const savedDoc = { _id: 'doc-2', documentName: 'test' }
+      const createStub = sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      const next = sinon.stub()
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: { documentName: 'test', documentPath: 'folderA' },
+      } as any
+
+      const result = await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
+      expect(result).to.exist
+      expect(result!.document).to.deep.equal(savedDoc)
+      expect(createStub.calledOnce).to.be.true
+      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/folderA')
+    })
+
+    it('should persist the normalized (dot-prefixed) extension', async () => {
+      const savedDoc = { _id: 'doc-3', documentName: 'test' }
+      const createStub = sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      const next = sinon.stub()
+
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: { documentName: 'test' },
+      } as any
+
+      // Pass the bare extension (no dot) - it must be stored normalized as ".pdf"
+      await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
+      expect(createStub.firstCall.args[0].extension).to.equal('.pdf')
     })
 
     it('should call next on validation error', async () => {
@@ -461,6 +500,141 @@ describe('storage/utils/utils', () => {
         // expected
       }
       expect(next.calledOnce).to.be.true
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // normalizeExtension (added in Review Fixes)
+  // -------------------------------------------------------------------------
+  describe('normalizeExtension', () => {
+    it('should prepend a dot if missing', () => {
+      expect(normalizeExtension('pdf')).to.equal('.pdf')
+    })
+
+    it('should keep the dot if already present', () => {
+      expect(normalizeExtension('.pdf')).to.equal('.pdf')
+    })
+
+    it('should return empty string for empty input', () => {
+      expect(normalizeExtension('')).to.equal('')
+    })
+
+    it('should return empty string for undefined-like falsy', () => {
+      // Callers often pass (doc.extension ?? '') - that should round-trip to ''
+      expect(normalizeExtension(undefined as any)).to.equal('')
+      expect(normalizeExtension(null as any)).to.equal('')
+    })
+
+    it('should not lowercase the extension', () => {
+      // Normalization is purely about the leading dot, not case
+      expect(normalizeExtension('PDF')).to.equal('.PDF')
+      expect(normalizeExtension('.PDF')).to.equal('.PDF')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // getFullDocumentPath (added in Review Fixes)
+  // -------------------------------------------------------------------------
+  describe('getFullDocumentPath', () => {
+    it('should return orgId/PipesHub when no documentPath', () => {
+      expect(getFullDocumentPath('org1')).to.equal('org1/PipesHub')
+      expect(getFullDocumentPath('org1', undefined)).to.equal('org1/PipesHub')
+    })
+
+    it('should return orgId/PipesHub when documentPath is empty string (falsy)', () => {
+      // Empty string is falsy, so the helper should fall back to the no-path case
+      expect(getFullDocumentPath('org1', '')).to.equal('org1/PipesHub')
+    })
+
+    it('should prefix documentPath with orgId/PipesHub when provided', () => {
+      expect(getFullDocumentPath('org1', 'Finance')).to.equal('org1/PipesHub/Finance')
+      expect(getFullDocumentPath('org1', 'a/b/c')).to.equal('org1/PipesHub/a/b/c')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // getVersionFilePath (added in Review Fixes)
+  // -------------------------------------------------------------------------
+  describe('getVersionFilePath', () => {
+    it('should return versioned snapshot path with dot-prefixed extension', () => {
+      expect(getVersionFilePath('org1/PipesHub/doc1', 3, '.pdf')).to.equal(
+        'org1/PipesHub/doc1/versions/v3.pdf',
+      )
+    })
+
+    it('should normalize extension without leading dot', () => {
+      expect(getVersionFilePath('root', 0, 'pdf')).to.equal('root/versions/v0.pdf')
+    })
+
+    it('should support version 0', () => {
+      expect(getVersionFilePath('root', 0, '.docx')).to.equal('root/versions/v0.docx')
+    })
+
+    it('should tolerate empty extension', () => {
+      expect(getVersionFilePath('root', 2, '')).to.equal('root/versions/v2')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // getCurrentFilePath (added in Review Fixes)
+  // -------------------------------------------------------------------------
+  describe('getCurrentFilePath', () => {
+    it('should include /current/ segment for versioned files', () => {
+      expect(getCurrentFilePath('root', 'report', '.pdf', true)).to.equal(
+        'root/current/report.pdf',
+      )
+    })
+
+    it('should omit /current/ for non-versioned files', () => {
+      expect(getCurrentFilePath('root', 'report', '.pdf', false)).to.equal(
+        'root/report.pdf',
+      )
+    })
+
+    it('should normalize extension without leading dot', () => {
+      expect(getCurrentFilePath('root', 'report', 'pdf', true)).to.equal(
+        'root/current/report.pdf',
+      )
+      expect(getCurrentFilePath('root', 'report', 'pdf', false)).to.equal(
+        'root/report.pdf',
+      )
+    })
+
+    it('should handle empty extension', () => {
+      expect(getCurrentFilePath('root', 'README', '', false)).to.equal(
+        'root/README',
+      )
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // getDocumentRootPath (added in Review Fixes)
+  // -------------------------------------------------------------------------
+  describe('getDocumentRootPath', () => {
+    it('should use fullDocumentPath directly when provided', () => {
+      // This is the shape the controller uses on update/rollback paths:
+      // the document already carries the stored 'orgId/PipesHub/...' path
+      expect(
+        getDocumentRootPath('ignoredOrg', 'doc1', '', 'orgA/PipesHub/Finance'),
+      ).to.equal('orgA/PipesHub/Finance/doc1')
+    })
+
+    it('should build path from orgId and documentPath when no fullDocumentPath', () => {
+      expect(getDocumentRootPath('org1', 'doc1', 'Finance')).to.equal(
+        'org1/PipesHub/Finance/doc1',
+      )
+    })
+
+    it('should build path from orgId alone when no documentPath', () => {
+      expect(getDocumentRootPath('org1', 'doc1')).to.equal('org1/PipesHub/doc1')
+    })
+
+    it('should prefer fullDocumentPath over orgId/documentPath when both are given', () => {
+      // fullDocumentPath wins - mirrors how uploadNextVersionDocument passes
+      // the already-stored path to avoid re-prefixing
+      expect(
+        getDocumentRootPath('org1', 'doc1', 'ignored', 'orgA/PipesHub'),
+      ).to.equal('orgA/PipesHub/doc1')
     })
   })
 })

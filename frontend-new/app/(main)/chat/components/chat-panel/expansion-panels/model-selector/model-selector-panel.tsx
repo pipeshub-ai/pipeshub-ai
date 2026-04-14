@@ -243,7 +243,7 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
         </Flex>
       </Flex>
 
-      {/* Right: Radio indicator — vertically centered */}
+      {/* Right: Radio indicator */}
       <Flex
         align="center"
         justify="center"
@@ -260,10 +260,10 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       >
         {isSelected && (
           <Image
-            src="/icons/common/ellipse-1.svg"
+            src="/icons/common/ellipse.svg"
             alt="selected"
-            width={8}
-            height={8}
+            width={16}
+            height={20}
             style={{ display: 'block' }}
           />
         )}

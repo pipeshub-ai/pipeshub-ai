@@ -87,9 +87,7 @@ export interface MyToolset {
   isConfigured: boolean;
   isAuthenticated: boolean;
   /**
-   * True when non-OAuth credentials exist for this toolset.
-   * Returned by the agent-scoped GET /agents/{key} endpoint instead of raw auth
-   * values (which are never exposed in list responses for security).
+   * True when non-OAuth credential fields exist on the stored record (etcd `auth` object).
    */
   hasCredentials?: boolean;
   isFromRegistry?: boolean;
@@ -97,8 +95,10 @@ export interface MyToolset {
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
   /**
-   * Raw credential payload (user-scoped /my-toolsets only).
-   * Agent-scoped endpoints always return null here — use hasCredentials instead.
+   * Non-OAuth: stored credential fields for form hydrate when the API exposes them.
+   * GET /my-toolsets: included for the current user. GET /agents/{agentKey}: only when
+   * the caller has edit access (can_edit); view-only users get null (OAuth list items
+   * always null here).
    */
   auth?: Record<string, unknown> | null;
 }
