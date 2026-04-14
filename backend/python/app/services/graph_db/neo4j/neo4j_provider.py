@@ -17,7 +17,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService

@@ -614,7 +614,7 @@ class DataSourceEntitiesProcessor:
             self.logger.warning(f"Failed to delete existing entity relation edges for message {message.id}: {str(e)}")
 
         now = get_epoch_timestamp_in_ms()
-        edges_to_create: List[Dict[str, Any]] = []
+        edges_to_create: list[dict[str, Any]] = []
 
         base_edge = {
             "_to": f"{CollectionNames.RECORDS.value}/{message.id}",
@@ -1052,7 +1052,7 @@ class DataSourceEntitiesProcessor:
             skipped_records = 0
 
             # Verify records exist in database before reindexing
-            existing_records: List[Record] = []
+            existing_records: list[Record] = []
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
                     # Check if record exists in database
@@ -1063,7 +1063,7 @@ class DataSourceEntitiesProcessor:
                             f"record not found in database"
                         )
                         continue
-                    
+
                     existing_records.append(record)
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
                     # Only reset if not already QUEUED or EMPTY or internal record

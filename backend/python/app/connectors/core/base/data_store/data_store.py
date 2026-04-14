@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, Dict, List, Optional
+from typing import TYPE_CHECKING, AsyncContextManager, Optional
 
 from app.models.entities import (
     Anyone,
@@ -81,7 +81,7 @@ class BaseDataStore(ABC):
         connector_id: str,
         parent_external_record_id: str,
         record_type: Optional[str] = None
-    ) -> List[Record]:
+    ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         pass
 
@@ -99,7 +99,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: list[str], limit: Optional[int] = None, offset: int = 0) -> list[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances."""
         pass
 
@@ -142,15 +142,15 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_people(self, people: List[Person]) -> None:
+    async def batch_upsert_people(self, people: list[Person]) -> None:
         pass
 
     @abstractmethod
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
         pass
 
     @abstractmethod
-    async def get_user_groups(self, connector_id: str, org_id: str) -> List[UserGroup]:
+    async def get_user_groups(self, connector_id: str, org_id: str) -> list[UserGroup]:
         pass
 
     @abstractmethod
@@ -182,47 +182,47 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_records(self, records: List[Record]) -> None:
+    async def batch_upsert_records(self, records: list[Record]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_record_groups(self, record_groups: List[RecordGroup]) -> None:
+    async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
+    async def batch_upsert_record_permissions(self, record_id: str, permissions: list[Permission]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: List[Permission], connector_id: str) -> None:
+    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: list[Permission], connector_id: str) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_user_groups(self, user_groups: List[UserGroup]) -> None:
+    async def batch_upsert_user_groups(self, user_groups: list[UserGroup]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
+    async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_domains(self, domains: List[Domain]) -> None:
+    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_anyone(self, anyone: List[Anyone]) -> None:
+    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
+    async def batch_upsert_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
         pass
 
     @abstractmethod
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
+    async def batch_upsert_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
         pass
 
     @abstractmethod
@@ -255,7 +255,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
         pass
 
     @abstractmethod
@@ -276,7 +276,7 @@ class BaseDataStore(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: List[str]
+        relationship_types: list[str]
     ) -> int:
         """
         Delete edges from a record by relationship types.

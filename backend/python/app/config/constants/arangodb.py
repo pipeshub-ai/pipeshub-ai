@@ -398,7 +398,7 @@ class EntityRelations(Enum):
     LEAD_BY = "LEAD_BY"
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
     MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
-    INVOLVED_IN = "INVOLVED_IN"    
+    INVOLVED_IN = "INVOLVED_IN"
 
 
 class EventTypes(Enum):

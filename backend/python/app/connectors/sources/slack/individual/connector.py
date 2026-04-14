@@ -42,21 +42,19 @@ import hashlib
 import mimetypes
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from app.config.configuration_service import ConfigurationService
+
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -78,9 +76,9 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
+    FilterOperator,
     FilterOption,
     FilterOptionsResponse,
-    FilterOperator,
     FilterType,
     OptionSourceType,
     SyncFilterKey,
@@ -91,9 +89,9 @@ from app.models.blocks import (
     Block,
     BlockGroup,
     BlockGroupChildren,
+    BlocksContainer,
     BlockSubType,
     BlockType,
-    BlocksContainer,
     ChildRecord,
     ChildType,
     DataFormat,
@@ -104,10 +102,10 @@ from app.models.blocks import (
 from app.models.entities import (
     AppUser,
     FileRecord,
-    ProgressStatus,
-    LinkRecord,
     LinkPublicStatus,
+    LinkRecord,
     MessageRecord,
+    ProgressStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -120,6 +118,13 @@ from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from logging import Logger
+
+    from app.config.configuration_service import ConfigurationService
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -136,7 +141,7 @@ RATE_LIMIT_CALLS_PER_MINUTE = 50
 @dataclass
 class ConversationalBurst:
     """All messages within BURST_WINDOW_SECONDS regardless of author."""
-    messages:  List[Dict[str, Any]]
+    messages:  list[dict[str, Any]]
     start_ts:  float
     end_ts:    float
 
@@ -155,17 +160,17 @@ class ConversationalBurst:
 class ProcessingContext:
     """Immutable snapshot of workspace state passed through the message pipeline."""
     channel_id:         str
-    channel_groups_map: Dict[str, str]   # external channel_id → internal RecordGroup.id
-    user_id_to_email:   Dict[str, str]   # Slack user_id → email  (snapshot)
-    user_id_to_name:    Dict[str, str]   # Slack user_id → name  (snapshot)
-    channel_id_to_name: Dict[str, str]   # Slack channel_id → name  (snapshot)
+    channel_groups_map: dict[str, str]   # external channel_id → internal RecordGroup.id
+    user_id_to_email:   dict[str, str]   # Slack user_id → email  (snapshot)
+    user_id_to_name:    dict[str, str]   # Slack user_id → name  (snapshot)
+    channel_id_to_name: dict[str, str]   # Slack channel_id → name  (snapshot)
     rate_limiter:       "RateLimiter"
 
 
 @dataclass
 class DeferredThread:
     """Thread parent message whose processing is deferred until after channel records are published."""
-    msg: Dict[str, Any]
+    msg: dict[str, Any]
     ctx: ProcessingContext
     rg_id: Optional[str]
 
@@ -174,9 +179,9 @@ class RateLimiter:
     """Sliding-window rate limiter shared across the entire connector instance."""
 
     def __init__(self, calls_per_minute: int = RATE_LIMIT_CALLS_PER_MINUTE,
-                 logger: Optional[Logger] = None):
+                 logger: Optional[Logger] = None) -> None:
         self.calls_per_minute = calls_per_minute
-        self._call_times: List[datetime] = []
+        self._call_times: list[datetime] = []
         self._logger = logger
 
     async def acquire(self) -> None:
@@ -193,6 +198,7 @@ class RateLimiter:
                 return await self.acquire()
 
         self._call_times.append(now)
+        return None
 
 
 # ── Connector declaration ──────────────────────────────────────────────────────
@@ -357,21 +363,21 @@ class SlackIndividualConnector(BaseConnector):
         # ── In-memory caches ─────────────────────────────────────────────
         # Populated during _sync_users(); re-populated on every run_sync().
         # All workspace members cached for @mention text replacement.
-        self.user_id_to_email_cache:       Dict[str, str] = {}
+        self.user_id_to_email_cache:       dict[str, str] = {}
         # Populated in _build_user_id_caches() after _sync_users().
         # Key: Slack user_id  Value: internal DB AppUser._key
         # Only the authenticated user will have an entry here.
-        self.user_id_to_internal_id_cache: Dict[str, str] = {}
+        self.user_id_to_internal_id_cache: dict[str, str] = {}
         # Populated during _sync_users() for ALL workspace members.
         # Key: Slack user_id  Value: user full_name
         # Used to replace @mentions in message content with display names.
-        self.user_id_to_name_cache:        Dict[str, str] = {}
+        self.user_id_to_name_cache:        dict[str, str] = {}
         # Populated during _sync_channels(); extended lazily.
-        self.channel_groups_cache:         Dict[str, str] = {}
+        self.channel_groups_cache:         dict[str, str] = {}
         # Populated during _sync_channels().
         # Key: Slack channel_id  Value: channel name
         # Used to replace channel mentions in message content.
-        self.channel_id_to_name_cache:     Dict[str, str] = {}
+        self.channel_id_to_name_cache:     dict[str, str] = {}
 
         # ── Filter state ─────────────────────────────────────────────────────
         self.sync_filters:     FilterCollection = FilterCollection()
@@ -381,7 +387,7 @@ class SlackIndividualConnector(BaseConnector):
     # 0.  Helpers
     # =========================================================================
 
-    _OPERATOR_SECONDS: Dict[str, int] = {
+    _OPERATOR_SECONDS: dict[str, int] = {
         FilterOperator.LAST_7_DAYS:   7   * 86400,
         FilterOperator.LAST_14_DAYS:  14  * 86400,
         FilterOperator.LAST_30_DAYS:  30  * 86400,
@@ -473,7 +479,7 @@ class SlackIndividualConnector(BaseConnector):
         credentials = cfg.get("credentials", {}) or {}
 
         # Collect all candidate tokens from every known config location.
-        candidates: List[str] = [
+        candidates: list[str] = [
             (credentials.get("access_token") or "").strip(),
             (auth.get("apiToken") or "").strip(),
             (auth.get("accessToken") or "").strip(),
@@ -540,7 +546,7 @@ class SlackIndividualConnector(BaseConnector):
             # Only the authenticated user gets an AppUser node + User-App edge.
             # All other workspace members are cached in-memory only (for @mention
             # text replacement and display names).
-            
+
 
             if not self.authenticated_user_email:
                 self.logger.info(
@@ -563,7 +569,7 @@ class SlackIndividualConnector(BaseConnector):
                         self.logger.warning(
                             "Error: no creator user found for this connector."
                         )
-                except Exception as exc:
+                except Exception:
                     self.logger.warning(
                         f"⚠️  Could not resolve email for authenticated user "
                         f"{self.authenticated_user_id}"
@@ -624,7 +630,7 @@ class SlackIndividualConnector(BaseConnector):
         await self._warm_all_user_caches()
         self.logger.info("✅ User sync done")
 
-    def _to_app_user(self, m: Dict[str, Any], fallback_email: Optional[str] = None) -> Optional[AppUser]:
+    def _to_app_user(self, m: dict[str, Any], fallback_email: Optional[str] = None) -> Optional[AppUser]:
         uid    = m.get("id")
         profile = m.get("profile", {})
         email  = (profile.get("email") or "").strip()
@@ -757,7 +763,7 @@ class SlackIndividualConnector(BaseConnector):
     # 3.  Channel sync → RecordGroups + HAS_PERMISSION edges
     # =========================================================================
 
-    async def _sync_channels(self) -> List[RecordGroup]:
+    async def _sync_channels(self) -> list[RecordGroup]:
         """
         Sync every channel type → RecordGroup.
         Builds HAS_PERMISSION edges for the authenticated user only:
@@ -769,8 +775,8 @@ class SlackIndividualConnector(BaseConnector):
 
         # Apply channel_ids filter
         ch_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_IDS)
-        include_ids: Optional[Set[str]] = None
-        exclude_ids: Optional[Set[str]] = None
+        include_ids: Optional[set[str]] = None
+        exclude_ids: Optional[set[str]] = None
         if ch_filter is not None:
             op = ch_filter.get_operator()
             if op == FilterOperator.IN:
@@ -780,7 +786,7 @@ class SlackIndividualConnector(BaseConnector):
 
         # Apply channel_types filter (public, private, im, mpim)
         ch_types_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_TYPES)
-        allowed_types: Optional[Set[str]] = None
+        allowed_types: Optional[set[str]] = None
         if ch_types_filter is not None:
             allowed_types = set(ch_types_filter.get_value() or [])
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel,im,mpim"
@@ -789,7 +795,7 @@ class SlackIndividualConnector(BaseConnector):
         self.channel_id_to_name_cache.clear()
 
         cursor: Optional[str] = None
-        record_groups: List[RecordGroup] = []
+        record_groups: list[RecordGroup] = []
         total = 0
 
         while True:
@@ -809,7 +815,7 @@ class SlackIndividualConnector(BaseConnector):
                 break
 
             data = resp.data
-            channels: List[Dict[str, Any]] = data.get("channels", [])
+            channels: list[dict[str, Any]] = data.get("channels", [])
             if not channels:
                 break
 
@@ -817,7 +823,7 @@ class SlackIndividualConnector(BaseConnector):
             if exclude_ids:
                 channels = [c for c in channels if c.get("id") not in exclude_ids]
 
-            batch: List[Tuple[RecordGroup, List[Permission]]] = []
+            batch: list[tuple[RecordGroup, list[Permission]]] = []
 
             for cd in channels:
                 cid = cd.get("id")
@@ -864,8 +870,8 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _channel_permissions(
         self,
-        channel_data: Dict[str, Any],
-    ) -> List[Permission]:
+        channel_data: dict[str, Any],
+    ) -> list[Permission]:
         """
         Return HAS_PERMISSION list for the authenticated user only.
 
@@ -885,12 +891,12 @@ class SlackIndividualConnector(BaseConnector):
             type=PermissionType.READ,
         )]
 
-    async def _fetch_channel_members(self, channel_id: str) -> List[str]:
+    async def _fetch_channel_members(self, channel_id: str) -> list[str]:
         """
         Return all member Slack user IDs for a channel via conversations.members
         with full cursor-based pagination.
         """
-        members: List[str] = []
+        members: list[str] = []
         cursor: Optional[str] = None
 
         while True:
@@ -929,7 +935,7 @@ class SlackIndividualConnector(BaseConnector):
 
         return members
 
-    def _resolve_mpim_name(self, cd: Dict[str, Any]) -> str:
+    def _resolve_mpim_name(self, cd: dict[str, Any]) -> str:
         """
         Build a human-friendly display name for MPIM (multi-party DM) channels.
 
@@ -943,7 +949,7 @@ class SlackIndividualConnector(BaseConnector):
         raw_name = cd.get("name", "")
 
         # Attempt to parse user names from the mpdm-user1--user2--user3-N format
-        display_parts: List[str] = []
+        display_parts: list[str] = []
         if raw_name.startswith("mpdm-"):
             # Strip "mpdm-" prefix and the trailing "-<digit>" group number
             inner = raw_name[5:]
@@ -990,7 +996,7 @@ class SlackIndividualConnector(BaseConnector):
         return raw_name or f"Group DM: {cid}"
 
     def _to_channel_record_group(
-        self, cd: Dict[str, Any]
+        self, cd: dict[str, Any]
     ) -> Optional[RecordGroup]:
         cid = cd.get("id")
         if not cid:
@@ -1094,7 +1100,7 @@ class SlackIndividualConnector(BaseConnector):
         cursor:     Optional[str] = None
         newest_ts:  Optional[str] = None   # newest across ALL pages (Slack newest-first)
         total_msgs = 0
-        all_deferred_threads: List[DeferredThread] = []
+        all_deferred_threads: list[DeferredThread] = []
 
         while True:
             await self.rate_limiter.acquire()
@@ -1119,7 +1125,7 @@ class SlackIndividualConnector(BaseConnector):
                     )
                 break
 
-            msgs: List[Dict[str, Any]] = resp.data.get("messages", [])
+            msgs: list[dict[str, Any]] = resp.data.get("messages", [])
             if not msgs:
                 break
 
@@ -1222,11 +1228,11 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _process_message_batch(
         self,
-        msgs: List[Dict[str, Any]],
+        msgs: list[dict[str, Any]],
         ctx: ProcessingContext,
-    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[DeferredThread]]:
-        out: List[Tuple[Record, List[Permission]]] = []
-        deferred_threads: List[DeferredThread] = []
+    ) -> tuple[list[tuple[Record, list[Permission]]], list[DeferredThread]]:
+        out: list[tuple[Record, list[Permission]]] = []
+        deferred_threads: list[DeferredThread] = []
         for burst in self._detect_bursts(msgs):
             if burst.message_count > 1:
                 recs, threads = await self._process_burst(burst, ctx)
@@ -1244,11 +1250,11 @@ class SlackIndividualConnector(BaseConnector):
 
     def _build_message_block(
         self,
-        msg: Dict[str, Any],
+        msg: dict[str, Any],
         block_index: int,
         parent_bg_index: int,
         ctx: ProcessingContext,
-        children_records: Optional[List[ChildRecord]] = None,
+        children_records: Optional[list[ChildRecord]] = None,
     ) -> Block:
         """Build a single TEXT Block from a Slack message dict.
 
@@ -1324,10 +1330,10 @@ class SlackIndividualConnector(BaseConnector):
 
     def _build_burst_block_containers(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         burst_id: str,
         ctx: ProcessingContext,
-        file_child_records: Optional[Dict[str, List[ChildRecord]]] = None,
+        file_child_records: Optional[dict[str, list[ChildRecord]]] = None,
     ) -> BlocksContainer:
         """
         Build a BlocksContainer for a burst record.
@@ -1342,7 +1348,7 @@ class SlackIndividualConnector(BaseConnector):
         except Exception:
             first_url = None
 
-        blocks: List[Block] = []
+        blocks: list[Block] = []
         for i, msg in enumerate(messages):
             ts = msg.get("ts", "")
             cr = (file_child_records or {}).get(ts)
@@ -1365,9 +1371,9 @@ class SlackIndividualConnector(BaseConnector):
 
     def _build_single_block_containers(
         self,
-        msg: Dict[str, Any],
+        msg: dict[str, Any],
         ctx: ProcessingContext,
-        children_records: Optional[List[ChildRecord]] = None,
+        children_records: Optional[list[ChildRecord]] = None,
     ) -> BlocksContainer:
         """
         Build a BlocksContainer for a single message record.
@@ -1398,10 +1404,10 @@ class SlackIndividualConnector(BaseConnector):
 
     def _build_thread_block_containers(
         self,
-        parent_msg: Dict[str, Any],
-        replies: List[Dict[str, Any]],
+        parent_msg: dict[str, Any],
+        replies: list[dict[str, Any]],
         ctx: ProcessingContext,
-        file_child_records: Optional[Dict[str, List[ChildRecord]]] = None,
+        file_child_records: Optional[dict[str, list[ChildRecord]]] = None,
     ) -> BlocksContainer:
         """
         Build a BlocksContainer for a thread-burst record (parent + replies).
@@ -1418,7 +1424,7 @@ class SlackIndividualConnector(BaseConnector):
             thread_url = None
 
         all_msgs  = [parent_msg] + replies
-        blocks: List[Block] = []
+        blocks: list[Block] = []
         for i, msg in enumerate(all_msgs):
             ts = msg.get("ts", "")
             cr = (file_child_records or {}).get(ts)
@@ -1444,7 +1450,7 @@ class SlackIndividualConnector(BaseConnector):
 
     def _create_thread_record_group(
         self,
-        parent_msg: Dict[str, Any],
+        parent_msg: dict[str, Any],
         ctx: ProcessingContext,
         parent_rg_id: Optional[str],
     ) -> Optional[RecordGroup]:
@@ -1504,21 +1510,21 @@ class SlackIndividualConnector(BaseConnector):
         thread_ts: str,
         ctx: ProcessingContext,
         oldest: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Fetch raw thread replies (excluding the parent) via conversations.replies.
 
         Args:
             oldest: If set, only replies with ts > oldest are returned
                     (Slack ``oldest`` is exclusive lower bound).
         """
-        replies: List[Dict[str, Any]] = []
+        replies: list[dict[str, Any]] = []
         cursor:  Optional[str] = None
-        seen:    Set[str] = set()
+        seen:    set[str] = set()
 
         while True:
             await ctx.rate_limiter.acquire()
             ds   = await self._fresh_datasource()
-            kwargs: Dict[str, Any] = dict(
+            kwargs: dict[str, Any] = dict(
                 channel=channel_id, ts=thread_ts,
                 limit=PAGE_SIZE_THREADS, cursor=cursor,
             )
@@ -1547,7 +1553,7 @@ class SlackIndividualConnector(BaseConnector):
         thread_ts: str,
         thread_rg_id: str,
         ctx: ProcessingContext,
-        file_child_records: Optional[Dict[str, List[ChildRecord]]] = None,
+        file_child_records: Optional[dict[str, list[ChildRecord]]] = None,
     ) -> Optional[MessageRecord]:
         """
         Build a thread-burst MessageRecord from a 5-min burst window of thread
@@ -1561,10 +1567,10 @@ class SlackIndividualConnector(BaseConnector):
         if not first_ts:
             return None
 
-        mentioned_user_ids:  Set[str] = set()
-        mentioned_group_ids: Set[str] = set()
-        extracted_urls:      Set[str] = set()
-        all_reactions: List[Dict[str, Any]] = []
+        mentioned_user_ids:  set[str] = set()
+        mentioned_group_ids: set[str] = set()
+        extracted_urls:      set[str] = set()
+        all_reactions: list[dict[str, Any]] = []
         for msg in burst.messages:
             t = msg.get("text", "")
             mentioned_user_ids.update(self._extract_user_mentions(t))
@@ -1608,7 +1614,7 @@ class SlackIndividualConnector(BaseConnector):
 
         channel_name = ctx.channel_id_to_name.get(ctx.channel_id, ctx.channel_id)
         try:
-            rec = MessageRecord(
+            return MessageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(first_ts)}",
                 record_type=RecordType.MESSAGE,
@@ -1644,7 +1650,6 @@ class SlackIndividualConnector(BaseConnector):
                 attachments_metadata=attachments_meta,
                 involved_user_source_ids=burst_authors,
             )
-            return rec
         except Exception as exc:
             self.logger.error(f"_build_thread_burst_record({burst_id}): {exc}")
             return None
@@ -1655,7 +1660,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _process_thread(
         self,
-        parent_msg: Dict[str, Any],
+        parent_msg: dict[str, Any],
         ctx: ProcessingContext,
         rg_id: Optional[str],
     ) -> None:
@@ -1709,8 +1714,8 @@ class SlackIndividualConnector(BaseConnector):
 
         # -- Collect file records keyed by message ts --------------------------
         thread_ext_group_id = f"thread_{ctx.channel_id}_{ts}"
-        file_children_by_ts: Dict[str, List[ChildRecord]] = {}
-        file_recs_by_ts: Dict[str, List[FileRecord]] = {}
+        file_children_by_ts: dict[str, list[ChildRecord]] = {}
+        file_recs_by_ts: dict[str, list[FileRecord]] = {}
         for msg in all_msgs:
             mts = msg.get("ts", "")
             for fd in msg.get("files", []):
@@ -1729,11 +1734,11 @@ class SlackIndividualConnector(BaseConnector):
 
         # -- Thread-burst MessageRecords (5-min windows, indexed) ---------------
         bursts = self._detect_bursts(all_msgs)
-        burst_recs_batch: List[Tuple[Record, List[Permission]]] = []
+        burst_recs_batch: list[tuple[Record, list[Permission]]] = []
 
         for burst in bursts:
-            burst_file_children: Dict[str, List[ChildRecord]] = {}
-            burst_file_recs: List[FileRecord] = []
+            burst_file_children: dict[str, list[ChildRecord]] = {}
+            burst_file_recs: list[FileRecord] = []
             for msg in burst.messages:
                 mts = msg.get("ts", "")
                 if mts in file_children_by_ts:
@@ -1806,7 +1811,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _process_thread_incremental(
         self,
-        parent_msg: Dict[str, Any],
+        parent_msg: dict[str, Any],
         ctx: ProcessingContext,
         thread_rg_id: str,
         last_reply_ts: str,
@@ -1831,8 +1836,8 @@ class SlackIndividualConnector(BaseConnector):
 
         # -- Collect file records for new replies -----------------------------
         thread_ext_group_id = f"thread_{ctx.channel_id}_{thread_ts}"
-        file_children_by_ts: Dict[str, List[ChildRecord]] = {}
-        file_recs_by_ts: Dict[str, List[FileRecord]] = {}
+        file_children_by_ts: dict[str, list[ChildRecord]] = {}
+        file_recs_by_ts: dict[str, list[FileRecord]] = {}
         for msg in new_replies:
             mts = msg.get("ts", "")
             for fd in msg.get("files", []):
@@ -1851,11 +1856,11 @@ class SlackIndividualConnector(BaseConnector):
 
         # -- Thread-burst MessageRecords for new replies -----------------------
         bursts = self._detect_bursts(new_replies)
-        burst_recs_batch: List[Tuple[Record, List[Permission]]] = []
+        burst_recs_batch: list[tuple[Record, list[Permission]]] = []
 
         for burst in bursts:
-            burst_file_children: Dict[str, List[ChildRecord]] = {}
-            burst_file_recs: List[FileRecord] = []
+            burst_file_children: dict[str, list[ChildRecord]] = {}
+            burst_file_recs: list[FileRecord] = []
             for msg in burst.messages:
                 mts = msg.get("ts", "")
                 if mts in file_children_by_ts:
@@ -1914,13 +1919,13 @@ class SlackIndividualConnector(BaseConnector):
         self,
         burst: ConversationalBurst,
         ctx: ProcessingContext,
-    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[DeferredThread]]:
+    ) -> tuple[list[tuple[Record, list[Permission]]], list[DeferredThread]]:
         """
         Multi-message burst → ONE burst MessageRecord with block_containers.
         Thread-parent messages are collected for deferred processing.
         """
-        recs: List[Tuple[Record, List[Permission]]] = []
-        deferred_threads: List[DeferredThread] = []
+        recs: list[tuple[Record, list[Permission]]] = []
+        deferred_threads: list[DeferredThread] = []
 
         first_ts = burst.messages[0].get("ts", "")
         last_ts  = burst.messages[-1].get("ts", "")
@@ -1928,10 +1933,10 @@ class SlackIndividualConnector(BaseConnector):
             return recs, deferred_threads
 
         # ── Aggregate burst-level metadata ────────────────────────────────────
-        mentioned_user_ids:  Set[str] = set()
-        mentioned_group_ids: Set[str] = set()
-        extracted_urls:      Set[str] = set()
-        all_reactions: List[Dict[str, Any]] = []
+        mentioned_user_ids:  set[str] = set()
+        mentioned_group_ids: set[str] = set()
+        extracted_urls:      set[str] = set()
+        all_reactions: list[dict[str, Any]] = []
         reply_count = 0
         latest_reply_timestamp: Optional[int] = None
 
@@ -1951,8 +1956,8 @@ class SlackIndividualConnector(BaseConnector):
                     latest_reply_timestamp = lr_ms
 
         # ── Build file FileRecords first so we can attach ChildRecords ────────
-        file_children_by_ts: Dict[str, List[ChildRecord]] = {}
-        file_recs: List[FileRecord] = []
+        file_children_by_ts: dict[str, list[ChildRecord]] = {}
+        file_recs: list[FileRecord] = []
 
         for msg in burst.messages:
             ts = msg.get("ts", "")
@@ -2075,15 +2080,15 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _process_single(
         self,
-        msg: Dict[str, Any],
+        msg: dict[str, Any],
         ctx: ProcessingContext,
-    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[DeferredThread]]:
+    ) -> tuple[list[tuple[Record, list[Permission]]], list[DeferredThread]]:
         """
         Single-message burst → ONE MessageRecord with block_containers.
         Thread-parent messages are collected for deferred processing.
         """
-        recs: List[Tuple[Record, List[Permission]]] = []
-        deferred_threads: List[DeferredThread] = []
+        recs: list[tuple[Record, list[Permission]]] = []
+        deferred_threads: list[DeferredThread] = []
         ts   = msg.get("ts", "")
         if not ts:
             return recs, deferred_threads
@@ -2091,8 +2096,8 @@ class SlackIndividualConnector(BaseConnector):
         rg_id = ctx.channel_groups_map.get(ctx.channel_id)
 
         # ── Build file ChildRecords ───────────────────────────────────────────
-        file_children: List[ChildRecord] = []
-        file_recs:     List[FileRecord]  = []
+        file_children: list[ChildRecord] = []
+        file_recs:     list[FileRecord]  = []
         for fd in msg.get("files", []):
             fr = await self._process_file_raw(fd, ctx)
             if fr:
@@ -2285,7 +2290,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _process_file_raw(
         self,
-        fd: Dict[str, Any],
+        fd: dict[str, Any],
         ctx: ProcessingContext,
     ) -> Optional[FileRecord]:
         """
@@ -2347,7 +2352,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _process_file(
         self,
-        fd: Dict[str, Any],
+        fd: dict[str, Any],
         parent: MessageRecord,
         ctx: ProcessingContext,
     ) -> Optional[FileRecord]:
@@ -2367,14 +2372,14 @@ class SlackIndividualConnector(BaseConnector):
         url: str,
         parent: MessageRecord,
         ctx: ProcessingContext,
-        msg: Dict[str, Any],
+        msg: dict[str, Any],
     ) -> Optional[LinkRecord]:
         try:
             itype, imeta = self._classify_url(url)
             unfurl       = self._unfurl_data(url, msg)
             rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
 
-            related: List[RelatedExternalRecord] = []
+            related: list[RelatedExternalRecord] = []
             if itype == "jira" and imeta.get("ticket_key"):
                 related.append(RelatedExternalRecord(
                     external_record_id=imeta["ticket_key"],
@@ -2412,7 +2417,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _enrich_link_records_linked_id(
         self,
-        batch: List[Tuple[Record, List[Permission]]],
+        batch: list[tuple[Record, list[Permission]]],
     ) -> None:
         """Look up related record by weburl for LinkRecords (same as Linear)."""
         link_records = [
@@ -2445,7 +2450,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _to_message_record(
         self,
-        msg: Dict[str, Any],
+        msg: dict[str, Any],
         ctx: ProcessingContext,
         parent_external_record_id: Optional[str] = None,
     ) -> Optional[MessageRecord]:
@@ -2474,7 +2479,7 @@ class SlackIndividualConnector(BaseConnector):
         content_with_mentions = self._replace_mentions_in_text(
             text, ctx.user_id_to_name, ctx.channel_id_to_name
         )
-        
+
         # Replace mentions in original_text if edited
         if original_text:
             original_text = self._replace_mentions_in_text(
@@ -2560,7 +2565,7 @@ class SlackIndividualConnector(BaseConnector):
 
     # ── Burst detection ────────────────────────────────────────────────────────
 
-    def _detect_bursts(self, msgs: List[Dict[str, Any]]) -> List[ConversationalBurst]:
+    def _detect_bursts(self, msgs: list[dict[str, Any]]) -> list[ConversationalBurst]:
         """
         Group messages into conversational bursts (oldest-first processing).
 
@@ -2578,8 +2583,8 @@ class SlackIndividualConnector(BaseConnector):
 
         # Slack returns newest-first; reverse to process chronologically
         sorted_msgs = sorted(msgs, key=lambda m: float(m.get("ts", "0")))
-        bursts: List[ConversationalBurst] = []
-        cur:    List[Dict[str, Any]]      = [sorted_msgs[0]]
+        bursts: list[ConversationalBurst] = []
+        cur:    list[dict[str, Any]]      = [sorted_msgs[0]]
 
         for i in range(1, len(sorted_msgs)):
             curr = sorted_msgs[i]
@@ -2704,7 +2709,7 @@ class SlackIndividualConnector(BaseConnector):
             ds = await self._fresh_datasource()
 
             try:
-                kwargs: Dict[str, Any] = dict(
+                kwargs: dict[str, Any] = dict(
                     channel=channel_id,
                     latest=now_ts,
                     limit=200,
@@ -2723,7 +2728,7 @@ class SlackIndividualConnector(BaseConnector):
             if not resp or not resp.success:
                 break
 
-            msgs: List[Dict[str, Any]] = resp.data.get("messages", [])
+            msgs: list[dict[str, Any]] = resp.data.get("messages", [])
             if not msgs:
                 break
 
@@ -2885,12 +2890,11 @@ class SlackIndividualConnector(BaseConnector):
         """
         try:
             async with self.data_store_provider.transaction() as tx:
-                result = await tx.find_slack_burst_record_by_ts(
+                return await tx.find_slack_burst_record_by_ts(
                     connector_id=self.connector_id,
                     channel_id=channel_id,
                     ts=ts,
                 )
-            return result  # type: ignore[return-value]
         except Exception as exc:
             self.logger.error(f"_find_burst_record_by_message_ts({ts}): {exc}")
             return None
@@ -2956,7 +2960,7 @@ class SlackIndividualConnector(BaseConnector):
             ds = await self._fresh_datasource()
 
             try:
-                hist_kwargs: Dict[str, Any] = dict(
+                hist_kwargs: dict[str, Any] = dict(
                     channel=channel_id,
                     latest=now_ts,
                     limit=200,
@@ -2984,7 +2988,7 @@ class SlackIndividualConnector(BaseConnector):
                     )
                 break
 
-            msgs: List[Dict[str, Any]] = resp.data.get("messages", [])
+            msgs: list[dict[str, Any]] = resp.data.get("messages", [])
             if not msgs:
                 break
 
@@ -3053,11 +3057,11 @@ class SlackIndividualConnector(BaseConnector):
 
         return updated
 
-    def _is_edited(self, md: Dict[str, Any]) -> bool:
+    def _is_edited(self, md: dict[str, Any]) -> bool:
         return "edited" in md
 
     async def _handle_edited_message(
-        self, md: Dict[str, Any], channel_id: str, ts: str
+        self, md: dict[str, Any], channel_id: str, ts: str
     ) -> int:
         """
         Handle an edited Slack message.  Returns 1 if a record was updated, else 0.
@@ -3212,7 +3216,7 @@ class SlackIndividualConnector(BaseConnector):
         )
 
     async def _handle_new_thread(
-        self, md: Dict[str, Any], channel_id: str, ts: str
+        self, md: dict[str, Any], channel_id: str, ts: str
     ) -> None:
         """
         Handle a thread root discovered during change detection.
@@ -3289,7 +3293,7 @@ class SlackIndividualConnector(BaseConnector):
         )
 
     def _record_changed(
-        self, md: Dict[str, Any], existing: Any
+        self, md: dict[str, Any], existing: Any
     ) -> bool:
         """Return True if any detectable field has changed since last sync."""
         # Edit newly detected
@@ -3307,9 +3311,9 @@ class SlackIndividualConnector(BaseConnector):
 
     @staticmethod
     def _reactions_changed(
-        current: List[Dict], existing: List[Dict]
+        current: list[dict], existing: list[dict]
     ) -> bool:
-        def _key(r: Dict) -> Tuple:
+        def _key(r: dict) -> tuple:
             return (r.get("name", ""), r.get("count", 0),
                     tuple(sorted(r.get("users", []))))
         return {_key(r) for r in current} != {_key(r) for r in existing}
@@ -3319,15 +3323,15 @@ class SlackIndividualConnector(BaseConnector):
     # =========================================================================
 
     async def _channel_group_map(
-        self, channel_ids: List[str]
-    ) -> Dict[str, str]:
+        self, channel_ids: list[str]
+    ) -> dict[str, str]:
         """
         Return channel_id → RecordGroup._key for the given channels.
         Serves from cache first; falls back to a single DB transaction
         for any cache misses.
         """
-        result:   Dict[str, str] = {}
-        uncached: List[str]      = []
+        result:   dict[str, str] = {}
+        uncached: list[str]      = []
 
         for cid in channel_ids:
             if cid in self.channel_groups_cache:
@@ -3355,89 +3359,89 @@ class SlackIndividualConnector(BaseConnector):
     # =========================================================================
 
     @staticmethod
-    def _extract_user_mentions(text: str) -> List[str]:
+    def _extract_user_mentions(text: str) -> list[str]:
         """Extract Slack user IDs from <@U…> / <@W…> syntax."""
         return re.findall(r"<@([UW]\w+)>", text)
 
     @staticmethod
-    def _extract_channel_mentions(text: str) -> List[str]:
+    def _extract_channel_mentions(text: str) -> list[str]:
         """Extract Slack channel IDs from <#C…> / <#G…> syntax."""
         return re.findall(r"<#([CG]\w+)(?:\|[^>]+)?>", text)
 
     def _replace_mentions_in_text(
         self,
         text: str,
-        user_id_to_name: Dict[str, str],
-        channel_id_to_name: Dict[str, str],
+        user_id_to_name: dict[str, str],
+        channel_id_to_name: dict[str, str],
     ) -> str:
         """
         Replace Slack mention syntax with actual names:
         - <@U09AEBH69JS> → @John Doe (or @email if name not available)
         - <#C123|general> → #general
         - <#C123> → #Channel Name
-        
+
         Args:
             text: Original message text with Slack mention syntax
             user_id_to_name: Mapping of Slack user_id → user name
             channel_id_to_name: Mapping of Slack channel_id → channel name
-            
+
         Returns:
             Text with mentions replaced by names
         """
         if not text:
             return text
-        
+
         # Replace user mentions: <@U09AEBH69JS> or <@U09AEBH69JS|display_name>
-        def replace_user_mention(match):
+        def replace_user_mention(match) -> str:
             user_id = match.group(1)
             display_name = match.group(2) if match.group(2) else None
-            
+
             # Use display name from mention if available, otherwise lookup in cache
             if display_name:
                 return f"@{display_name}"
-            
+
             # Lookup user name in cache
             name = user_id_to_name.get(user_id)
             if name:
                 return f"@{name}"
-            
+
             # Fallback to email if available
             email = self.user_id_to_email_cache.get(user_id)
             if email:
                 return f"@{email}"
-            
+
             # Final fallback: keep the user ID (log warning for cache miss)
             self.logger.debug(f"User mention cache miss for user_id: {user_id}")
             return f"@{user_id}"
-        
+
         # Pattern: <@U09AEBH69JS> or <@U09AEBH69JS|display_name>
         text = re.sub(r"<@([UW]\w+)(?:\|([^>]+))?>", replace_user_mention, text)
-        
+
         # Replace channel mentions: <#C123> or <#C123|channel-name>
-        def replace_channel_mention(match):
+        def replace_channel_mention(match) -> str:
             channel_id = match.group(1)
             display_name = match.group(2) if match.group(2) else None
-            
+
             # Use display name from mention if available
             if display_name:
                 return f"#{display_name}"
-            
+
             # Lookup channel name in cache
             name = channel_id_to_name.get(channel_id)
             if name:
                 return f"#{name}"
-            
+
             # Fallback: keep the channel ID (log warning for cache miss)
             self.logger.debug(f"Channel mention cache miss for channel_id: {channel_id}")
             return f"#{channel_id}"
-        
+
         # Pattern: <#C123> or <#C123|channel-name>
         text = re.sub(r"<#([CG]\w+)(?:\|([^>]+))?>", replace_channel_mention, text)
         
         return text
 
     @staticmethod
-    def _extract_urls(text: str) -> List[str]:
+    def _extract_urls(text: str) -> list[str]:
         """Extract HTTP/HTTPS URLs from both Slack mrkdwn and plain text."""
         return [
             m[0] or m[1]
@@ -3450,7 +3454,7 @@ class SlackIndividualConnector(BaseConnector):
     # =========================================================================
 
     @staticmethod
-    def _classify_url(url: str) -> Tuple[str, Dict[str, Any]]:
+    def _classify_url(url: str) -> tuple[str, dict[str, Any]]:
         from urllib.parse import urlparse
         try:
             p    = urlparse(url)
@@ -3478,7 +3482,7 @@ class SlackIndividualConnector(BaseConnector):
             return "web", {"url": url}
 
     @staticmethod
-    def _unfurl_data(url: str, msg: Dict[str, Any]) -> Dict[str, Any]:
+    def _unfurl_data(url: str, msg: dict[str, Any]) -> dict[str, Any]:
         """Match a URL to its Slack attachment (unfurl) metadata."""
         for att in msg.get("attachments", []):
             from_url = att.get("from_url", "")
@@ -3594,7 +3598,7 @@ class SlackIndividualConnector(BaseConnector):
                 raise HTTPException(404, f"No messages found for burst: {ext_id}")
 
             # Resolve file ChildRecords from DB, keyed by message ts
-            file_children_by_ts: Dict[str, List[ChildRecord]] = {}
+            file_children_by_ts: dict[str, list[ChildRecord]] = {}
             try:
                 async with self.data_store_provider.transaction() as tx:
                     child_records = await tx.get_records_by_parent(
@@ -3602,7 +3606,7 @@ class SlackIndividualConnector(BaseConnector):
                         parent_external_record_id=ext_id,
                         record_type=RecordType.FILE.value,
                     )
-                    ext_id_to_child: Dict[str, ChildRecord] = {}
+                    ext_id_to_child: dict[str, ChildRecord] = {}
                     for cr in (child_records or []):
                         ext_id_to_child[cr.external_record_id] = ChildRecord(
                             child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name
@@ -3649,7 +3653,7 @@ class SlackIndividualConnector(BaseConnector):
             if not burst_msgs:
                 raise HTTPException(404, f"No messages found for thread burst: {ext_id}")
 
-            file_children_by_ts: Dict[str, List[ChildRecord]] = {}
+            file_children_by_ts: dict[str, list[ChildRecord]] = {}
             try:
                 async with self.data_store_provider.transaction() as tx:
                     child_records = await tx.get_records_by_parent(
@@ -3657,7 +3661,7 @@ class SlackIndividualConnector(BaseConnector):
                         parent_external_record_id=ext_id,
                         record_type=RecordType.FILE.value,
                     )
-                    ext_id_to_child: Dict[str, ChildRecord] = {}
+                    ext_id_to_child: dict[str, ChildRecord] = {}
                     for cr in (child_records or []):
                         ext_id_to_child[cr.external_record_id] = ChildRecord(
                             child_type=ChildType.RECORD, child_id=cr.id, child_name=cr.record_name
@@ -3706,7 +3710,7 @@ class SlackIndividualConnector(BaseConnector):
                 raise HTTPException(404, f"Message not found: {ext_id}")
 
             # Resolve file ChildRecords
-            file_children: List[ChildRecord] = []
+            file_children: list[ChildRecord] = []
             try:
                 async with self.data_store_provider.transaction() as tx:
                     child_records = await tx.get_records_by_parent(
@@ -3767,7 +3771,7 @@ class SlackIndividualConnector(BaseConnector):
     # 12.  Reindexing
     # =========================================================================
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """
         Reindex a batch of records:
           - Changed records → on_record_content_update (DB write + re-index event)
@@ -3777,8 +3781,8 @@ class SlackIndividualConnector(BaseConnector):
             return
 
         self.logger.info(f"Re-indexing {len(record_results)} records…")
-        updated:     List[Tuple[Record, List[Permission]]] = []
-        not_updated: List[Record]                          = []
+        updated:     list[tuple[Record, list[Permission]]] = []
+        not_updated: list[Record]                          = []
 
         for rec in record_results:
             try:
@@ -3804,7 +3808,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _check_updated(
         self, rec: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         if rec.record_type == RecordType.MESSAGE:
             return await self._check_updated_message(rec)
         if rec.record_type == RecordType.FILE:
@@ -3813,7 +3817,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _check_updated_message(
         self, rec: MessageRecord
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         ts = rec.external_record_id
         ch = rec.external_record_group_id
         if not ts or not ch:
@@ -3832,7 +3836,7 @@ class SlackIndividualConnector(BaseConnector):
             channel=ch, oldest=ts, latest=ts, inclusive=True, limit=1
         )
 
-        md: Optional[Dict[str, Any]] = None
+        md: Optional[dict[str, Any]] = None
         if resp and resp.success:
             msgs = resp.data.get("messages", [])
             if msgs:
@@ -3875,7 +3879,7 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _check_updated_file(
         self, rec: FileRecord
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         fid = rec.external_record_id
         if not fid:
             return None
@@ -3949,7 +3953,7 @@ class SlackIndividualConnector(BaseConnector):
         self.logger.debug("User name cache empty after DB refresh — warming via API")
         await self._warm_all_user_caches()
 
-    def _channel_display_name(self, c: Dict[str, Any]) -> str:
+    def _channel_display_name(self, c: dict[str, Any]) -> str:
         """Return a user-friendly label for any channel type."""
         cid = c.get("id", "")
 
@@ -4006,7 +4010,7 @@ class SlackIndividualConnector(BaseConnector):
                     if sl in self._channel_display_name(c).lower()
                 ]
 
-            options: List[FilterOption] = []
+            options: list[FilterOption] = []
             for c in channels:
                 cid = c.get("id")
                 if not cid:
@@ -4049,7 +4053,7 @@ class SlackIndividualConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str:
         return ""   # Slack uses OAuth bearer tokens, not signed URLs
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         self.logger.warning("Webhook notifications not yet implemented for Slack")
 
     # =========================================================================

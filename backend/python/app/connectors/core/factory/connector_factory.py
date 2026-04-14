@@ -56,6 +56,7 @@ from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector

@@ -236,13 +236,13 @@ class Record(BaseModel):
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
 
     # Source information
-    weburl: Optional[str] = None
-    signed_url: Optional[str] = None
-    fetch_signed_url: Optional[str] = None
-    preview_renderable: Optional[bool] = True
-    is_shared: Optional[bool] = False
-    is_shared_with_me: Optional[bool] = False
-    shared_with_me_record_group_id: Optional[str] = None
+    weburl: str | None = None
+    signed_url: str | None = None
+    fetch_signed_url: str | None = None
+    preview_renderable: bool | None = True
+    is_shared: bool | None = False
+    is_shared_with_me: bool | None = False
+    shared_with_me_record_group_id: str | None = None
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
@@ -633,18 +633,18 @@ class FileRecord(Record):
 class MessageRecord(Record):
     """
     Generic message record for all messaging platforms (Slack, Teams, Discord, WhatsApp, etc.)
-    
+
     Generic fields that apply across platforms:
     - content: Message text content
     - thread_id: Thread/conversation identifier (platform-agnostic)
     - is_thread_parent: True if this is the thread parent message
     - reply_count: Number of replies in thread
-    - reply_user_ids: List of user IDs who replied
+    - reply_user_ids: list of user IDs who replied
     - latest_reply_timestamp: Timestamp of latest reply
-    - reactions: List of reaction objects (platform-agnostic format)
-    - mentioned_user_ids: List of mentioned user IDs
-    - mentioned_group_ids: List of mentioned channel/group/room IDs (platform-agnostic)
-    - extracted_urls: List of URLs extracted from message
+    - reactions: list of reaction objects (platform-agnostic format)
+    - mentioned_user_ids: list of mentioned user IDs
+    - mentioned_group_ids: list of mentioned channel/group/room IDs (platform-agnostic)
+    - extracted_urls: list of URLs extracted from message
     - is_edited: True if message was edited
     - edited_timestamp: Timestamp when edited
     - original_text: Original text before edit (if edited)
@@ -657,42 +657,42 @@ class MessageRecord(Record):
     - rich_content: Structured content (blocks, cards, etc.) in platform-agnostic format
     - connector_metadata: Platform-specific metadata stored as JSON
     """
-    content: Optional[str] = None
-    thread_id: Optional[str] = None
+    content: str | None = None
+    thread_id: str | None = None
     is_thread_parent: bool = False
     reply_count: int = 0
-    reply_user_ids: List[str] = Field(default_factory=list)
-    latest_reply_timestamp: Optional[int] = None
-    reactions: List[Dict[str, Any]] = Field(default_factory=list)
-    mentioned_user_ids: List[str] = Field(default_factory=list)
-    mentioned_group_ids: List[str] = Field(default_factory=list)
-    extracted_urls: List[str] = Field(default_factory=list)
+    reply_user_ids: list[str] = Field(default_factory=list)
+    latest_reply_timestamp: int | None = None
+    reactions: list[dict[str, Any]] = Field(default_factory=list)
+    mentioned_user_ids: list[str] = Field(default_factory=list)
+    mentioned_group_ids: list[str] = Field(default_factory=list)
+    extracted_urls: list[str] = Field(default_factory=list)
     is_edited: bool = False
-    edited_timestamp: Optional[int] = None
-    original_text: Optional[str] = None
-    author_id: Optional[str] = None
-    bot_id: Optional[str] = None
-    app_id: Optional[str] = None
-    attachments: List[Dict[str, Any]] = Field(default_factory=list)
-    rich_content: Optional[Dict[str, Any]] = None
-    connector_metadata: Optional[Dict[str, Any]] = None
-    author_name: Optional[str] = None
-    author_email: Optional[str] = None
+    edited_timestamp: int | None = None
+    original_text: str | None = None
+    author_id: str | None = None
+    bot_id: str | None = None
+    app_id: str | None = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    rich_content: dict[str, Any] | None = None
+    connector_metadata: dict[str, Any] | None = None
+    author_name: str | None = None
+    author_email: str | None = None
     # Slack-specific optional fields (stored flat, not nested)
-    thread_ts: Optional[str] = None  # Slack thread timestamp
-    slack_subtype: Optional[str] = None  # Slack message subtype
-    slack_user_id: Optional[str] = None  # Slack user ID (in addition to author_id)
-    slack_blocks: List[Dict[str, Any]] = Field(default_factory=list)  # Slack blocks
+    thread_ts: str | None = None  # Slack thread timestamp
+    slack_subtype: str | None = None  # Slack message subtype
+    slack_user_id: str | None = None  # Slack user ID (in addition to author_id)
+    slack_blocks: list[dict[str, Any]] = Field(default_factory=list)  # Slack blocks
     # Burst tracking timestamps (string Slack ts values, e.g. "1620000000.000100")
-    start_ts: Optional[str] = None  # ts of the first message in the burst / thread
-    end_ts: Optional[str] = None    # ts of the last message in the burst / thread
+    start_ts: str | None = None  # ts of the first message in the burst / thread
+    end_ts: str | None = None    # ts of the last message in the burst / thread
     # Source user IDs of all users who authored messages in a burst/single record
     # Used by the processor to create INVOLVED_IN entity relations
-    involved_user_source_ids: List[str] = Field(default_factory=list)
+    involved_user_source_ids: list[str] = Field(default_factory=list)
     # Attachment metadata for child FileRecords (record_id + name)
-    attachments_metadata: List[Dict[str, str]] = Field(default_factory=list)
+    attachments_metadata: list[dict[str, str]] = Field(default_factory=list)
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted message-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -728,7 +728,7 @@ class MessageRecord(Record):
 
         return "\n".join(lines)
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict[str, Any]:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -766,7 +766,7 @@ class MessageRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(message_doc: Dict, record_doc: Dict) -> "MessageRecord":
+    def from_arango_record(message_doc: dict[str, Any], record_doc: dict[str, Any]) -> "MessageRecord":
         """Create MessageRecord from ArangoDB documents (records + messages collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -834,8 +834,8 @@ class MessageRecord(Record):
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
         )
 
-    def to_kafka_record(self) -> Dict:
-        payload: Dict = {
+    def to_kafka_record(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "recordId": self.id,
             "orgId": self.org_id,
             "recordName": self.record_name,

@@ -17,7 +17,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional, List, Dict
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -44,6 +44,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
     ProjectRecord,
@@ -55,7 +56,6 @@ from app.models.entities import (
     WebpageRecord,
     SQLTableRecord,
     SQLViewRecord,
-    MessageRecord,
 )
 from app.schema.arango.documents import (
     agent_schema,

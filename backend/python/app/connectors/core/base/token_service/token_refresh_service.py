@@ -6,7 +6,6 @@ Handles automatic token refresh for OAuth connectors
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.constants import (
@@ -26,7 +25,7 @@ class TokenRefreshService:
         self.configuration_service = configuration_service
         self.graph_provider = graph_provider
         self.logger = logging.getLogger("connector_service")
-        self._refresh_tasks: Dict[str, asyncio.Task] = {}
+        self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_connectors: set = set()  # Track connectors currently being processed to prevent recursion
@@ -86,7 +85,7 @@ class TokenRefreshService:
             self.logger.debug(f"Could not check credentials for connector {connector_id}: {e}")
             return False
 
-    def _is_oauth_connector(self, connector: Dict[str, any]) -> bool:
+    def _is_oauth_connector(self, connector: dict[str, any]) -> bool:
         """Check if connector uses OAuth authentication."""
         auth_type = connector.get('authType', '')
         return auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']
@@ -180,7 +179,7 @@ class TokenRefreshService:
         self,
         oauth_config_id: str,
         connector_type: str
-    ) -> Dict[str, any]:
+    ) -> dict[str, any]:
         """
         Fetch shared OAuth config from ETCD.
 
@@ -209,7 +208,7 @@ class TokenRefreshService:
 
     def _enrich_from_registry(
         self,
-        oauth_flow_config: Dict[str, any],
+        oauth_flow_config: dict[str, any],
         connector_type: str
     ) -> None:
         """
@@ -262,7 +261,7 @@ class TokenRefreshService:
 
     def _extract_scopes(
         self,
-        shared_oauth_config: Dict[str, any],
+        shared_oauth_config: dict[str, any],
         connector_scope: str
     ) -> list:
         """
@@ -294,7 +293,7 @@ class TokenRefreshService:
 
     def _extract_credentials_from_oauth_config(
         self,
-        shared_oauth_config: Dict[str, any]
+        shared_oauth_config: dict[str, any]
     ) -> tuple[str, str]:
         """
         Extract clientId and clientSecret from OAuth config.
@@ -313,10 +312,10 @@ class TokenRefreshService:
 
     def _build_oauth_flow_from_shared_config(
         self,
-        shared_oauth_config: Dict[str, any],
+        shared_oauth_config: dict[str, any],
         connector_scope: str,
         connector_type: str
-    ) -> Dict[str, any]:
+    ) -> dict[str, any]:
         """
         Build OAuth flow config from shared OAuth config.
 
@@ -349,9 +348,9 @@ class TokenRefreshService:
 
     def _build_oauth_flow_from_auth_config(
         self,
-        auth_config: Dict[str, any],
-        base_config: Dict[str, any]
-    ) -> Dict[str, any]:
+        auth_config: dict[str, any],
+        base_config: dict[str, any]
+    ) -> dict[str, any]:
         """
         Build/enrich OAuth flow config from auth config (fallback).
 
@@ -378,8 +377,8 @@ class TokenRefreshService:
         self,
         connector_id: str,
         connector_type: str,
-        auth_config: Dict[str, any]
-    ) -> Dict[str, any]:
+        auth_config: dict[str, any]
+    ) -> dict[str, any]:
         """
         Build complete OAuth flow configuration from all available sources.
         Tries shared OAuth config first, falls back to auth config.
@@ -613,7 +612,7 @@ class TokenRefreshService:
 
         except RecursionError as e:
             # Special handling for recursion errors
-            print(f"RECURSION ERROR in token refresh for {connector_id}: {str(e)[:100]}", flush=True)
+            self.logger.error(f"❌ Recursion error refreshing token for connector {connector_id}: {e}", exc_info=False)
         except Exception as e:
             # Use exc_info=False to avoid potential recursion in traceback formatting
             self.logger.error(f"❌ Error refreshing token for connector {connector_id}: {e}", exc_info=False)

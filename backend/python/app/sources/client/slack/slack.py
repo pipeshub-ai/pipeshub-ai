@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from slack_sdk import WebClient  # type: ignore
 
@@ -13,11 +13,11 @@ from app.sources.client.iclient import IClient
 class SlackResponse:
     """Standardized Slack API response wrapper"""
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return asdict(self)
 
@@ -64,7 +64,7 @@ class SlackRESTClientViaToken:
         if not token:
             raise ValueError("Slack token cannot be empty")
 
-        if not (token.startswith('xoxb-') or token.startswith('xoxp-')):
+        if not (token.startswith(('xoxb-', 'xoxp-'))):
             raise ValueError(f"Invalid Slack token format. Token should start with 'xoxb-' (bot token) or 'xoxp-' (user token), got: {token[:10]}...")
 
         self.client = WebClient(token=token)
@@ -212,7 +212,7 @@ class SlackClient(IClient):
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client = SlackRESTClientViaToken(token)
-            
+
             elif auth_type == "OAUTH":
                 # For OAuth/token-based auth, use the OAuth access token
                 access_token = credentials_config.get("access_token", "")
@@ -232,7 +232,7 @@ class SlackClient(IClient):
     @classmethod
     async def build_from_toolset(
         cls,
-        toolset_config: Dict[str, Any],
+        toolset_config: dict[str, Any],
         logger: logging.Logger,
     ) -> 'SlackClient':
         """
@@ -288,7 +288,7 @@ class SlackClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Slack.
 
         Args:

@@ -8,7 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional, List, Dict
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
 
@@ -2654,7 +2654,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_create_entity_relations(
         self,
-        edges: List[Dict],
+        edges: list[dict],
         transaction: Optional[str] = None
     ) -> int:
         """
