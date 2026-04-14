@@ -1940,7 +1940,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
                     })
             elif block_type == GroupType.TABLE.value:
-                table_summary,child_results = result.get("content")
+                _,child_results = result.get("content")
                 block_group_index = result.get("block_group_index")
                 fk_info = build_fk_info(result)
                 if child_results:
@@ -1951,7 +1951,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     rendered_form = template.render(
                         block_group_index=block_group_index,
                         block_group_web_url="",
-                        table_summary=table_summary,
+                        table_summary="Not Available",
                         table_rows=child_results,
                     )
                     content.append({
