@@ -77,7 +77,7 @@ function errorMessageFromUnknown(err: unknown): string {
 
 type ConsentOutcome =
   | { type: 'idle' }
-  | { type: 'success'; redirectUrl: string }
+  | { type: 'success'; redirectUrl: string; consent: 'granted' | 'denied' }
   | { type: 'error'; message: string };
 
 export function OAuthAuthorizeView() {
@@ -221,7 +221,7 @@ export function OAuthAuthorizeView() {
       );
 
       if (data.redirectUrl) {
-        setOutcome({ type: 'success', redirectUrl: data.redirectUrl });
+        setOutcome({ type: 'success', redirectUrl: data.redirectUrl, consent });
         return;
       }
       setOutcome({ type: 'error', message: t('oauthConsent.noRedirect') });
@@ -291,14 +291,31 @@ export function OAuthAuthorizeView() {
   }
 
   if (outcome.type === 'success') {
+    const granted = outcome.consent === 'granted';
+    const scopePermissionSummary = consentData.scopes.map((s) => ({
+      name: s.name,
+      granted,
+    }));
     return (
       <OAuthConnectionOutcome
-        variant="success"
-        title={t('oauthConsent.outcomeSuccessTitle')}
-        descriptionLines={[
-          t('oauthConsent.outcomeSuccessLine1'),
-          t('oauthConsent.outcomeSuccessLine2'),
-        ]}
+        variant={granted ? 'success' : 'denied'}
+        title={
+          granted
+            ? t('oauthConsent.outcomeAllowedTitle')
+            : t('oauthConsent.outcomeDeniedTitle')
+        }
+        descriptionLines={
+          granted
+            ? [
+                t('oauthConsent.outcomeAllowedLine1'),
+                t('oauthConsent.outcomeAllowedLine2'),
+              ]
+            : [
+                t('oauthConsent.outcomeDeniedLine1'),
+                t('oauthConsent.outcomeDeniedLine2'),
+              ]
+        }
+        scopePermissionSummary={scopePermissionSummary}
       />
     );
   }

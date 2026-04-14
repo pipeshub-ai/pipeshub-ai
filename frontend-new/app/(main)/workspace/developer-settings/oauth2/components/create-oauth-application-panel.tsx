@@ -197,18 +197,22 @@ export function CreateOAuthApplicationPanel({
     let cancelled = false;
     setScopesLoading(true);
     setScopesError(null);
-    void Oauth2Api.getScopes()
-      .then((data) => {
+
+    const loadScopes = async () => {
+      try {
+        const data = await Oauth2Api.getScopes();
         if (!cancelled) setScopesByCategory(data.scopes ?? {});
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) {
           setScopesError(t('workspace.oauth2.create.scopesLoadError'));
         }
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setScopesLoading(false);
-      });
+      }
+    };
+
+    void loadScopes();
+
     return () => {
       cancelled = true;
     };
@@ -634,367 +638,367 @@ export function CreateOAuthApplicationPanel({
           </Flex>
         </Box>
       ) : (
-      <Tabs.Root
-        value={activeTab}
-        onValueChange={(v) => setActiveTab(v as 'general' | 'scopes')}
-      >
-        <Tabs.List
-          style={{
-            borderBottom: '1px solid var(--olive-3)',
-            marginBottom: 'var(--space-3)',
-          }}
+        <Tabs.Root
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as 'general' | 'scopes')}
         >
-          <Tabs.Trigger value="general">
-            {t('workspace.oauth2.create.tabGeneral')}
-          </Tabs.Trigger>
-          <Tabs.Trigger value="scopes">
-            {t('workspace.oauth2.create.tabPermissions')}
-          </Tabs.Trigger>
-        </Tabs.List>
+          <Tabs.List
+            style={{
+              borderBottom: '1px solid var(--olive-3)',
+              marginBottom: 'var(--space-3)',
+            }}
+          >
+            <Tabs.Trigger value="general">
+              {t('workspace.oauth2.create.tabGeneral')}
+            </Tabs.Trigger>
+            <Tabs.Trigger value="scopes">
+              {t('workspace.oauth2.create.tabPermissions')}
+            </Tabs.Trigger>
+          </Tabs.List>
 
-        <Tabs.Content value="general">
-          <Flex direction="column" gap="4">
-            <Box style={CARD_STYLE}>
-              <FormField
-                label={t('workspace.oauth2.create.appNameLabel')}
-                required
-                error={generalErrors.name}
-              >
-                <TextField.Root
-                  size="2"
-                  placeholder={t('workspace.oauth2.create.appNamePlaceholder')}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </FormField>
-              <Box style={{ marginTop: 'var(--space-3)' }}>
+          <Tabs.Content value="general">
+            <Flex direction="column" gap="4">
+              <Box style={CARD_STYLE}>
                 <FormField
-                  label={t('workspace.oauth2.create.descriptionLabel')}
-                  optional
+                  label={t('workspace.oauth2.create.appNameLabel')}
+                  required
+                  error={generalErrors.name}
                 >
-                  <TextArea
+                  <TextField.Root
                     size="2"
-                    rows={2}
-                    placeholder={t(
-                      'workspace.oauth2.create.descriptionPlaceholder'
-                    )}
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    style={{ width: '100%', minHeight: 64 }}
+                    placeholder={t('workspace.oauth2.create.appNamePlaceholder')}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    style={{ width: '100%' }}
                   />
                 </FormField>
-              </Box>
-            </Box>
-
-            <Box style={CARD_STYLE}>
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {t('workspace.oauth2.create.grantTypesHeading')}
-                <Text
-                  as="span"
-                  weight="medium"
-                  style={{ color: 'var(--red-a11)', marginLeft: 2 }}
-                  aria-hidden
-                >
-                  *
-                </Text>
-              </Text>
-              {generalErrors.grants && (
-                <Text
-                  size="1"
-                  style={{ color: 'var(--red-a11)', marginTop: 4 }}
-                >
-                  {generalErrors.grants}
-                </Text>
-              )}
-              <Flex wrap="wrap" gap="3" style={{ marginTop: 'var(--space-2)' }}>
-                {GRANT_OPTIONS.map((opt) => (
-                  <Flex key={opt.value} align="center" gap="2">
-                    <Checkbox
-                      checked={grantTypes.has(opt.value)}
-                      onCheckedChange={(c) =>
-                        toggleGrant(opt.value, Boolean(c))
-                      }
+                <Box style={{ marginTop: 'var(--space-3)' }}>
+                  <FormField
+                    label={t('workspace.oauth2.create.descriptionLabel')}
+                    optional
+                  >
+                    <TextArea
+                      size="2"
+                      rows={2}
+                      placeholder={t(
+                        'workspace.oauth2.create.descriptionPlaceholder'
+                      )}
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      style={{ width: '100%', minHeight: 64 }}
                     />
-                    <Text size="2" style={{ color: 'var(--slate-12)' }}>
-                      {t(opt.labelKey)}
-                    </Text>
-                  </Flex>
-                ))}
-              </Flex>
-            </Box>
+                  </FormField>
+                </Box>
+              </Box>
 
-            {usesAuthorizationCode && (
               <Box style={CARD_STYLE}>
-                <Flex direction="column" gap="1">
-                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                    {t('workspace.oauth2.create.redirectHeading')}
-                    <Text
-                      as="span"
-                      weight="medium"
-                      style={{ color: 'var(--red-a11)', marginLeft: 2 }}
-                      aria-hidden
-                    >
-                      *
-                    </Text>
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {t('workspace.oauth2.create.grantTypesHeading')}
+                  <Text
+                    as="span"
+                    weight="medium"
+                    style={{ color: 'var(--red-a11)', marginLeft: 2 }}
+                    aria-hidden
+                  >
+                    *
                   </Text>
-                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                    {t('workspace.oauth2.create.redirectHelper')}
-                  </Text>
-                </Flex>
-                {generalErrors.redirectUris && (
+                </Text>
+                {generalErrors.grants && (
                   <Text
                     size="1"
                     style={{ color: 'var(--red-a11)', marginTop: 4 }}
                   >
-                    {generalErrors.redirectUris}
+                    {generalErrors.grants}
                   </Text>
                 )}
-                <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-3)' }}>
-                  {redirectUris.map((uri, index) => (
-                    <Flex key={index} align="center" gap="2">
-                      <TextField.Root
-                        size="2"
-                        placeholder={t(
-                          'workspace.oauth2.create.redirectPlaceholder'
-                        )}
-                        value={uri}
-                        onChange={(e) => {
-                          const next = [...redirectUris];
-                          next[index] = e.target.value;
-                          setRedirectUris(next);
-                        }}
-                        style={{ flex: 1, minWidth: 0 }}
+                <Flex wrap="wrap" gap="3" style={{ marginTop: 'var(--space-2)' }}>
+                  {GRANT_OPTIONS.map((opt) => (
+                    <Flex key={opt.value} align="center" gap="2">
+                      <Checkbox
+                        checked={grantTypes.has(opt.value)}
+                        onCheckedChange={(c) =>
+                          toggleGrant(opt.value, Boolean(c))
+                        }
                       />
-                      <IconButton
-                        type="button"
-                        variant="ghost"
-                        color="gray"
-                        size="2"
-                        disabled={redirectUris.length <= 1}
-                        aria-label={t('workspace.oauth2.create.removeRedirectAria')}
-                        onClick={() => {
-                          if (redirectUris.length <= 1) return;
-                          setRedirectUris(redirectUris.filter((_, i) => i !== index));
-                        }}
-                        style={{ flexShrink: 0 }}
-                      >
-                        <MaterialIcon name="close" size={18} color="var(--slate-11)" />
-                      </IconButton>
+                      <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                        {t(opt.labelKey)}
+                      </Text>
                     </Flex>
                   ))}
                 </Flex>
+              </Box>
+
+              {usesAuthorizationCode && (
+                <Box style={CARD_STYLE}>
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                      {t('workspace.oauth2.create.redirectHeading')}
+                      <Text
+                        as="span"
+                        weight="medium"
+                        style={{ color: 'var(--red-a11)', marginLeft: 2 }}
+                        aria-hidden
+                      >
+                        *
+                      </Text>
+                    </Text>
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                      {t('workspace.oauth2.create.redirectHelper')}
+                    </Text>
+                  </Flex>
+                  {generalErrors.redirectUris && (
+                    <Text
+                      size="1"
+                      style={{ color: 'var(--red-a11)', marginTop: 4 }}
+                    >
+                      {generalErrors.redirectUris}
+                    </Text>
+                  )}
+                  <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-3)' }}>
+                    {redirectUris.map((uri, index) => (
+                      <Flex key={index} align="center" gap="2">
+                        <TextField.Root
+                          size="2"
+                          placeholder={t(
+                            'workspace.oauth2.create.redirectPlaceholder'
+                          )}
+                          value={uri}
+                          onChange={(e) => {
+                            const next = [...redirectUris];
+                            next[index] = e.target.value;
+                            setRedirectUris(next);
+                          }}
+                          style={{ flex: 1, minWidth: 0 }}
+                        />
+                        <IconButton
+                          type="button"
+                          variant="ghost"
+                          color="gray"
+                          size="2"
+                          disabled={redirectUris.length <= 1}
+                          aria-label={t('workspace.oauth2.create.removeRedirectAria')}
+                          onClick={() => {
+                            if (redirectUris.length <= 1) return;
+                            setRedirectUris(redirectUris.filter((_, i) => i !== index));
+                          }}
+                          style={{ flexShrink: 0 }}
+                        >
+                          <MaterialIcon name="close" size={18} color="var(--slate-11)" />
+                        </IconButton>
+                      </Flex>
+                    ))}
+                  </Flex>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="2"
+                    style={{ marginTop: 'var(--space-2)', cursor: 'pointer' }}
+                    onClick={() => setRedirectUris([...redirectUris, ''])}
+                  >
+                    <MaterialIcon name="add" size={16} color="var(--accent-11)" />
+                    {t('workspace.oauth2.create.addRedirectUri')}
+                  </Button>
+                </Box>
+              )}
+
+              <Box style={CARD_STYLE}>
+                <Flex direction="column" gap="3">
+                  {generalErrors.optionalUrls && (
+                    <Text size="1" style={{ color: 'var(--red-a11)' }}>
+                      {generalErrors.optionalUrls}
+                    </Text>
+                  )}
+                  <FormField
+                    label={t('workspace.oauth2.create.homepageLabel')}
+                    optional
+                  >
+                    <TextField.Root
+                      type="url"
+                      placeholder={t('workspace.oauth2.create.urlPlaceholder')}
+                      value={homepageUrl}
+                      onChange={(e) => setHomepageUrl(e.target.value)}
+                      style={INPUT_STYLE}
+                    />
+                  </FormField>
+                  <FormField
+                    label={t('workspace.oauth2.create.privacyLabel')}
+                    optional
+                  >
+                    <TextField.Root
+                      type="url"
+                      value={privacyPolicyUrl}
+                      onChange={(e) => setPrivacyPolicyUrl(e.target.value)}
+                      placeholder={t('workspace.oauth2.create.urlPlaceholder')}
+                      style={INPUT_STYLE}
+                    />
+                  </FormField>
+                  <FormField
+                    label={t('workspace.oauth2.create.termsLabel')}
+                    optional
+                  >
+                    <TextField.Root
+                      type="url"
+                      value={termsUrl}
+                      onChange={(e) => setTermsUrl(e.target.value)}
+                      placeholder={t('workspace.oauth2.create.urlPlaceholder')}
+                      style={INPUT_STYLE}
+                    />
+                  </FormField>
+                </Flex>
+              </Box>
+            </Flex>
+          </Tabs.Content>
+
+          <Tabs.Content value="scopes">
+            <Flex direction="column" gap="3">
+              <Flex align="start" justify="between" gap="3" wrap="wrap">
+                <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
+                  <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                    {t('workspace.oauth2.create.permissionsHeading')}
+                  </Text>
+                  <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                    {t('workspace.oauth2.create.permissionsSummary', {
+                      selected: selectedScopeCount,
+                      total: totalScopeCount,
+                    })}
+                  </Text>
+                </Flex>
                 <Button
                   type="button"
-                  variant="ghost"
+                  variant="outline"
+                  color="gray"
                   size="2"
-                  style={{ marginTop: 'var(--space-2)', cursor: 'pointer' }}
-                  onClick={() => setRedirectUris([...redirectUris, ''])}
+                  disabled={totalScopeCount === 0 || scopesLoading}
+                  onClick={toggleSelectAllScopes}
+                  style={{ flexShrink: 0, cursor: 'pointer' }}
                 >
-                  <MaterialIcon name="add" size={16} color="var(--accent-11)" />
-                  {t('workspace.oauth2.create.addRedirectUri')}
+                  {allScopesSelected
+                    ? t('workspace.oauth2.create.clearAllScopes')
+                    : t('workspace.oauth2.create.selectAllScopes')}
                 </Button>
-              </Box>
-            )}
-
-            <Box style={CARD_STYLE}>
-              <Flex direction="column" gap="3">
-                {generalErrors.optionalUrls && (
-                  <Text size="1" style={{ color: 'var(--red-a11)' }}>
-                    {generalErrors.optionalUrls}
-                  </Text>
-                )}
-                <FormField
-                  label={t('workspace.oauth2.create.homepageLabel')}
-                  optional
-                >
-                  <input
-                    type="url"
-                    value={homepageUrl}
-                    onChange={(e) => setHomepageUrl(e.target.value)}
-                    placeholder={t('workspace.oauth2.create.urlPlaceholder')}
-                    style={INPUT_STYLE}
-                  />
-                </FormField>
-                <FormField
-                  label={t('workspace.oauth2.create.privacyLabel')}
-                  optional
-                >
-                  <input
-                    type="url"
-                    value={privacyPolicyUrl}
-                    onChange={(e) => setPrivacyPolicyUrl(e.target.value)}
-                    placeholder={t('workspace.oauth2.create.urlPlaceholder')}
-                    style={INPUT_STYLE}
-                  />
-                </FormField>
-                <FormField
-                  label={t('workspace.oauth2.create.termsLabel')}
-                  optional
-                >
-                  <input
-                    type="url"
-                    value={termsUrl}
-                    onChange={(e) => setTermsUrl(e.target.value)}
-                    placeholder={t('workspace.oauth2.create.urlPlaceholder')}
-                    style={INPUT_STYLE}
-                  />
-                </FormField>
               </Flex>
-            </Box>
-          </Flex>
-        </Tabs.Content>
 
-        <Tabs.Content value="scopes">
-          <Flex direction="column" gap="3">
-            <Flex align="start" justify="between" gap="3" wrap="wrap">
-              <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
-                <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  {t('workspace.oauth2.create.permissionsHeading')}
-                </Text>
+              {scopesLoading && (
                 <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                  {t('workspace.oauth2.create.permissionsSummary', {
-                    selected: selectedScopeCount,
-                    total: totalScopeCount,
-                  })}
+                  {t('workspace.oauth2.create.scopesLoading')}
                 </Text>
-              </Flex>
-              <Button
-                type="button"
-                variant="outline"
-                color="gray"
-                size="2"
-                disabled={totalScopeCount === 0 || scopesLoading}
-                onClick={toggleSelectAllScopes}
-                style={{ flexShrink: 0, cursor: 'pointer' }}
-              >
-                {allScopesSelected
-                  ? t('workspace.oauth2.create.clearAllScopes')
-                  : t('workspace.oauth2.create.selectAllScopes')}
-              </Button>
-            </Flex>
+              )}
 
-            {scopesLoading && (
-              <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                {t('workspace.oauth2.create.scopesLoading')}
-              </Text>
-            )}
-
-            {scopesError && !scopesLoading && (
-              <Flex direction="column" gap="2" align="start">
-                <Text size="2" style={{ color: 'var(--red-11)' }}>
-                  {scopesError}
-                </Text>
-                <Button
-                  size="2"
-                  variant="soft"
-                  onClick={() => {
-                    setScopesError(null);
-                    setScopesLoading(true);
-                    void Oauth2Api.getScopes()
-                      .then((data) => setScopesByCategory(data.scopes ?? {}))
-                      .catch(() =>
-                        setScopesError(t('workspace.oauth2.create.scopesLoadError'))
-                      )
-                      .finally(() => setScopesLoading(false));
-                  }}
-                >
-                  {t('workspace.oauth2.create.scopesRetry')}
-                </Button>
-              </Flex>
-            )}
-
-            {!scopesLoading &&
-              !scopesError &&
-              sortedCategories.map(([category, items]) => {
-                const selectedInCat = items.filter((i) =>
-                  selectedScopes.has(i.name)
-                ).length;
-                const totalInCat = items.length;
-                const groupChecked: CheckedState =
-                  selectedInCat === totalInCat
-                    ? true
-                    : selectedInCat === 0
-                      ? false
-                      : 'indeterminate';
-
-                return (
-                  <Box
-                    key={category}
-                    style={{
-                      ...CARD_STYLE,
-                      padding: 'var(--space-3)',
+              {scopesError && !scopesLoading && (
+                <Flex direction="column" gap="2" align="start">
+                  <Text size="2" style={{ color: 'var(--red-11)' }}>
+                    {scopesError}
+                  </Text>
+                  <Button
+                    size="2"
+                    variant="soft"
+                    onClick={() => {
+                      setScopesError(null);
+                      setScopesLoading(true);
+                      void Oauth2Api.getScopes()
+                        .then((data) => setScopesByCategory(data.scopes ?? {}))
+                        .catch(() =>
+                          setScopesError(t('workspace.oauth2.create.scopesLoadError'))
+                        )
+                        .finally(() => setScopesLoading(false));
                     }}
                   >
-                    <Flex align="center" justify="between" gap="3" wrap="wrap">
-                      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                        <Checkbox
-                          checked={groupChecked}
-                          onCheckedChange={(c) =>
-                            toggleCategory(items, c as CheckedState)
-                          }
-                        />
-                        <Text
-                          size="2"
-                          weight="medium"
-                          style={{ color: 'var(--slate-12)' }}
-                        >
-                          {category}
+                    {t('workspace.oauth2.create.scopesRetry')}
+                  </Button>
+                </Flex>
+              )}
+
+              {!scopesLoading &&
+                !scopesError &&
+                sortedCategories.map(([category, items]) => {
+                  const selectedInCat = items.filter((i) =>
+                    selectedScopes.has(i.name)
+                  ).length;
+                  const totalInCat = items.length;
+                  const groupChecked: CheckedState =
+                    selectedInCat === totalInCat
+                      ? true
+                      : selectedInCat === 0
+                        ? false
+                        : 'indeterminate';
+
+                  return (
+                    <Box
+                      key={category}
+                      style={{
+                        ...CARD_STYLE,
+                        padding: 'var(--space-3)',
+                      }}
+                    >
+                      <Flex align="center" justify="between" gap="3" wrap="wrap">
+                        <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                          <Checkbox
+                            checked={groupChecked}
+                            onCheckedChange={(c) =>
+                              toggleCategory(items, c as CheckedState)
+                            }
+                          />
+                          <Text
+                            size="2"
+                            weight="medium"
+                            style={{ color: 'var(--slate-12)' }}
+                          >
+                            {category}
+                          </Text>
+                        </Flex>
+                        <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                          {selectedInCat}/{totalInCat}
                         </Text>
                       </Flex>
-                      <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                        {selectedInCat}/{totalInCat}
-                      </Text>
-                    </Flex>
-                    <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-3)' }}>
-                      {items.map((scope) => (
-                        <Flex
-                          key={scope.name}
-                          align="start"
-                          gap="2"
-                          style={{
-                            padding: 'var(--space-2)',
-                            borderRadius: 'var(--radius-2)',
-                            border: '1px solid var(--olive-4)',
-                          }}
-                        >
-                          <Checkbox
-                            checked={selectedScopes.has(scope.name)}
-                            onCheckedChange={(c) =>
-                              toggleScope(scope.name, Boolean(c))
-                            }
-                            style={{ marginTop: 2 }}
-                          />
-                          <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
-                            <Text
-                              size="2"
-                              weight="medium"
-                              style={{
-                                fontFamily:
-                                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                                color: 'var(--slate-12)',
-                              }}
-                            >
-                              {scope.name}
-                            </Text>
-                            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                              {scope.description}
-                            </Text>
-                            {scope.requiresUserConsent && (
-                              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                                {t('workspace.oauth2.create.requiresConsent')}
+                      <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-3)' }}>
+                        {items.map((scope) => (
+                          <Flex
+                            key={scope.name}
+                            align="start"
+                            gap="2"
+                            style={{
+                              padding: 'var(--space-2)',
+                              borderRadius: 'var(--radius-2)',
+                              border: '1px solid var(--olive-4)',
+                            }}
+                          >
+                            <Checkbox
+                              checked={selectedScopes.has(scope.name)}
+                              onCheckedChange={(c) =>
+                                toggleScope(scope.name, Boolean(c))
+                              }
+                              style={{ marginTop: 2 }}
+                            />
+                            <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                              <Text
+                                size="2"
+                                weight="medium"
+                                style={{
+                                  fontFamily:
+                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                  color: 'var(--slate-12)',
+                                }}
+                              >
+                                {scope.name}
                               </Text>
-                            )}
+                              <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                                {scope.description}
+                              </Text>
+                              {scope.requiresUserConsent && (
+                                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                                  {t('workspace.oauth2.create.requiresConsent')}
+                                </Text>
+                              )}
+                            </Flex>
                           </Flex>
-                        </Flex>
-                      ))}
-                    </Flex>
-                  </Box>
-                );
-              })}
-          </Flex>
-        </Tabs.Content>
-      </Tabs.Root>
+                        ))}
+                      </Flex>
+                    </Box>
+                  );
+                })}
+            </Flex>
+          </Tabs.Content>
+        </Tabs.Root>
       )}
     </WorkspaceRightPanel>
   );

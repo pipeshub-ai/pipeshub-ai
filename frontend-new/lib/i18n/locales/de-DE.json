@@ -1111,6 +1111,15 @@
     "outcomeSuccessLine1": "Authentifizierung erfolgreich.",
     "outcomeSuccessLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen.",
     "outcomeErrorTitle": "Verbindung nicht m\u00f6glich",
-    "tryAgain": "Erneut versuchen"
+    "tryAgain": "Erneut versuchen",
+    "permissionsReviewHeading": "Berechtigungen",
+    "permissionStatusAllowed": "Erlaubt",
+    "permissionStatusDenied": "Abgelehnt",
+    "outcomeAllowedTitle": "Berechtigungen erteilt",
+    "outcomeAllowedLine1": "Die Anwendung kann auf das zugreifen, was Sie genehmigt haben.",
+    "outcomeAllowedLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen.",
+    "outcomeDeniedTitle": "Berechtigungen abgelehnt",
+    "outcomeDeniedLine1": "Die Anwendung erhielt keinen Zugriff.",
+    "outcomeDeniedLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen."
   }
 }

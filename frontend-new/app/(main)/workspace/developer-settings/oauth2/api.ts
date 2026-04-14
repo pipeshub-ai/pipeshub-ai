@@ -67,7 +67,6 @@ export const Oauth2Api = {
 
   /**
    * Update OAuth 2.0 client application.
-   * PATCH /api/v1/oauth-clients/:id
    */
   async updateOAuthClient(
     id: string,

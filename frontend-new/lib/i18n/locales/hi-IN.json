@@ -981,6 +981,15 @@
     "outcomeSuccessLine1": "प्रमाणीकरण सफल रहा।",
     "outcomeSuccessLine2": "आप इस विंडो को बंद कर सकते हैं।",
     "outcomeErrorTitle": "कनेक्ट नहीं हो सका",
-    "tryAgain": "पुनः प्रयास करें"
+    "tryAgain": "पुनः प्रयास करें",
+    "permissionsReviewHeading": "अनुमतियाँ",
+    "permissionStatusAllowed": "अनुमत",
+    "permissionStatusDenied": "अस्वीकृत",
+    "outcomeAllowedTitle": "अनुमतियाँ दी गईं",
+    "outcomeAllowedLine1": "ऐप्लिकेशन उस डेटा तक पहुँच सकता है जिसे आपने मंज़ूर किया है।",
+    "outcomeAllowedLine2": "आप इस विंडो को बंद कर सकते हैं।",
+    "outcomeDeniedTitle": "अनुमतियाँ अस्वीकृत",
+    "outcomeDeniedLine1": "ऐप्लिकेशन को पहुँच नहीं दी गई।",
+    "outcomeDeniedLine2": "आप इस विंडो को बंद कर सकते हैं।"
   }
 }
