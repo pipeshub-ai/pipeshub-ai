@@ -2736,14 +2736,16 @@ async def _build_toolsets_list_response(
                 and bool(auth_record.get("auth"))
             )
 
+        # Non-OAuth: expose stored credential fields for list UIs (same as GET /my-toolsets).
+        # Do NOT add a second branch that forces auth=null for real instances when
+        # expose_non_oauth_auth is False — that caused isAuthenticated/hasCredentials to
+        # reflect etcd while auth was always null (agent toolset dialog could not hydrate).
         if expose_non_oauth_auth:
             toolset_entry["auth"] = (
                 auth_record.get("auth", None)
                 if auth_type_upper != "OAUTH" and auth_record is not None
                 else None
             )
-        elif include_auth_key_for_registry:
-            toolset_entry["auth"] = None
 
         toolsets.append(toolset_entry)
 
@@ -2839,9 +2841,9 @@ async def _resolve_agent_with_permission(
 ) -> dict:
     """
     Verify the caller has any access to the agent and return the full agent
-    document merged with their permission flags.  Does NOT enforce edit rights
-    or service-account restrictions — use ``_require_agent_edit_access`` for
-    write endpoints that need those checks.
+    document merged with their permission flags (including ``can_edit``). Does NOT
+    enforce edit rights or service-account restrictions — use
+    ``_require_agent_edit_access`` for write endpoints that need those checks.
     """
     user_context = _get_user_context(request)
     user_id = user_context["user_id"]
@@ -2925,11 +2927,17 @@ async def get_agent_toolsets(
     so the UI can display them as available options.
 
     Response shape mirrors GET /my-toolsets: includes pagination and filterCounts.
+
+    Non-OAuth ``auth`` fields are included only when the caller has edit access
+    (``can_edit`` on the agent). View-only users still see ``isAuthenticated`` /
+    ``hasCredentials`` but not raw credential fields.
     """
-    await _resolve_agent_with_permission(agent_key, request)
+    agent = await _resolve_agent_with_permission(agent_key, request)
 
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
+
+    expose_non_oauth_auth_fields = bool(agent.get("can_edit", False))
 
     async def _fetch_agent_auth(instance_id: str) -> dict[str, Any] | None:
         return await config_service.get_config(_get_agent_auth_path(instance_id, agent_key), default=None)
@@ -2945,7 +2953,7 @@ async def get_agent_toolsets(
         fetch_auth_for_instance=_fetch_agent_auth,
         include_has_credentials=True,
         include_auth_key_for_registry=True,
-        expose_non_oauth_auth=False,
+        expose_non_oauth_auth=expose_non_oauth_auth_fields,
     )
 
 
