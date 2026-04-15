@@ -412,10 +412,6 @@ class FileRecord(Record):
             block_groups_as_dicts = [bg.model_dump() for bg in block_groups]
 
             seen_block_groups = set()
-            print(f"blocks: {blocks}")
-            print(f"block_groups: {block_groups}")
-
-
             for block in blocks:
                 block_type = block.type.value if block.type else None
 

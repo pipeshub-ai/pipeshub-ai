@@ -39,6 +39,8 @@ from app.agents.actions.microsoft.one_drive.one_drive import (
     SearchFilesInput,
     SearchSharedWithMeInput,
     ShareItemInput,
+    _DriveSearchResult,
+    _SharedItemFetchResult,
 )
 
 
@@ -499,9 +501,9 @@ class TestCollectEnrichedAndDriveIds:
 
     def test_collects_unique_drive_ids(self):
         results = [
-            {"enriched": {"name": "f1"}, "drive_id": "d-1"},
-            {"enriched": {"name": "f2"}, "drive_id": "d-1"},
-            {"enriched": {"name": "f3"}, "drive_id": "d-2"},
+            _SharedItemFetchResult(enriched={"name": "f1"}, drive_id="d-1"),
+            _SharedItemFetchResult(enriched={"name": "f2"}, drive_id="d-1"),
+            _SharedItemFetchResult(enriched={"name": "f3"}, drive_id="d-2"),
         ]
         enriched, drive_ids = OneDrive._collect_enriched_and_drive_ids(results)
         assert len(enriched) == 3
@@ -509,7 +511,7 @@ class TestCollectEnrichedAndDriveIds:
 
     def test_none_drive_id_excluded(self):
         results = [
-            {"enriched": {"name": "f1"}, "drive_id": None},
+            _SharedItemFetchResult(enriched={"name": "f1"}, drive_id=None),
         ]
         enriched, drive_ids = OneDrive._collect_enriched_and_drive_ids(results)
         assert len(enriched) == 1
@@ -867,11 +869,11 @@ class TestSearchSharedWithMe:
     async def test_with_drives(self):
         od = _make_onedrive()
         od.shared_with_data = AsyncMock(return_value=(True, "{}", ["d-1"]))
-        od._search_drive = AsyncMock(return_value={
-            "drive_id": "d-1",
-            "success": True,
-            "results": {"value": [{"name": "report.pdf"}]},
-        })
+        od._search_drive = AsyncMock(return_value=_DriveSearchResult(
+            drive_id="d-1",
+            success=True,
+            results={"value": [{"name": "report.pdf"}]},
+        ))
         success, result = await od.search_shared_with_me(query="report")
         assert success is True
         parsed = json.loads(result)
@@ -1145,8 +1147,8 @@ class TestOneDriveHelpers:
         od = _make_onedrive()
         od.client.drives_drive_search = AsyncMock(side_effect=RuntimeError("down"))
         out = await od._search_drive("d1", "q")
-        assert out["success"] is False
-        assert "down" in out["error"]
+        assert out.success is False
+        assert "down" in out.error
 
 
 class TestGetFilesExtraBranches:
@@ -1215,11 +1217,11 @@ class TestSearchSharedWithMeExtra:
         od = _make_onedrive()
         od.shared_with_data = AsyncMock(return_value=(True, "{}", ["d-1"]))
         od._search_drive = AsyncMock(
-            return_value={
-                "drive_id": "d-1",
-                "success": True,
-                "results": [{"name": "a"}],
-            }
+            return_value=_DriveSearchResult(
+                drive_id="d-1",
+                success=True,
+                results=[{"name": "a"}],
+            )
         )
         success, raw = await od.search_shared_with_me(query="x", top=10)
         assert success is True
@@ -1231,11 +1233,11 @@ class TestSearchSharedWithMeExtra:
         od = _make_onedrive()
         od.shared_with_data = AsyncMock(return_value=(True, "{}", ["d-1"]))
         od._search_drive = AsyncMock(
-            return_value={
-                "drive_id": "d-1",
-                "success": True,
-                "results": {"value": [42]},
-            }
+            return_value=_DriveSearchResult(
+                drive_id="d-1",
+                success=True,
+                results={"value": [42]},
+            )
         )
         success, raw = await od.search_shared_with_me(query="x", top=10)
         assert success is True
@@ -1625,8 +1627,8 @@ class TestSearchDriveSuccessPayload:
             )
         )
         out = await od._search_drive("d1", "q", per_drive_top=5, select="id")
-        assert out["success"] is True
-        assert out["results"]["value"][0]["name"] == "a"
+        assert out.success is True
+        assert out.results["value"][0]["name"] == "a"
 
 
 class TestGetFolderChildrenException:
@@ -1657,7 +1659,7 @@ class TestSearchSharedWithMeMoreBranches:
         od = _make_onedrive()
         od.shared_with_data = AsyncMock(return_value=(True, "{}", ["d-1"]))
         od._search_drive = AsyncMock(
-            return_value={"drive_id": "d-1", "success": False, "error": "x"},
+            return_value=_DriveSearchResult(drive_id="d-1", success=False, error="x"),
         )
         success, raw = await od.search_shared_with_me(query="q")
         assert success is True
@@ -1669,11 +1671,11 @@ class TestSearchSharedWithMeMoreBranches:
         od = _make_onedrive()
         od.shared_with_data = AsyncMock(return_value=(True, "{}", ["d-1"]))
         od._search_drive = AsyncMock(
-            return_value={
-                "drive_id": "d-1",
-                "success": True,
-                "results": 42,
-            }
+            return_value=_DriveSearchResult(
+                drive_id="d-1",
+                success=True,
+                results=42,
+            )
         )
         success, raw = await od.search_shared_with_me(query="q")
         assert success is True

@@ -17,12 +17,11 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
-from tarfile import data_filter
 from typing import Final, Optional
 from typing import Any
-import json
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
+from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_model_config
 from app.config.configuration_service import ConfigurationService
@@ -68,16 +67,32 @@ _MAGIC_PDF: Final[bytes] = b"%PDF"
 _MAGIC_ZIP: Final[bytes] = b"PK\x03\x04"
 _MAGIC_OLE2: Final[bytes] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
 
+_OOXML_EXTENSIONS: Final[frozenset[str]] = frozenset({"docx", "xlsx", "pptx"})
+_OLE2_EXTENSIONS: Final[frozenset[str]] = frozenset({"doc", "xls", "ppt"})
+_MAGIC_VALIDATED_EXTENSIONS: Final[frozenset[str]] = frozenset(
+    {"pdf", *_OOXML_EXTENSIONS, *_OLE2_EXTENSIONS}
+)
+_TEXT_FILE_ENCODINGS: Final[tuple[str, ...]] = ("utf-8", "utf-8-sig", "latin-1", "iso-8859-1")
+_DELIMITED_FILE_ENCODINGS: Final[list[str]] = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
+
+
+class ParseErrorPayload(BaseModel):
+    error: str
+
+
+def _error_list(message: str) -> list[dict[str, str]]:
+    return [ParseErrorPayload(error=message).model_dump()]
+
 
 def _validate_magic(data: bytes, ext: str) -> None:
     """Raise ``ValueError`` if magic bytes contradict the declared extension."""
     if ext == "pdf":
         if len(data) < 4 or data[:4] != _MAGIC_PDF:
             raise ValueError("File does not look like a PDF (unexpected magic bytes)")
-    elif ext in {"docx", "xlsx", "pptx"}:
+    elif ext in _OOXML_EXTENSIONS:
         if len(data) < 4 or data[:4] != _MAGIC_ZIP:
             raise ValueError(f".{ext} file does not look like a ZIP/OOXML container")
-    elif ext in {"doc", "xls", "ppt"}:
+    elif ext in _OLE2_EXTENSIONS:
         if len(data) < 8 or data[:8] != _MAGIC_OLE2:
             raise ValueError(f".{ext} file does not look like an OLE2 container")
 
@@ -136,15 +151,7 @@ class FileContentParser:
                 f"Supported: {', '.join(sorted(self.SUPPORTED_EXTENSIONS))}"
             )
 
-        if ext_n in {
-            "pdf",
-            "docx",
-            "xlsx",
-            "pptx",
-            "doc",
-            "xls",
-            "ppt",
-        }:
+        if ext_n in _MAGIC_VALIDATED_EXTENSIONS:
             _validate_magic(raw, ext_n)
 
         dispatch = {
@@ -201,10 +208,13 @@ class FileContentParser:
         for message in data:
             if not isinstance(message, dict):
                 continue
-            text_content = message.get("text", "") if message.get("type") == "text" else ""
+            text_content = (
+                message.get("text", "")
+                if message.get("type") == "text"
+                else ""
+            )
             if text_content:
                 token_count += count_tokens_text(text_content, None)
-        print(f"\033[95m[check_token_limit] token_count: {token_count} | max_allowed_tokens: {max_allowed_tokens}\033[0m")
         return token_count < max_allowed_tokens
 
     async def parse(
@@ -219,13 +229,13 @@ class FileContentParser:
         try:
             ext_n = (file_record.extension or "").strip().lower().lstrip(".")
             if not ext_n or not self.is_supported_extension(ext_n):
-                return (False, [{"error": "File type not supported"}])
+                return (False, _error_list("File type not supported"))
 
             try:
                 blocks = await self.parse_to_block_container(file_record, raw)
             except Exception as exc:
                 self._logger.exception("parse_to_block_container failed")
-                return (False, [{"error": f"Parse failed: {exc}"}])
+                return (False, _error_list(f"Parse failed: {exc}"))
 
             file_record.block_containers = blocks
 
@@ -233,7 +243,7 @@ class FileContentParser:
                 llm_context = file_record.to_llm_full_context()
             except Exception as exc:
                 self._logger.exception("to_llm_full_context failed")
-                return (False, [{"error": f"Context build failed: {exc}"}])
+                return (False, _error_list(f"Context build failed: {exc}"))
 
             try:
                 is_within_limit = await self.check_token_limit(
@@ -244,21 +254,23 @@ class FileContentParser:
                 )
             except Exception as exc:
                 self._logger.exception("Token check failed")
-                return (False, [{"error": f"Token check failed: {exc}"}])
-
-            print(f"\033[32m[content_parser] llm_context: {json.dumps(llm_context, indent=4)}\033[0m")
+                return (False, _error_list(f"Token check failed: {exc}"))
 
             if is_within_limit:
                 return (True, llm_context)
-            return (False, [{"error": "Token limit exceeded"}])
+            return (False, _error_list("Token limit exceeded"))
         except Exception as exc:
             self._logger.exception("Failed to parse file record")
-            return (False, [{"error": f"Failed to parse file: {exc}"}])
+            return (False, _error_list(f"Failed to parse file: {exc}"))
 
     # --- File type parsers -----------------------
 
     async def handle_pdf(self, raw: bytes, file_name: str) -> BlocksContainer:
-        name = file_name if file_name.lower().endswith(".pdf") else f"{file_name}.pdf"
+        name = (
+            file_name
+            if file_name.lower().endswith(".pdf")
+            else f"{file_name}.pdf"
+        )
         processor = PyMuPDFOpenCVProcessor(logger=self._logger, config=self._config)
         return await processor.load_document(name, raw)
 
@@ -305,9 +317,8 @@ class FileContentParser:
         file_name: str,
         parser: CSVParser,
     ) -> BlocksContainer:
-        encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
         all_rows = None
-        for encoding in encodings:
+        for encoding in _DELIMITED_FILE_ENCODINGS:
             try:
                 text = raw.decode(encoding)
                 stream = io.StringIO(text)
@@ -331,7 +342,7 @@ class FileContentParser:
 
     async def handle_md(self, raw: bytes, file_name: str) -> BlocksContainer:
         md_content = None
-        for encoding in ("utf-8", "utf-8-sig", "latin-1", "iso-8859-1"):
+        for encoding in _TEXT_FILE_ENCODINGS:
             try:
                 md_content = raw.decode(encoding)
                 break
@@ -343,7 +354,7 @@ class FileContentParser:
 
     async def handle_txt(self, raw: bytes, file_name: str) -> BlocksContainer:
         text_content = None
-        for encoding in ("utf-8", "utf-8-sig", "latin-1", "iso-8859-1"):
+        for encoding in _TEXT_FILE_ENCODINGS:
             try:
                 text_content = raw.decode(encoding)
                 break

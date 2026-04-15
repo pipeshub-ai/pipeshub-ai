@@ -5,6 +5,8 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from docx import Document  # type: ignore
+
 from app.agents.actions.util.parse_file import (
     FileContentParser,
 )
@@ -14,7 +16,7 @@ from msgraph.generated.models.drive_recipient import DriveRecipient  # type: ign
 from msgraph.generated.models.folder import Folder  # type: ignore
 from msgraph.generated.models.item_reference import ItemReference  # type: ignore
 from msgraph.generated.drives.item.items.item.invite.invite_post_request_body import InvitePostRequestBody  # type: ignore
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.models.entities import FileRecord, RecordType
@@ -37,6 +39,45 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
 
 logger = logging.getLogger(__name__)
+
+_VALID_SHARE_ROLES = {"read", "write", "owner"}
+
+
+class _ResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    success: bool = False
+    data: Optional[Any] = None
+    error: Optional[Any] = None
+    message: Optional[str] = None
+
+
+class _SharedByPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    display_name: Optional[str] = Field(default=None, alias="displayName")
+    address: Optional[str] = None
+
+
+class _RemoteItemPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    drive_id: Optional[str] = Field(default=None, alias="driveId")
+
+
+class _EnrichedSharedItemPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    name: Optional[str] = None
+    web_url: Optional[str] = Field(default=None, alias="webUrl")
+    type: str
+    shared_by: _SharedByPayload = Field(alias="sharedBy")
+    shared_on_ist: Optional[str] = Field(default=None, alias="sharedOnIST")
+    sharing_type: Optional[str] = Field(default=None, alias="sharingType")
+    location: Optional[str] = None
+    size_bytes: Optional[int] = Field(default=None, alias="sizeBytes")
+    last_modified_ist: Optional[str] = Field(default=None, alias="lastModifiedIST")
+    remote_item: _RemoteItemPayload = Field(alias="remoteItem")
 
 
 def _serialize_graph_obj(obj: Any) -> Any:
@@ -122,7 +163,6 @@ def _serialize_graph_obj(obj: Any) -> Any:
 
     return result if result else str(obj)
 
-
 def _normalize_odata(data: Any) -> Any:
     """Normalize OData response keys so cascading placeholders resolve reliably.
 
@@ -131,30 +171,33 @@ def _normalize_odata(data: Any) -> Any:
     ``results`` alias pointing to the same list so both paths work.
     """
     if isinstance(data, dict):
-        if "value" in data and isinstance(data["value"], list) and "results" not in data:
+        if (
+            "value" in data
+            and isinstance(data["value"], list)
+            and "results" not in data
+        ):
             data["results"] = data["value"]
     return data
 
-
 def _response_json(response: object) -> str:
     """Serialize an OneDriveResponse to JSON, handling Kiota SDK objects in data."""
-    out: Dict[str, Any] = {"success": getattr(response, "success", False)}
+    payload = _ResponsePayload(success=getattr(response, "success", False))
     data = getattr(response, "data", None)
     if data is not None:
         serialized = _serialize_graph_obj(data)
-        out["data"] = _normalize_odata(serialized)
+        payload.data = _normalize_odata(serialized)
     error = getattr(response, "error", None)
     if error is not None:
-        out["error"] = error
+        payload.error = error
     message = getattr(response, "message", None)
     if message is not None:
-        out["message"] = message
-    return json.dumps(out)
+        payload.message = message
+    return payload.model_dump_json(exclude_none=True)
+
 
 def _generate_word_docx_bytes(content: Optional[str]) -> bytes:
     """Generate a Word document (docx) from text content."""
     text = content or ""
-    from docx import Document
     doc = Document()
     if text:
         for para in text.split("\n"):
@@ -162,12 +205,16 @@ def _generate_word_docx_bytes(content: Optional[str]) -> bytes:
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
 class GetDrivesInput(BaseModel):
     """Schema for listing OneDrive drives"""
+    model_config = ConfigDict(extra="ignore")
+
     search: Optional[str] = Field(default=None, description="Search query to filter drives")
     filter: Optional[str] = Field(default=None, description="OData filter query for drives")
     orderby: Optional[str] = Field(default=None, description="Field to order results by")
@@ -178,6 +225,8 @@ class GetDrivesInput(BaseModel):
 
 class GetDriveInput(BaseModel):
     """Schema for getting a specific drive"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive to retrieve")
     select: Optional[str] = Field(default=None, description="Comma-separated list of fields to return")
     expand: Optional[str] = Field(default=None, description="Related entities to expand")
@@ -185,6 +234,8 @@ class GetDriveInput(BaseModel):
 
 class GetFilesInput(BaseModel):
     """Schema for listing files in a drive or folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     folder_id: Optional[str] = Field(default=None, description="ID of the folder to list children of (defaults to root)")
     search: Optional[str] = Field(default=None, description="Search query to filter files by name or content")
@@ -196,6 +247,8 @@ class GetFilesInput(BaseModel):
 
 class GetFileInput(BaseModel):
     """Schema for getting a specific file or folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file or folder")
     select: Optional[str] = Field(default=None, description="Comma-separated list of fields to return")
@@ -204,6 +257,8 @@ class GetFileInput(BaseModel):
 
 class SearchFilesInput(BaseModel):
     """Schema for searching files across OneDrive"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive to search in")
     query: str = Field(description="Search query string to find files by name, content, or metadata")
     top: Optional[int] = Field(default=None, description="Maximum number of results to return")
@@ -212,6 +267,8 @@ class SearchFilesInput(BaseModel):
 
 class GetFolderChildrenInput(BaseModel):
     """Schema for listing items inside a specific folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     folder_id: str = Field(description="The ID of the folder whose children to list")
     filter: Optional[str] = Field(default=None, description="OData filter query")
@@ -222,6 +279,8 @@ class GetFolderChildrenInput(BaseModel):
 
 class CreateFolderInput(BaseModel):
     """Schema for creating a new folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     parent_folder_id: Optional[str] = Field(default=None, description="ID of the parent folder (defaults to root)")
     folder_name: str = Field(description="Name of the new folder to create")
@@ -235,6 +294,8 @@ class CreateFolderInput(BaseModel):
 
 class MoveItemInput(BaseModel):
     """Schema for moving a file or folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file or folder to move")
     new_parent_id: str = Field(description="The ID of the destination folder")
@@ -243,6 +304,8 @@ class MoveItemInput(BaseModel):
 
 class RenameItemInput(BaseModel):
     """Schema for renaming a file or folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file or folder to rename")
     new_name: str = Field(description="The new name for the item")
@@ -250,26 +313,33 @@ class RenameItemInput(BaseModel):
 
 class GetVersionsInput(BaseModel):
     """Schema for getting file version history"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file")
 
 
 class GetSharedWithMeInput(BaseModel):
     """Schema for getting files shared with the current user"""
+    model_config = ConfigDict(extra="ignore")
+
     top: Optional[int] = Field(default=None, description="Maximum number of items to return")
 
 
 class SearchSharedWithMeInput(BaseModel):
     """Schema for searching across drives that have shared content with the current user"""
+    model_config = ConfigDict(extra="ignore")
+
     query: str = Field(description="Search query string to find files by name, content, or metadata across shared drives")
     top: Optional[int] = Field(default=10, description="Maximum number of shared items to consider when discovering drives (max 50)")
     per_drive_top: Optional[int] = Field(default=None, description="Maximum number of search hits to return per drive")
     select: Optional[str] = Field(default=None, description="Comma-separated list of fields to return for each hit")
 
 
-
 class ShareItemInput(BaseModel):
     """Schema for sharing a file or folder with specific users"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive containing the item")
     item_id: str = Field(description="The ID of the file or folder to share")
     emails: List[str] = Field(description="List of email addresses to share the item with")
@@ -281,6 +351,8 @@ class ShareItemInput(BaseModel):
 
 class GetSpecificVersionInput(BaseModel):
     """Schema for getting a specific file version"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file")
     version_id: str = Field(description="The ID of the version to retrieve")
@@ -289,6 +361,8 @@ class GetSpecificVersionInput(BaseModel):
 
 class RestoreVersionInput(BaseModel):
     """Schema for restoring a specific file version"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file")
     version_id: str = Field(description="The ID of the version to restore as the current version")
@@ -296,6 +370,8 @@ class RestoreVersionInput(BaseModel):
 
 class CopyItemInput(BaseModel):
     """Schema for copying a file or folder"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the source drive")
     item_id: str = Field(description="The ID of the file or folder to copy")
     destination_drive_id: Optional[str] = Field(default=None, description="The ID of the destination drive (defaults to same drive)")
@@ -305,12 +381,16 @@ class CopyItemInput(BaseModel):
 
 class GetDownloadUrlInput(BaseModel):
     """Schema for getting a download URL"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file")
 
 
 class GetThumbnailsInput(BaseModel):
     """Schema for getting thumbnails or preview URLs"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file")
     size: Optional[str] = Field(default=None, description="Thumbnail size: 'small', 'medium', or 'large' (defaults to all sizes)")
@@ -318,39 +398,55 @@ class GetThumbnailsInput(BaseModel):
 
 class GetFileContentInput(BaseModel):
     """Schema for reading text-based file content"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the text-based file (e.g. .txt, .md, .csv, .json, .html)")
 
 
 class GetFileContentBase64Input(BaseModel):
     """Schema for reading binary file content as base64"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file (image, PDF, or other binary)")
     max_bytes: Optional[int] = Field(default=5_000_000, description="Maximum number of bytes to fetch (default 5 MB)")
 
 
-class CreateOfficeFileInput(BaseModel):
-    """Schema for creating a new blank Office file"""
+class CreateWordFileInput(BaseModel):
+    """Schema for creating a new blank Word file"""
+    model_config = ConfigDict(extra="ignore")
+
     drive_id: str = Field(description="The ID of the drive")
     parent_folder_id: Optional[str] = Field(default=None, description="ID of the parent folder (defaults to root)")
-    file_name: str = Field(description="Name of the new file, including extension (.docx, .xlsx, or .pptx)")
-    file_type: str = Field(description="Office file type: 'word' (.docx), 'excel' (.xlsx), or 'powerpoint' (.pptx)")
+    file_name: str = Field(description="Name of the new file, including extension (.docx)")
+    file_type: str = Field(description="Word file type: 'word' (.docx)")
     content: Optional[str] = Field(default=None, description="Content of the file")
+
+
+class CreateOfficeFileInput(CreateWordFileInput):
+    """Backward-compatible alias retained for existing imports/tests."""
 
 
 class CreateOneNoteNotebookInput(BaseModel):
     """Schema for creating a OneNote notebook"""
+    model_config = ConfigDict(extra="ignore")
+
     notebook_name: str = Field(description="Display name for the new OneNote notebook")
 
 
 class CreateOneNoteSectionInput(BaseModel):
     """Schema for creating a section inside an existing OneNote notebook"""
+    model_config = ConfigDict(extra="ignore")
+
     web_url: str = Field(description="The webUrl of the OneNote notebook to create the section in")
     section_name: str = Field(description="Display name for the new section")
 
 
 class CreateOneNotePageInput(BaseModel):
     """Schema for creating a page inside an existing OneNote section"""
+    model_config = ConfigDict(extra="ignore")
+
     section_id: str = Field(description="The ID of the section to create the page in")
     page_title: str = Field(description="Title for the new page")
     page_body_html: Optional[str] = Field(default=None, description="Optional HTML body content for the page")
@@ -358,17 +454,57 @@ class CreateOneNotePageInput(BaseModel):
 
 class GetOneNoteSectionsInput(BaseModel):
     """Schema for listing sections in a OneNote notebook"""
+    model_config = ConfigDict(extra="ignore")
+
     web_url: str = Field(description="The webUrl of the OneNote notebook to list sections from")
 
 
 class GetOneNotePagesInput(BaseModel):
     """Schema for listing pages in a OneNote section"""
+    model_config = ConfigDict(extra="ignore")
+
     section_id: str = Field(description="The ID of the section to list pages from")
 
 
 class GetOneNotePageContentInput(BaseModel):
     """Schema for reading the HTML content of a OneNote page"""
+    model_config = ConfigDict(extra="ignore")
+
     page_id: str = Field(description="The ID of the page to read content from")
+
+
+# ---------------------------------------------------------------------------
+# Internal models (not exposed as tool args)
+# ---------------------------------------------------------------------------
+
+class _CopyParentReference(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    drive_id: str = Field(alias="driveId")
+    id: str
+
+
+class _CopyRequestBody(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    parent_reference: _CopyParentReference = Field(alias="parentReference")
+    name: Optional[str] = None
+
+
+class _DriveSearchResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    drive_id: str
+    success: bool
+    results: Optional[Any] = None
+    error: Optional[str] = None
+
+
+class _SharedItemFetchResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enriched: Dict[str, Any]
+    drive_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -559,39 +695,37 @@ class OneDrive:
         return "Unknown"
 
     @staticmethod
-    def _build_enriched_item(item, resource_data: dict) -> dict:
+    def _build_enriched_item(item: Any, resource_data: dict) -> dict:
         """Build the enriched representation of a shared item."""
         last_shared = item.last_shared
         shared_by = last_shared.shared_by if last_shared else None
         parent_ref = resource_data.get("parentReference", {})
         drive_id = parent_ref.get("driveId")
 
-        return {
-            "name": resource_data.get("name"),
-            "webUrl": resource_data.get("webUrl"),
-            "type": OneDrive._resolve_item_type(resource_data),
-            "sharedBy": {
-                "displayName": shared_by.display_name if shared_by else None,
-                "address": shared_by.address if shared_by else None,
-            },
-            "sharedOnIST": str(last_shared.shared_date_time) if last_shared else None,
-            "sharingType": last_shared.sharing_type if last_shared else None,
-            "location": (
+        return _EnrichedSharedItemPayload(
+            name=resource_data.get("name"),
+            web_url=resource_data.get("webUrl"),
+            type=OneDrive._resolve_item_type(resource_data),
+            shared_by=_SharedByPayload(
+                display_name=shared_by.display_name if shared_by else None,
+                address=shared_by.address if shared_by else None,
+            ),
+            shared_on_ist=str(last_shared.shared_date_time) if last_shared else None,
+            sharing_type=last_shared.sharing_type if last_shared else None,
+            location=(
                 parent_ref.get("path", "").split("root:")[-1].strip("/")
                 or parent_ref.get("name")
             ),
-            "sizeBytes": resource_data.get("size"),
-            "lastModifiedIST": resource_data.get("lastModifiedDateTime"),
-            "remoteItem": {
-                "driveId": drive_id,
-            },
-        }
+            size_bytes=resource_data.get("size"),
+            last_modified_ist=resource_data.get("lastModifiedDateTime"),
+            remote_item=_RemoteItemPayload(drive_id=drive_id),
+        ).model_dump(by_alias=True)
 
     async def _fetch_shared_item(
         self,
-        item,
+        item: Any,
         current_user_email: Optional[str],
-    ) -> Optional[dict]:
+    ) -> Optional[_SharedItemFetchResult]:
         """Fetch and enrich a single shared insight item.
 
         Skips items shared by the current user themselves. Returns None if the
@@ -616,19 +750,19 @@ class OneDrive:
         resource_data = resource_json.get("data", resource_json)
 
         enriched = self._build_enriched_item(item, resource_data)
-        return {
-            "enriched": enriched,
-            "drive_id": enriched["remoteItem"]["driveId"],
-        }
+        return _SharedItemFetchResult(
+            enriched=enriched,
+            drive_id=enriched["remoteItem"]["driveId"],
+        )
 
     async def _fetch_shared_items_batched(
         self,
-        items: list,
+        items: List[Any],
         current_user_email: Optional[str],
         batch_size: int = 5,
-    ) -> list[Optional[dict]]:
+    ) -> List[Optional[_SharedItemFetchResult]]:
         """Fetch shared items concurrently in fixed-size batches."""
-        results: list[Optional[dict]] = []
+        results: list[Optional[_SharedItemFetchResult]] = []
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
             batch_results = await asyncio.gather(
@@ -642,14 +776,14 @@ class OneDrive:
         """Fetch the full drive object for a given drive id."""
         drive_response = await self.client.drives_drive_get_drive(drive_id)
         if not drive_response.success:
-            logger.warning(f"Failed to fetch drive {drive_id}")
+            logger.warning("Failed to fetch drive %s", drive_id)
             return None
         drive_json = json.loads(_response_json(drive_response))
         return drive_json.get("data", drive_json)
 
     @staticmethod
     def _collect_enriched_and_drive_ids(
-        results: list[Optional[dict]],
+        results: list[Optional[_SharedItemFetchResult]],
     ) -> tuple[list[dict], list[str]]:
         """Split fetch results into enriched items and a unique, ordered drive id list."""
         enriched: list[dict] = []
@@ -659,8 +793,8 @@ class OneDrive:
         for result in results:
             if result is None:
                 continue
-            enriched.append(result["enriched"])
-            drive_id = result["drive_id"]
+            enriched.append(result.enriched)
+            drive_id = result.drive_id
             if drive_id and drive_id not in seen_drive_ids:
                 seen_drive_ids.add(drive_id)
                 ordered_drive_ids.append(drive_id)
@@ -691,10 +825,10 @@ class OneDrive:
             return True, json.dumps({"value": enriched}, default=str), ordered_drive_ids
 
         except Exception as e:
-            logger.error(f"Failed to get shared-with-me items: {e}")
+            logger.error("Failed to get shared-with-me items: %s", e)
             return False, json.dumps({"error": str(e)}), []
 
-    async def _search_drive(self, drive_id: str, query: str, per_drive_top: Optional[int] = None, select: Optional[str] = None) -> dict:
+    async def _search_drive(self, drive_id: str, query: str, per_drive_top: Optional[int] = None, select: Optional[str] = None) -> _DriveSearchResult:
         try:
             response = await self.client.drives_drive_search(
                 drive_id=drive_id,
@@ -705,20 +839,21 @@ class OneDrive:
             raw = _response_json(response)
             parsed = json.loads(raw) if raw else {}
             payload = parsed.get("data", parsed) if isinstance(parsed, dict) else parsed
-            return {
-                "drive_id": drive_id,
-                "success": bool(response.success),
-                "results": payload,
-            }
+            return _DriveSearchResult(
+                drive_id=drive_id,
+                success=bool(response.success),
+                results=payload,
+            )
         except Exception as drive_err:
             logger.warning(
-                f"Failed to search drive {drive_id} for query '{query}': {drive_err}"
+                "Failed to search drive %s for query '%s': %s",
+                drive_id, query, drive_err,
             )
-            return {
-                "drive_id": drive_id,
-                "success": False,
-                "error": str(drive_err),
-            }
+            return _DriveSearchResult(
+                drive_id=drive_id,
+                success=False,
+                error=str(drive_err),
+            )
 
     # ------------------------------------------------------------------
     # Drive-level tools
@@ -756,22 +891,20 @@ class OneDrive:
         skip: Optional[int] = None,
     ) -> tuple[bool, str]:
         try:
-            # Run both concurrently
             response = await self.client.me_list_drives(
-                    search=search,
-                    filter=filter,
-                    orderby=orderby,
-                    select=select,
-                    top=top,
-                    skip=skip,
-                )
-            res = _response_json(response)
+                search=search,
+                filter=filter,
+                orderby=orderby,
+                select=select,
+                top=top,
+                skip=skip,
+            )
             if response.success:
                 return True, _response_json(response)
             return False, _response_json(response)
 
         except Exception as e:
-            logger.error(f"Failed to get drives: {e}")
+            logger.error("Failed to get drives: %s", e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -821,7 +954,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get drive {drive_id}: {e}")
+            logger.error("Failed to get drive %s: %s", drive_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -890,7 +1023,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get files for drive {drive_id}: {e}")
+            logger.error("Failed to get files for drive %s: %s", drive_id, e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -950,7 +1083,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get children of folder {folder_id}: {e}")
+            logger.error("Failed to get children of folder %s: %s", folder_id, e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -1000,12 +1133,11 @@ class OneDrive:
                 select=select,
                 expand=expand,
             )
-            data  = _response_json(response)
             if response.success:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get file {item_id}: {e}")
+            logger.error("Failed to get file %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1065,7 +1197,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to search files with query '{query}': {e}")
+            logger.error("Failed to search files with query '%s': %s", query, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1099,14 +1231,14 @@ class OneDrive:
         top: Optional[int] = 10
     ) -> tuple[bool, str]:
         try:
-             success, data, drives = await self.shared_with_data(top)
-             if success:
+            success, data, drives = await self.shared_with_data(top)
+            if success:
                 return True, json.dumps({"value": data}, default=str)
-             else:
+            else:
                 return False, json.dumps({"error": data})
 
         except Exception as e:
-            logger.error(f"Failed to get shared-with-me items: {e}")
+            logger.error("Failed to get shared-with-me items: %s", e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -1166,9 +1298,9 @@ class OneDrive:
 
             flattened: list[dict] = []
             for entry in per_drive_results:
-                if not entry.get("success"):
+                if not entry.success:
                     continue
-                results_payload = entry.get("results")
+                results_payload = entry.results
                 if isinstance(results_payload, dict):
                     drive_value = results_payload.get("value") or []
                 elif isinstance(results_payload, list):
@@ -1177,23 +1309,23 @@ class OneDrive:
                     drive_value = []
                 for hit in drive_value:
                     if isinstance(hit, dict):
-                        hit_with_drive = {**hit, "_drive_id": entry["drive_id"]}
+                        hit_with_drive = {**hit, "_drive_id": entry.drive_id}
                         flattened.append(hit_with_drive)
                     else:
-                        flattened.append({"_drive_id": entry["drive_id"], "value": hit})
+                        flattened.append({"_drive_id": entry.drive_id, "value": hit})
 
             return True, json.dumps(
                 {
                     "query": query,
                     "drives": drives,
-                    "per_drive": per_drive_results,
+                    "per_drive": [e.model_dump() for e in per_drive_results],
                     "value": flattened,
                 },
                 default=str,
             )
 
         except Exception as e:
-            logger.error(f"Failed to search shared-with-me items for '{query}': {e}")
+            logger.error("Failed to search shared-with-me items for '%s': %s", query, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1255,7 +1387,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to create folder '{folder_name}': {e}")
+            logger.error("Failed to create folder '%s': %s", folder_name, e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -1312,12 +1444,12 @@ class OneDrive:
                 driveItem_id=item_id,
                 request_body=body,
             )
-            logger.info(f"Response: {response}")
+            logger.debug("Rename response: %s", response)
             if response.success:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to rename item {item_id}: {e}")
+            logger.error("Failed to rename item %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -1377,7 +1509,7 @@ class OneDrive:
                 return True, result
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to move item {item_id}: {e}")
+            logger.error("Failed to move item %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1431,7 +1563,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get root folder for drive {drive_id}: {e}")
+            logger.error("Failed to get root folder for drive %s: %s", drive_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1483,14 +1615,14 @@ class OneDrive:
         try:
             dest_drive = destination_drive_id or drive_id
 
-            request_body: dict = {
-                "parentReference": {
-                    "driveId": dest_drive,
-                    "id": destination_folder_id,
-                }
-            }
-            if new_name:
-                request_body["name"] = new_name
+            body_model = _CopyRequestBody(
+                parent_reference=_CopyParentReference(
+                    drive_id=dest_drive,
+                    id=destination_folder_id,
+                ),
+                name=new_name,
+            )
+            request_body = body_model.model_dump(by_alias=True, exclude_none=True)
 
             response = await self.client.drives_drive_items_drive_item_copy(
                 drive_id=drive_id,
@@ -1504,7 +1636,7 @@ class OneDrive:
                 })
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to copy item {item_id}: {e}")
+            logger.error("Failed to copy item %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1560,7 +1692,7 @@ class OneDrive:
             tuple[bool, str]: Success flag and JSON response
         """
         try:
-            valid_roles = {"read", "write", "owner"}
+            valid_roles = _VALID_SHARE_ROLES
             if role not in valid_roles:
                 return False, json.dumps({
                     "error": f"Invalid role '{role}'. Must be one of: {', '.join(valid_roles)}"
@@ -1589,7 +1721,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to share item {item_id}: {e}")
+            logger.error("Failed to share item %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1654,7 +1786,7 @@ class OneDrive:
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get download URL for item {item_id}: {e}")
+            logger.error("Failed to get download URL for item %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1691,8 +1823,6 @@ class OneDrive:
         drive_id: str,
         item_id: str,
     ) -> tuple[bool, str]:
-        import time
-        _start = time.perf_counter()
         try:
             file_info = await self.client.drives_get_items(
                 drive_id=drive_id,
@@ -1710,8 +1840,8 @@ class OneDrive:
             data_dict = json.loads(_response_json(file_info))
 
             file_size = data_dict.get("data", {}).get("size")
-            # if file_size is not None and file_size > 1.5 * 1024 * 1024:  # 1.5 MB
-            #     return False, json.dumps({"data": data_dict.get("data"), "error": "File is too large to be processed"})
+            if file_size is not None and file_size > 10 * 1024 * 1024:  # 10 MB
+                return False, json.dumps({"data": data_dict.get("data"), "error": "File is too large to be processed"})
 
             file_obj = data_dict.get("data", {}).get("file", {})
             mime_type = file_obj.get("mimeType")
@@ -1752,13 +1882,11 @@ class OneDrive:
                     configuration_service,
                 )
                 if status:
-                    print(f"\033[31m[get_file_content] completed in {time.perf_counter() - _start:.3f}s\033[0m")
                     return True, json.dumps(payload)
-                print(f"\033[31m[get_file_content] failed in {time.perf_counter() - _start:.3f}s\033[0m")
                 return False, json.dumps(payload)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get content for item {item_id}: {e}")
+            logger.error("Failed to get content for item %s: %s", item_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1767,9 +1895,9 @@ class OneDrive:
 
     @tool(
         app_name="onedrive",
-        tool_name="create_office_file",
-        description="Create a new blank Microsoft Office file (Word .docx, Excel .xlsx, or PowerPoint .pptx) in OneDrive from scratch via the API.",
-        args_schema=CreateOfficeFileInput,
+        tool_name="create_word_file",
+        description="Create a new blank Microsoft Word file (.docx) in OneDrive from scratch via the API.",
+        args_schema=CreateWordFileInput,
         when_to_use=[
             "User wants to create a new blank Word, Excel, or PowerPoint file in OneDrive",
             "User says 'create a Word doc', 'make a new Excel spreadsheet', or 'start a PowerPoint'",
@@ -1790,7 +1918,7 @@ class OneDrive:
         ],
         category=ToolCategory.FILE_STORAGE,
     )
-    async def create_office_file(
+    async def create_word_file(
         self,
         drive_id: str,
         file_name: str,
@@ -1803,7 +1931,7 @@ class OneDrive:
         Args:
             drive_id: The ID of the drive
             file_name: Name of the file (should include extension)
-            file_type: 'word', 'excel', or 'powerpoint'
+            file_type: 'word'
             parent_folder_id: Parent folder ID (defaults to root)
         Returns:
             tuple[bool, str]: Success flag and JSON response with the created file metadata
@@ -1864,8 +1992,25 @@ class OneDrive:
                 return True, json.dumps(result)
             return False, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to create Office file '{file_name}': {e}")
+            logger.error("Failed to create Office file '%s': %s", file_name, e)
             return False, json.dumps({"error": str(e)})
+
+    async def create_office_file(
+        self,
+        drive_id: str,
+        file_name: str,
+        file_type: str,
+        parent_folder_id: Optional[str] = None,
+        content: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """Backward-compatible wrapper for prior create_office_file calls."""
+        return await self.create_word_file(
+            drive_id=drive_id,
+            file_name=file_name,
+            file_type=file_type,
+            parent_folder_id=parent_folder_id,
+            content=content,
+        )
 
     # ------------------------------------------------------------------
     # Create OneNote notebook
@@ -1912,7 +2057,7 @@ class OneDrive:
                 return False, _response_json(nb_response)
             return True, _response_json(nb_response)
         except Exception as e:
-            logger.error(f"Failed to create OneNote notebook '{notebook_name}': {e}")
+            logger.error("Failed to create OneNote notebook '%s': %s", notebook_name, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -1973,7 +2118,7 @@ class OneDrive:
 
             return True, _response_json(sec_response)
         except Exception as e:
-            logger.error(f"Failed to create OneNote section '{section_name}': {e}")
+            logger.error("Failed to create OneNote section '%s': %s", section_name, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -2028,7 +2173,7 @@ class OneDrive:
 
             return True, _response_json(page_response)
         except Exception as e:
-            logger.error(f"Failed to create OneNote page '{page_title}': {e}")
+            logger.error("Failed to create OneNote page '%s': %s", page_title, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -2093,7 +2238,7 @@ class OneDrive:
                 return False, _response_json(response)
             return True, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get sections for webUrl {web_url}: {e}")
+            logger.error("Failed to get sections for webUrl %s: %s", web_url, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -2142,7 +2287,7 @@ class OneDrive:
                 return False, _response_json(response)
             return True, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get pages for section {section_id}: {e}")
+            logger.error("Failed to get pages for section %s: %s", section_id, e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -2192,7 +2337,7 @@ class OneDrive:
 
             return True, _response_json(response)
         except Exception as e:
-            logger.error(f"Failed to get content for page {page_id}: {e}")
+            logger.error("Failed to get content for page %s: %s", page_id, e)
             return False, _response_json(response)
 
     # ------------------------------------------------------------------
