@@ -1,5 +1,5 @@
+import { ConfigService, OpenSearchConfig, QdrantConfig } from '../services/cm.service';
 import { RedisConfig } from '../../../libs/types/messaging.types';
-import { ConfigService } from '../services/cm.service';
 
 export interface AppConfig {
   jwtSecret: string;
@@ -35,12 +35,9 @@ export interface AppConfig {
     db: string;
   };
 
-  qdrant: {
-    port: number;
-    apiKey: string;
-    host: string;
-    grpcPort: number;
-  };
+  vectorDbType: string;
+  qdrant?: QdrantConfig;
+  opensearch?: OpenSearchConfig;
 
   arango: {
     url: string;
@@ -104,7 +101,10 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     kafka: await configService.getKafkaConfig(),
     redis: await configService.getRedisConfig(),
     arango: await configService.getArangoConfig(),
-    qdrant: await configService.getQdrantConfig(),
+    vectorDbType: process.env.VECTOR_DB_TYPE || 'qdrant',
+    ...(( process.env.VECTOR_DB_TYPE || 'qdrant') === 'qdrant'
+      ? { qdrant: await configService.getQdrantConfig() }
+      : { opensearch: await configService.getOpenSearchConfig() }),
     mongo: await configService.getMongoConfig(),
     smtp: await configService.getSmtpConfig(),
 

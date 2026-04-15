@@ -2093,6 +2093,58 @@ export const getQdrantConfig =
       next(error);
     }
   };
+
+export const createOpenSearchConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { host, port, username, password, useSsl, verifyCerts, timeout } = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify({ host, port, username, password, useSsl, verifyCerts, timeout }));
+      await keyValueStoreService.set<string>(
+        configPaths.db.opensearch,
+        encryptedConfig,
+      );
+      const warningMessage = res.getHeader('Warning');
+      res.status(200).json({
+        message: 'OpenSearch config created successfully',
+        warningMessage,
+      });
+    } catch (error: any) {
+      logger.error('Error creating OpenSearch config', { error });
+      next(error);
+    }
+  };
+
+export const getOpenSearchConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedConfig = await keyValueStoreService.get<string>(
+        configPaths.db.opensearch,
+      );
+      if (encryptedConfig) {
+        const opensearchConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedConfig),
+        );
+        res.status(200).json(opensearchConfig).end();
+        return;
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting OpenSearch config', { error });
+      next(error);
+    }
+  };
+
 export const getFrontendUrl =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

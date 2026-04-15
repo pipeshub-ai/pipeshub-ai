@@ -1,16 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
-from qdrant_client.http.models import (  # type: ignore
-    Filter,
-    PointStruct,
-    QueryRequest,
+from app.services.vector_db.models import (
+    CollectionConfig,
+    FilterExpression,
+    FilterMode,
+    FilterValue,
+    HybridSearchRequest,
+    SearchResult,
+    VectorPoint,
 )
-
-from app.services.vector_db.qdrant.filter import QdrantFilterMode
-
-# Type alias for filter values
-FilterValue = Union[str, int, float, bool, List[Union[str, int, float, bool]]]
 
 
 class IVectorDBService(ABC):
@@ -38,12 +37,7 @@ class IVectorDBService(ABC):
     async def create_collection(
         self,
         collection_name: str,
-        embedding_size: int=1024,
-        sparse_idf: bool = False,
-        vectors_config: Optional[dict] = None,
-        sparse_vectors_config: Optional[dict] = None,
-        optimizers_config: Optional[dict] = None,
-        quantization_config: Optional[dict] = None,
+        config: Optional[CollectionConfig] = None,
     ) -> None:
         raise NotImplementedError("create_collection() is not implemented")
 
@@ -71,33 +65,53 @@ class IVectorDBService(ABC):
     @abstractmethod
     async def filter_collection(
         self,
-        filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
+        filter_mode: Union[str, FilterMode] = FilterMode.MUST,
         must: Optional[Dict[str, FilterValue]] = None,
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
         **filters: FilterValue,
-    ) -> Filter:
+    ) -> FilterExpression:
         raise NotImplementedError("filter_collection() is not implemented")
 
     @abstractmethod
-    async def scroll(self, collection_name: str, scroll_filter: Filter, limit: int) -> object:
+    async def scroll(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+    ) -> object:
         raise NotImplementedError("scroll() is not implemented")
 
     @abstractmethod
     def query_nearest_points(
         self,
         collection_name: str,
-        requests: List[QueryRequest],
-    ) -> List[List[PointStruct]]:
-        """Query batch points"""
+        requests: List[HybridSearchRequest],
+    ) -> List[List[SearchResult]]:
         raise NotImplementedError("query_nearest_points() is not implemented")
 
     @abstractmethod
     def upsert_points(
         self,
         collection_name: str,
-        points: List[PointStruct],
+        points: List[VectorPoint],
     ) -> None:
-        """Upsert points"""
-        raise NotImplementedError("upsert() is not implemented")
+        raise NotImplementedError("upsert_points() is not implemented")
+
+    @abstractmethod
+    def delete_points(
+        self,
+        collection_name: str,
+        filter: FilterExpression,
+    ) -> None:
+        raise NotImplementedError("delete_points() is not implemented")
+
+    @abstractmethod
+    def overwrite_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        points: FilterExpression,
+    ) -> None:
+        raise NotImplementedError("overwrite_payload() is not implemented")
