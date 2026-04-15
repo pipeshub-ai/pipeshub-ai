@@ -159,6 +159,7 @@ jobs:
           PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
           PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          TEST_GRAPH_DB_TYPE: ${{ env.GRAPH_DB == 'both' && 'neo4j' || env.GRAPH_DB }}
           TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
           TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
           TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
@@ -254,6 +255,11 @@ jobs:
           CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
           CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
           CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
+          TEST_GRAPH_DB_TYPE: ${{ env.GRAPH_DB == 'both' && 'arango' || env.GRAPH_DB }}
+          TEST_ARANGO_URL: ${{ secrets.TEST_ARANGO_URL }}
+          TEST_ARANGO_USERNAME: ${{ secrets.TEST_ARANGO_USERNAME }}
+          TEST_ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
+          TEST_ARANGO_DB_NAME: ${{ secrets.TEST_ARANGO_DB_NAME }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
