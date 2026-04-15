@@ -1033,6 +1033,18 @@
     "outcomeAllowedLine2": "You can close this window.",
     "outcomeDeniedTitle": "Permissions denied",
     "outcomeDeniedLine1": "The application was not granted access.",
-    "outcomeDeniedLine2": "You can close this window."
+    "outcomeDeniedLine2": "You can close this window.",
+    "errorTitles": {
+      "invalid_scope": "Invalid scopes requested",
+      "invalid_request": "Invalid request",
+      "invalid_client": "Unknown application",
+      "server_error": "Server error"
+    },
+    "errorHints": {
+      "invalid_scope": "The application requested scopes that are either not recognised or not allowed for this OAuth app. Check the app\u2019s allowed scopes in Developer Settings.",
+      "invalid_request": "The redirect URI provided does not match any URI registered for this application. Verify the redirect URIs configured in Developer Settings.",
+      "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application\u2019s configuration.",
+      "server_error": "An unexpected error occurred on the server. Please try again later."
+    }
   }
 }

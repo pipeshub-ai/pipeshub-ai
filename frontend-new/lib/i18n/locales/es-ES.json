@@ -1025,6 +1025,18 @@
     "outcomeAllowedLine2": "Puede cerrar esta ventana.",
     "outcomeDeniedTitle": "Permisos denegados",
     "outcomeDeniedLine1": "No se concedi\u00f3 acceso a la aplicaci\u00f3n.",
-    "outcomeDeniedLine2": "Puede cerrar esta ventana."
+    "outcomeDeniedLine2": "Puede cerrar esta ventana.",
+    "errorTitles": {
+      "invalid_scope": "Scopes solicitados no v\u00e1lidos",
+      "invalid_request": "Solicitud no v\u00e1lida",
+      "invalid_client": "Aplicaci\u00f3n desconocida",
+      "server_error": "Error del servidor"
+    },
+    "errorHints": {
+      "invalid_scope": "La aplicaci\u00f3n solicit\u00f3 scopes que no son reconocidos o no est\u00e1n permitidos para esta app OAuth. Verifique los scopes permitidos en la Configuraci\u00f3n de Desarrollador.",
+      "invalid_request": "La URI de redirecci\u00f3n proporcionada no coincide con ninguna URI registrada para esta aplicaci\u00f3n. Verifique las URIs de redirecci\u00f3n en la Configuraci\u00f3n de Desarrollador.",
+      "invalid_client": "El client_id no coincide con ninguna aplicaci\u00f3n OAuth registrada. Verifique el ID de cliente en la configuraci\u00f3n de su aplicaci\u00f3n.",
+      "server_error": "Ocurri\u00f3 un error inesperado en el servidor. Int\u00e9ntelo de nuevo m\u00e1s tarde."
+    }
   }
 }

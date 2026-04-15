@@ -56,23 +56,64 @@ function normalizeScopeForPost(scopeFromUrl: string | null): string {
   return scopeFromUrl.replace(/\+/g, ' ').trim();
 }
 
+/** Extract OAuth error code from an Axios error response (e.g. "invalid_scope"). */
+function extractOAuthErrorCode(data: unknown): string | null {
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    'error' in data &&
+    typeof (data as { error?: string }).error === 'string'
+  ) {
+    return (data as { error: string }).error;
+  }
+  return null;
+}
+
+/** Extract the best human-readable message from an error, preferring error_description. */
 function errorMessageFromUnknown(err: unknown): string {
   if (isAxiosError(err)) {
     const data = err.response?.data;
-    const fromBody =
-      extractApiErrorMessage(data) ??
-      (typeof data === 'object' &&
+    // Prefer error_description (OAuth-style) over the generic error code
+    if (
+      typeof data === 'object' &&
       data !== null &&
       'error_description' in data &&
-      typeof (data as { error_description?: string }).error_description === 'string'
-        ? (data as { error_description: string }).error_description
-        : null);
+      typeof (data as { error_description?: string }).error_description === 'string' &&
+      (data as { error_description: string }).error_description.trim()
+    ) {
+      return (data as { error_description: string }).error_description;
+    }
+    const fromBody = extractApiErrorMessage(data);
     if (fromBody) return fromBody;
     const processed = processError(err as AxiosError);
     return processed.message;
   }
   if (err instanceof Error) return err.message;
   return 'An error occurred';
+}
+
+/** Extract the OAuth error code from an error, if present. */
+function errorCodeFromUnknown(err: unknown): string | null {
+  if (isAxiosError(err)) {
+    return extractOAuthErrorCode(err.response?.data);
+  }
+  return null;
+}
+
+/** Parse OAuth error params from a redirect URL, if any. */
+function extractErrorFromRedirectUrl(
+  url: string
+): { code: string; description: string } | null {
+  try {
+    const parsed = new URL(url);
+    const error = parsed.searchParams.get('error');
+    if (!error) return null;
+    const description =
+      parsed.searchParams.get('error_description') || error;
+    return { code: error, description };
+  } catch {
+    return null;
+  }
 }
 
 type ConsentOutcome =
@@ -90,6 +131,7 @@ export function OAuthAuthorizeView() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
   const [outcome, setOutcome] = useState<ConsentOutcome>({ type: 'idle' });
   const [consentData, setConsentData] = useState<ConsentData | null>(null);
   const [codeChallenge, setCodeChallenge] = useState('');
@@ -147,12 +189,22 @@ export function OAuthAuthorizeView() {
         if (cancelled) return;
 
         if (data.redirectUrl) {
-          window.location.href = data.redirectUrl;
+          // Check if the redirect URL carries OAuth error params (e.g. invalid_scope).
+          // Show them on the consent page instead of silently redirecting.
+          const redirectError = extractErrorFromRedirectUrl(data.redirectUrl);
+          if (redirectError) {
+            setErrorCode(redirectError.code);
+            setError(redirectError.description);
+          } else {
+            window.location.href = data.redirectUrl;
+          }
           return;
         }
 
         if (data.error) {
-          throw new Error(data.error_description || data.error);
+          setErrorCode(data.error);
+          setError(data.error_description || data.error);
+          return;
         }
 
         if (data.requiresConsent && data.consentData) {
@@ -165,6 +217,8 @@ export function OAuthAuthorizeView() {
       } catch (err) {
         if (axios.isCancel(err)) return;
         if (cancelled) return;
+        const code = errorCodeFromUnknown(err);
+        if (code) setErrorCode(code);
         setError(errorMessageFromUnknown(err));
       } finally {
         if (!cancelled) setLoading(false);
@@ -258,19 +312,112 @@ export function OAuthAuthorizeView() {
   }
 
   if (error) {
+    const errorTitle = errorCode
+      ? t(`oauthConsent.errorTitles.${errorCode}`, { defaultValue: '' }) ||
+        t('oauthConsent.errorTitle')
+      : t('oauthConsent.errorTitle');
+
+    const errorHint = errorCode
+      ? t(`oauthConsent.errorHints.${errorCode}`, { defaultValue: '' })
+      : '';
+
     return (
       <Flex
         align="center"
         justify="center"
-        style={{ minHeight: '100vh', padding: 'var(--space-5)' }}
+        style={{
+          minHeight: '100vh',
+          padding: 'var(--space-5)',
+          background: 'var(--gray-2)',
+        }}
       >
-        <Box style={{ maxWidth: 480, width: '100%', textAlign: 'center' }}>
-          <Text color="red" size="3" weight="medium" mb="2">
-            {t('oauthConsent.errorTitle')}
-          </Text>
-          <Text size="2" color="gray">
-            {error}
-          </Text>
+        <Box
+          style={{
+            maxWidth: 520,
+            width: '100%',
+            padding: 'var(--space-5)',
+            borderRadius: 'var(--radius-3)',
+            border: '1px solid var(--gray-6)',
+            background: 'var(--color-panel-solid)',
+            boxShadow: 'var(--shadow-2)',
+          }}
+        >
+          <Flex direction="column" gap="3" align="center">
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: '50%',
+                background: 'var(--red-3)',
+              }}
+            >
+              <span
+                className="material-icons-outlined"
+                style={{ fontSize: 24, color: 'var(--red-11)' }}
+              >
+                error_outline
+              </span>
+            </Flex>
+
+            <Text size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
+              {errorTitle}
+            </Text>
+
+            {errorCode && (
+              <Text
+                as="div"
+                size="1"
+                style={{
+                  fontFamily: 'var(--code-font-family, monospace)',
+                  padding: '2px 8px',
+                  borderRadius: 'var(--radius-1)',
+                  background: 'var(--red-3)',
+                  color: 'var(--red-11)',
+                }}
+              >
+                {errorCode}
+              </Text>
+            )}
+
+            <Text
+              as="div"
+              size="2"
+              style={{ color: 'var(--gray-11)', textAlign: 'center', lineHeight: 1.5 }}
+            >
+              {error}
+            </Text>
+
+            {errorHint && (
+              <Box
+                style={{
+                  width: '100%',
+                  padding: 'var(--space-3)',
+                  borderRadius: 'var(--radius-2)',
+                  background: 'var(--gray-3)',
+                  border: '1px solid var(--gray-6)',
+                }}
+              >
+                <Flex gap="2" align="start">
+                  <span
+                    className="material-icons-outlined"
+                    style={{
+                      fontSize: 16,
+                      color: 'var(--gray-10)',
+                      marginTop: 1,
+                      flexShrink: 0,
+                    }}
+                  >
+                    info
+                  </span>
+                  <Text size="2" style={{ color: 'var(--gray-11)', lineHeight: 1.5 }}>
+                    {errorHint}
+                  </Text>
+                </Flex>
+              </Box>
+            )}
+          </Flex>
         </Box>
       </Flex>
     );

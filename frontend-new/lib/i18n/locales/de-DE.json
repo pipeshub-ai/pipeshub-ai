@@ -1163,6 +1163,18 @@
     "outcomeAllowedLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen.",
     "outcomeDeniedTitle": "Berechtigungen abgelehnt",
     "outcomeDeniedLine1": "Die Anwendung erhielt keinen Zugriff.",
-    "outcomeDeniedLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen."
+    "outcomeDeniedLine2": "Sie k\u00f6nnen dieses Fenster schlie\u00dfen.",
+    "errorTitles": {
+      "invalid_scope": "Ung\u00fcltige Scopes angefordert",
+      "invalid_request": "Ung\u00fcltige Anfrage",
+      "invalid_client": "Unbekannte Anwendung",
+      "server_error": "Serverfehler"
+    },
+    "errorHints": {
+      "invalid_scope": "Die Anwendung hat Scopes angefordert, die entweder nicht erkannt oder f\u00fcr diese OAuth-App nicht erlaubt sind. \u00dcberpr\u00fcfen Sie die erlaubten Scopes in den Entwicklereinstellungen.",
+      "invalid_request": "Die angegebene Redirect-URI stimmt mit keiner registrierten URI f\u00fcr diese Anwendung \u00fcberein. \u00dcberpr\u00fcfen Sie die Redirect-URIs in den Entwicklereinstellungen.",
+      "invalid_client": "Die client_id stimmt mit keiner registrierten OAuth-Anwendung \u00fcberein. \u00dcberpr\u00fcfen Sie die Client-ID in der Konfiguration Ihrer Anwendung.",
+      "server_error": "Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuchen Sie es sp\u00e4ter erneut."
+    }
   }
 }
