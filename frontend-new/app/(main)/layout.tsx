@@ -28,6 +28,7 @@ import { useAuthStore } from "@/lib/store/auth-store"
 import { useMobileSidebarStore } from "@/lib/store/mobile-sidebar-store"
 import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
+import { AuthenticatedSetupGuard } from '@/app/components/ui/setup-guard'
 
 export default function RootLayout({
   children,
@@ -81,11 +82,13 @@ export default function RootLayout({
                 {t('common.rotateLandscape')}
               </Text>
             </div>
-            <AuthGuard>
-              <AppLayout sidebar={sidebar}>
-                {children}
-              </AppLayout>
-            </AuthGuard>
+            <AuthenticatedSetupGuard>
+              <AuthGuard>
+                <AppLayout sidebar={sidebar}>
+                  {children}
+                </AppLayout>
+              </AuthGuard>
+            </AuthenticatedSetupGuard>
           </ThemeProvider>
         </I18nextProvider>
       </body>

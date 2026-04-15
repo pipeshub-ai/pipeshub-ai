@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 
 import { extractApiErrorMessage } from '@/lib/api/api-error';
+import { getApiBaseUrl } from '@/lib/api/base-url';
 
 async function readHttpErrorMessage(response: Response): Promise<string> {
   const status = response.status;
@@ -90,7 +91,7 @@ export default function OAuthCallbackPage() {
           throw new Error('Invalid OAuth state: missing provider.');
         }
 
-        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+        const baseUrl = getApiBaseUrl();
         if (!baseUrl) {
           throw new Error('Configuration error: API base URL is not set.');
         }

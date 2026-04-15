@@ -7,6 +7,7 @@ import i18n from '@/lib/i18n/config';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { ToastContainer } from '@/app/components/feedback';
 import { ThemeProvider, ThemeScript } from '@/app/components/theme-provider';
+import { PublicSetupGuard } from '@/app/components/ui/setup-guard';
 
 export default function PublicLayout({
   children,
@@ -40,7 +41,9 @@ export default function PublicLayout({
       <body>
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
-            {children}
+            <PublicSetupGuard>
+              {children}
+            </PublicSetupGuard>
             <ToastContainer />
           </ThemeProvider>
         </I18nextProvider>

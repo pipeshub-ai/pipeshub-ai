@@ -10,6 +10,7 @@ import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
 } from '@/lib/api/user-account-api-error';
+import { getApiBaseUrl } from '@/lib/api/base-url';
 
 // ─── Local error classification (login-module only) ───────────────────────────
 
@@ -228,7 +229,7 @@ export function useAuthActions({
       typeof window !== 'undefined'
         ? sessionStorage.getItem('auth_session_token')
         : null;
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    const baseUrl = getApiBaseUrl();
     let url = `${baseUrl}/api/v1/saml/signIn?email=${encodeURIComponent(email)}`;
     if (sessionToken) {
       url += `&sessionToken=${encodeURIComponent(sessionToken)}`;

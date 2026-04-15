@@ -2,6 +2,7 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/lib/store/auth-store';
 import { processError } from './api-error';
 import { showErrorToast } from './error-toast';
+import { getApiBaseUrl } from './base-url';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -9,7 +10,6 @@ declare module 'axios' {
   }
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 const API_TIMEOUT = 20000;
 
 // In-memory lock to prevent multiple simultaneous refresh attempts
@@ -36,7 +36,6 @@ const processQueue = (error: Error | null, token: string | null = null) => {
 };
 
 export const apiClient = axios.create({
-  baseURL: API_BASE_URL,
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',
@@ -44,16 +43,16 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
-// Request interceptor - add auth token and request ID
+// Request interceptor - resolve base URL at request time and add auth token
 apiClient.interceptors.request.use(
   (config) => {
+    config.baseURL = getApiBaseUrl();
     const token = useAuthStore.getState().accessToken;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     } else {
       console.warn('No access token found for authenticated request:', config.url);
     }
-    // config.headers['x-request-id'] = generateRequestId();
     return config;
   },
   (error) => Promise.reject(error)
@@ -140,7 +139,7 @@ async function refreshAccessToken(): Promise<boolean> {
       console.log('Attempting token refresh...');
 
       // Call refresh endpoint - using fetch to avoid interceptor loop
-      const response = await fetch(`${API_BASE_URL}/api/v1/userAccount/refresh/token`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/userAccount/refresh/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

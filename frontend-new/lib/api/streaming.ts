@@ -28,8 +28,7 @@
  */
 
 import { useAuthStore } from '@/lib/store/auth-store';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+import { getApiBaseUrl } from './base-url';
 
 export interface StreamingOptions {
   onChunk: (chunk: string) => void;
@@ -55,7 +54,7 @@ export async function streamRequest(
   try {
     const token = useAuthStore.getState().accessToken;
 
-    const response = await fetch(`${API_BASE_URL}${url}`, {
+    const response = await fetch(`${getApiBaseUrl()}${url}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -219,7 +218,7 @@ export async function streamSSERequest<T = unknown>(
   try {
     const token = useAuthStore.getState().accessToken;
 
-    const response = await fetch(`${API_BASE_URL}${url}`, {
+    const response = await fetch(`${getApiBaseUrl()}${url}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

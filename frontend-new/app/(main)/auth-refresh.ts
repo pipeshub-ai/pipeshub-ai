@@ -9,8 +9,7 @@
 
 import { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime'
 import { useAuthStore } from '@/lib/store/auth-store'
-
-const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL
+import { getApiBaseUrl } from '@/lib/api/base-url'
 
 // In-memory lock to prevent multiple simultaneous refresh attempts
 let isRefreshing = false
@@ -44,7 +43,7 @@ export async function refreshAccessToken(): Promise<boolean> {
       console.log('Attempting token refresh...')
 
       // Call the refresh endpoint with refresh_token in Authorization header
-      const response = await fetch(`${BASE_URL}/api/v1/userAccount/refresh/token`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/userAccount/refresh/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

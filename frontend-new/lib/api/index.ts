@@ -1,6 +1,9 @@
 // Axios instance with interceptors
 export { apiClient, default } from './axios-instance';
 
+// Runtime API base URL
+export { getApiBaseUrl, setApiBaseUrl, hasApiBaseUrl, hasStoredApiBaseUrl, clearApiBaseUrl, isTauri } from './base-url';
+
 // SWR fetchers
 export { axiosFetcher, publicFetcher, configuredFetcher } from './fetcher';
 

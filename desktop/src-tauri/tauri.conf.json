@@ -1,0 +1,81 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "PipesHub",
+  "version": "0.1.0",
+  "identifier": "com.pipeshub.desktop",
+  "build": {
+    "beforeDevCommand": "cd ../frontend-new && npm run dev -- --port 3002",
+    "devUrl": "http://localhost:3002",
+    "beforeBuildCommand": "cd ../frontend-new && npm run build",
+    "frontendDist": "../../frontend-new/out"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PipesHub",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' https: http: ws: wss:; img-src 'self' https: http: data: blob:; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;",
+      "dangerousDisableAssetCspModification": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "copyright": "© 2025 PipesHub",
+    "category": "Productivity",
+    "shortDescription": "PipesHub — AI-powered knowledge management",
+    "longDescription": "PipesHub is a self-hosted AI-powered knowledge management platform. This desktop app connects to your PipesHub deployment.",
+    "publisher": "PipesHub",
+    "linux": {
+      "deb": {
+        "depends": [],
+        "desktopTemplate": null,
+        "section": "utils"
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      },
+      "rpm": {
+        "depends": [],
+        "release": "1"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "frameworks": [],
+      "signingIdentity": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": true,
+        "languages": ["English"],
+        "installerIcon": "icons/icon.ico",
+        "headerImage": null
+      },
+      "wix": null
+    }
+  }
+}

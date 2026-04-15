@@ -323,9 +323,19 @@ export class Application {
     this.app.use(requestContextMiddleware);
 
     // CORS - ensure this matches your frontend domain
+    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(o => o.trim()) || ['http://localhost:3001'];
+    const appLogger = this.logger;
+    appLogger.info(`CORS allowed origins: ${JSON.stringify(allowedOrigins)}`);
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
+        origin: (origin, callback) => {
+          if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+          } else {
+            appLogger.warn(`CORS blocked request from origin: ${origin}`);
+            callback(new Error(`Origin ${origin} not allowed by CORS`));
+          }
+        },
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],

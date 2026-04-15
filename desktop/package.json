@@ -1,0 +1,22 @@
+{
+  "name": "pipeshub-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:debug": "tauri build --debug",
+    "tauri:icon": "tauri icon icons/app-icon.png",
+    "build:mac-dmg": "tauri build --bundles dmg",
+    "build:mac-app": "tauri build --bundles app",
+    "build:win-nsis": "tauri build --bundles nsis",
+    "build:win-msi": "tauri build --bundles msi",
+    "build:linux-deb": "tauri build --bundles deb",
+    "build:linux-rpm": "tauri build --bundles rpm",
+    "build:linux-appimage": "tauri build --bundles appimage"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -2,6 +2,9 @@
 const nextConfig = {
     // output: 'export',
     trailingSlash: true,
+    images: {
+        unoptimized: true,
+    },
     /**
      * Static export does not emit per-slug callback HTML. Rewrites map
      * `/toolsets/oauth/callback/:slug` → this page so `next dev` matches Netlify `_redirects`.
