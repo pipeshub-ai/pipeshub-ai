@@ -162,3 +162,49 @@ export class EntitiesEventProducer {
     }
   }
 }
+
+@injectable()
+export class AiConfigEventProducer {
+  private readonly topic = 'ai-config-events';
+
+  constructor(
+    @inject('MessageProducer') private readonly producer: IMessageProducer,
+    @inject('Logger') private readonly logger: Logger,
+  ) {}
+
+  async start(): Promise<void> {
+    if (!this.producer.isConnected()) {
+      await this.producer.connect();
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.producer.isConnected()) {
+      await this.producer.disconnect();
+    }
+  }
+
+  isConnected(): boolean {
+    return this.producer.isConnected();
+  }
+
+  async publishEvent(event: Event): Promise<void> {
+    const message: StreamMessage<string> = {
+      key: event.eventType,
+      value: JSON.stringify(event),
+      headers: {
+        eventType: event.eventType,
+        timestamp: event.timestamp.toString(),
+      },
+    };
+
+    try {
+      await this.producer.publish(this.topic, message);
+      this.logger.info(
+        `Published event: ${event.eventType} to topic ${this.topic}`,
+      );
+    } catch (error) {
+      this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+    }
+  }
+}

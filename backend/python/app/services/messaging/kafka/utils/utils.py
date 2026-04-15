@@ -104,7 +104,7 @@ class KafkaUtils:
     async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for AI config events"""
         return await KafkaUtils._create_base_consumer_config(
-            app_container, KafkaConstants.CLIENT_ID_AICONFIG_CONSUMER.value, KafkaConstants.GROUP_ID_AICONFIG.value, [Topic.ENTITY_EVENTS.value]
+            app_container, KafkaConstants.CLIENT_ID_AICONFIG_CONSUMER.value, KafkaConstants.GROUP_ID_AICONFIG.value, [Topic.AI_CONFIG_EVENTS.value]
         )
 
 

@@ -38,6 +38,7 @@ import axios from 'axios';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { ConfigService } from '../services/updateConfig.service';
 import {
+  AiConfigEventProducer,
   ConnectorPublicUrlChangedEvent,
   EntitiesEventProducer,
   Event,
@@ -2347,7 +2348,7 @@ export const setMetricsCollectionRemoteServer =
     }
   };
 
-async function sendEvent(eventService: EntitiesEventProducer, event: Event) {
+async function sendEvent(eventService: EntitiesEventProducer | AiConfigEventProducer, event: Event) {
   try {
     await eventService.start();
     await eventService.publishEvent(event);
@@ -2360,7 +2361,7 @@ async function sendEvent(eventService: EntitiesEventProducer, event: Event) {
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: AiConfigEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2736,7 +2737,7 @@ export const getAvailableModelsByType =
 export const addAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: AiConfigEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2924,7 +2925,7 @@ export const addAIModelProvider =
 export const updateAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: AiConfigEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -3114,7 +3115,7 @@ export const updateAIModelProvider =
 export const deleteAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: AiConfigEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -3233,7 +3234,7 @@ export const deleteAIModelProvider =
 export const updateDefaultAIModel =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: AiConfigEventProducer,
     appConfig: AppConfig,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

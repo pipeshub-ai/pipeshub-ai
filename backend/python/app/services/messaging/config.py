@@ -25,6 +25,7 @@ class Topic(str, Enum):
 
     RECORD_EVENTS = "record-events"
     ENTITY_EVENTS = "entity-events"
+    AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"
     HEALTH_CHECK = "health-check"
 

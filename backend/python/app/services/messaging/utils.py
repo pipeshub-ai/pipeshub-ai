@@ -201,5 +201,5 @@ class MessagingUtils:
             app_container,
             "aiconfig_consumer_client",
             "aiconfig_consumer_group",
-            [Topic.ENTITY_EVENTS.value],
+            [Topic.AI_CONFIG_EVENTS.value],
         )

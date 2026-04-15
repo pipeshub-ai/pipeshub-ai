@@ -9,6 +9,7 @@ import { Logger } from './logger.service';
 export const REQUIRED_TOPICS: TopicDefinition[] = [
   { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'entity-events', numPartitions: 1, replicationFactor: 1 },
+  { topic: 'ai-config-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'sync-events', numPartitions: 1, replicationFactor: 1 },
   { topic: 'health-check', numPartitions: 1, replicationFactor: 1 },
 ];

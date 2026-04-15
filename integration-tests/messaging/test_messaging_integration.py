@@ -25,6 +25,7 @@ from messaging.conftest import (
     consume_redis_messages,
 )
 from messaging.payloads import (
+    ALL_AI_CONFIG_EVENTS,
     ALL_ENTITY_EVENTS,
     ALL_RECORD_EVENTS,
     ALL_SYNC_EVENTS,
@@ -341,6 +342,7 @@ class TestKafkaProducerConsumerE2E:
         suffix = uuid.uuid4().hex[:8]
         record_topic = f"e2e-kafka-records-{suffix}"
         entity_topic = f"e2e-kafka-entity-{suffix}"
+        ai_config_topic = f"e2e-kafka-aiconfig-{suffix}"
         sync_topic = f"e2e-kafka-sync-{suffix}"
         brokers = _kafka_brokers().split(",")
 
@@ -354,6 +356,7 @@ class TestKafkaProducerConsumerE2E:
         # Build events per topic
         record_events = [factory() for factory in ALL_RECORD_EVENTS]
         entity_events = [factory() for factory in ALL_ENTITY_EVENTS]
+        ai_config_events = [factory() for factory in ALL_AI_CONFIG_EVENTS]
         sync_events = [factory() for factory in ALL_SYNC_EVENTS]
 
         # One consumer per topic
@@ -361,16 +364,19 @@ class TestKafkaProducerConsumerE2E:
         received_per_topic: dict[str, list[StreamMessage]] = {
             record_topic: [],
             entity_topic: [],
+            ai_config_topic: [],
             sync_topic: [],
         }
         done_events: dict[str, asyncio.Event] = {
             record_topic: asyncio.Event(),
             entity_topic: asyncio.Event(),
+            ai_config_topic: asyncio.Event(),
             sync_topic: asyncio.Event(),
         }
         expected_counts = {
             record_topic: len(record_events),
             entity_topic: len(entity_events),
+            ai_config_topic: len(ai_config_events),
             sync_topic: len(sync_events),
         }
 
@@ -389,6 +395,7 @@ class TestKafkaProducerConsumerE2E:
             for t, events_list in [
                 (record_topic, record_events),
                 (entity_topic, entity_events),
+                (ai_config_topic, ai_config_events),
                 (sync_topic, sync_events),
             ]:
                 cfg = KafkaConsumerConfig(
@@ -413,6 +420,10 @@ class TestKafkaProducerConsumerE2E:
                 await producer.send_message(
                     entity_topic, event, key=event["payload"].get("orgId", "")
                 )
+            for event in ai_config_events:
+                await producer.send_message(
+                    ai_config_topic, event, key=event["payload"].get("orgId", "")
+                )
             for event in sync_events:
                 await producer.send_message(sync_topic, event, key=event["eventType"])
 
@@ -424,12 +435,14 @@ class TestKafkaProducerConsumerE2E:
 
             assert len(received_per_topic[record_topic]) == len(record_events)
             assert len(received_per_topic[entity_topic]) == len(entity_events)
+            assert len(received_per_topic[ai_config_topic]) == len(ai_config_events)
             assert len(received_per_topic[sync_topic]) == len(sync_events)
 
             # Verify event types match
             for t, events_list in [
                 (record_topic, record_events),
                 (entity_topic, entity_events),
+                (ai_config_topic, ai_config_events),
                 (sync_topic, sync_events),
             ]:
                 received_types = {m.eventType for m in received_per_topic[t]}
