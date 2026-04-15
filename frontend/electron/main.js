@@ -1,7 +1,12 @@
 const { app, BrowserWindow, protocol, net, nativeImage, session, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { LocalSyncManager } = require('./local-sync/manager');
+
+// One ID per app process so the renderer can mark "URL confirmed for this launch"
+// in localStorage without mismatch after full page loads (preload re-runs each time).
+const APP_LAUNCH_ID = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 
 // Directory where `next build` (static export) output lands after electron:copy
 const STATIC_DIR = path.join(__dirname, 'out');
@@ -68,7 +73,8 @@ function createWindow() {
 
   // Load the static export entry point via the custom protocol.
   // Start at /chat/ — the existing guards handle all cases:
-  //   • ServerUrlGuard: shows setup screen if no API URL is stored yet
+  //   • ServerUrlGuard: prompts for the API URL once per launch (pre-filled
+  //     with the last saved value; editable)
   //   • AuthGuard: redirects to /login if not authenticated
   //   • If already authenticated: renders chat immediately (no round-trip via login)
   mainWindow.loadURL(`${SCHEME}://./chat/`);
@@ -178,6 +184,80 @@ app.whenReady().then(() => {
         status: localSyncManager.getStatus(payload.connectorId),
       };
     }
+  });
+
+  // ── Streaming fetch proxy ────────────────────────────────────────────────
+  // The renderer runs under the app:// origin. Chromium enforces CORS on
+  // fetch(), and in particular the ReadableStream returned by
+  // `response.body.getReader()` is unreliable for long-lived SSE responses
+  // from a cross-origin backend. Rather than disable webSecurity (unsafe),
+  // we proxy streaming requests through the main process using Electron's
+  // `net.fetch`, which has no CORS enforcement, and forward chunks to the
+  // renderer over IPC. The renderer reconstructs a ReadableStream and feeds
+  // it to the existing SSE parser unchanged.
+  const activeStreams = new Map(); // streamId -> AbortController
+
+  ipcMain.handle('stream/start', async (event, payload) => {
+    const { streamId, url, method, headers, body } = payload || {};
+    if (!streamId || !url) return;
+
+    const controller = new AbortController();
+    activeStreams.set(streamId, controller);
+
+    const wc = event.sender;
+    const send = (channel, data) => {
+      if (!wc.isDestroyed()) wc.send(channel, data);
+    };
+
+    try {
+      const response = await net.fetch(url, {
+        method: method || 'GET',
+        headers: headers || {},
+        body: body != null ? body : undefined,
+        signal: controller.signal,
+      });
+
+      send('stream/headers', {
+        streamId,
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries()),
+      });
+
+      if (!response.body) {
+        send('stream/end', { streamId });
+        activeStreams.delete(streamId);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // `value` is a Uint8Array — transferable over IPC as a plain buffer.
+        send('stream/chunk', { streamId, chunk: value });
+      }
+      send('stream/end', { streamId });
+    } catch (err) {
+      const isAbort = err && (err.name === 'AbortError' || controller.signal.aborted);
+      send('stream/error', {
+        streamId,
+        name: isAbort ? 'AbortError' : (err?.name || 'Error'),
+        message: err?.message || 'Stream request failed',
+      });
+    } finally {
+      activeStreams.delete(streamId);
+    }
+  });
+
+  ipcMain.on('stream/abort', (_event, payload) => {
+    const controller = activeStreams.get(payload?.streamId);
+    if (controller) controller.abort();
+  });
+
+  ipcMain.on('pipeshub-get-launch-id', (event) => {
+    event.returnValue = APP_LAUNCH_ID;
   });
 
   ipcMain.handle('local-sync/replay', async (_event, payload) => {
