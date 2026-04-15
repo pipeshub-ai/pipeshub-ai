@@ -772,6 +772,7 @@
         "createApp": "App erstellen",
         "cancel": "Abbrechen",
         "nextDisabledTooltip": "Geben Sie einen App-Namen und mindestens eine gültige Redirect-URI ein.",
+        "createDisabledScopesTooltip": "Wählen Sie mindestens einen Berechtigungs-Scope, um die Anwendung zu erstellen.",
         "tabGeneral": "Allgemein",
         "tabPermissions": "Berechtigungen & Scopes",
         "appNameLabel": "App-Name",
@@ -814,6 +815,7 @@
         "errorRedirectRequired": "Mindestens eine Redirect-URI ist erforderlich.",
         "errorRedirectInvalid": "Jede Redirect-URI muss eine gültige http(s)-URL sein.",
         "errorGrantRequired": "Wählen Sie mindestens einen Grant-Typ.",
+        "errorScopeRequired": "Wählen Sie mindestens einen Berechtigungs-Scope.",
         "errorOptionalUrlInvalid": "Optionale URLs müssen, sofern angegeben, gültige http(s)-Adressen sein.",
         "grantRequiredTitle": "Grant-Typ erforderlich",
         "grantRequiredDescription": "Mindestens ein Grant-Typ muss ausgewählt bleiben."

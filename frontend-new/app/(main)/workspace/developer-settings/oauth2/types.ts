@@ -73,7 +73,7 @@ export interface CreateOAuthClientApiResponse {
   app: OAuthClient & { clientSecret?: string };
 }
 
-/** PATCH /api/v1/oauth-clients/:id */
+/** PUT /api/v1/oauth-clients/:id */
 export interface UpdateOAuthClientPayload {
   name: string;
   description?: string;

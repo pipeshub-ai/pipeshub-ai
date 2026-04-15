@@ -647,6 +647,7 @@
         "createApp": "Create App",
         "cancel": "Cancel",
         "nextDisabledTooltip": "Enter an app name and at least one valid redirect URI.",
+        "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
         "appNameLabel": "App name",
@@ -689,6 +690,7 @@
         "errorRedirectRequired": "At least one redirect URI is required.",
         "errorRedirectInvalid": "Each redirect URI must be a valid http(s) URL.",
         "errorGrantRequired": "Select at least one grant type.",
+        "errorScopeRequired": "Select at least one permission scope.",
         "errorOptionalUrlInvalid": "Optional URLs must be valid http(s) addresses when provided.",
         "grantRequiredTitle": "Grant type required",
         "grantRequiredDescription": "At least one grant type must stay selected."

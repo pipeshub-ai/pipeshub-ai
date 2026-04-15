@@ -513,10 +513,15 @@ export function ManageOAuthApplicationPanel({
     isValidOAuthRedirectUri(u)
   );
 
-  const formStructurallyValid =
+  const baseGeneralValid =
     Boolean(name.trim()) &&
     grantTypes.size > 0 &&
     (!usesAuthorizationCode || hasValidRedirect);
+
+  const scopesRequirementMet =
+    totalScopeCount === 0 || selectedScopes.size > 0;
+
+  const formStructurallyValid = baseGeneralValid && scopesRequirementMet;
 
   const primaryDisabled =
     detailLoading ||
@@ -529,6 +534,9 @@ export function ManageOAuthApplicationPanel({
   const primaryTooltip = useMemo(() => {
     if (detailLoading || !detail || !clientId || isSaving) return undefined;
     if (!formStructurallyValid) {
+      if (baseGeneralValid && !scopesRequirementMet) {
+        return t('workspace.oauth2.create.errorScopeRequired');
+      }
       return t('workspace.oauth2.manageApplication.saveDisabledInvalid');
     }
     if (!isDirty) {
@@ -541,12 +549,18 @@ export function ManageOAuthApplicationPanel({
     clientId,
     isSaving,
     formStructurallyValid,
+    baseGeneralValid,
+    scopesRequirementMet,
     isDirty,
     t,
   ]);
 
   const handleSave = useCallback(async () => {
     if (!clientId || !detail) return;
+    if (totalScopeCount > 0 && selectedScopes.size === 0) {
+      setActiveTab('scopes');
+      return;
+    }
     if (!validateForm()) {
       setActiveTab('general');
       return;
@@ -625,6 +639,7 @@ export function ManageOAuthApplicationPanel({
     onSaved,
     onOpenChange,
     usesAuthorizationCode,
+    totalScopeCount,
   ]);
 
   const handleRegenerateSecret = useCallback(async () => {
@@ -1175,6 +1190,11 @@ export function ManageOAuthApplicationPanel({
                         total: totalScopeCount,
                       })}
                     </Text>
+                    {totalScopeCount > 0 && selectedScopeCount === 0 && (
+                      <Text size="2" style={{ color: 'var(--amber-11)', marginTop: 4 }}>
+                        {t('workspace.oauth2.create.errorScopeRequired')}
+                      </Text>
+                    )}
                   </Flex>
                   <Button
                     type="button"

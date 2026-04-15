@@ -21,7 +21,7 @@ export default function BotsPage() {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
-  }, [isProfileInitialized, isAdmin, router]);
+  }, [isProfileInitialized, isAdmin]);
 
   const {
     slackBotConfigs,

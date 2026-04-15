@@ -647,6 +647,7 @@
         "createApp": "ऐप बनाएँ",
         "cancel": "रद्द करें",
         "nextDisabledTooltip": "ऐप नाम और कम से कम एक मान्य रीडायरेक्ट URI दर्ज करें।",
+        "createDisabledScopesTooltip": "अनुप्रयोग बनाने के लिए कम से कम एक अनुमति स्कोप चुनें।",
         "tabGeneral": "सामान्य",
         "tabPermissions": "अनुमतियाँ और स्कोप",
         "appNameLabel": "ऐप नाम",
@@ -689,6 +690,7 @@
         "errorRedirectRequired": "कम से कम एक रीडायरेक्ट URI आवश्यक है।",
         "errorRedirectInvalid": "प्रत्येक रीडायरेक्ट URI मान्य http(s) URL होना चाहिए।",
         "errorGrantRequired": "कम से कम एक ग्रांट प्रकार चुनें।",
+        "errorScopeRequired": "कम से कम एक अनुमति स्कोप चुनें।",
         "errorOptionalUrlInvalid": "वैकल्पिक URL, यदि दिए गए हों, तो मान्य http(s) पते होने चाहिए।",
         "grantRequiredTitle": "ग्रांट प्रकार आवश्यक",
         "grantRequiredDescription": "कम से कम एक ग्रांट प्रकार चयनित रहना चाहिए।"

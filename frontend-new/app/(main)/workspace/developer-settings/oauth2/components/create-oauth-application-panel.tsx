@@ -369,6 +369,9 @@ export function CreateOAuthApplicationPanel({
       setActiveTab('general');
       return;
     }
+    if (totalScopeCount > 0 && selectedScopeCount === 0) {
+      return;
+    }
     setIsCreating(true);
     try {
       const res = await Oauth2Api.createOAuthClient(buildPayload());
@@ -400,7 +403,7 @@ export function CreateOAuthApplicationPanel({
     } finally {
       setIsCreating(false);
     }
-  }, [validateGeneral, buildPayload, addToast, t, onCreated]);
+  }, [validateGeneral, buildPayload, addToast, t, onCreated, totalScopeCount, selectedScopeCount]);
 
   const onPrimaryClick = useCallback(() => {
     if (createdCredentials) {
@@ -438,6 +441,16 @@ export function CreateOAuthApplicationPanel({
 
   const primaryTooltipGeneral = primaryDisabledGeneral
     ? t('workspace.oauth2.create.nextDisabledTooltip')
+    : undefined;
+
+  const primaryDisabledScopes =
+    scopesLoading ||
+    (totalScopeCount > 0 && selectedScopeCount === 0);
+
+  const primaryTooltipScopes = primaryDisabledScopes
+    ? scopesLoading
+      ? undefined
+      : t('workspace.oauth2.create.createDisabledScopesTooltip')
     : undefined;
 
   const documentationAction = (
@@ -511,11 +524,19 @@ export function CreateOAuthApplicationPanel({
           : t('workspace.oauth2.create.cancel')
       }
       primaryDisabled={
-        createdCredentials ? false : activeTab === 'general' ? primaryDisabledGeneral : false
+        createdCredentials
+          ? false
+          : activeTab === 'general'
+            ? primaryDisabledGeneral
+            : primaryDisabledScopes
       }
       primaryLoading={createdCredentials ? false : isCreating}
       primaryTooltip={
-        createdCredentials ? undefined : activeTab === 'general' ? primaryTooltipGeneral : undefined
+        createdCredentials
+          ? undefined
+          : activeTab === 'general'
+            ? primaryTooltipGeneral
+            : primaryTooltipScopes
       }
       onPrimaryClick={onPrimaryClick}
       onSecondaryClick={onSecondaryPanelClick}
@@ -862,6 +883,11 @@ export function CreateOAuthApplicationPanel({
                       total: totalScopeCount,
                     })}
                   </Text>
+                  {totalScopeCount > 0 && selectedScopeCount === 0 && (
+                    <Text size="2" style={{ color: 'var(--amber-11)', marginTop: 4 }}>
+                      {t('workspace.oauth2.create.errorScopeRequired')}
+                    </Text>
+                  )}
                 </Flex>
                 <Button
                   type="button"
