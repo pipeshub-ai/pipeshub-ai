@@ -44,6 +44,14 @@ interface WorkspaceRightPanelProps {
   primaryTooltip?: string;
 }
 
+// Toasts render in a document.body portal; Radix Dialog treats them as ΓÇ£outsideΓÇ¥
+// unless we ignore pointer/focus there (otherwise dismissing a toast closes the panel).
+const TOAST_REGION_SELECTOR = '[data-ph-toast-region]';
+
+function isInsideToastRegion(node: EventTarget | null | undefined): boolean {
+  return node instanceof Element && Boolean(node.closest(TOAST_REGION_SELECTOR));
+}
+
 // ========================================
 // Component
 // ========================================
@@ -71,6 +79,22 @@ export function WorkspaceRightPanel({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
+        onPointerDownOutside={(event) => {
+          const original = (
+            event as CustomEvent<{ originalEvent: PointerEvent }>
+          ).detail?.originalEvent;
+          if (isInsideToastRegion(original?.target ?? null)) {
+            event.preventDefault();
+          }
+        }}
+        onFocusOutside={(event) => {
+          const original = (
+            event as CustomEvent<{ originalEvent: FocusEvent }>
+          ).detail?.originalEvent;
+          if (isInsideToastRegion(original?.relatedTarget ?? null)) {
+            event.preventDefault();
+          }
+        }}
         style={{
           position: 'fixed',
           top: 10,

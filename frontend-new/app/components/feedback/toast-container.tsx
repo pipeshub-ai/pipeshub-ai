@@ -83,6 +83,7 @@ export function ToastContainer() {
       `}</style>
 
       <Box
+        data-ph-toast-region=""
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
