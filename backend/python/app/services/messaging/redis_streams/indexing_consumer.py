@@ -274,6 +274,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Using id "0" tells Redis to redeliver everything in our own PEL —
             # the only way a same-client_id restart can resume in-flight work.
             while self.running:
+                active_count = self._get_active_task_count()
+                if active_count >= messaging_env.max_pending_indexing_tasks:
+                    await asyncio.sleep(0.5)
+                    continue
                 try:
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
