@@ -21,6 +21,7 @@ describe('ConfigurationManager Routes', () => {
   let mockAppConfig: any
   let mockConfigService: any
   let mockEntityEventService: any
+  let mockAiConfigEventService: any
   let mockSyncEventService: any
 
   beforeEach(() => {
@@ -57,6 +58,12 @@ describe('ConfigurationManager Routes', () => {
       stop: sinon.stub().resolves(),
     }
 
+    mockAiConfigEventService = {
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+      stop: sinon.stub().resolves(),
+    }
+
     mockSyncEventService = {
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -71,7 +78,7 @@ describe('ConfigurationManager Routes', () => {
     container.bind<KeyValueStoreService>('KeyValueStoreService').toConstantValue(mockKeyValueStore)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
     container.bind<EntitiesEventProducer>('EntitiesEventProducer').toConstantValue(mockEntityEventService)
-    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockEntityEventService)
+    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService)
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventService)
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)

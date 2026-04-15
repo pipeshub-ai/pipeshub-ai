@@ -41,6 +41,11 @@ describe('Configuration Manager Routes - handler coverage', () => {
       start: sinon.stub().resolves(),
     }
 
+    const mockAiConfigEventService = {
+      publishEvent: sinon.stub().resolves(),
+      start: sinon.stub().resolves(),
+    }
+
     const mockSyncEventService = {
       publishEvent: sinon.stub().resolves(),
       start: sinon.stub().resolves(),
@@ -60,7 +65,7 @@ describe('Configuration Manager Routes - handler coverage', () => {
     container.bind('KeyValueStoreService').toConstantValue(mockKvStore as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
     container.bind('EntitiesEventProducer').toConstantValue(mockEntityEventService as any)
-    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockEntityEventService as any)
+    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
     container.bind(PrometheusService).toConstantValue(mockPrometheusService as any)

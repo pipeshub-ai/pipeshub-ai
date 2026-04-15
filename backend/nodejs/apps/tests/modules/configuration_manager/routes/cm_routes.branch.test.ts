@@ -38,6 +38,7 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
     }
 
     const mockEntityEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
+    const mockAiConfigEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
     const mockSyncEventService = { publishEvent: sinon.stub().resolves(), start: sinon.stub().resolves() }
     const mockConfigService = { updateConfig: sinon.stub().resolves(), getConfig: sinon.stub().resolves({}) }
 
@@ -45,7 +46,7 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
     container.bind('KeyValueStoreService').toConstantValue(mockKvStore as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
     container.bind('EntitiesEventProducer').toConstantValue(mockEntityEventService as any)
-    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockEntityEventService as any)
+    container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
     container.bind(PrometheusService).toConstantValue({ recordActivity: sinon.stub() } as any)
