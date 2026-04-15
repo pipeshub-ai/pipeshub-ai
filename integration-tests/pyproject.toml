@@ -17,6 +17,7 @@ dependencies = [
   "azure-storage-file-share>=12.13.0",
   "aiokafka>=0.9.0",
   "redis>=5.0.0",
+  "cryptography>=41.0.0",
   "pydantic>=2.12.5",
   "pyyaml>=6.0",
 ]
