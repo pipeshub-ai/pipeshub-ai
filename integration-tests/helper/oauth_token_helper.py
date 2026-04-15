@@ -45,7 +45,7 @@ _CACHE_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
 
 def _derive_key(secret_key: str) -> bytes:
     """SHA-256 hash of SECRET_KEY → 32-byte AES key (hex round-trip)."""
-    return bytes.fromhex(hashlib.sha256(secret_key.encode()).hexdigest())
+    return hashlib.sha256(secret_key.encode()).digest()
 
 
 def _encrypt(key: bytes, text: str) -> str:
@@ -110,13 +110,19 @@ def _write_credentials_to_redis(
     if raw:
         try:
             encrypted_str = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeError(
+                f"Existing Redis KV config for connector {connector_id!r} is not valid JSON. "
+                "Aborting to prevent data loss."
+            ) from exc
+        try:
             existing_config = json.loads(_decrypt(key_bytes, encrypted_str))
-        except Exception:
-            logger.warning(
-                "Could not read/decrypt existing KV config for connector %s; "
-                "credentials will be written into an empty config skeleton.",
-                connector_id,
-            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to decrypt existing Redis KV config for connector {connector_id!r}. "
+                "Aborting to prevent accidental data loss. "
+                "Verify that SECRET_KEY matches the backend's value."
+            ) from exc
 
     # Merge — only replace the credentials block
     existing_config["credentials"] = {
@@ -183,13 +189,19 @@ def _write_credentials_to_etcd(
     if raw:
         try:
             encrypted_str = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeError(
+                f"Existing etcd KV config for connector {connector_id!r} is not valid JSON. "
+                "Aborting to prevent data loss."
+            ) from exc
+        try:
             existing_config = json.loads(_decrypt(key_bytes, encrypted_str))
-        except Exception:
-            logger.warning(
-                "Could not read/decrypt existing etcd config for connector %s; "
-                "credentials will be written into an empty config skeleton.",
-                connector_id,
-            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to decrypt existing etcd KV config for connector {connector_id!r}. "
+                "Aborting to prevent accidental data loss. "
+                "Verify that SECRET_KEY matches the backend's value."
+            ) from exc
 
     existing_config["credentials"] = {
         "access_token": access_token,
