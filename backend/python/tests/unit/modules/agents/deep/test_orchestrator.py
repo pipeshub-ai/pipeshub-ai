@@ -235,7 +235,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": ["jira.search"]}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
         assert "retrieval" in result.lower()
 
     def test_without_knowledge_with_tools(self):
@@ -261,7 +261,7 @@ class TestBuildKnowledgeContext:
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
 
 
 # ============================================================================
@@ -1133,11 +1133,11 @@ class TestBuildKnowledgeContextExtra:
         assert "No Knowledge Base" in result
 
     def test_knowledge_true_tools_empty(self):
-        """has_knowledge True + no tools -> Knowledge Base Available."""
+        """has_knowledge True + no tools -> Knowledge Sources Available."""
         log = _mock_log()
         state = {"has_knowledge": True, "tools": []}
         result = _build_knowledge_context(state, log)
-        assert "Knowledge Base Available" in result
+        assert "Knowledge Sources Available" in result
 
 
 # ============================================================================
@@ -1231,8 +1231,8 @@ class TestOrchestratorNodeAdditional:
         assert "john@example.com" in last_msg.content
 
     @pytest.mark.asyncio
-    async def test_time_context_appended(self):
-        """When time context is available, it's appended to query (line 137)."""
+    async def test_time_context_in_system_prompt(self):
+        """When time context is available, it is included in the system prompt."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
         mock_response = MagicMock()
@@ -1257,9 +1257,13 @@ class TestOrchestratorNodeAdditional:
              patch("app.modules.agents.deep.orchestrator.send_keepalive", new_callable=AsyncMock):
             result = await orchestrator_node(state, config, writer)
 
-        last_msg = llm.ainvoke.call_args[0][0][-1]
-        assert "2026-03-24" in last_msg.content
-        assert "US/Pacific" in last_msg.content
+        messages = llm.ainvoke.call_args[0][0]
+        system_content = messages[0].content
+        assert "2026-03-24" in system_content
+        assert "US/Pacific" in system_content
+        last_msg = messages[-1]
+        assert "2026-03-24" not in last_msg.content
+        assert "US/Pacific" not in last_msg.content
 
     @pytest.mark.asyncio
     async def test_reasoning_streamed_when_present(self):
@@ -1463,3 +1467,213 @@ class TestBuildUserContextAdditional:
         state = {"user_info": {"lastName": "OnlyLast"}, "user_email": ""}
         result = _build_user_context(state)
         assert "OnlyLast" in result
+
+
+# ============================================================================
+# 19. _build_knowledge_context — connector routing case matrix
+# ============================================================================
+
+class TestBuildKnowledgeContextRoutingMatrix:
+    """
+    Exhaustive case matrix for knowledge-base + connector routing guidance.
+
+    Config key:
+      KB   = Knowledge Base (no connector_id filter needed)
+      J    = Jira indexed connector
+      C    = Confluence indexed connector
+      S    = Slack indexed connector
+
+    Every case verifies WHAT the orchestrator's prompt tells the LLM to do,
+    not just that some keyword is present.
+    """
+
+    _KB  = {"displayName": "Company Wiki", "type": "KB"}
+    _KBI = {
+        "displayName": "Private Docs", "type": "KB",
+        "filters": {"recordGroups": ["rg-private-1"]},
+    }
+    _J   = {"displayName": "Jira Project", "type": "jira",       "connectorId": "jira-cid-1"}
+    _C   = {"displayName": "Confluence",   "type": "confluence", "connectorId": "conf-cid-2"}
+    _S   = {"displayName": "Slack WS",     "type": "slack",      "connectorId": "slack-cid-3"}
+
+    def _ctx(self, knowledge, has_knowledge=True, tools=None):
+        return _build_knowledge_context(
+            {
+                "has_knowledge": has_knowledge,
+                "agent_knowledge": knowledge,
+                "tools": tools or [],
+            },
+            _mock_log(),
+        )
+
+    # ── Case 1: KB-only ─────────────────────────────────────────────────────
+
+    def test_kb_only_shows_kb_label(self):
+        """KB-only: KB label appears in the context."""
+        result = self._ctx([self._KB])
+        assert "Company Wiki" in result
+
+    def test_kb_only_with_ids_shows_collection_ids(self):
+        """KB-only with filters: collection_ids must appear in routing block."""
+        result = self._ctx([self._KBI])
+        assert "rg-private-1" in result
+        assert "collection_ids" in result
+
+    def test_kb_only_routing_block_present(self):
+        """KB-only: routing block (Reason then Route) IS generated."""
+        result = self._ctx([self._KB])
+        assert "KB-only configuration" in result
+
+    def test_kb_only_omit_guidance_when_no_ids(self):
+        """KB-only without collection_ids: guidance says to omit filter."""
+        result = self._ctx([self._KB])
+        assert "omit" in result.lower() or "KB-only" in result
+
+    # ── Case 2: Single connector, no KB ─────────────────────────────────────
+
+    def test_single_connector_routing_block_present(self):
+        """Single connector: routing block must appear."""
+        result = self._ctx([self._J])
+        assert "How to route retrieval" in result
+
+    def test_single_connector_id_in_identity_table(self):
+        """Single connector: connector_id appears in the identity table."""
+        result = self._ctx([self._J])
+        assert "jira-cid-1" in result
+
+    def test_single_connector_routing_decision_shown(self):
+        """Single connector: routing decision block must appear."""
+        result = self._ctx([self._J])
+        assert "Step 2 — Route based on what Step 1 found" in result
+
+    def test_single_connector_count_is_one(self):
+        result = self._ctx([self._J])
+        assert "1 connector" in result
+
+    def test_single_connector_no_kb_only_note(self):
+        """Single connector without KB: KB-only note must NOT appear."""
+        result = self._ctx([self._J])
+        assert "KB-only configuration" not in result
+
+    # ── Case 3: Multiple connectors, no KB ──────────────────────────────────
+
+    def test_multi_connector_all_ids_in_routing_block(self):
+        """Multi-connector: every connector_id appears in routing guidance."""
+        result = self._ctx([self._J, self._C])
+        assert "jira-cid-1" in result
+        assert "conf-cid-2" in result
+
+    def test_multi_connector_count_correct(self):
+        result = self._ctx([self._J, self._C, self._S])
+        assert "3 connector" in result
+
+    def test_multi_connector_all_connectors_example(self):
+        """Multi-connector: 'All sources' example section present."""
+        result = self._ctx([self._J, self._C])
+        assert "All sources" in result
+
+    def test_multi_connector_specific_example(self):
+        """Multi-connector: 'Specific source' example section present."""
+        result = self._ctx([self._J, self._C])
+        assert "Specific source" in result
+
+    def test_multi_connector_default_search_all_rule(self):
+        """Multi-connector: guidance must say to search ALL when uncertain."""
+        result = self._ctx([self._J, self._C])
+        assert "ALL" in result or "all" in result.lower()
+
+    def test_multi_connector_all_labels_in_identity(self):
+        """Multi-connector: all connector labels appear."""
+        result = self._ctx([self._J, self._C, self._S])
+        assert "Jira Project" in result
+        assert "Confluence" in result
+        assert "Slack WS" in result
+
+    # ── Case 4: KB + single connector ───────────────────────────────────────
+
+    def test_kb_and_single_connector_kb_listed(self):
+        """KB + connector: KB name appears in the KB collections section."""
+        result = self._ctx([self._KB, self._J])
+        assert "Company Wiki" in result
+
+    def test_kb_and_single_connector_routing_block_present(self):
+        """KB + connector: connector routing block must appear."""
+        result = self._ctx([self._KB, self._J])
+        assert "How to route retrieval" in result
+
+    def test_kb_and_single_connector_connector_id_present(self):
+        result = self._ctx([self._KB, self._J])
+        assert "jira-cid-1" in result
+
+    def test_kb_and_single_connector_no_kb_only_note(self):
+        """KB + connector: KB-only note must NOT appear (connector IS present)."""
+        result = self._ctx([self._KB, self._J])
+        assert "KB-only configuration" not in result
+
+    # ── Case 5: KB + multiple connectors ────────────────────────────────────
+
+    def test_kb_and_multi_connector_kb_and_all_connectors_present(self):
+        """KB + multi-connector: KB AND all connector routing guidance shown."""
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "Company Wiki" in result
+        assert "jira-cid-1" in result
+        assert "conf-cid-2" in result
+
+    def test_kb_and_multi_connector_routing_block_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "How to route retrieval" in result
+
+    def test_kb_and_multi_connector_all_example_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "All sources" in result
+
+    def test_kb_and_multi_connector_specific_example_present(self):
+        result = self._ctx([self._KB, self._J, self._C])
+        assert "Specific source" in result
+
+    # ── Case 6: No knowledge at all (has_knowledge=False) ───────────────────
+
+    def test_no_knowledge_no_tools_early_return(self):
+        """has_knowledge=False, no tools → 'No Knowledge or Tools' message."""
+        result = self._ctx([], has_knowledge=False, tools=[])
+        assert "No Knowledge" in result
+
+    def test_no_knowledge_with_tools_early_return(self):
+        """has_knowledge=False, tools present → 'No Knowledge Base' message."""
+        result = self._ctx([], has_knowledge=False, tools=["jira.search"])
+        assert "No Knowledge Base" in result
+        assert "Do NOT create retrieval" in result
+
+    # ── Case 7: has_knowledge=True but no detailed knowledge entries ─────────
+
+    def test_has_knowledge_true_but_empty_list_fallback(self):
+        """has_knowledge=True but agent_knowledge=[] → generic fallback message."""
+        result = self._ctx([], has_knowledge=True)
+        # Should still mention knowledge and suggest a retrieval task
+        assert "Knowledge Sources Available" in result
+
+    # ── Case 8: Retrieval task quality guidance always present ───────────────
+
+    def test_retrieval_quality_guidance_present(self):
+        """The 'rich retrieval task descriptions' guidance must always appear."""
+        for knowledge in [
+            [self._KB],
+            [self._J],
+            [self._KB, self._J],
+            [self._J, self._C],
+        ]:
+            result = self._ctx(knowledge)
+            assert "rich retrieval task descriptions" in result, \
+                f"Quality guidance missing for knowledge config: {knowledge}"
+
+    # ── Case 9: Orchestrator task format in examples ─────────────────────────
+
+    def test_orchestrator_task_example_has_domains_retrieval(self):
+        """Generated task examples must include 'domains': ['retrieval']."""
+        result = self._ctx([self._J])
+        assert '"retrieval"' in result or "'retrieval'" in result
+
+    def test_orchestrator_task_example_connector_id_embedded(self):
+        """Connector_id must appear in the task description example."""
+        result = self._ctx([self._J])
+        assert "jira-cid-1" in result

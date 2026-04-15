@@ -1,6 +1,17 @@
+import asyncio
+import functools
+import logging
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Dict, List, Optional
+from typing import AsyncContextManager, Optional
+
+# Import Neo4j exceptions with fallback for compatibility
+try:
+    from neo4j.exceptions import TransientError
+    NEO4J_AVAILABLE = True
+except ImportError:
+    TransientError = None
+    NEO4J_AVAILABLE = False
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.data_store import (
@@ -22,11 +33,81 @@ from app.models.entities import (
     Record,
     RecordGroup,
     User,
-    UserGroup,
 )
 from app.models.permission import Permission
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+def _is_deadlock_error(exception: Exception) -> bool:
+    """
+    Check if exception is a Neo4j deadlock error.
+    Module-level function used by both the decorator and GraphDataStore.
+    """
+    if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
+        return "DeadlockDetected" in str(exception)
+
+    exception_str = str(exception)
+    exception_type = type(exception).__name__
+
+    return (
+        "TransientError" in exception_type and
+        "DeadlockDetected" in exception_str
+    )
+
+
+def retry_on_deadlock(max_retries: int = 3):
+    """
+    Decorator that retries an async function on Neo4j deadlock errors.
+
+    When a deadlock is detected, the entire function is re-executed from scratch,
+    which naturally creates a fresh transaction on retry.
+
+    Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
+
+    Args:
+        max_retries: Maximum number of attempts (default: 3)
+
+    Usage:
+        @retry_on_deadlock(max_retries=3)
+        async def on_new_records(self, records):
+            async with self.data_store_provider.transaction() as tx_store:
+                # transaction code here
+                pass
+    """
+    if max_retries < 1:
+        raise ValueError("max_retries must be at least 1")
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            logger = logging.getLogger(func.__module__)
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+
+                    if _is_deadlock_error(e) and attempt < max_retries - 1:
+                        backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
+                        logger.warning(
+                            f"Deadlock detected in {func.__name__} "
+                            f"(attempt {attempt + 1}/{max_retries}), "
+                            f"retrying in {backoff:.1f}s: {str(e)[:200]}"
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        if _is_deadlock_error(e):
+                            logger.error(
+                                f"Deadlock persists in {func.__name__} "
+                                f"after {max_retries} attempts: {str(e)[:200]}"
+                            )
+                        raise
+
+            raise last_exception
+        return wrapper
+    return decorator
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -46,7 +127,7 @@ class GraphTransactionStore(TransactionStore):
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.logger = graph_provider.logger
 
-    async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool | None:
+    async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
     async def get_record_by_path(self, connector_id: str, path: str) -> Optional[Record]:
@@ -66,7 +147,7 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
 
-    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
+    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: list[str], limit: Optional[int] = None, offset: int = 0) -> list[Record]:
         """Get records by status. Returns properly typed Record instances."""
         return await self.graph_provider.get_records_by_status(org_id, connector_id, status_filters, limit, offset, transaction=self.txn)
 
@@ -118,7 +199,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
-    async def delete_nodes(self, keys: List[str], collection: str) -> None:
+    async def delete_nodes(self, keys: list[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
@@ -142,14 +223,14 @@ class GraphTransactionStore(TransactionStore):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: List[str]
+        relationship_types: list[str]
     ) -> int:
         """Delete edges by relationship types from a record."""
         return await self.graph_provider.delete_edges_by_relationship_types(
             from_id, from_collection, collection, relationship_types, transaction=self.txn
         )
 
-    async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
+    async def delete_nodes_and_edges(self, keys: list[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
 
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
@@ -161,18 +242,18 @@ class GraphTransactionStore(TransactionStore):
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
         return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
         users_dict = await self.graph_provider.get_users(org_id, active=active)
         return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
-    async def get_app_users(self, org_id: str, connector_id: str) -> List[AppUser]:
+    async def get_app_users(self, org_id: str, connector_id: str) -> list[AppUser]:
         app_users_dict = await self.graph_provider.get_app_users(org_id, connector_id)
         return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
-    async def get_user_groups(self, connector_id: str, org_id: str) -> List[AppUserGroup]:
+    async def get_user_groups(self, connector_id: str, org_id: str) -> list[AppUserGroup]:
         return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)
 
-    async def batch_upsert_people(self, people: List[Person]) -> None:
+    async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
     async def create_user_group_hierarchy(
@@ -277,10 +358,10 @@ class GraphTransactionStore(TransactionStore):
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
         return await self.graph_provider.get_first_user_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> List[User]:
+    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
         return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[Dict]:
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
@@ -299,7 +380,7 @@ class GraphTransactionStore(TransactionStore):
         connector_id: str,
         parent_external_record_id: str,
         record_type: Optional[str] = None
-    ) -> List[Record]:
+    ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         return await self.graph_provider.get_records_by_parent(
             connector_id, parent_external_record_id, record_type, transaction=self.txn
@@ -313,7 +394,7 @@ class GraphTransactionStore(TransactionStore):
         """Get the creator user for a connector/app by connectorId."""
         return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
 
-    async def batch_upsert_records(self, records: List[Record]) -> None:
+    async def batch_upsert_records(self, records: list[Record]) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edge).
 
@@ -321,7 +402,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_records(records, transaction=self.txn)
 
-    async def batch_upsert_record_groups(self, record_groups: List[RecordGroup]) -> None:
+    async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         """
         Batch upsert record groups.
 
@@ -329,13 +410,13 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
 
-    async def batch_upsert_record_permissions(self, record_id: str, permissions: List[Permission]) -> None:
+    async def batch_upsert_record_permissions(self, record_id: str, permissions: list[Permission]) -> None:
         return await self.graph_provider.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
 
-    async def batch_create_user_app_edges(self, edges: List[Dict]) -> int:
+    async def batch_create_user_app_edges(self, edges: list[dict]) -> int:
         return await self.graph_provider.batch_create_user_app_edges(edges)
 
-    async def batch_upsert_user_groups(self, user_groups: List[AppUserGroup]) -> None:
+    async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         """
         Batch upsert user groups.
 
@@ -343,7 +424,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_user_groups(user_groups, transaction=self.txn)
 
-    async def batch_upsert_app_roles(self, app_roles: List[AppRole]) -> None:
+    async def batch_upsert_app_roles(self, app_roles: list[AppRole]) -> None:
         """
         Batch upsert app roles.
 
@@ -351,7 +432,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_app_roles(app_roles, transaction=self.txn)
 
-    async def batch_upsert_app_users(self, users: List[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
         """
         Batch upsert app users.
 
@@ -366,19 +447,19 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
 
-    async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
+    async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
 
-    async def batch_upsert_domains(self, domains: List[Domain]) -> None:
+    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
         return await self.graph_provider.batch_upsert_domains(domains, transaction=self.txn)
 
-    async def batch_upsert_anyone(self, anyone: List[Anyone]) -> None:
+    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
         return await self.graph_provider.batch_upsert_anyone(anyone, transaction=self.txn)
 
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
+    async def batch_upsert_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
         return await self.graph_provider.batch_upsert_anyone_with_link(anyone_with_link, transaction=self.txn)
 
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
+    async def batch_upsert_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
         return await self.graph_provider.batch_upsert_anyone_same_org(anyone_same_org, transaction=self.txn)
 
     async def commit(self) -> None:
@@ -463,41 +544,41 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
         )
-    async def get_sync_point(self, sync_point_key: str) -> Optional[Dict]:
+    async def get_sync_point(self, sync_point_key: str) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
-    async def get_all_orgs(self) -> List[Org]:
+    async def get_all_orgs(self) -> list[Org]:
         return await self.graph_provider.get_all_orgs()
 
-    async def create_user_groups(self, user_groups: List[AppUserGroup]) -> None:
+    async def create_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         return await self.graph_provider.batch_upsert_nodes([user_group.to_arango_base_user_group() for user_group in user_groups],
                     collection=CollectionNames.GROUPS.value, transaction=self.txn)
 
-    async def create_users(self, users: List[AppUser]) -> None:
+    async def create_users(self, users: list[AppUser]) -> None:
         return await self.graph_provider.batch_upsert_nodes([user.to_arango_base_user() for user in users],
                     collection=CollectionNames.USERS.value, transaction=self.txn)
 
-    async def create_orgs(self, orgs: List[Org]) -> None:
+    async def create_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_nodes([org.to_arango_base_org() for org in orgs],
                     collection=CollectionNames.ORGS.value, transaction=self.txn)
 
-    async def create_domains(self, domains: List[Domain]) -> None:
+    async def create_domains(self, domains: list[Domain]) -> None:
         return await self.graph_provider.batch_upsert_nodes([domain.to_arango_base_domain() for domain in domains],
                     collection=CollectionNames.DOMAINS.value, transaction=self.txn)
 
-    async def create_anyone(self, anyone: List[Anyone]) -> None:
+    async def create_anyone(self, anyone: list[Anyone]) -> None:
         return await self.graph_provider.batch_upsert_nodes([anyone_item.to_arango_base_anyone() for anyone_item in anyone],
                     collection=CollectionNames.ANYONE.value, transaction=self.txn)
 
-    async def create_anyone_with_link(self, anyone_with_link: List[AnyoneWithLink]) -> None:
+    async def create_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
         return await self.graph_provider.batch_upsert_nodes([anyone_with_link_item.to_arango_base_anyone_with_link() for anyone_with_link_item in anyone_with_link],
                     collection=CollectionNames.ANYONE_WITH_LINK.value, transaction=self.txn)
 
-    async def create_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
+    async def create_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
         return await self.graph_provider.batch_upsert_nodes([anyone_same_org_item.to_arango_base_anyone_same_org() for anyone_same_org_item in anyone_same_org],
                     collection=CollectionNames.ANYONE_SAME_ORG.value, transaction=self.txn)
 
-    async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
+    async def create_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
@@ -506,11 +587,11 @@ class GraphTransactionStore(TransactionStore):
     async def read_sync_point(self, sync_point_key: str) -> None:
         return await self.graph_provider.get_sync_point(sync_point_key, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
-    async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict) -> None:
+    async def update_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def batch_upsert_record_group_permissions(
-        self, record_group_id: str, permissions: List[Permission], connector_id: str
+        self, record_group_id: str, permissions: list[Permission], connector_id: str
     ) -> None:
         """
         Batch upsert permissions for a record group.
@@ -579,25 +660,25 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
+    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
-    async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
+    async def batch_create_entity_relations(self, edges: list[dict]) -> None:
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
         return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict]:
         """Get all edges pointing to a specific node"""
         return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
         """Get all edges originating from a specific node"""
         return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
         field: str, direction: str = "outbound"
-    ) -> List:
+    ) -> list:
         """Get specific field values from related nodes"""
         return await self.graph_provider.get_related_node_field(
             node_id, edge_collection, target_collection, field, direction, transaction=self.txn
@@ -607,13 +688,13 @@ class GraphTransactionStore(TransactionStore):
         """Delete a record and all its relations"""
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
 
-    async def process_file_permissions(self, org_id: str, file_key: str, permissions: List[Dict]) -> None:
+    async def process_file_permissions(self, org_id: str, file_key: str, permissions: list[dict]) -> None:
         """Process file permissions"""
         return await self.graph_provider.process_file_permissions(org_id, file_key, permissions, transaction=self.txn)
 
     async def get_nodes_by_field_in(
-        self, collection: str, field: str, values: List, return_fields: List[str] = None
-    ) -> List[Dict]:
+        self, collection: str, field: str, values: list, return_fields: list[str] = None
+    ) -> list[dict]:
         """Get nodes where field value is in list"""
         return await self.graph_provider.get_nodes_by_field_in(
             collection, field, values, return_fields, transaction=self.txn
@@ -628,9 +709,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_nodes_by_filters(
         self,
         collection: str,
-        filters: Dict,
-        return_fields: Optional[List[str]] = None
-    ) -> List[Dict]:
+        filters: dict,
+        return_fields: Optional[list[str]] = None
+    ) -> list[dict]:
         """Get nodes from a collection matching multiple field filters."""
         return await self.graph_provider.get_nodes_by_filters(
             collection=collection,

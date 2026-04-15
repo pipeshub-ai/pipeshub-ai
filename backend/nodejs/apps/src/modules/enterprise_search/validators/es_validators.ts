@@ -56,6 +56,14 @@ export const enterpriseSearchCreateSchema = z.object({
       .string()
       .min(1, { message: 'Model friendly name is required' })
       .optional(),
+    timezone: z
+      .string()
+      .min(1, { message: 'Timezone must be a non-empty string' })
+      .optional(),
+    currentTime: z
+      .string()
+      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
+      .optional(),
   }),
 });
 
@@ -113,6 +121,14 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     modelFriendlyName: z
       .string()
       .min(1, { message: 'Model friendly name is required' })
+      .optional(),
+    timezone: z
+      .string()
+      .min(1, { message: 'Timezone must be a non-empty string' })
+      .optional(),
+    currentTime: z
+      .string()
+      .datetime({ message: 'currentTime must be an ISO 8601 datetime string' })
       .optional(),
   }),
 });

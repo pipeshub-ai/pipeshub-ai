@@ -10909,4 +10909,202 @@ describe('Enterprise Search Controller', () => {
       expect(written).to.include('error')
     })
   })
+   // -----------------------------------------------------------------------
+  // Agent Mode Tests - chatMode parsing with agent:mode format
+  // -----------------------------------------------------------------------
+  describe('streamChat - agent mode parsing', () => {
+    it('should parse agent:auto as agentMode=true and chatMode=auto', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(async function (this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return mockStream
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent:auto',
+        },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2), email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('auto')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await promise
+    })
+
+    it('should parse agent:quick as agentMode=true and chatMode=quick', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(async function (this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return mockStream
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent:quick',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('quick')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await promise
+    })
+
+    it('should parse plain agent as agentMode=true and chatMode=auto', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(async function (this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return mockStream
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'agent',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('auto')
+      expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await promise
+    })
+
+    it('should not set agentMode when chatMode does not include agent', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(async function (this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return mockStream
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+          chatMode: 'quick',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('quick')
+      expect(capturedUri).to.not.include('/agent/agentIdPlaceholder')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await promise
+    })
+
+    it('should default to quick mode when chatMode is not provided', async () => {
+      const handler = streamChat(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'test query' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any = null
+      let capturedUri: string = ''
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(async function (this: any) {
+        capturedBody = JSON.parse((this as any).body)
+        capturedUri = (this as any).uri
+        return mockStream
+      })
+
+      const req = createMockRequest({
+        body: {
+          query: 'test query',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody).to.not.be.null
+      expect(capturedBody.chatMode).to.equal('quick')
+      expect(capturedUri).to.not.include('/agent/agentIdPlaceholder')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await promise
+    })
+  })
 })

@@ -1,0 +1,4 @@
+# Netlify (static export): only `/toolsets/oauth/callback/index.html` exists. IdPs redirect to
+# `/toolsets/oauth/callback/<slug>?code=…` — forward here so the app loads (query preserved).
+# Other static hosts need an equivalent rule (e.g. CloudFront/S3 website redirect).
+/toolsets/oauth/callback/:slug /toolsets/oauth/callback/ 302

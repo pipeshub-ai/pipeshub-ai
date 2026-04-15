@@ -585,6 +585,12 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
       return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
+    case 'answer_chunk':
+    case 'restreaming':
+    case 'tool_call':
+    case 'tool_success':
+    case 'tool_error':
+    case 'tool_execution_complete':
       return null;
     default:
       return 'Processing ...';
@@ -1324,11 +1330,14 @@ const ChatInterface = () => {
             query: trimmedInput,
             modelKey: currentModel?.modelKey,
             modelName: currentModel?.modelName,
-            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
-              ? currentModel.modelFriendlyName.trim() 
+            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim()
+              ? currentModel.modelFriendlyName.trim()
               : undefined,
             chatMode: chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
+            // Timezone and current time for LLM context
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            currentTime: new Date().toISOString(),
           },
           wasCreatingNewConversation
         );

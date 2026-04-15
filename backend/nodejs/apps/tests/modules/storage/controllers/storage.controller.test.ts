@@ -7,7 +7,6 @@ import {
   BadRequestError,
   NotFoundError,
   InternalServerError,
-  ForbiddenError,
 } from '../../../../src/libs/errors/http.errors'
 import * as utils from '../../../../src/modules/storage/utils/utils'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
@@ -764,7 +763,7 @@ describe('StorageController', () => {
       expect(error).to.be.instanceOf(BadRequestError)
     })
 
-    it('should throw ForbiddenError for file format mismatch', async () => {
+    it('should throw BadRequestError for file format mismatch', async () => {
       const mockDoc = { isVersionedFile: true, extension: '.docx' }
       sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
 
@@ -780,7 +779,8 @@ describe('StorageController', () => {
       await controller.uploadNextVersionDocument(req, mockRes, mockNext)
       expect(mockNext.calledOnce).to.be.true
       const error = mockNext.firstCall.args[0]
-      expect(error).to.be.instanceOf(ForbiddenError)
+      expect(error).to.be.instanceOf(BadRequestError)
+      expect(error.message).to.include('does not match the original document extension')
     })
   })
 
@@ -888,7 +888,7 @@ describe('StorageController', () => {
       expect(mockNext.calledOnce).to.be.true
     })
 
-    it('should return true when document has changed', async () => {
+    it('should return true when versioned document has changed', async () => {
       const mockAdapter = {
         getBufferFromStorageService: sinon.stub()
           .onFirstCall().resolves({ data: Buffer.from('new') })
@@ -896,6 +896,7 @@ describe('StorageController', () => {
       }
       sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
       const mockDoc = {
+        isVersionedFile: true,
         versionHistory: [{ version: 0 }],
       }
       sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
@@ -911,13 +912,14 @@ describe('StorageController', () => {
       expect(mockRes.json.calledWith(true)).to.be.true
     })
 
-    it('should return false when document has not changed', async () => {
+    it('should return false when versioned document has not changed', async () => {
       const buffer = Buffer.from('same')
       const mockAdapter = {
         getBufferFromStorageService: sinon.stub().resolves({ data: buffer }),
       }
       sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
       const mockDoc = {
+        isVersionedFile: true,
         versionHistory: [{ version: 0 }],
       }
       sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
@@ -931,6 +933,72 @@ describe('StorageController', () => {
       await controller.documentDiffChecker(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
       expect(mockRes.json.calledWith(false)).to.be.true
+    })
+
+    // Review-fix added a short-circuit for non-versioned documents that uses
+    // mutationCount as the change signal instead of the buffer comparison.
+    it('should return true for non-versioned doc when mutationCount > 1', async () => {
+      const mockDoc = {
+        isVersionedFile: false,
+        versionHistory: [],
+        mutationCount: 2,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      const initSpy = sinon.stub(controller, 'initializeStorageAdapter')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.documentDiffChecker(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockRes.json.calledWith(true)).to.be.true
+      // It must short-circuit before initializing the adapter / reading buffers
+      expect(initSpy.called).to.be.false
+    })
+
+    it('should return false for non-versioned doc when mutationCount <= 1', async () => {
+      const mockDoc = {
+        isVersionedFile: false,
+        versionHistory: [],
+        mutationCount: 1,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      const initSpy = sinon.stub(controller, 'initializeStorageAdapter')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.documentDiffChecker(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockRes.json.calledWith(false)).to.be.true
+      expect(initSpy.called).to.be.false
+    })
+
+    it('should short-circuit for versioned doc with empty versionHistory using mutationCount', async () => {
+      const mockDoc = {
+        isVersionedFile: true,
+        versionHistory: [],
+        mutationCount: 3,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      const initSpy = sinon.stub(controller, 'initializeStorageAdapter')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.documentDiffChecker(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockRes.json.calledWith(true)).to.be.true
+      expect(initSpy.called).to.be.false
     })
 
     it('should throw NotFoundError when document does not exist', async () => {
@@ -1815,6 +1883,819 @@ describe('StorageController', () => {
 
       expect(mockNext.calledOnce).to.be.true
       expect(mockNext.firstCall.args[0].message).to.include('Invalid storage type')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // createPlaceholderDocument - fullDocumentPath construction
+  // -------------------------------------------------------------------------
+  describe('createPlaceholderDocument - fullDocumentPath construction', () => {
+    it('should prefix documentPath with orgId/PipesHub when documentPath is provided', async () => {
+      const createStub = sinon.stub(DocumentModel, 'create').resolves({ _id: 'doc-1' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 'local' }))
+
+      const req = {
+        body: {
+          documentName: 'test',
+          extension: 'pdf',
+          isVersionedFile: false,
+          documentPath: 'custom/folder',
+        },
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+      } as any
+
+      await controller.createPlaceholderDocument(req, mockRes, mockNext)
+
+      const docInfo = createStub.firstCall.args[0] as any
+      expect(docInfo.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/custom/folder')
+    })
+
+    it('should set documentPath to orgId/PipesHub when no documentPath provided', async () => {
+      const createStub = sinon.stub(DocumentModel, 'create').resolves({ _id: 'doc-1' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 'local' }))
+
+      const req = {
+        body: {
+          documentName: 'test',
+          extension: 'pdf',
+          isVersionedFile: false,
+        },
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+      } as any
+
+      await controller.createPlaceholderDocument(req, mockRes, mockNext)
+
+      const docInfo = createStub.firstCall.args[0] as any
+      expect(docInfo.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // uploadNextVersionDocument - extension normalization
+  // -------------------------------------------------------------------------
+  describe('uploadNextVersionDocument - extension normalization', () => {
+    it('should allow case-insensitive extension matching (.PDF vs .pdf)', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.PDF',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('old') }),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'url' }),
+      } as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'v0-url' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 's3' }))
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
+          currentVersionNote: 'v0',
+          nextVersionNote: 'v1',
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+    })
+
+    it('should allow extension without leading dot to match (pdf vs .pdf)', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: 'pdf',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('old') }),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'url' }),
+      } as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'v0-url' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 's3' }))
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // uploadNextVersionDocument - v0 flow (empty versionHistory)
+  // -------------------------------------------------------------------------
+  describe('uploadNextVersionDocument - v0 flow for empty versionHistory', () => {
+    it('should save current as v0 then upload new version successfully', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('old-content') }),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'new-url' }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'v0-url' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 's3' }))
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new-content'), originalname: 'test.pdf', size: 11, mimetype: 'application/pdf' },
+          currentVersionNote: 'initial version',
+          nextVersionNote: 'update',
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect((controller.cloneDocument as sinon.SinonStub).calledOnce).to.be.true
+      expect(mockDoc.versionHistory.length).to.equal(2)
+      expect(mockDoc.versionHistory[0].version).to.equal(0)
+      expect(mockDoc.versionHistory[1].version).to.equal(1)
+      expect(mockDoc.save.calledOnce).to.be.true
+    })
+
+    it('should throw when v0 buffer retrieval fails', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 500, msg: 'storage error' }),
+        uploadDocumentToStorageService: sinon.stub(),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1, mimetype: 'application/pdf' },
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+    })
+
+    it('should throw when v0 clone returns undefined', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('old') }),
+        uploadDocumentToStorageService: sinon.stub(),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves(undefined)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('x'), originalname: 'test.pdf', size: 1, mimetype: 'application/pdf' },
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // uploadNextVersionDocument - existing versions with change detection
+  // -------------------------------------------------------------------------
+  describe('uploadNextVersionDocument - existing versions with change detection', () => {
+    it('should save intermediate version when document has changed', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [{ version: 0, s3: { url: 'v0-url' }, size: 50 }] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 1,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('current') }),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'new-url' }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'compareDocuments').resolves(false)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'intermediate-url' } as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
+          currentVersionNote: 'auto-save',
+          nextVersionNote: 'manual update',
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect((controller.cloneDocument as sinon.SinonStub).calledOnce).to.be.true
+      expect(mockDoc.versionHistory.length).to.equal(3)
+    })
+
+    it('should skip intermediate version when document has not changed', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [{ version: 0, s3: { url: 'v0-url' }, size: 50 }] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 1,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub(),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'new-url' }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'compareDocuments').resolves(true)
+      sinon.stub(controller, 'cloneDocument')
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect((controller.cloneDocument as sinon.SinonStub).called).to.be.false
+      expect(mockDoc.versionHistory.length).to.equal(2)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // uploadNextVersionDocument - S3 and AzureBlob URL update
+  // -------------------------------------------------------------------------
+  describe('uploadNextVersionDocument - S3 and AzureBlob URL update', () => {
+    it('should set document.s3 when storageVendor is S3', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+        s3: undefined as any,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('old') }),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'https://s3-current-url' }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'v0-url' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 's3' }))
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockDoc.s3).to.deep.equal({ url: 'https://s3-current-url' })
+    })
+
+    it('should set document.azureBlob when storageVendor is AzureBlob', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [] as any[],
+        storageVendor: StorageVendor.AzureBlob,
+        mutationCount: 0,
+        sizeInBytes: 100,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+        azureBlob: undefined as any,
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('old') }),
+        uploadDocumentToStorageService: sinon.stub().resolves({ statusCode: 200, data: 'https://azure-current-url' }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'v0-url' } as any)
+      mockKeyValueStoreService.get.resolves(JSON.stringify({ storageType: 'azureBlob' }))
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        body: {
+          fileBuffer: { buffer: Buffer.from('new'), originalname: 'test.pdf', size: 3, mimetype: 'application/pdf' },
+        },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.uploadNextVersionDocument(req, mockRes, mockNext)
+
+      expect(mockDoc.azureBlob).to.deep.equal({ url: 'https://azure-current-url' })
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // rollBackToPreviousVersion - version parsing and validation
+  // -------------------------------------------------------------------------
+  describe('rollBackToPreviousVersion - version parsing and validation', () => {
+    it('should read version from query param', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, size: 50 },
+          { version: 1, size: 100 },
+          { version: 2, size: 150 },
+        ] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 3,
+        sizeInBytes: 150,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('v0-content') }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'rollback-url' } as any)
+      sinon.stub(utils, 'isValidStorageVendor').returns(true)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 0 },
+        body: { note: 'rollback to v0' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockAdapter.getBufferFromStorageService.firstCall.args[1]).to.equal(0)
+    })
+
+    it('should fall back to body version when query is empty', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, size: 50 },
+          { version: 1, size: 100 },
+          { version: 2, size: 150 },
+        ] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 3,
+        sizeInBytes: 150,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('v1-content') }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'rollback-url' } as any)
+      sinon.stub(utils, 'isValidStorageVendor').returns(true)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: {},
+        // RollBackToPreviousVersionSchema requires body.version to be a number
+        body: { version: 1, note: 'rollback to v1' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockAdapter.getBufferFromStorageService.firstCall.args[1]).to.equal(1)
+    })
+
+    it('should throw BadRequestError when version is undefined', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        isVersionedFile: true,
+        versionHistory: [{ version: 0 }],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: {},
+        body: { note: 'rollback' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(mockNext.firstCall.args[0].message).to.include('version is required for rollback')
+    })
+
+    it('should throw BadRequestError when version >= currentVersion - 1', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        isVersionedFile: true,
+        versionHistory: [{ version: 0 }, { version: 1 }],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 1 },
+        body: { note: 'rollback' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(mockNext.firstCall.args[0].message).to.include(
+        'Cannot rollback to version 1: current latest is version 1',
+      )
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // rollBackToPreviousVersion - non-versioned document check (fixed logic)
+  // -------------------------------------------------------------------------
+  describe('rollBackToPreviousVersion - non-versioned document check', () => {
+    it('should throw BadRequestError for non-versioned document', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        isVersionedFile: false,
+        versionHistory: [],
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: { version: '0' },
+        body: { note: 'rollback' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(mockNext.firstCall.args[0].message).to.include('non-versioned')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // rollBackToPreviousVersion - success path and storageVendor usage
+  // -------------------------------------------------------------------------
+  describe('rollBackToPreviousVersion - success path', () => {
+    it('should rollback and use document.storageVendor for versionHistory key', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, s3: { url: 'v0-url' }, size: 50 },
+          { version: 1, s3: { url: 'v1-url' }, size: 100 },
+          { version: 2, s3: { url: 'v2-url' }, size: 150 },
+        ] as any[],
+        storageVendor: StorageVendor.S3,
+        mutationCount: 3,
+        sizeInBytes: 150,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('v0-content') }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'rollback-url' } as any)
+      sinon.stub(utils, 'isValidStorageVendor').returns(true)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 0 },
+        body: { note: 'rollback to v0' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockDoc.versionHistory.length).to.equal(4)
+      const newEntry = mockDoc.versionHistory[3]
+      expect(newEntry.version).to.equal(3)
+      expect(newEntry[StorageVendor.S3]).to.deep.equal({ url: 'rollback-url' })
+      expect(newEntry.note).to.equal('rollback to v0')
+      expect(mockDoc.sizeInBytes).to.equal(50)
+      expect(mockDoc.mutationCount).to.equal(4)
+      expect(mockDoc.save.called).to.be.true
+    })
+
+    it('should throw BadRequestError for invalid storageVendor', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        extension: '.pdf',
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, size: 50 },
+          { version: 1, size: 100 },
+          { version: 2, size: 150 },
+        ],
+        storageVendor: 'invalid_vendor',
+        mutationCount: 3,
+        sizeInBytes: 150,
+        documentName: 'test',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(utils, 'getDocumentInfo').resolves({ document: mockDoc } as any)
+
+      const mockAdapter = {
+        getBufferFromStorageService: sinon.stub().resolves({ statusCode: 200, data: Buffer.from('content') }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+      sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'url' } as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        // Post-validation, query.version is already coerced to a number
+        query: { version: 0 },
+        body: { note: 'rollback' },
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+        headers: {},
+      } as any
+
+      await controller.rollBackToPreviousVersion(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(mockNext.firstCall.args[0].message).to.include('Invalid storage type')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // uploadDirectDocument - versioned vs non-versioned path and basePath dedup
+  // -------------------------------------------------------------------------
+  describe('uploadDirectDocument - path construction', () => {
+    it('should include /current/ in path for versioned file', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        storageVendor: StorageVendor.S3,
+        extension: '.pdf',
+        isVersionedFile: true,
+        documentName: 'report',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+
+      const mockAdapter = {
+        generatePresignedUrlForDirectUpload: sinon.stub().resolves({
+          statusCode: 200,
+          data: { url: 'https://bucket.s3.amazonaws.com/org/PipesHub/doc-1/current/report.pdf?signed=true' },
+        }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.uploadDirectDocument(req, mockRes, mockNext)
+
+      const calledPath = mockAdapter.generatePresignedUrlForDirectUpload.firstCall.args[0]
+      expect(calledPath).to.include('/current/')
+      expect(calledPath).to.equal('org/PipesHub/doc-1/current/report.pdf')
+    })
+
+    it('should omit /current/ in path for non-versioned file', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        storageVendor: StorageVendor.S3,
+        extension: '.pdf',
+        isVersionedFile: false,
+        documentName: 'report',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+
+      const mockAdapter = {
+        generatePresignedUrlForDirectUpload: sinon.stub().resolves({
+          statusCode: 200,
+          data: { url: 'https://bucket.s3.amazonaws.com/org/PipesHub/doc-1/report.pdf?signed=true' },
+        }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.uploadDirectDocument(req, mockRes, mockNext)
+
+      const calledPath = mockAdapter.generatePresignedUrlForDirectUpload.firstCall.args[0]
+      expect(calledPath).to.not.include('/current/')
+      expect(calledPath).to.equal('org/PipesHub/doc-1/report.pdf')
+    })
+
+    it('should not double-append documentId when path already ends with it', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub/doc-1',
+        storageVendor: StorageVendor.S3,
+        extension: '.pdf',
+        isVersionedFile: false,
+        documentName: 'report',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+
+      const mockAdapter = {
+        generatePresignedUrlForDirectUpload: sinon.stub().resolves({
+          statusCode: 200,
+          data: { url: 'https://bucket.s3.amazonaws.com/path?signed=true' },
+        }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.uploadDirectDocument(req, mockRes, mockNext)
+
+      const calledPath = mockAdapter.generatePresignedUrlForDirectUpload.firstCall.args[0]
+      expect(calledPath).to.equal('org/PipesHub/doc-1/report.pdf')
+      expect(calledPath).to.not.include('doc-1/doc-1')
+    })
+
+    it('should handle extension without leading dot', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        documentPath: 'org/PipesHub',
+        storageVendor: StorageVendor.S3,
+        extension: 'pdf',
+        isVersionedFile: false,
+        documentName: 'report',
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+
+      const mockAdapter = {
+        generatePresignedUrlForDirectUpload: sinon.stub().resolves({
+          statusCode: 200,
+          data: { url: 'https://bucket.s3.amazonaws.com/path?signed=true' },
+        }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+        headers: {},
+      } as any
+
+      await controller.uploadDirectDocument(req, mockRes, mockNext)
+
+      const calledPath = mockAdapter.generatePresignedUrlForDirectUpload.firstCall.args[0]
+      expect(calledPath).to.equal('org/PipesHub/doc-1/report.pdf')
     })
   })
 })

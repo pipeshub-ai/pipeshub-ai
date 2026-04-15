@@ -1220,6 +1220,32 @@ describe('UserAccountController', () => {
       expect(result.data).to.equal('mail sent');
       expect(mockMailService.sendMail.calledOnce).to.be.true;
     });
+
+    it('should use /reset-password#token= hash fragment format in the link', async () => {
+      const user = {
+        _id: 'u1',
+        email: 'user@example.com',
+        orgId: 'o1',
+        fullName: 'Test User',
+      };
+
+      sinon.stub(Org, 'findOne').resolves({
+        shortName: 'TestOrg',
+        registeredName: 'Test Organization',
+      } as any);
+
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendForgotPasswordEmail(user);
+
+      const mailCall = mockMailService.sendMail.firstCall.args[0];
+      const link: string = mailCall.templateData.link;
+
+      // Must use hash fragment (#token=), never query param (?token=)
+      expect(link).to.match(/\/reset-password#token=.+/);
+      expect(link).to.not.include('?token=');
+      expect(link).to.not.include('&token=');
+    });
   });
 
   describe('generateAndSendLoginOtp', () => {

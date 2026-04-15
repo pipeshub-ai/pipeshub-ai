@@ -1187,7 +1187,7 @@ export class UserController {
           templateData: {
             invitee: user?.fullName,
             orgName: org?.shortName || org?.registeredName,
-            link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
+            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
           },
         });
         if (result.statusCode !== 200) {
@@ -1388,7 +1388,7 @@ export class UserController {
             templateData: {
               invitee: req.user?.fullName,
               orgName: org?.shortName || org?.registeredName,
-              link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
+              link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
             },
           });
           if (result.statusCode !== 200) {
@@ -1475,7 +1475,7 @@ export class UserController {
             templateData: {
               invitee: req.user?.fullName,
               orgName: org?.shortName || org?.registeredName,
-              link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
+              link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
             },
           });
           if (result.statusCode !== 200) {
@@ -1731,7 +1731,7 @@ export class UserController {
           this.config.scopedJwtSecret,
         );
 
-      const validateEmailLink = `${this.config.frontendUrl}/reset-email?token=${validateEmailToken}`;
+      const validateEmailLink = `${this.config.frontendUrl}/reset-email#token=${validateEmailToken}`;
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       const emailSentResponse = await this.mailService.sendMail({
         emailTemplateType: 'resetEmail',

@@ -192,7 +192,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
       const s3Url =
-        version === undefined || version === 0
+        version === undefined
           ? document.s3?.url
           : document.versionHistory?.[version]?.s3?.url;
 
@@ -501,9 +501,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
    */
   private extractKeyFromUrl(url: string): string {
     try {
-      // Create regex pattern matching the bucket and region exactly
+
       const urlPattern = new RegExp(
-        `https?://${this.bucketName}.s3.${this.region}.amazonaws.com/(.+)`,
+        `https?://${this.bucketName}\\.s3\\.(?:${this.region}\\.)?amazonaws\\.com/(.+)`,
       );
       const match = url.match(urlPattern);
 
