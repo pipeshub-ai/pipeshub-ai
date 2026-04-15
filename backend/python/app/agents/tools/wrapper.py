@@ -465,13 +465,9 @@ class RegistryToolWrapper(BaseTool):
         try:
             # Extract arguments - arun can be called with args[0] as dict or **kwargs
             if args and isinstance(args[0], dict):
-                arguments = dict(args[0])
+                arguments = args[0]
             else:
-                arguments = dict(kwargs) if kwargs else {}
-            # Merge tool_runtime_kwargs (conversation_id, blob_store, org_id, etc.) so
-            # toolset actions can use conversation tasks (e.g. CSV export).
-            if kwargs:
-                arguments.update(kwargs)
+                arguments = kwargs if kwargs else {}
 
             result = await self._execute_tool_async(arguments)
             # Preserve tuple structure for success detection

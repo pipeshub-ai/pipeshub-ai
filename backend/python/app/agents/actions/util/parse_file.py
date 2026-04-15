@@ -74,6 +74,7 @@ _MAGIC_VALIDATED_EXTENSIONS: Final[frozenset[str]] = frozenset(
 )
 _TEXT_FILE_ENCODINGS: Final[tuple[str, ...]] = ("utf-8", "utf-8-sig", "latin-1", "iso-8859-1")
 _DELIMITED_FILE_ENCODINGS: Final[list[str]] = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
+_TOKEN_LIMIT_SAFETY_FACTOR = 0.8
 
 
 class ParseErrorPayload(BaseModel):
@@ -202,7 +203,7 @@ class FileContentParser:
         if isinstance(model_config, list):
             model_config = model_config[0] if model_config else {}
         context_length = (model_config or {}).get("contextLength") or 128_000
-        max_allowed_tokens = int(context_length * 0.8)
+        max_allowed_tokens = int(context_length * _TOKEN_LIMIT_SAFETY_FACTOR)
 
         token_count = 0
         for message in data:

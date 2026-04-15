@@ -41,6 +41,8 @@ from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSourc
 logger = logging.getLogger(__name__)
 
 _VALID_SHARE_ROLES = {"read", "write", "owner"}
+_SEARCH_SHARED_CONCURRENCY = 5
+_MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
 class _ResponsePayload(BaseModel):
@@ -536,7 +538,7 @@ class _SharedItemFetchResult(BaseModel):
                 ],
             ),
             additional_params={
-                "prompt": "consent",
+                "prompt": "select_account",
                 "response_mode": "query",
             },
             fields=[
@@ -1285,7 +1287,7 @@ class OneDrive:
             success, shared_with_data, drives = await self.shared_with_data(top)
             if not drives:
                 return True, json.dumps({"query": query, "drives": [], "value": []})
-            semaphore = asyncio.Semaphore(5)
+            semaphore = asyncio.Semaphore(_SEARCH_SHARED_CONCURRENCY)
 
             async def _search_with_limit(did):
                 async with semaphore:
@@ -1840,7 +1842,7 @@ class OneDrive:
             data_dict = json.loads(_response_json(file_info))
 
             file_size = data_dict.get("data", {}).get("size")
-            if file_size is not None and file_size > 10 * 1024 * 1024:  # 10 MB
+            if file_size is not None and file_size > _MAX_FILE_CONTENT_BYTES:  # 50 MB
                 return False, json.dumps({"data": data_dict.get("data"), "error": "File is too large to be processed"})
 
             file_obj = data_dict.get("data", {}).get("file", {})
@@ -1899,8 +1901,8 @@ class OneDrive:
         description="Create a new blank Microsoft Word file (.docx) in OneDrive from scratch via the API.",
         args_schema=CreateWordFileInput,
         when_to_use=[
-            "User wants to create a new blank Word, Excel, or PowerPoint file in OneDrive",
-            "User says 'create a Word doc', 'make a new Excel spreadsheet', or 'start a PowerPoint'",
+            "User wants to create a new blank Word file in OneDrive",
+            "User says 'create a Word doc' or 'make a new .docx file'",
             "User needs an empty Office file to start working in",
         ],
         when_not_to_use=[

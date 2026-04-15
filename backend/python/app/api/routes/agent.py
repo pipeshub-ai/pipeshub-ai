@@ -1169,7 +1169,6 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: dict[str, Any] = None,
-    agent: dict[str, Any] = None,
     modelName: str = None,
     modelKey: str = None,
 ) -> AsyncGenerator[str, None]:
@@ -3171,7 +3170,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 reranker_service,
                 config_service,
                 org_info,
-                agent=agent,
                 modelName=model_name,
                 modelKey=model_key,
             ),
