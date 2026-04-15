@@ -862,17 +862,15 @@ export function ChatInput({
 
       {/* Bottom controls */}
       <Flex align="center" justify="between">
-        {/* Left side - Mode switcher (disabled in regenerate mode; edit mode leaves it active) */}
-        <Box style={isRegenerateMode ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
+        {/* Left side — query ModeSwitcher disabled in regenerate (avoid mode churn); agent strategy stays active so regen can use quick/verify/deep. */}
+        <Box style={isRegenerateMode && !isAgentChat ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
           {isAgentChat ? (
             <AgentStrategyModeSwitcher
               activeStrategy={settings.agentStrategy}
               modeColors={agentStrategyToolbarColors}
               isPanelOpen={isMobile ? isMobileModesOpen : isAgentStrategyPanelOpen}
               showFullUI={showFullUI}
-              disabled={isRegenerateMode}
               onClick={() => {
-                if (isRegenerateMode) return;
                 if (isMobile) {
                   setIsMobileModesOpen(true);
                   return;
@@ -927,11 +925,10 @@ export function ChatInput({
                 variant="ghost"
                 color="gray"
                 size="2"
-                disabled={isRegenerateMode}
                 onClick={() => setIsMobileOptionsOpen(true)}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ margin: 0, cursor: 'pointer' }}
               >
-                <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
               <IconButton
                 variant={showUploadArea ? 'soft' : 'ghost'}
@@ -960,7 +957,6 @@ export function ChatInput({
                 <AgentStrategyDropdown
                   value={settings.agentStrategy}
                   onChange={setAgentStrategy}
-                  disabled={isRegenerateMode}
                   accentColor={activeToggleColor}
                 />
               ) : null}

@@ -177,8 +177,19 @@ export const ChatApi = {
         timezone,
         currentTime: new Date().toISOString(),
         tools: request.agentStreamTools ?? [],
-        filters: request.filters,
       };
+      // Omit filters when empty so the Python agent stream treats scope as
+      // "derive from agent knowledge" — `{ apps: [], kb: [] }` means explicit no scope.
+      const f = request.filters;
+      const apps = (f?.apps ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      const kb = (f?.kb ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      if (apps.length > 0 || kb.length > 0) {
+        payload.filters = { apps, kb };
+      }
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
