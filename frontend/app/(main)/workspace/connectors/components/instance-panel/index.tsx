@@ -33,6 +33,7 @@ export function InstanceManagementPanel() {
     instancePanelTab,
     instanceConfigs,
     instanceStats,
+    localSyncStatuses,
     instances,
     closeInstancePanel,
     setInstancePanelTab,
@@ -135,6 +136,7 @@ export function InstanceManagementPanel() {
   const instanceId = selectedInstance._key;
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;
   const instanceStat = instanceId ? instanceStats[instanceId] : undefined;
+  const localSyncStatus = instanceId ? localSyncStatuses[instanceId] : undefined;
 
   const lastSyncedLabel = selectedInstance.lastSynced
     ? `Synced ${selectedInstance.lastSynced}`
@@ -249,25 +251,26 @@ export function InstanceManagementPanel() {
             <Tabs.Trigger value="settings">Settings</Tabs.Trigger>
           </Tabs.List>
 
-            <Tabs.Content value="overview">
-              <OverviewTab
-                instance={selectedInstance}
-                stats={instanceStat}
-                connectorConfig={instanceConfig}
-              />
-            </Tabs.Content>
-            <Tabs.Content value="settings">
-              <SettingsTab
-                instance={selectedInstance}
-                config={instanceConfig}
-                onRequestRemoveConnector={
-                  selectedInstance._key ? openRemoveDialog : undefined
-                }
-                removeDisabled={removeConnectorDisabled}
-                removeDisabledTooltip={removeConnectorDisabledTooltip}
-              />
-            </Tabs.Content>
-          </Tabs.Root>
+          <Tabs.Content value="overview">
+            <OverviewTab
+              instance={selectedInstance}
+              stats={instanceStat}
+              connectorConfig={instanceConfig}
+              localSyncStatus={localSyncStatus}
+            />
+          </Tabs.Content>
+          <Tabs.Content value="settings">
+            <SettingsTab
+              instance={selectedInstance}
+              config={instanceConfig}
+              onRequestRemoveConnector={
+                selectedInstance._key ? openRemoveDialog : undefined
+              }
+              removeDisabled={removeConnectorDisabled}
+              removeDisabledTooltip={removeConnectorDisabledTooltip}
+            />
+          </Tabs.Content>
+        </Tabs.Root>
 
         {/* ── Manage Configuration button (bottom) ── */}
         <Flex

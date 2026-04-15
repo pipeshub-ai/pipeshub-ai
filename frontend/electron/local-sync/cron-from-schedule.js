@@ -1,0 +1,32 @@
+/**
+ * Ported from CLI src/sync/cron_from_schedule.ts. Keep in sync with
+ * frontend/src/sections/accountdetails/connectors/utils/cron.ts.
+ */
+function buildCronFromSchedule(cfg) {
+  const interval = Math.max(1, Number((cfg && cfg.intervalMinutes) || 60));
+  const startMs = Number((cfg && cfg.startTime) || 0);
+
+  const date = startMs > 0 ? new Date(startMs) : new Date();
+  const minute = date.getUTCMinutes();
+  const hour = date.getUTCHours();
+  const dow = date.getUTCDay();
+
+  if (interval < 60) return `*/${interval} * * * *`;
+  if (interval % 60 === 0 && interval < 1440) {
+    const hours = Math.max(1, Math.floor(interval / 60));
+    return `${minute} */${hours} * * *`;
+  }
+  if (interval % 1440 === 0) {
+    const days = Math.max(1, Math.floor(interval / 1440));
+    if (days === 1) return `${minute} ${hour} * * *`;
+    if (days % 7 === 0) return `${minute} ${hour} * * ${dow}`;
+    return `${minute} ${hour} * * *`;
+  }
+  if (interval > 60) {
+    const hours = Math.max(1, Math.floor(interval / 60));
+    return `${minute} */${hours} * * *`;
+  }
+  return '0 * * * *';
+}
+
+module.exports = { buildCronFromSchedule };

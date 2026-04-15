@@ -26,7 +26,8 @@
     "electron:prepare": "node scripts/electron-prepare.mjs",
     "electron:build:mac": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --config electron-builder.yml --publish never",
     "electron:build:win": "npm run build:electron && npm run electron:prepare && npx electron-builder --win --config electron-builder.yml --publish never",
-    "electron:build:mac-win": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --win --config electron-builder.yml --publish never"
+    "electron:build:mac-win": "npm run build:electron && npm run electron:prepare && npx electron-builder --mac --win --config electron-builder.yml --publish never",
+    "electron:dmg": "npm run build && npm run electron:prepare && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.yml --mac dmg --publish never"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
@@ -41,6 +42,7 @@
     "@vis.gl/react-google-maps": "^1.6.1",
     "@xyflow/react": "^12.10.2",
     "axios": "^1.15.0",
+    "chokidar": "^3.6.0",
     "docx-preview": "^0.3.7",
     "dompurify": "^3.4.0",
     "i18next": "^25.8.0",

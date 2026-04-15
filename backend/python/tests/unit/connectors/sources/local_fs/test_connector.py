@@ -103,6 +103,8 @@ def folder_connector() -> LocalFsConnector:
         MagicMock(),
         MagicMock(),
         "connector-instance-1",
+        "personal",
+        "test-user",
     )
 
 
@@ -342,7 +344,7 @@ class TestLocalFsConnectorAsync:
 async def test_handle_webhook_notification_logs():
     logger = MagicMock()
     proc = MagicMock()
-    c = LocalFsConnector(logger, proc, MagicMock(), MagicMock(), "id")
+    c = LocalFsConnector(logger, proc, MagicMock(), MagicMock(), "id", "personal", "u")
     c.handle_webhook_notification({})
     logger.debug.assert_called()
 
@@ -351,7 +353,7 @@ async def test_handle_webhook_notification_logs():
 async def test_cleanup_logs():
     logger = MagicMock()
     proc = MagicMock()
-    c = LocalFsConnector(logger, proc, MagicMock(), MagicMock(), "id")
+    c = LocalFsConnector(logger, proc, MagicMock(), MagicMock(), "id", "personal", "u")
     await c.cleanup()
     logger.info.assert_called()
 

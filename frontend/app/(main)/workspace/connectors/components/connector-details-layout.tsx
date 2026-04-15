@@ -6,7 +6,14 @@ import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
-import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorStatsResponse, ConnectorScope } from '../types';
+import type {
+  Connector,
+  ConnectorInstance,
+  ConnectorConfig,
+  ConnectorStatsResponse,
+  ConnectorScope,
+  LocalSyncStatus,
+} from '../types';
 import { getConnectorInfoText } from '../utils/connector-metadata';
 
 // ========================================
@@ -26,6 +33,8 @@ interface ConnectorDetailsLayoutProps {
   instanceConfigs?: Record<string, ConnectorConfig>;
   /** Per-instance stats data from API */
   instanceStats?: Record<string, ConnectorStatsResponse['data']>;
+  /** Per-instance local sync watcher state from Electron runtime */
+  localSyncStatuses?: Record<string, LocalSyncStatus>;
   /** Loading state */
   isLoading: boolean;
   /** Navigate back to connectors list */
@@ -53,6 +62,7 @@ export function ConnectorDetailsLayout({
   instances,
   instanceConfigs,
   instanceStats,
+  localSyncStatuses,
   isLoading,
   onBack,
   onAddInstance,
@@ -207,6 +217,7 @@ export function ConnectorDetailsLayout({
               scope={scope}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               stats={instance._key ? instanceStats?.[instance._key] : undefined}
+              localSyncStatus={instance._key ? localSyncStatuses?.[instance._key] : undefined}
               onManage={onManageInstance}
               onToggleSyncActive={onToggleSyncActive}
               onChevronClick={onInstanceChevron}

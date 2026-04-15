@@ -430,6 +430,19 @@ export interface ConnectorInstance extends Connector {
   };
 }
 
+/** Electron local-folder watcher state per connector instance */
+export interface LocalSyncStatus {
+  connectorId: string;
+  watcherState: 'starting' | 'watching' | 'stopped';
+  rootPath: string | null;
+  lastError: string | null;
+  pendingCount: number;
+  failedCount: number;
+  syncedCount: number;
+  lastBatchId: string | null;
+  lastAckAt: number | null;
+}
+
 /** Management panel tab */
 export type InstancePanelTab = 'overview' | 'settings';
 
