@@ -7,7 +7,7 @@ import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncGenerator, List
+from typing import TYPE_CHECKING, AsyncGenerator, Generator, List
 
 import pytest
 import pytest_asyncio
@@ -103,6 +103,11 @@ def _setup_arango_env_vars() -> None:
 
 _init_global_test_env()
 
+from ai_models_setup import (  # noqa: E402
+    SeededAIModel,
+    setup_test_llm_model,
+    teardown_test_llm_model,
+)
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
@@ -145,6 +150,32 @@ def pipeshub_client() -> PipeshubClient:
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
+
+
+@pytest.fixture(scope="session")
+def ai_models_configured(
+    pipeshub_client: PipeshubClient,
+) -> Generator[SeededAIModel, None, None]:
+    """Seed a single OpenAI LLM model and tear it down at session end.
+
+    Required by tests that wait for ``indexingStatus == COMPLETED``: without an
+    LLM the indexing pipeline cannot finish, and tests will either time out or
+    fail. Mirrors the frontend's ``modelService.addModel`` payload so the same
+    backend validation/health-check path runs in tests.
+
+    Reads ``TEST_OPENAI_API_KEY`` (or ``OPENAI_API_KEY``) for the API key and
+    optionally ``TEST_OPENAI_LLM_MODEL`` to override the model name. Raises
+    ``RuntimeError`` if no API key is available — failure is loud rather than a
+    silent indexing timeout downstream.
+
+    On teardown, the seeded model is DELETEd via the same providers endpoint so
+    no test residue is left on the backend.
+    """
+    seeded = setup_test_llm_model(pipeshub_client)
+    try:
+        yield seeded
+    finally:
+        teardown_test_llm_model(pipeshub_client, seeded)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

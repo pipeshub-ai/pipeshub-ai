@@ -470,13 +470,14 @@ class TestStop:
 
 
 class TestDrainPending:
-    """Tests for _drain_pending() using XAUTOCLAIM."""
+    """Tests for _drain_pending() — Phase 1 (XAUTOCLAIM) + Phase 2 (XREADGROUP id="0")."""
 
     @pytest.mark.asyncio
     async def test_drain_pending_no_pending_messages(self, consumer):
         """When PEL is empty, _drain_pending returns immediately."""
         mock_redis = AsyncMock()
         mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         consumer.redis = mock_redis
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
@@ -484,12 +485,14 @@ class TestDrainPending:
         await consumer._drain_pending()
 
         mock_redis.xautoclaim.assert_awaited_once()
+        mock_redis.xreadgroup.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_drain_pending_none_result(self, consumer):
         """When xautoclaim returns no claimed messages, _drain_pending stops."""
         mock_redis = AsyncMock()
         mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         consumer.redis = mock_redis
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
@@ -500,7 +503,7 @@ class TestDrainPending:
 
     @pytest.mark.asyncio
     async def test_drain_pending_processes_and_acks_messages(self, consumer):
-        """Pending messages are processed and acknowledged."""
+        """Pending messages claimed via XAUTOCLAIM are processed and acknowledged."""
         mock_redis = AsyncMock()
         pending_msg = {
             "value": json.dumps({"eventType": "RECOVER", "payload": {"id": 42}})
@@ -508,6 +511,7 @@ class TestDrainPending:
         mock_redis.xautoclaim = AsyncMock(
             return_value=("0-0", [("1-0", pending_msg)], [])
         )
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         mock_redis.xack = AsyncMock()
         consumer.redis = mock_redis
         consumer.running = True
@@ -530,6 +534,7 @@ class TestDrainPending:
         mock_redis.xautoclaim = AsyncMock(
             return_value=("0-0", [("2-0", pending_msg)], [])
         )
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         mock_redis.xack = AsyncMock()
         consumer.redis = mock_redis
         consumer.running = True
@@ -553,6 +558,7 @@ class TestDrainPending:
         mock_redis.xautoclaim = AsyncMock(
             return_value=("0-0", [("1-0", msg1), ("2-0", msg2)], [])
         )
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         # xack raises on first call, succeeds on second
         mock_redis.xack = AsyncMock(
             side_effect=[Exception("xack failed"), None]
@@ -582,6 +588,7 @@ class TestDrainPending:
                 ("0-0", [("2-0", msg2)], []),
             ]
         )
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         mock_redis.xack = AsyncMock()
         consumer.redis = mock_redis
         consumer.running = True
@@ -610,6 +617,7 @@ class TestDrainPending:
         """When xautoclaim returns no claimed messages, drain stops."""
         mock_redis = AsyncMock()
         mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xreadgroup = AsyncMock(return_value=None)
         consumer.redis = mock_redis
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
@@ -618,6 +626,66 @@ class TestDrainPending:
 
         mock_redis.xautoclaim.assert_awaited_once()
         consumer.message_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_phase2_recovers_own_pel(self, consumer):
+        """Phase 2: XREADGROUP id="0" recovers messages already owned by this consumer.
+
+        This is the same-client_id "restart" scenario — XAUTOCLAIM cannot help
+        because there is no other consumer to steal from.
+        """
+        mock_redis = AsyncMock()
+        own_msg = {
+            "value": json.dumps({"eventType": "OWN_PEL", "payload": {"id": 7}})
+        }
+        # Phase 1: nothing to claim from other consumers
+        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        # Phase 2: own PEL has one message, then drained
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [("9-0", own_msg)])],
+                None,
+            ]
+        )
+        mock_redis.xack = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=True)
+
+        await consumer._drain_pending()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_awaited_once_with(
+            "test-topic", consumer.config.group_id, "9-0"
+        )
+        # Phase 2 must use id "0" to read from own PEL (not ">")
+        first_phase2_call = mock_redis.xreadgroup.call_args_list[0]
+        assert first_phase2_call.kwargs["streams"] == {"test-topic": "0"}
+        assert first_phase2_call.kwargs["consumername"] == consumer.config.client_id
+
+    @pytest.mark.asyncio
+    async def test_drain_pending_phase2_does_not_ack_failed_messages(self, consumer):
+        """Phase 2: handler returning False keeps the message in own PEL."""
+        mock_redis = AsyncMock()
+        own_msg = {
+            "value": json.dumps({"eventType": "OWN_FAIL", "payload": {"id": 8}})
+        }
+        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        mock_redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [("test-topic", [("10-0", own_msg)])],
+                None,
+            ]
+        )
+        mock_redis.xack = AsyncMock()
+        consumer.redis = mock_redis
+        consumer.running = True
+        consumer.message_handler = AsyncMock(return_value=False)
+
+        await consumer._drain_pending()
+
+        consumer.message_handler.assert_awaited_once()
+        mock_redis.xack.assert_not_awaited()
 
 
 class TestConsumeLoop:
@@ -756,15 +824,17 @@ class TestConsumeLoop:
             return None
 
         mock_redis.xreadgroup = AsyncMock(side_effect=xreadgroup_side_effect)
-        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
         mock_redis.aclose = AsyncMock()
         consumer.redis = mock_redis
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            await consumer._consume_loop()
-            mock_sleep.assert_awaited_with(1)
+        # Skip _drain_pending so its Phase 2 xreadgroup call doesn't consume
+        # the side_effect intended for the inner consume loop.
+        with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
+            with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                await consumer._consume_loop()
+                mock_sleep.assert_awaited_with(1)
 
         mock_redis.aclose.assert_awaited()
 
@@ -773,13 +843,15 @@ class TestConsumeLoop:
         """CancelledError in the inner loop breaks cleanly."""
         mock_redis = AsyncMock()
         mock_redis.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError())
-        mock_redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
         mock_redis.aclose = AsyncMock()
         consumer.redis = mock_redis
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=True)
 
-        await consumer._consume_loop()
+        # Skip _drain_pending so its Phase 2 xreadgroup call doesn't trigger
+        # the CancelledError before the inner consume loop's handler can catch it.
+        with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
+            await consumer._consume_loop()
 
         mock_redis.aclose.assert_awaited()
 
