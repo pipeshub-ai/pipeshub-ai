@@ -307,6 +307,8 @@ class LocalFsConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             LocalFsApp(connector_id),
@@ -315,6 +317,8 @@ class LocalFsConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_name = Connectors.LOCAL_FS
         self.connector_id = connector_id
@@ -866,6 +870,9 @@ class LocalFsConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
+        **kwargs,
     ) -> "LocalFsConnector":
         data_entities_processor = await create_initialized_data_source_entities_processor(
             logger, data_store_provider, config_service
@@ -876,6 +883,8 @@ class LocalFsConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
 
     async def get_filter_options(

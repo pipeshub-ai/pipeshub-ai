@@ -1,6 +1,7 @@
 const { app, BrowserWindow, protocol, net, nativeImage, session, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { LocalSyncManager } = require('./local-sync/manager');
 
 // Directory where `next build` (static export) output lands after electron:copy
 const STATIC_DIR = path.join(__dirname, 'out');
@@ -11,6 +12,21 @@ const STATIC_DIR = path.join(__dirname, 'out');
 const SCHEME = 'app';
 
 let mainWindow;
+let localSyncManager;
+let isQuitting = false;
+
+// Single-instance lock so only one app instance runs watchers / dispatch.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
 
 function getAppIcon() {
   const pngPath = path.join(STATIC_DIR, 'logo', 'pipes-hub-1024.png');
@@ -75,6 +91,14 @@ app.whenReady().then(() => {
     callback({ responseHeaders: headers });
   });
 
+  localSyncManager = new LocalSyncManager({
+    app,
+    onStatusChange: (status) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send('local-sync-status', status);
+    },
+  });
+
   // Handle the custom app:// protocol — map requests to static export files
   protocol.handle(SCHEME, (request) => {
     const url = new URL(request.url);
@@ -116,7 +140,62 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
+  ipcMain.handle('local-sync/start', async (_event, payload) => {
+    return localSyncManager.start(payload || {});
+  });
+
+  ipcMain.handle('local-sync/stop', async (_event, payload) => {
+    return localSyncManager.stop(payload?.connectorId);
+  });
+
+  ipcMain.handle('local-sync/status', async (_event, payload) => {
+    return localSyncManager.getStatus(payload?.connectorId);
+  });
+
+  ipcMain.handle('local-sync/rescan', async (_event, payload) => {
+    if (!payload || !payload.connectorId) return null;
+    return localSyncManager.rescan(payload.connectorId);
+  });
+
+  ipcMain.handle('local-sync/set-schedule', async (_event, payload) => {
+    if (!payload || !payload.connectorId) return null;
+    return localSyncManager.setSchedule(payload.connectorId, {
+      syncStrategy: payload.syncStrategy,
+      scheduledConfig: payload.scheduledConfig,
+      connectorDisplayType: payload.connectorDisplayType,
+    });
+  });
+
+  ipcMain.handle('local-sync/full-resync', async (_event, payload) => {
+    if (!payload || !payload.connectorId) return null;
+    try {
+      const result = await localSyncManager.fullResync(payload.connectorId);
+      return { ok: true, ...result, status: localSyncManager.getStatus(payload.connectorId) };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        status: localSyncManager.getStatus(payload.connectorId),
+      };
+    }
+  });
+
+  ipcMain.handle('local-sync/replay', async (_event, payload) => {
+    if (payload?.connectorId) {
+      return localSyncManager.replay(payload.connectorId);
+    }
+    const connectorIds = localSyncManager.journal.listConnectorIds();
+    const results = [];
+    for (const connectorId of connectorIds) {
+      results.push(await localSyncManager.replay(connectorId));
+    }
+    return results;
+  });
+
   createWindow();
+  localSyncManager.init().catch((error) => {
+    console.warn('[local-sync] initialization failed:', error);
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -125,4 +204,17 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// Drain local-sync watchers (flush pending dispatches, persist state) before exit.
+app.on('before-quit', async (event) => {
+  if (isQuitting || !localSyncManager) return;
+  event.preventDefault();
+  isQuitting = true;
+  try {
+    await localSyncManager.shutdown();
+  } catch (error) {
+    console.warn('[local-sync] shutdown error:', error);
+  }
+  app.exit(0);
 });

@@ -33,6 +33,7 @@ import type {
   ConnectorConfig,
   ConnectorStatsResponse,
   ConnectorScope,
+  LocalSyncStatus,
 } from '../../types';
 
 // ========================================
@@ -47,6 +48,8 @@ interface InstanceCardProps {
   config?: ConnectorConfig;
   /** Per-instance stats from GET /knowledgeBase/stats/{id} */
   stats?: ConnectorStatsResponse['data'];
+  /** Local Electron watcher state for this connector instance */
+  localSyncStatus?: LocalSyncStatus;
   onManage?: (instance: ConnectorInstance) => void;
   onStartSync?: (instance: ConnectorInstance) => void;
   /** POST …/toggle — flips sync `isActive` */
@@ -63,6 +66,7 @@ export function InstanceCard({
   scope,
   config,
   stats,
+  localSyncStatus,
   onManage,
   onStartSync,
   onToggleSyncActive,
@@ -132,6 +136,13 @@ export function InstanceCard({
   const recordsSelected = getRecordsSelectedInfo(config);
   const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
   const enabledDate = formatEnabledDate(instance.createdAtTimestamp);
+  const localSyncLabel = localSyncStatus
+    ? localSyncStatus.watcherState === 'watching'
+      ? `Watching ${localSyncStatus.pendingCount} pending`
+      : localSyncStatus.watcherState === 'starting'
+      ? 'Starting watcher...'
+      : 'Watcher stopped'
+    : '-';
 
   const canToggleSync =
     Boolean(instance._key) &&
@@ -389,6 +400,8 @@ export function InstanceCard({
             />
           </Flex>
         )}
+
+        <InfoRow label="LOCAL SYNC" value={localSyncLabel} />
       </Flex>
 
       {/* ── Auth incomplete banner ── */}

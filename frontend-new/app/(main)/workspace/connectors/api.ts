@@ -61,6 +61,15 @@ function parseDeleteConnectorInstanceBody(
   };
 }
 
+export interface ConnectorFileEvent {
+  type: string;
+  path: string;
+  oldPath?: string;
+  timestamp: number;
+  size?: number;
+  isDirectory: boolean;
+}
+
 export const ConnectorsApi = {
   // ── List & Registry ──
 
@@ -272,6 +281,23 @@ export const ConnectorsApi = {
     return data.connector;
   },
 
+  /** Start sync for a connector instance */
+  async startSyncToggle(connectorId: string, fullSync = true) {
+    const { data } = await apiClient.post(
+      `${BASE_URL}/${connectorId}/toggle`,
+      { type: 'sync', fullSync }
+    );
+    return data;
+  },
+
+  /**
+   * Backward-compatible alias.
+   * Prefer `startSyncToggle` in new call sites.
+   */
+  async startSync(connectorId: string) {
+    return this.startSyncToggle(connectorId, true);
+  },
+
   // ── Reindex Failed ──
 
   /**
@@ -306,6 +332,22 @@ export const ConnectorsApi = {
         connectorId,
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
+    );
+    return data;
+  },
+
+  /** Submit local filesystem file-event batches for incremental sync */
+  async submitFileEvents(
+    connectorId: string,
+    payload: {
+      batchId: string;
+      timestamp: number;
+      events: ConnectorFileEvent[];
+    }
+  ) {
+    const { data } = await apiClient.post(
+      `${BASE_URL}/${connectorId}/file-events`,
+      payload
     );
     return data;
   },
