@@ -547,7 +547,7 @@ describe('AzureBlobStorageAdapter', () => {
       expect(result.statusCode).to.equal(200)
     })
 
-    it('should use current URL when version is 0', async () => {
+    it('should use versionHistory URL when version is 0', async () => {
       const proto = require(
         '../../../../src/modules/storage/providers/azure.provider',
       ).default.prototype
@@ -555,7 +555,7 @@ describe('AzureBlobStorageAdapter', () => {
       proto.containerName = 'testcontainer'
       const { Readable } = require('stream')
       const readable = new Readable()
-      readable.push(Buffer.from('current content'))
+      readable.push(Buffer.from('v0 content'))
       readable.push(null)
 
       const mockBlobClient = {
@@ -567,6 +567,9 @@ describe('AzureBlobStorageAdapter', () => {
 
       const result = await proto.getBufferFromStorageService({
         azureBlob: { url: 'https://account.blob.core.windows.net/testcontainer/current.pdf' },
+        versionHistory: [
+          { azureBlob: { url: 'https://account.blob.core.windows.net/testcontainer/v0.pdf' } },
+        ],
       }, 0)
 
       expect(result.statusCode).to.equal(200)

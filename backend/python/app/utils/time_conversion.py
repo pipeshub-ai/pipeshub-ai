@@ -1,6 +1,99 @@
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MAX_TIMESTAMP_LENGTH = 13
+
+_LLM_TIME_CONTEXT_HEADING = "## Time context"
+
+# One subtle line under the heading (tools + relative dates).
+_LLM_TIME_CONTEXT_SUBLINE = (
+    "Use this when the user asks about the current date, time, day of week, "
+    "or time-relative wording (today, tomorrow, this week, etc.). "
+    "In replies to the user, use **Time zone** (when shown) for calendar dates and "
+    "timezone-aware times (am/pm). For tools, keep each API's datetime format as required."
+)
+
+
+def _utc_reference_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _strip_or_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _utc_offset_hh_mm(dt: datetime) -> str:
+    """UTC offset for ``dt`` as ``±HH:MM`` (ISO-style, stable across platforms)."""
+    off = dt.utcoffset()
+    if off is None:
+        return "+00:00"
+    total_minutes = int(off.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def format_user_timezone_prompt_line(
+    time_zone_name: str | None,
+    *,
+    moment: datetime | None = None,
+) -> str:
+    """Single markdown line for LLM prompts: IANA id, abbreviation, UTC offset.
+
+    Unknown or invalid IANA names return a line with the raw value only (no offset).
+    Whitespace-only names yield an empty string.
+    """
+    name = (time_zone_name or "").strip()
+    if not name:
+        return ""
+
+    try:
+        tz = ZoneInfo(name)
+    except (ZoneInfoNotFoundError, OSError):
+        return f"**Time zone**: {name}"
+
+    if moment is None:
+        now = datetime.now(tz)
+    elif moment.tzinfo is None:
+        now = moment.replace(tzinfo=tz)
+    else:
+        now = moment.astimezone(tz)
+
+    abbr = now.tzname() or "local"
+    offset_label = _utc_offset_hh_mm(now)
+    return f"**Time zone**: {name} ({abbr}, UTC{offset_label})"
+
+
+def build_llm_time_context(
+    *,
+    current_time: str | None = None,
+    time_zone: str | None = None,
+) -> str:
+    """Heading plus **Current time** / **Time zone** lines for LLM prompts."""
+    ct = _strip_or_none(current_time)
+    tz = _strip_or_none(time_zone)
+    if not ct and not tz:
+        return ""
+
+    ref = ct or _utc_reference_now_iso()
+    tz_line = format_user_timezone_prompt_line(tz) if tz else ""
+    current_line = f"**Current time**: {ref}" + ("" if ct else " (UTC)")
+
+    lines = [
+        _LLM_TIME_CONTEXT_HEADING,
+        "",
+        _LLM_TIME_CONTEXT_SUBLINE,
+        "",
+        current_line,
+    ]
+    if tz_line:
+        lines.append(tz_line)
+    return "\n".join(lines)
+
 
 def get_epoch_timestamp_in_ms() -> int:
     now = datetime.now(timezone.utc).timestamp()

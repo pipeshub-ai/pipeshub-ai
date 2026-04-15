@@ -24,8 +24,8 @@ export const DocumentIdParamsWithVersion = z.object({
     version: z.string()
       .optional()
       .transform((val) => (val ? Number(val) : undefined))
-      .refine((num) => num === undefined || num > 0, {
-        message: "version must be greater than zero",
+      .refine((num) => num === undefined || num >= 0, {
+        message: "version must be greater than or equal to zero",
       }),
     expirationTimeInSeconds: z.string()
       .optional()
@@ -99,6 +99,11 @@ export const GetBufferSchema = z.object({
 export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
   body: z.object({
     note: z.string(),
+    version: z
+      .number({ invalid_type_error: 'version must be an integer' })
+      .int({ message: 'version must be an integer' })
+      .min(0, { message: 'version must be >= 0' })
+      .optional(),
   }),
 });
 
@@ -109,6 +114,9 @@ export const CreateDocumentSchema = z.object({
     documentPath: z.string(),
     permissions: z.string().optional(),
     metaData: z.any().optional(),
+    customMetadata: z
+      .array(z.object({ key: z.string(), value: z.any() }))
+      .optional(),
     isVersionedFile: z.boolean().optional(),
     extension : z.string(),
   }),

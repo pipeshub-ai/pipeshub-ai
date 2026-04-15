@@ -24,6 +24,7 @@ from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
 )
+from app.utils.time_conversion import build_llm_time_context
 
 DEFAULT_CONTEXT_LENGTH = 128000
 
@@ -42,6 +43,8 @@ class ChatQuery(BaseModel):
     modelName: str | None = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: str | None = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
     mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
+    timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
+    currentTime: str | None = None  # ISO 8601 datetime string from the client
 
 
 # Dependency injection functions
@@ -159,6 +162,12 @@ def _build_chat_llm_messages(
         mode_config["system_prompt"] = custom_system_prompt
 
     system_prompt = mode_config["system_prompt"]
+    time_context = build_llm_time_context(
+        current_time=query_info.currentTime,
+        time_zone=query_info.timezone,
+    )
+    if time_context:
+        system_prompt += f"\n\n{time_context}"
     if final_results:
         system_prompt += _CITATION_SYSTEM_RULES
 

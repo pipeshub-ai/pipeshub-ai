@@ -18,6 +18,9 @@ This approach ensures the agent sees the exact same block format as the chatbot.
 from datetime import datetime
 from typing import Any
 
+from app.modules.agents.qna.chat_state import ChatState
+from app.utils.time_conversion import build_llm_time_context
+
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
 CONVERSATION_PREVIEW_LENGTH = 300
@@ -309,6 +312,25 @@ def build_user_context(user_info, org_info) -> str:
 
 
 # ============================================================================
+# TIME CONTEXT (direct / lightweight prompts)
+# ============================================================================
+
+
+def build_direct_answer_time_context(state: ChatState) -> str:
+    """Date/time lines for prompts that bypass ``build_response_prompt``.
+
+    Used when the planner sets ``can_answer_directly`` and the answer is streamed
+    via ``stream_llm_response`` (QnA ``_generate_direct_response`` and Deep
+    ``_handle_direct_answer``). Those paths must still see the same clock context
+    as the full response pipeline.
+    """
+    return build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
+
+
+# ============================================================================
 # RESPONSE PROMPT BUILDER
 # ============================================================================
 
@@ -363,7 +385,6 @@ def build_response_prompt(state, max_iterations=30) -> str:
 
     # Use provided current_time/timezone if available, else fall back to server UTC
     provided_current_time = state.get("current_time")
-    provided_timezone = state.get("timezone")
     if provided_current_time:
         current_datetime = provided_current_time
     # current_datetime already set above as fallback
@@ -374,9 +395,12 @@ def build_response_prompt(state, max_iterations=30) -> str:
     complete_prompt = complete_prompt.replace("{conversation_history}", conversation_history)
     complete_prompt = complete_prompt.replace("{current_datetime}", current_datetime)
 
-    # Add timezone context if provided
-    if provided_timezone:
-        complete_prompt += f"\n\n**User Timezone**: {provided_timezone}"
+    clock_block = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
+    if clock_block:
+        complete_prompt += f"\n\n{clock_block}"
 
     if base_prompt and base_prompt not in ["You are an enterprise questions answering expert", ""]:
         complete_prompt = f"{base_prompt}\n\n{complete_prompt}"

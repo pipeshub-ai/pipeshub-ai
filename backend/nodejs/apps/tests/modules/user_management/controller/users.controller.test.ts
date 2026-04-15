@@ -1201,6 +1201,12 @@ describe('UserController', () => {
         expect(res.status.calledWith(200)).to.be.true;
         expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
         expect(mockMailService.sendMail.calledOnce).to.be.true;
+
+        // Verify the link uses #token= hash fragment, not ?token= query param
+        const mailCall = mockMailService.sendMail.firstCall.args[0];
+        const link: string = mailCall.templateData.link;
+        expect(link).to.match(/\/reset-password#token=.+/);
+        expect(link).to.not.include('?token=');
       }
     });
 
@@ -1866,6 +1872,14 @@ describe('UserController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
+        // Verify all invite emails use #token= hash fragment, not ?token= query param
+        for (const call of mockMailService.sendMail.getCalls()) {
+          const link: string = call.args[0].templateData.link;
+          if (link.includes('reset-password')) {
+            expect(link).to.match(/\/reset-password#token=.+/);
+            expect(link).to.not.include('?token=');
+          }
+        }
       }
     });
 
@@ -2166,6 +2180,15 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.called).to.be.true;
+
+      // Verify all invite emails use #token= hash fragment, not ?token= query param
+      for (const call of mockMailService.sendMail.getCalls()) {
+        const link: string = call.args[0].templateData.link;
+        if (link.includes('reset-password')) {
+          expect(link).to.match(/\/reset-password#token=.+/);
+          expect(link).to.not.include('?token=');
+        }
+      }
     });
 
     it('should handle error when password method check fails', async () => {
@@ -3014,6 +3037,10 @@ describe('UserController', () => {
       if (!next.called) {
         const mailCall = mockMailService.sendMail.firstCall.args[0];
         expect(mailCall.templateData.orgName).to.equal('FC');
+        // Verify invite link uses #token= hash fragment, not ?token= query param
+        const link: string = mailCall.templateData.link;
+        expect(link).to.match(/\/reset-password#token=.+/);
+        expect(link).to.not.include('?token=');
       }
     });
 
@@ -3045,6 +3072,10 @@ describe('UserController', () => {
       if (!next.called) {
         const mailCall = mockMailService.sendMail.firstCall.args[0];
         expect(mailCall.templateData.orgName).to.equal('Full Corp');
+        // Verify invite link uses #token= hash fragment, not ?token= query param
+        const link: string = mailCall.templateData.link;
+        expect(link).to.match(/\/reset-password#token=.+/);
+        expect(link).to.not.include('?token=');
       }
     });
 

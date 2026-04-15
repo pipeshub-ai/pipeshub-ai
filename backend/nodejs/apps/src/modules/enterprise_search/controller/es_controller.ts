@@ -369,6 +369,8 @@ export const streamChat =
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: chatMode,
         conversationId: savedConversation._id?.toString() || null,
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -1410,6 +1412,8 @@ export const addMessageStream =
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: chatMode,
         conversationId: conversationId || null,
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       const aiCommandOptions: AICommandOptions = {

@@ -22,7 +22,6 @@ from datetime import datetime
 from typing import Any, Literal, Union
 from uuid import UUID
 
-import pytz
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -37,8 +36,12 @@ from app.modules.agents.capability_summary import (
 )
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
-from app.modules.qna.response_prompt import create_response_messages
+from app.modules.qna.response_prompt import (
+    build_direct_answer_time_context,
+    create_response_messages,
+)
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
+from app.utils.time_conversion import build_llm_time_context
 
 # ============================================================================
 # CONSTANTS & CONFIGURATION
@@ -3741,8 +3744,8 @@ ZOOM_GUIDANCE = r"""
 - **Never set both.** If neither is given, ask the user which they prefer.
 
 ### Timezone Inference
-BEFORE checking if timezone is missing, always read the Temporal Context
-   section. If User timezone is present there, use it directly. Never ask user for timezone.
+BEFORE checking if timezone is missing, always read the **Time context**
+   section. If a **Time zone** line is present there, use it directly. Never ask the user for a time zone.
 
 ---
 
@@ -3752,7 +3755,7 @@ BEFORE checking if timezone is missing, always read the Temporal Context
    - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
 3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
 4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
-5. **Always use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
+5. **Always use the user's timezone** → INFERRABLE from **Time context**, and assume current year if not provided.
 6. **Multiple matches on search — confirm before acting.** If `list_meetings` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
 7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
 8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
@@ -3989,16 +3992,12 @@ async def planner_node(
         system_prompt = f"## Agent Instructions\n{instructions.strip()}\n\n{system_prompt}"
 
     # Add timezone / current time context if provided
-    timezone = state.get("timezone")
-    current_time = state.get("current_time")
-    if timezone or current_time:
-        time_context_parts = []
-        if current_time:
-            time_context_parts.append(f"Current time: {current_time}")
-        if timezone:
-            time_context_parts.append(f"User timezone: {timezone}")
-        time_context = "\n".join(time_context_parts)
-        system_prompt = f"{system_prompt}\n\n## Temporal Context\n{time_context}"
+    time_block = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
+    if time_block:
+        system_prompt = f"{system_prompt}\n\n{time_block}"
 
     # Build messages with conversation context (using LangChain message format for better context awareness)
     messages = _build_planner_messages(state, query, log)
@@ -6718,6 +6717,7 @@ async def _generate_direct_response(
     # Add capability summary so direct responses can answer "what can you do?"
     capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
+    system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
     messages.append(SystemMessage(content=system_content))
 
@@ -7926,7 +7926,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
   unavailable if execution returns an explicit auth/connection error.
 - **Date normalization is mandatory before tool calls**:
    - Convert ALL relative date phrases to absolute ISO dates (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) before calling tools.
-   - Use user's timezone and current time from the Temporal Context section.
+   - Use **Current time** and **Time zone** (when present) from the **Time context** section.
    - Do NOT ask user to provide dates when relative dates are resolvable.
    - Common mappings:
      - "today" → current date
@@ -8109,20 +8109,12 @@ Use this decision tree to choose the right approach:
         base_prompt += "\n" + TEAMS_GUIDANCE
 
     # Add timezone / current time context if provided
-    timezone = state.get("timezone")
-    current_time = state.get("current_time")
-    if timezone or current_time:
-        time_parts = []
-        if current_time:
-            time_parts.append(f"**Current time**: {current_time}")
-        if timezone:
-            tz = pytz.timezone(timezone)
-            now = datetime.now(tz)
-            abbr = now.strftime("%Z")        # IST, EST, PST etc.
-            offset = now.strftime("%z")      # +0530
-            offset_fmt = f"{offset[:-2]}:{offset[-2:]}"  # +05:30
-            time_parts.append(f"**User timezone**: {timezone} ({abbr} (UTC{offset_fmt}))")
-        base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
+    time_block = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
+    if time_block:
+        base_prompt += "\n\n" + time_block
 
     # ── Capability summary ────────────────────────────────────────────────────
     capability_summary = build_capability_summary(state)

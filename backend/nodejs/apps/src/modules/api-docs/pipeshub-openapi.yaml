@@ -2671,6 +2671,20 @@ components:
             Chat mode affecting response behavior.
             Different modes optimize for different use cases.
           example: "balanced"
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            IANA timezone identifier from the client.
+            Used to provide time-aware context to the AI.
+          example: "America/New_York"
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 datetime string from the client.
+            Used to provide time-aware context to the AI.
+          example: "2026-04-12T10:30:00Z"
 
     AddMessageRequest:
       type: object
@@ -2694,6 +2708,20 @@ components:
         chatMode:
           type: string
           description: Chat mode for this message
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            IANA timezone identifier from the client.
+            Used to provide time-aware context to the AI.
+          example: "America/New_York"
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 datetime string from the client.
+            Used to provide time-aware context to the AI.
+          example: "2026-04-12T10:30:00Z"
 
     Message:
       type: object

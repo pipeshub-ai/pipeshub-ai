@@ -34,6 +34,7 @@ from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -362,13 +363,10 @@ async def _execute_simple_sub_agent(
         tool_guidance = _build_sub_agent_tool_guidance(task, state)
 
         # Build time context
-        time_ctx = ""
-        current_time = state.get("current_time")
-        timezone = state.get("timezone")
-        if current_time:
-            time_ctx += f"Current time: {current_time}"
-        if timezone:
-            time_ctx += f"\nTimezone: {timezone}"
+        time_ctx = build_llm_time_context(
+            current_time=state.get("current_time"),
+            time_zone=state.get("timezone"),
+        )
 
         # Build agent instructions prefix
         agent_instructions = _build_sub_agent_instructions(state)
@@ -546,13 +544,10 @@ async def _execute_complex_sub_agent(
     tool_guidance = _build_sub_agent_tool_guidance(task, state)
 
     # Build time context
-    time_ctx = ""
-    current_time = state.get("current_time")
-    timezone = state.get("timezone")
-    if current_time:
-        time_ctx += f"Current time: {current_time}"
-    if timezone:
-        time_ctx += f"\nTimezone: {timezone}"
+    time_ctx = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
 
     agent_instructions = _build_sub_agent_instructions(state)
 
@@ -853,13 +848,10 @@ async def _execute_multi_step_sub_agent(
     tool_guidance = _build_sub_agent_tool_guidance(task, state)
     agent_instructions = _build_sub_agent_instructions(state)
 
-    time_ctx = ""
-    current_time = state.get("current_time")
-    timezone = state.get("timezone")
-    if current_time:
-        time_ctx += f"Current time: {current_time}"
-    if timezone:
-        time_ctx += f"\nTimezone: {timezone}"
+    time_ctx = build_llm_time_context(
+        current_time=state.get("current_time"),
+        time_zone=state.get("timezone"),
+    )
 
     # Execute each step sequentially, accumulating results
     all_tool_results = []
