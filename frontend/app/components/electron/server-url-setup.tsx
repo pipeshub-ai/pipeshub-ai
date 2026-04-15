@@ -2,12 +2,25 @@
 
 import React, { useState, useEffect } from 'react';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
-import { isElectron, hasStoredApiBaseUrl, setApiBaseUrl } from '@/lib/utils/api-base-url';
+import { isElectron, getApiBaseUrl, setApiBaseUrl } from '@/lib/utils/api-base-url';
+
+// Launch-scoped flag: main process assigns one APP_LAUNCH_ID per app process;
+// preload exposes it on every load. We persist the confirmed id in localStorage;
+// when it matches we skip the prompt. Survives route groups, login redirects,
+// and full page loads (preload re-runs but the ID stays stable).
+const CONFIRMED_LAUNCH_KEY = 'PIPESHUB_URL_CONFIRMED_LAUNCH_ID';
+
+function getLaunchId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const api = (window as Window & { electronAPI?: { launchId?: string } }).electronAPI;
+  const id = api?.launchId;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
 
 /**
- * ServerUrlGuard — wraps the app and shows a setup screen when:
- *   1. Running inside Electron, AND
- *   2. No API base URL has been configured in localStorage yet.
+ * ServerUrlGuard — wraps the app and shows a setup screen on every Electron
+ * launch so the user can confirm or edit the PipesHub server URL. Any
+ * previously stored URL is pre-filled and editable.
  *
  * On web this component is transparent (renders children immediately).
  */
@@ -15,11 +28,20 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (isElectron() && !hasStoredApiBaseUrl()) {
-      setNeedsSetup(true);
-    } else {
+    if (!isElectron()) {
       setNeedsSetup(false);
+      return;
     }
+    const launchId = getLaunchId();
+    // Defensive: if preload didn't expose a launchId we can't distinguish
+    // launches, so don't loop the prompt across route-group navigations —
+    // just render children.
+    if (!launchId) {
+      setNeedsSetup(false);
+      return;
+    }
+    const confirmedLaunch = localStorage.getItem(CONFIRMED_LAUNCH_KEY);
+    setNeedsSetup(confirmedLaunch !== launchId);
   }, []);
 
   // SSR / first render — show nothing until we know
@@ -33,15 +55,15 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
 }
 
 function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
-  const [url, setUrl] = useState('');
+  const existing = typeof window !== 'undefined' ? getApiBaseUrl() : '';
+  const [url, setUrl] = useState(existing);
   const [error, setError] = useState('');
-  const [testing, setTesting] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    const trimmed = url.trim().replace(/\/+$/, ''); // strip trailing slashes
+    const trimmed = url.trim().replace(/\/+$/, '');
     if (!trimmed) {
       setError('Please enter a server URL.');
       return;
@@ -54,21 +76,9 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
       return;
     }
 
-    // Test connectivity
-    setTesting(true);
-    try {
-      const res = await fetch(`${trimmed}/api/v1/health`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) throw new Error(`Server responded with ${res.status}`);
-    } catch {
-      // Even if health check fails, let user proceed — the endpoint may not exist
-      // but the URL could still be valid
-    }
-    setTesting(false);
-
     setApiBaseUrl(trimmed);
+    const launchId = getLaunchId();
+    if (launchId) localStorage.setItem(CONFIRMED_LAUNCH_KEY, launchId);
     onComplete();
   };
 
@@ -105,7 +115,9 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
             Connect to PipesHub Server
           </Heading>
           <Text size="2" color="gray" align="center">
-            Enter the URL of your PipesHub server to get started.
+            {existing
+              ? 'Confirm or update your PipesHub server URL.'
+              : 'Enter the URL of your PipesHub server to get started.'}
           </Text>
         </Flex>
 
@@ -149,10 +161,9 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
             <Button
               type="submit"
               size="3"
-              disabled={testing}
-              style={{ width: '100%', cursor: testing ? 'wait' : 'pointer' }}
+              style={{ width: '100%', cursor: 'pointer' }}
             >
-              {testing ? 'Connecting...' : 'Connect'}
+              Connect
             </Button>
           </Flex>
         </form>
