@@ -30,6 +30,9 @@ export interface ConfirmationDialogProps {
   /** Whether the confirm action is in-progress */
   isLoading?: boolean;
 
+  /** Label shown on the confirm button while loading (default: "Removing...") */
+  confirmLoadingLabel?: string;
+
   /** Callback when confirm is clicked */
   onConfirm: () => void;
 }
@@ -56,6 +59,7 @@ export function ConfirmationDialog({
   cancelLabel = 'Cancel',
   confirmVariant = 'danger',
   isLoading = false,
+  confirmLoadingLabel = 'Removing...',
   onConfirm,
 }: ConfirmationDialogProps) {
   const handleCancel = () => {
@@ -133,7 +137,7 @@ export function ConfirmationDialog({
               disabled={isLoading}
               style={{ cursor: isLoading ? 'not-allowed' : 'pointer' }}
             >
-              {isLoading ? 'Removing...' : confirmLabel}
+              {isLoading ? confirmLoadingLabel : confirmLabel}
             </Button>
           </Flex>
         </Flex>

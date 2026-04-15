@@ -20,6 +20,7 @@ import {
   AvatarCell,
   StatusBadge,
   ConfirmationDialog,
+  DestructiveTypedConfirmationDialog,
 } from '../components';
 import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
@@ -53,6 +54,7 @@ const ROLE_OPTIONS = [
 const STATUS_OPTIONS = [
   { value: 'Active', label: 'Active', icon: 'check_circle', iconColor: 'var(--accent-11)' },
   { value: 'Pending', label: 'Pending', icon: 'schedule', iconColor: 'var(--amber-11)' },
+  { value: 'Blocked', label: 'Blocked', icon: 'block', iconColor: 'var(--red-11)' },
 ];
 
 // ========================================
@@ -126,6 +128,8 @@ function UsersPageContent() {
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [unblockTarget, setUnblockTarget] = useState<User | null>(null);
+  const [isUnblocking, setIsUnblocking] = useState(false);
   // Admin group ref for role changes
   const adminGroupRef = useRef<Group | null>(null);
 
@@ -340,7 +344,9 @@ function UsersPageContent() {
               icon={filter.icon}
               options={STATUS_OPTIONS}
               selectedValues={filters.statuses || []}
-              onSelectionChange={(values) => setFilters({ statuses: values as ('Active' | 'Pending')[] })}
+              onSelectionChange={(values) =>
+                setFilters({ statuses: values as ('Active' | 'Pending' | 'Blocked')[] })
+              }
             />
           );
         case 'lastActive':
@@ -436,7 +442,7 @@ function UsersPageContent() {
     // Status filter
     if (filters.statuses?.length) {
       result = result.filter((u) => {
-        const status = u.hasLoggedIn ? 'Active' : 'Pending';
+        const status = u.isBlocked ? 'Blocked' : u.hasLoggedIn ? 'Active' : 'Pending';
         return filters.statuses!.includes(status);
       });
     }
@@ -641,7 +647,11 @@ function UsersPageContent() {
         label: t('workspace.users.columns.status'),
         width: '110px',
         render: (user) => (
-          <StatusBadge status={user.hasLoggedIn ? 'Active' : 'Pending'} />
+          <StatusBadge
+            status={
+              user.isBlocked ? 'Blocked' : user.hasLoggedIn ? 'Active' : 'Pending'
+            }
+          />
         ),
       },
       {
@@ -694,6 +704,32 @@ function UsersPageContent() {
       setIsRemoving(false);
     }
   }, [removeTarget, fetchUsers, addToast, t]);
+
+  const handleConfirmUnblock = useCallback(async () => {
+    if (!unblockTarget) return;
+    setIsUnblocking(true);
+    try {
+      await UsersApi.unblockUser(unblockTarget.userId);
+      addToast({
+        variant: 'success',
+        title: t('workspace.users.actions.unblockSuccess', 'User unblocked'),
+        duration: 3000,
+      });
+      setUnblockTarget(null);
+      fetchUsers();
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.users.actions.unblockError', 'Failed to unblock user'),
+        duration: 5000,
+      });
+    } finally {
+      setIsUnblocking(false);
+    }
+  }, [unblockTarget, addToast, t, fetchUsers]);
+
+  const unblockConfirmKeyword =
+    unblockTarget?.name?.trim() || unblockTarget?.email || '';
 
   // Shared "coming soon" toast helper
   const showComingSoon = useCallback(() => {
@@ -824,7 +860,20 @@ function UsersPageContent() {
 
       let actions: (RowAction | false)[];
 
-      if (isPending) {
+      if (user.isBlocked) {
+        actions = [
+          {
+            icon: 'visibility',
+            label: t('workspace.users.actions.viewProfile'),
+            onClick: () => navigateToProfilePanel(user),
+          },
+          {
+            icon: 'lock_open',
+            label: t('workspace.users.actions.unblock', 'Unblock'),
+            onClick: () => setUnblockTarget(user),
+          },
+        ];
+      } else if (isPending) {
         // Pending invite — invite management actions
         actions = [
           {
@@ -907,7 +956,15 @@ function UsersPageContent() {
 
       return <EntityRowActionMenu actions={actions} />;
     },
-    [t, navigateToProfilePanel, showComingSoon, handleChangeRole, handleResendInvite, handleEditInvite, ROLE_SUB_MENU_OPTIONS]
+    [
+      t,
+      navigateToProfilePanel,
+      showComingSoon,
+      handleChangeRole,
+      handleResendInvite,
+      handleEditInvite,
+      ROLE_SUB_MENU_OPTIONS,
+    ]
   );
 
   // ── Render ──────────────────────────────
@@ -1008,6 +1065,42 @@ function UsersPageContent() {
         confirmVariant="danger"
         isLoading={isRemoving}
         onConfirm={handleRemoveUser}
+      />
+
+      <DestructiveTypedConfirmationDialog
+        open={!!unblockTarget}
+        onOpenChange={(open) => {
+          if (!open) setUnblockTarget(null);
+        }}
+        heading={t('workspace.users.actions.unblockTypedConfirmTitle', {
+          name: unblockTarget?.name || unblockTarget?.email || '',
+          defaultValue: 'Unblock {{name}}?',
+        })}
+        body={
+          <>
+            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+              {t('workspace.users.actions.unblockTypedConfirmBodyLine1', {
+                name: unblockTarget?.name || unblockTarget?.email || '',
+                defaultValue: 'This will restore sign-in access for {{name}}.',
+              })}
+            </Text>
+            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+              {t(
+                'workspace.users.actions.unblockTypedConfirmBodyLine2',
+                'Type the user\'s display name exactly to confirm.'
+              )}
+            </Text>
+          </>
+        }
+        confirmationKeyword={unblockConfirmKeyword}
+        confirmInputLabel={t('workspace.users.actions.typeNameToConfirm', {
+          keyword: unblockConfirmKeyword,
+        })}
+        primaryButtonText={t('workspace.users.actions.unblockConfirmAction', 'Unblock')}
+        cancelLabel={t('workspace.users.actions.cancelButton')}
+        isLoading={isUnblocking}
+        confirmLoadingLabel={t('workspace.users.actions.unblocking', 'Unblocking…')}
+        onConfirm={() => void handleConfirmUnblock()}
       />
     </Flex>
   );

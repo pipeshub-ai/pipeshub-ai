@@ -190,7 +190,10 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
             variant="ghost"
             color="gray"
             size="1"
-            onClick={() => onDismiss(toast.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDismiss(toast.id);
+            }}
             style={{
               opacity: isHovered ? 1 : 0.6,
               transition: 'opacity 0.15s ease',
