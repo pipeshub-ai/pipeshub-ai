@@ -552,7 +552,9 @@ function TeamsPageContent() {
   );
 
   // ── Empty state ──
-  const isEmpty = !isLoading && teams.length === 0;
+  // True only when there's no data at all (not a search/filter with zero results)
+  const hasActiveSearch = searchQuery.trim().length > 0 || Object.values(filters).some((v) => (Array.isArray(v) ? v.length > 0 : Boolean(v)));
+  const isEmpty = !isLoading && teams.length === 0 && !hasActiveSearch;
 
   // ── Render ──────────────────────────────
 

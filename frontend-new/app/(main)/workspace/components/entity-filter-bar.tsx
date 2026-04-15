@@ -35,8 +35,8 @@ export function EntityFilterBar({ filters, renderFilter }: EntityFilterBarProps)
       style={{
         height: '40px',
         padding: '0 16px',
-        borderBottom: '1px solid var(--slate-6)',
-        backgroundColor: 'var(--slate-2)',
+        borderBottom: '1px solid var(--olive-6)',
+        backgroundColor: 'var(--olive-2)',
       }}
     >
       <MaterialIcon name="filter_list" size={16} color="var(--slate-9)" />

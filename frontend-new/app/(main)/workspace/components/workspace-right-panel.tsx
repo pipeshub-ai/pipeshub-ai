@@ -112,7 +112,7 @@ export function WorkspaceRightPanel({
           <Flex align="center" gap="2">
             {icon && (
               typeof icon === 'string'
-                ? <MaterialIcon name={icon} size={20} color="var(--slate-12)"/>
+                ? <MaterialIcon name={icon} size={24} color="var(--slate-12)"/>
                 : icon
             )}
             {titleNode ?? (

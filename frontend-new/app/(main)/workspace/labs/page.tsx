@@ -9,11 +9,14 @@ import {
   Heading,
   Switch,
   TextField,
+  IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   ConfirmationDialog,
   SettingsSaveBar,
+  SettingsSection,
+  SettingsRow,
 } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useLabsStore } from './store';
@@ -22,90 +25,25 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
-// Local Sub-components (mirror general/page.tsx patterns)
+// Local Sub-components
 // ========================================
 
-interface SettingsSectionProps {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}
-
-function SettingsSection({ title, description, children }: SettingsSectionProps) {
-  return (
-    <Flex
-      direction="column"
-      gap="4"
-      style={{
-        border: '1px solid var(--slate-5)',
-        borderRadius: 'var(--radius-1)',
-        padding: 16,
-        backdropFilter: 'blur(25px)',
-        backgroundColor: 'var(--slate-2)',
-      }}
-    >
-      {/* Section header */}
-      <Flex direction="column" gap="1">
-        <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          {title}
-        </Text>
-        {description && (
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-            {description}
-          </Text>
-        )}
-      </Flex>
-      {/* Divider */}
-      <Box style={{ height: 1, backgroundColor: 'var(--slate-5)', width: '100%' }} />
-      {/* Content */}
-      <Flex direction="column" gap="5">
-        {children}
-      </Flex>
-    </Flex>
-  );
-}
-
-interface SettingsRowProps {
-  label: string;
-  description?: string;
-  children: React.ReactNode;
-}
-
-function SettingsRow({ label, description, children }: SettingsRowProps) {
-  return (
-    <Flex align="center" justify="between" style={{ width: '100%' }}>
-      <Box style={{ flex: 1 }}>
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-          {label}
-        </Text>
-        {description && (
-          <Text
-            size="1"
-            style={{ color: 'var(--slate-9)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}
-          >
-            {description}
-          </Text>
-        )}
-      </Box>
-      <Box style={{ flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
-    </Flex>
-  );
-}
-
-/** Accent-tinted info callout used inside sections */
+/** Accent-tinted info callout used as a standalone banner */
 function InfoCallout({ children }: { children: React.ReactNode }) {
   return (
     <Flex
       align="center"
-      gap="2"
+      gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
+        backgroundColor: 'var(--accent-a2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '10px 12px',
+        padding: '12px',
       }}
     >
-      <MaterialIcon name="info" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
         {children}
       </Text>
@@ -117,18 +55,18 @@ function InfoCallout({ children }: { children: React.ReactNode }) {
 function PlatformConfigNote() {
   return (
     <Flex
-      align="start"
+      align="center"
       gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
+        backgroundColor: 'var(--accent-a2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '12px 16px',
+        padding: '16px',
       }}
     >
-      <Box style={{ flexShrink: 0, marginTop: 1 }}>
-        <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-      </Box>
+      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           Platform Configuration
@@ -330,10 +268,20 @@ export default function LabsPage() {
 
         {/* ── File Upload Limit Section ── */}
         <Box style={{ marginBottom: 20 }}>
-          <SettingsSection title="File Upload Limit">
-            <Flex direction="column" gap="2">
-              <SettingsRow label="File Upload Limit" description="Maximum file size for uploads">
-                <Flex direction="column" gap="1">
+          <Flex direction="column" gap="3">
+            <SettingsSection>
+              <Flex align="center" justify="between" style={{ width: '100%' }}>
+                {/* Label + description */}
+                <Box style={{ flex: 1 }}>
+                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+                    File Upload Limit
+                  </Text>
+                  <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, lineHeight: '16px', fontWeight: 300 }}>
+                    Maximum file size for uploads
+                  </Text>
+                </Box>
+                {/* Input — fixed 158px, right-aligned */}
+                <Flex direction="column" gap="1" style={{ width: 158, flexShrink: 0 }}>
                   <TextField.Root
                     type="number"
                     placeholder="max. 1000"
@@ -348,13 +296,13 @@ export default function LabsPage() {
                         align="center"
                         justify="center"
                         style={{
-                          backgroundColor: 'var(--accent-3)',
+                          backgroundColor: 'var(--accent-a3)',
                           borderRadius: 'var(--radius-1)',
                           padding: '2px 8px',
-                          height: 24,
+                          height: 18,
                         }}
                       >
-                        <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-a11)' }}>
                           MB
                         </Text>
                       </Flex>
@@ -366,14 +314,13 @@ export default function LabsPage() {
                     </Text>
                   )}
                 </Flex>
-              </SettingsRow>
-
-              <InfoCallout>
-                Changes apply immediately to all file uploads including Knowledge Hub and other
-                backend-enforced uploads
-              </InfoCallout>
-            </Flex>
-          </SettingsSection>
+              </Flex>
+                <InfoCallout>
+              Changes apply immediately to all file uploads including Knowledge Hub and other
+              backend-enforced uploads
+            </InfoCallout>
+            </SettingsSection>
+          </Flex>
         </Box>
 
         {/* ── Feature Flags Section ── */}

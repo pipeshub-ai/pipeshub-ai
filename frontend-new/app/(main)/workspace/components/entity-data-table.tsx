@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Box, Text, Checkbox } from '@radix-ui/themes';
+import { EmptyIcon } from '@/app/components/ui/empty-icon';
 
 // ========================================
 // Types
@@ -94,8 +95,8 @@ export function EntityDataTable<T>({
         align="center"
         style={{
           height: '36px',
-          borderBottom: '1px solid var(--slate-6)',
-          backgroundColor: 'var(--slate-2)',
+          borderBottom: '1px solid var(--olive-6)',
+          backgroundColor: 'var(--olive-2)',
           flexShrink: 0,
         }}
       >
@@ -148,6 +149,18 @@ export function EntityDataTable<T>({
           transition: 'opacity 150ms ease',
         }}
       >
+        {!isLoading && data.length === 0 && (
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            gap="3"
+            style={{ height: '100%', color: 'var(--slate-8)' }}
+          >
+            <EmptyIcon size={48} />
+            <Text size="2" style={{ color: 'var(--slate-9)' }}>No results found</Text>
+          </Flex>
+        )}
         {data.map((item) => {
           const id = getItemId(item);
           const isSelected = selectedIds.has(id);
