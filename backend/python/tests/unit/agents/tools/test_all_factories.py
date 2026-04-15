@@ -150,3 +150,16 @@ class TestClickupFactory:
                 toolset_config={"key": "val"}, state=None
             )
             assert result is not None
+
+class TestMSGraphOneDriveFactory:
+    @pytest.mark.asyncio
+    async def test_create_client(self):
+        from app.agents.tools.factories.microsoft import MSGraphClientFactory
+        factory = MSGraphClientFactory(service_name="one_drive")
+        with patch("app.agents.tools.factories.microsoft.MSGraphClient") as MockClient:
+            MockClient.build_from_toolset = AsyncMock(return_value=MagicMock())
+            result = await factory.create_client(
+                config_service=MagicMock(), logger=MagicMock(),
+                toolset_config={"key": "val"}, state=None
+            )
+            assert result is not None

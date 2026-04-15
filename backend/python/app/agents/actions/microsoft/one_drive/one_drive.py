@@ -3,6 +3,7 @@ import asyncio
 import logging
 from io import BytesIO
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from app.agents.actions.util.parse_file import (
     FileContentParser,
@@ -1709,8 +1710,8 @@ class OneDrive:
             data_dict = json.loads(_response_json(file_info))
 
             file_size = data_dict.get("data", {}).get("size")
-            if file_size is not None and file_size > 1.5 * 1024 * 1024:  # 1.5 MB
-                return False, json.dumps({"data": data_dict.get("data"), "error": "File is too large to be processed"})
+            # if file_size is not None and file_size > 1.5 * 1024 * 1024:  # 1.5 MB
+            #     return False, json.dumps({"data": data_dict.get("data"), "error": "File is too large to be processed"})
 
             file_obj = data_dict.get("data", {}).get("file", {})
             mime_type = file_obj.get("mimeType")
@@ -1729,7 +1730,6 @@ class OneDrive:
 
                 record_name = data_dict.get("data", {}).get("name", f"document.{ext}")
                 file_record = FileRecord(
-                    id=item_id,
                     org_id="",
                     record_name=record_name,
                     record_type=RecordType.FILE,
@@ -1752,15 +1752,13 @@ class OneDrive:
                     configuration_service,
                 )
                 if status:
-                    # print(f"\033[31m[get_file_content] completed in {time.perf_counter() - _start:.3f}s\033[0m")
-                    return True, json.dumps({"content": payload})
-                # print(f"\033[31m[get_file_content] failed in {time.perf_counter() - _start:.3f}s\033[0m")
-                return False, json.dumps({"error": payload})
-            # print(f"\033[31m[get_file_content] failed (content fetch) in {time.perf_counter() - _start:.3f}s\033[0m")
+                    print(f"\033[31m[get_file_content] completed in {time.perf_counter() - _start:.3f}s\033[0m")
+                    return True, json.dumps(payload)
+                print(f"\033[31m[get_file_content] failed in {time.perf_counter() - _start:.3f}s\033[0m")
+                return False, json.dumps(payload)
             return False, _response_json(response)
         except Exception as e:
             logger.error(f"Failed to get content for item {item_id}: {e}")
-            # print(f"\033[31m[get_file_content] exception in {time.perf_counter() - _start:.3f}s: {e}\033[0m")
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------

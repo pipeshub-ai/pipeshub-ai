@@ -17,8 +17,10 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
+from tarfile import data_filter
 from typing import Final, Optional
-
+from typing import Any
+import json
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
 
@@ -184,7 +186,7 @@ class FileContentParser:
         model_name: Optional[str],
         model_key: Optional[str],
         configuration_service: ConfigurationService,
-        data: str,
+        data: list[dict[str, Any]],
     ) -> bool:
         if not data:
             return True
@@ -194,8 +196,15 @@ class FileContentParser:
             model_config = model_config[0] if model_config else {}
         context_length = (model_config or {}).get("contextLength") or 128_000
         max_allowed_tokens = int(context_length * 0.8)
-        token_count = count_tokens_text(data, None)
-        # print(f"\033[95m[check_token_limit] token_count: {token_count} | max_allowed_tokens: {max_allowed_tokens}\033[0m")
+
+        token_count = 0
+        for message in data:
+            if not isinstance(message, dict):
+                continue
+            text_content = message.get("text", "") if message.get("type") == "text" else ""
+            if text_content:
+                token_count += count_tokens_text(text_content, None)
+        print(f"\033[95m[check_token_limit] token_count: {token_count} | max_allowed_tokens: {max_allowed_tokens}\033[0m")
         return token_count < max_allowed_tokens
 
     async def parse(
@@ -205,18 +214,18 @@ class FileContentParser:
         model_name: Optional[str],
         model_key: Optional[str],
         configuration_service: ConfigurationService,
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, list[dict[str, Any]]]:
         """Return ``(True, llm_context)`` on success, or ``(False, error_message)``."""
         try:
             ext_n = (file_record.extension or "").strip().lower().lstrip(".")
             if not ext_n or not self.is_supported_extension(ext_n):
-                return (False, "File type not supported")
+                return (False, [{"error": "File type not supported"}])
 
             try:
                 blocks = await self.parse_to_block_container(file_record, raw)
             except Exception as exc:
                 self._logger.exception("parse_to_block_container failed")
-                return (False, f"Parse failed: {exc}")
+                return (False, [{"error": f"Parse failed: {exc}"}])
 
             file_record.block_containers = blocks
 
@@ -224,7 +233,7 @@ class FileContentParser:
                 llm_context = file_record.to_llm_full_context()
             except Exception as exc:
                 self._logger.exception("to_llm_full_context failed")
-                return (False, f"Context build failed: {exc}")
+                return (False, [{"error": f"Context build failed: {exc}"}])
 
             try:
                 is_within_limit = await self.check_token_limit(
@@ -235,14 +244,16 @@ class FileContentParser:
                 )
             except Exception as exc:
                 self._logger.exception("Token check failed")
-                return (False, f"Token check failed: {exc}")
+                return (False, [{"error": f"Token check failed: {exc}"}])
+
+            print(f"\033[32m[content_parser] llm_context: {json.dumps(llm_context, indent=4)}\033[0m")
 
             if is_within_limit:
                 return (True, llm_context)
-            return (False, "File is too big to be parsed")
+            return (False, [{"error": "Token limit exceeded"}])
         except Exception as exc:
             self._logger.exception("Failed to parse file record")
-            return (False, f"Failed to parse file: {exc}")
+            return (False, [{"error": f"Failed to parse file: {exc}"}])
 
     # --- File type parsers -----------------------
 
