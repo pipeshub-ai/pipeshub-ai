@@ -1,0 +1,211 @@
+## ---------------------------------------------------------------------------
+## Organization API – Response Schemas
+## ---------------------------------------------------------------------------
+
+
+# Reusable anchor for the org document fields shared by
+# OrgDocumentResponse, OrgUpdateDetailsResponse.data, and OrgDeleteResponse.data.
+_org_document_fields: &org_document_fields
+  _id:
+    type: string
+    required: true
+    format: objectid
+  registeredName:
+    type: string
+    required: true
+  shortName:
+    type: string
+    required: false
+  domain:
+    type: string
+    required: true
+  contactEmail:
+    type: string
+    required: true
+    format: email
+  accountType:
+    type: string
+    required: true
+    enum:
+      - business
+  permanentAddress:
+    type: object
+    required: false
+    properties:
+      _id:
+        type: string
+        required: false
+        format: objectid
+      addressLine1:
+        type: string
+        required: false
+      city:
+        type: string
+        required: false
+      state:
+        type: string
+        required: false
+      country:
+        type: string
+        required: false
+      postCode:
+        type: string
+        required: false
+  onBoardingStatus:
+    type: string
+    required: true
+    enum:
+      - configured
+      - notConfigured
+      - skipped
+  isDeleted:
+    type: boolean
+    required: true
+  createdAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  updatedAt:
+    required: true
+    oneOf:
+      - type: string
+        format: datetime
+      - type: string
+        format: date
+  slug:
+    type: string
+    required: true
+  __v:
+    type: integer
+    required: true
+
+schemas:
+
+  - name: OrgCheckExistenceResponse
+    description: "GET /api/v1/org/exists — checkOrgExistence"
+    path: /api/v1/org/exists
+    method: GET
+    fields:
+      exists:
+        type: boolean
+        required: true
+
+  - name: OrgHealthResponse
+    description: "GET /api/v1/org/health — health check"
+    path: /api/v1/org/health
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - healthy
+      timestamp:
+        type: string
+        required: true
+        format: datetime
+
+  - name: OrgDocumentResponse
+    description: "GET /api/v1/org — getOrganizationById, also POST /api/v1/org create success body"
+    path: /api/v1/org
+    method: GET
+    fields:
+      <<: *org_document_fields
+
+  - name: OrgUpdateDetailsResponse
+    description: "PUT /api/v1/org — updateOrganizationDetails"
+    path: /api/v1/org
+    method: PUT
+    fields:
+      message:
+        type: string
+        required: true
+      data:
+        type: object
+        required: true
+        properties:
+          <<: *org_document_fields
+
+  - name: OrgDeleteResponse
+    description: "DELETE /api/v1/org — soft delete organization"
+    path: /api/v1/org
+    method: DELETE
+    fields:
+      message:
+        type: string
+        required: true
+      data:
+        type: object
+        required: true
+        properties:
+          <<: *org_document_fields
+
+  - name: OrgGetOnboardingStatusResponse
+    description: "GET /api/v1/org/onboarding-status — getOnboardingStatus"
+    path: /api/v1/org/onboarding-status
+    method: GET
+    fields:
+      status:
+        type: string
+        required: true
+        enum:
+          - configured
+          - notConfigured
+          - skipped
+
+  - name: OrgUpdateOnboardingStatusResponse
+    description: "PUT /api/v1/org/onboarding-status — updateOnboardingStatus"
+    path: /api/v1/org/onboarding-status
+    method: PUT
+    fields:
+      message:
+        type: string
+        required: true
+      status:
+        type: string
+        required: true
+        enum:
+          - configured
+          - notConfigured
+          - skipped
+
+  - name: OrgUpdateLogoResponse
+    description: "PUT /api/v1/org/logo — updateOrgLogo"
+    path: /api/v1/org/logo
+    method: PUT
+    fields:
+      message:
+        type: string
+        required: true
+      mimeType:
+        type: string
+        required: true
+        enum:
+          - image/jpeg
+          - image/svg+xml
+
+  - name: OrgRemoveLogoResponse
+    description: "DELETE /api/v1/org/logo — removeOrgLogo"
+    path: /api/v1/org/logo
+    method: DELETE
+    fields:
+      logo:
+        type: "null"
+        required: true
+      mimeType:
+        type: "null"
+        required: true
+      _id:
+        type: string
+        required: true
+        format: objectid
+      orgId:
+        type: string
+        required: true
+        format: objectid
+      __v:
+        type: integer
+        required: true
