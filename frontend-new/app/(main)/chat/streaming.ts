@@ -64,7 +64,9 @@ function statusMessageRestreaming(): StatusMessage {
  *
  * @param slotId  — stable slot key in the store dictionary
  * @param query   — user's plain-text question
- * @param request — full StreamChatRequest (model, chatMode, filters, etc.)
+ * @param request — full StreamChatRequest (model, chatMode, filters, etc.). For **agent**
+ *   streams, `ChatApi.streamMessage` omits `filters` from the POST body when both `apps`
+ *   and `kb` are empty so retrieval uses the agent's full configured knowledge.
  */
 export async function streamMessageForSlot(
   slotId: string,
