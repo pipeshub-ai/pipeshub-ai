@@ -139,7 +139,7 @@ class TestSpecializedConsumerConfigs:
         config = await KafkaUtils.create_entity_kafka_consumer_config(container)
         assert config.client_id == "entity_consumer_client"
         assert config.group_id == "entity_consumer_group"
-        assert config.topics == ["ai-config-events"]
+        assert config.topics == ["entity-events"]
 
     @pytest.mark.asyncio
     async def test_sync_consumer_config(self):
@@ -719,7 +719,7 @@ class TestSpecializedConsumerConfigsCoverage:
         config = await KafkaUtils.create_entity_kafka_consumer_config(container)
         assert config.client_id == "entity_consumer_client"
         assert config.group_id == "entity_consumer_group"
-        assert config.topics == ["ai-config-events"]
+        assert config.topics == ["entity-events"]
 
     @pytest.mark.asyncio
     async def test_sync_consumer_config(self):
