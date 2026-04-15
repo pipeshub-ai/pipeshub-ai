@@ -16,6 +16,7 @@ import type {
   ConnectorInstance,
   InstancePanelTab,
   ConnectorStatsResponse,
+  LocalSyncStatus,
 } from './types';
 import { mergeConfigWithSchema, initializeFormData } from './utils/config-merge';
 import { evaluateConditionalDisplay } from './utils/conditional-display';
@@ -102,6 +103,8 @@ interface ConnectorsState {
   instanceConfigs: Record<string, ConnectorConfig>;
   /** Per-instance stats data keyed by connector _key */
   instanceStats: Record<string, ConnectorStatsResponse['data']>;
+  /** Per-instance local sync watcher runtime status keyed by connector _key */
+  localSyncStatuses: Record<string, LocalSyncStatus>;
   /** Currently selected instance for management panel */
   selectedInstance: ConnectorInstance | null;
   /** Is management panel open */
@@ -212,6 +215,8 @@ interface ConnectorsState {
   removeConnectorInstanceCaches: (connectorId: string) => void;
   /** Remove an instance from active list + instance list + clear selection/panel. */
   removeConnectorInstance: (connectorId: string) => void;
+  setLocalSyncStatus: (connectorId: string, status: LocalSyncStatus) => void;
+  clearLocalSyncStatus: (connectorId: string) => void;
   clearInstanceData: () => void;
   setSelectedInstance: (instance: ConnectorInstance | null) => void;
   openInstancePanel: (instance: ConnectorInstance) => void;
@@ -302,6 +307,7 @@ const initialState = {
   instances: [] as ConnectorInstance[],
   instanceConfigs: {} as Record<string, ConnectorConfig>,
   instanceStats: {} as Record<string, ConnectorStatsResponse['data']>,
+  localSyncStatuses: {} as Record<string, LocalSyncStatus>,
   selectedInstance: null as ConnectorInstance | null,
   isInstancePanelOpen: false,
   instancePanelTab: 'overview' as InstancePanelTab,
@@ -828,6 +834,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
           s.registryConnectors = s.registryConnectors.filter((c) => c._key !== connectorId);
           delete s.instanceConfigs[connectorId];
           delete s.instanceStats[connectorId];
+          delete s.localSyncStatuses[connectorId];
           if (!s.deletedInstanceIds.includes(connectorId)) {
             s.deletedInstanceIds.push(connectorId);
           }
@@ -838,11 +845,22 @@ export const useConnectorsStore = create<ConnectorsState>()(
           }
         }),
 
+      setLocalSyncStatus: (connectorId, status) =>
+        set((s) => {
+          s.localSyncStatuses[connectorId] = status;
+        }),
+
+      clearLocalSyncStatus: (connectorId) =>
+        set((s) => {
+          delete s.localSyncStatuses[connectorId];
+        }),
+
       clearInstanceData: () =>
         set((s) => {
           s.instances = [];
           s.instanceConfigs = {};
           s.instanceStats = {};
+          s.localSyncStatuses = {};
         }),
 
       setSelectedInstance: (instance) =>
