@@ -223,7 +223,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                 LIMIT @limit
                 RETURN {{
                     path: file_path,
-                    record_name: COALESCE(r.recordName, r.name)
+                    record_name: NOT_NULL(r.recordName, r.name)
                 }}
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id, "limit": limit})
@@ -236,7 +236,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                RETURN COALESCE(r.recordName, r.name)
+                RETURN NOT_NULL(r.recordName, r.name)
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return [name for name in result if name] if result else []
@@ -250,7 +250,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                FILTER COALESCE(r.recordName, r.name) == @name
+                FILTER NOT_NULL(r.recordName, r.name) == @name
                 LIMIT 1
                 RETURN r
         """
@@ -266,7 +266,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                FILTER COALESCE(r.recordName, r.name) == @name
+                FILTER NOT_NULL(r.recordName, r.name) == @name
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
@@ -284,7 +284,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                LET name = COALESCE(r.recordName, r.name)
+                LET name = NOT_NULL(r.recordName, r.name)
                 LET file_path = (
                     FOR v, e IN OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
                         FILTER IS_SAME_COLLECTION('{CollectionNames.FILES.value}', v)
@@ -307,7 +307,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                FILTER COALESCE(r.recordName, r.name) == @name
+                FILTER NOT_NULL(r.recordName, r.name) == @name
                 FOR v, e IN OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.FILES.value}', v)
                     FILTER v.path != null AND CONTAINS(v.path, @sub)
@@ -476,14 +476,14 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                FILTER COALESCE(r.recordName, r.name) == @name
+                FILTER NOT_NULL(r.recordName, r.name) == @name
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
                     LET path_parts = (
                         FOR v, e, p IN 0..5 OUTBOUND g {CollectionNames.BELONGS_TO.value}
                             FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                            RETURN COALESCE(v.name, '')
+                            RETURN NOT_NULL(v.name, '')
                     )
                     LET filtered_parts = (FOR part IN path_parts FILTER part != '' RETURN part)
                     RETURN LENGTH(filtered_parts) > 0 ? CONCAT_SEPARATOR('/', filtered_parts) : null
@@ -511,7 +511,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid
-                FILTER COALESCE(r.recordName, r.name) == @name
+                FILTER NOT_NULL(r.recordName, r.name) == @name
                 FOR v, e IN OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.FILES.value}', v)
                     LIMIT 1
