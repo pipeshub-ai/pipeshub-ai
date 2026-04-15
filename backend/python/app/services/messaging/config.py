@@ -116,6 +116,11 @@ class MessagingEnvConfig:
         return float(os.getenv("SHUTDOWN_TASK_TIMEOUT", "240.0"))
 
     @property
+    def max_delivery_attempts(self) -> int:
+        """Max times a message can be delivered before being dead-lettered (ACK-ed and discarded)."""
+        return int(os.getenv("MAX_DELIVERY_ATTEMPTS", "10"))
+
+    @property
     def max_pending_indexing_tasks(self) -> int:
         return int(
             os.getenv(

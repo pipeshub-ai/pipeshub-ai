@@ -1105,6 +1105,139 @@ class TestDrainPending:
 
 
 # ===================================================================
+# _exceeds_max_retries  (dead-letter logic)
+# ===================================================================
+
+
+class TestExceedsMaxRetries:
+    """Tests for _exceeds_max_retries() — dead-letter logic for poison messages."""
+
+    @pytest.mark.asyncio
+    async def test_under_limit_returns_false(self, consumer):
+        """Message below the delivery threshold should NOT be dead-lettered."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 2}]
+        )
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is False
+        consumer.redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_at_limit_dead_letters(self, consumer):
+        """Message at the delivery threshold should be ACK-ed (dead-lettered)."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 10}]
+        )
+        consumer.redis.xack = AsyncMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is True
+        consumer.redis.xack.assert_awaited_once_with(
+            "topic-a", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_xpending_returns_false(self, consumer):
+        """When XPENDING returns no details, message is not dead-lettered."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(return_value=[])
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_xpending_error_returns_false(self, consumer):
+        """XPENDING errors should not dead-letter — return False and log."""
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            side_effect=Exception("redis down")
+        )
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_drain_phase1_skips_poison_message(self, consumer):
+        """Phase 1 should skip dispatch when _exceeds_max_retries returns True."""
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(
+            return_value=("0-0", [("1-0", _valid_fields())], [])
+        )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+
+        with patch.object(
+            consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True
+        ):
+            with patch.object(
+                consumer, "_start_processing_task", new_callable=AsyncMock
+            ) as mock_process:
+                await consumer._drain_pending()
+
+        mock_process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drain_phase2_skips_poison_message(self, consumer):
+        """Phase 2 should skip dispatch when _exceeds_max_retries returns True."""
+        first_topic = consumer.config.topics[0]
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer.redis.xreadgroup = AsyncMock(
+            side_effect=[
+                [(first_topic, [("9-0", _valid_fields())])],
+                None,
+                None,
+            ]
+        )
+
+        with patch.object(
+            consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True
+        ):
+            with patch.object(
+                consumer, "_start_processing_task", new_callable=AsyncMock
+            ) as mock_process:
+                await consumer._drain_pending()
+
+        mock_process.assert_not_called()
+
+
+# ===================================================================
 # _consume_loop  (lines 261-327)
 # ===================================================================
 

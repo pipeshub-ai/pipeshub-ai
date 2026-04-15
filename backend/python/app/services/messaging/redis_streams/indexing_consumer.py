@@ -215,6 +215,34 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    async def _exceeds_max_retries(self, topic: str, message_id: str) -> bool:
+        """Check delivery count via XPENDING and ACK poison messages.
+
+        Returns True (and ACKs the message) when the delivery count exceeds
+        ``MAX_DELIVERY_ATTEMPTS``, effectively dead-lettering the message so
+        it no longer blocks the PEL on every restart.
+        """
+        max_attempts = messaging_env.max_delivery_attempts
+        try:
+            details = await self.redis.xpending_range(  # type: ignore
+                topic, self.config.group_id,
+                min=message_id, max=message_id, count=1,
+            )
+            if details:
+                times_delivered = details[0].get("times_delivered", 0)
+                if times_delivered >= max_attempts:
+                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+                    self.logger.warning(
+                        "Dead-lettered message %s on stream %s after %d delivery attempts (max %d)",
+                        message_id, topic, times_delivered, max_attempts,
+                    )
+                    return True
+        except Exception as e:
+            self.logger.error(
+                "Error checking delivery count for %s: %s", message_id, e,
+            )
+        return False
+
     async def _drain_pending(self) -> None:
         """Re-process messages left in the Pending Entries List (PEL).
 
@@ -251,6 +279,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         if not self.running:
                             return
                         try:
+                            if await self._exceeds_max_retries(topic, message_id):
+                                continue
                             self.logger.info(
                                 "Recovering pending message: stream=%s, id=%s",
                                 topic, message_id,
@@ -298,6 +328,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 return
                             drained_any = True
                             try:
+                                if await self._exceeds_max_retries(topic, message_id):
+                                    continue
                                 self.logger.info(
                                     "Recovering own pending message: stream=%s, id=%s",
                                     topic, message_id,
