@@ -25,7 +25,7 @@ _OLLAMA_ENDPOINT = AIModelField(
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
     .with_icon("/assets/icons/ai-models/ollama.svg") \
     .with_color("#4A90E2") \
-    .add_field(model_field("e.g., llama2, codellama, mistral"), ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g., gemma4:latest, hf.co/unsloth/gpt-oss-20b-GGUF:F16"), ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY_OPTIONAL, ModelCapability.TEXT_GENERATION) \
     .add_field(_OLLAMA_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
