@@ -897,23 +897,17 @@ const ChatMessage = React.memo(
         const isWebCitation = recordCitations.some(
           (citation) =>
             citation?.citationType === 'web|url' ||
-            citation?.metadata?.origin === 'WEB_SEARCH' ||
-            citation?.metadata?.connector === 'WEB'
+            citation?.metadata?.origin === 'WEB_SEARCH'
         );
 
         if (isWebCitation || isUrlLikeRecordId) {
           const webCitation = recordCitations.find(
             (citation) =>
               citation?.citationType === 'web|url' ||
-              citation?.metadata?.origin === 'WEB_SEARCH' ||
-              citation?.metadata?.connector === 'WEB'
+              citation?.metadata?.origin === 'WEB_SEARCH'
           );
 
-          const webUrl =
-            getWebUrlWithFragment(webCitation) ||
-            (typeof webCitation?.metadata?.webUrl === 'string'
-              ? webCitation.metadata.webUrl
-              : undefined) ||
+          const webUrl = (typeof webCitation?.metadata?.webUrl === 'string' ? webCitation.metadata.webUrl : undefined) ||
             (typeof record.webUrl === 'string' ? record.webUrl : undefined) ||
             (isUrlLikeRecordId ? record.recordId : undefined);
 
