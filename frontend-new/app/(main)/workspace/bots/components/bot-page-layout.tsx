@@ -75,7 +75,7 @@ export function BotPageLayout({
       {/* ── Content ── */}
       {isLoading ? (
         <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
-          <LottieLoader variant="loader" size={48} />
+          <LottieLoader variant="loader" size={48} showLabel label="Loading bots…" />
         </Flex>
       ) : configs.length === 0 ? (
         <EmptyState onAdd={onCreateBot} />

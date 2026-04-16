@@ -132,7 +132,7 @@ export function SelectRecordsPage() {
       >
         {isLoadingRecords ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>
-            <LottieLoader variant="loader" size={48} />
+            <LottieLoader variant="loader" size={48} showLabel label="Loading records…" />
           </Flex>
         ) : filteredRecords.length === 0 ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>

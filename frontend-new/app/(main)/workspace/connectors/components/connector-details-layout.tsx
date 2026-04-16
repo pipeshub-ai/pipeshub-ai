@@ -154,7 +154,7 @@ export function ConnectorDetailsLayout({
       {/* ── Instance list ── */}
       {isLoading ? (
         <Flex align="center" justify="center" style={{ flex: 1 }}>
-          <LottieLoader variant="loader" size={48} />
+          <LottieLoader variant="loader" size={48} showLabel label="Loading instances…" />
         </Flex>
       ) : instances.length === 0 ? (
         <Flex

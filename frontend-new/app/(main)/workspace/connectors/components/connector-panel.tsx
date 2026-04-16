@@ -334,7 +334,7 @@ export function ConnectorPanel() {
           justify="center"
           style={{ height: 200 }}
         >
-          <LottieLoader variant="loader" size={48} />
+          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
         </Flex>
       ) : panelView === 'select-records' ? (
         <SelectRecordsPage />

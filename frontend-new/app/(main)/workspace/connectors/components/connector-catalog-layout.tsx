@@ -218,7 +218,7 @@ export function ConnectorCatalogLayout({
           justify="center"
           style={{ width: '100%', flex: 1 }}
         >
-          <LottieLoader variant="loader" size={48} />
+          <LottieLoader variant="loader" size={48} showLabel label="Loading connectors…" />
         </Flex>
       ) : filtered.length === 0 ? (
         <Flex

@@ -157,7 +157,7 @@ function Oauth2PageContent() {
       >
         {isLoading && (
           <Flex align="center" justify="center" style={{ flex: 1, padding: 'var(--space-6)' }}>
-            <LottieLoader variant="loader" size={48} />
+            <LottieLoader variant="loader" size={48} showLabel />
           </Flex>
         )}
 

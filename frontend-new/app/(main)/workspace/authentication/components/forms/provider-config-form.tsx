@@ -105,7 +105,7 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
     if (isLoading) {
       return (
         <Flex align="center" justify="center" style={{ padding: '32px 0' }}>
-          <LottieLoader variant="loader" size={48} />
+          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
         </Flex>
       );
     }

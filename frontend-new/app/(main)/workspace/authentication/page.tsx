@@ -228,7 +228,7 @@ export default function AuthenticationPage() {
   if (isLoading) {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
-        <LottieLoader variant="loader" size={48} />
+        <LottieLoader variant="loader" size={48} showLabel label="Loading authentication settings…" />
       </Flex>
     );
   }
