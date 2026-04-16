@@ -19,6 +19,9 @@ from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
 from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.sources.custom_connector.api.custom_connector_router import (
+    custom_connector_router,
+)
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
 from app.containers.connector import (
@@ -46,6 +49,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
                 "app.api.routes.toolsets",
                 "app.connectors.sources.localKB.api.kb_router",
                 "app.connectors.sources.localKB.api.knowledge_hub_router",
+                "app.connectors.sources.custom_connector.api.custom_connector_router",
                 "app.api.routes.entity",
                 "app.connectors.api.middleware",
                 "app.core.signed_url",
@@ -570,6 +574,7 @@ app.include_router(entity_router)
 app.include_router(toolsets_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
+app.include_router(custom_connector_router)
 app.include_router(router)
 
 

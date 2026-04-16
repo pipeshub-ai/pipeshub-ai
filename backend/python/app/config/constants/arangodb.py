@@ -46,6 +46,7 @@ class Connectors(Enum):
     SLACK = "SLACK"
 
     KNOWLEDGE_BASE = "KB"
+    CUSTOM = "CUSTOM"
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"

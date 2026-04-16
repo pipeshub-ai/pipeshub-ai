@@ -27,6 +27,7 @@ from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
+from app.connectors.sources.custom_connector.connector import CustomConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
@@ -42,7 +43,6 @@ from app.connectors.sources.google.gmail.individual.connector import (
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.linear.connector import LinearConnector
-from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.outlook_individual.connector import (
@@ -90,7 +90,8 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
-        "kb": KnowledgeBaseConnector,
+        "custom": CustomConnector,
+        "kb": CustomConnector,
         "azureblob": AzureBlobConnector,
         "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,

@@ -1144,6 +1144,19 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_kb_context_for_record(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Return the recordGroup context for a given record.
+
+        Returns a dict with at least ``kb_id``, ``kb_name``, and ``org_id``,
+        or ``None`` if the record is not linked to any recordGroup.
+        """
+        pass
+
     # ==================== User Operations ====================
 
     @abstractmethod
@@ -1393,6 +1406,16 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def update_record_group(
+        self,
+        record_group_id: str,
+        updates: dict,
+        transaction: str | None = None,
+    ) -> bool:
+        """Update a record group by ID. Generic alias for update_knowledge_base."""
+        pass
+
+    @abstractmethod
     async def delete_knowledge_base(
         self,
         kb_id: str,
@@ -1402,8 +1425,17 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
-        """Shared validation logic for folder creation."""
+    async def delete_record_group(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Delete a record group and all nested content. Generic alias for delete_knowledge_base."""
+        pass
+
+    @abstractmethod
+    async def validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
+        """Validate that user has write access before creating a folder in a record group."""
         pass
 
     @abstractmethod
@@ -1542,6 +1574,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         files: list[dict],
         parent_folder_id: str | None = None,
+        is_restricted: bool = True,
     ) -> dict:
         """Upload records to KB root or a folder."""
         pass
@@ -1675,6 +1708,272 @@ class IGraphDBProvider(ABC):
         """List records in a KB. Returns (records, total_count, available_filters)."""
         pass
 
+    # ==================== Generic Connector Instance Operations ====================
+
+    @abstractmethod
+    async def get_user_node_permission(
+        self,
+        node_id: str,
+        user_id: str,
+        group_type: str | None = None,
+        transaction: str | None = None,
+    ) -> str | None:
+        """Get user's permission role on a node (recordGroup or record), direct or via team."""
+        pass
+
+    @abstractmethod
+    async def list_user_record_groups(
+        self,
+        user_id: str,
+        org_id: str,
+        group_type: str | None = None,
+        skip: int = 0,
+        limit: int = 20,
+        search: str | None = None,
+        permissions: list[str] | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+        connector_id: str | None = None,
+    ) -> tuple[list[dict], int, dict]:
+        """
+        List record groups of a given group_type accessible by a user.
+        Returns (list of record group dicts, total count, available_filters).
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group(
+        self,
+        record_group_id: str,
+        user_id: str,
+        group_type: str,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Get a record group (e.g. KB / Collection) with user permissions."""
+        pass
+
+    @abstractmethod
+    async def get_node_children(
+        self,
+        node_id: str,
+        node_type: str,
+        skip: int = 0,
+        limit: int = 20,
+        level: int = 1,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> dict:
+        """
+        Get children of a node. node_type is 'recordGroup' or 'record' (folder).
+        For recordGroup: returns root-level children via PARENT_CHILD from recordGroup.
+        For record (folder): returns folder children via PARENT_CHILD from record.
+        Returns dict with success, container, folders, records, totalCount, counts, availableFilters.
+        """
+        pass
+
+    @abstractmethod
+    async def create_node_permissions(
+        self,
+        node_id: str,
+        requester_id: str,
+        user_ids: list[str],
+        team_ids: list[str],
+        role: str,
+        group_ids: list[str] | None = None,
+        role_ids: list[str] | None = None,
+        node_collection: str = "recordGroups",
+        transaction: str | None = None,
+    ) -> dict:
+        """Create permissions for users/groups/roles/teams on a node (recordGroup or record).
+
+        - user_ids: user doc keys to grant permission to (type=USER)
+        - group_ids: group doc keys (type=GROUP) — SDK-generic
+        - role_ids: role doc keys (type=ROLE) — SDK-generic
+        - team_ids: team doc keys (type=TEAM) — KB-specific
+        - node_collection: "recordGroups" (default) or "records"
+        """
+        pass
+
+    @abstractmethod
+    async def update_node_permission(
+        self,
+        node_id: str,
+        requester_id: str,
+        user_ids: list[str],
+        team_ids: list[str],
+        new_role: str,
+        group_ids: list[str] | None = None,
+        role_ids: list[str] | None = None,
+        node_collection: str = "recordGroups",
+    ) -> dict | None:
+        """Update permissions for users/groups/roles/teams on a node."""
+        pass
+
+    @abstractmethod
+    async def remove_node_permission(
+        self,
+        node_id: str,
+        user_ids: list[str],
+        team_ids: list[str],
+        group_ids: list[str] | None = None,
+        role_ids: list[str] | None = None,
+        node_collection: str = "recordGroups",
+        transaction: str | None = None,
+    ) -> bool:
+        """Remove permissions for multiple entities (users/groups/roles/teams) from a node."""
+        pass
+
+    @abstractmethod
+    async def list_node_permissions(
+        self,
+        node_id: str,
+        node_collection: str = "recordGroups",
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """List all permissions for a node. Each item includes entity details and type (USER/GROUP/ROLE/TEAM)."""
+        pass
+
+    @abstractmethod
+    async def get_node_permissions(
+        self,
+        node_id: str,
+        user_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
+        group_ids: list[str] | None = None,
+        role_ids: list[str] | None = None,
+        node_collection: str = "recordGroups",
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, str]]:
+        """Get current roles for users/groups/roles/teams on a node.
+
+        Returns: {"users": {id: role}, "groups": {id: role}, "roles": {id: role}, "teams": {id: None}}.
+        """
+        pass
+
+    @abstractmethod
+    async def count_node_owners(
+        self,
+        node_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Count the number of owners for a node."""
+        pass
+
+    @abstractmethod
+    async def create_generic_folder(
+        self,
+        instance_id: str,
+        folder_name: str,
+        org_id: str,
+        is_restricted: bool = False,
+        inherit_permissions: bool = True,
+        parent_folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Create folder with proper RECORDS document and edges.
+        If parent_folder_id is None, creates at instance root with PARENT_CHILD from recordGroup.
+        If is_restricted, creates inheritPermissions edge.
+        """
+        pass
+
+    @abstractmethod
+    async def get_generic_folder_children(
+        self,
+        instance_id: str,
+        folder_id: str,
+        skip: int = 0,
+        limit: int = 20,
+        level: int = 1,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> dict:
+        """Get folder contents with folders_first pagination."""
+        pass
+
+    @abstractmethod
+    async def delete_generic_folder(
+        self,
+        instance_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a folder and all nested content within a connector instance."""
+        pass
+
+    @abstractmethod
+    async def list_record_group_records(
+        self,
+        record_group_id: str,
+        user_id: str,
+        org_id: str,
+        skip: int = 0,
+        limit: int = 20,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        sort_by: str = "createdAtTimestamp",
+        sort_order: str = "desc",
+        folder_id: str | None = None,
+    ) -> tuple[list[dict], int, dict]:
+        """List records in a record group. Returns (records, total_count, available_filters)."""
+        pass
+
+    @abstractmethod
+    async def create_files_in_record_group(
+        self,
+        record_group_id: str,
+        user_id: str,
+        org_id: str,
+        files: list[dict],
+        is_restricted: bool,
+        parent_folder_id: str | None = None,
+    ) -> dict:
+        """
+        Upload/create file records in a record group.
+        If parent_folder_id is None, creates at record-group root with PARENT_CHILD from recordGroup.
+        If is_restricted, creates inheritPermissions edges.
+        """
+        pass
+
+    @abstractmethod
+    async def validate_folder_exists_in_record_group(
+        self,
+        record_group_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Validate that a folder exists and belongs to the record group."""
+        pass
+
+    @abstractmethod
+    async def find_folder_by_name_in_record_group(
+        self,
+        record_group_id: str,
+        folder_name: str,
+        parent_folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Find a folder by name within a specific parent (record-group root or folder)."""
+        pass
+
     # ==================== Group Operations ====================
 
     @abstractmethod
@@ -1718,6 +2017,52 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def list_user_groups(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str | None = None,
+        skip: int = 0,
+        limit: int = 20,
+        search: str | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int]:
+        """
+        List user groups accessible by a user (via PERMISSION edge USER -> GROUP),
+        paginated + searchable, optionally filtered by connector_id.
+
+        Returns: (list of group dicts with {id, name, description, userRole, timestamps, ...}, total_count).
+        """
+        pass
+
+    @abstractmethod
+    async def delete_group_cascade(
+        self,
+        group_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Cascade-delete a group: remove all PERMISSION edges both to and from the group
+        (memberships + permissions the group grants), then delete the group document.
+        """
+        pass
+
+    @abstractmethod
+    async def remove_users_from_group_edges(
+        self,
+        group_id: str,
+        user_ids: list[str],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Remove PERMISSION edges from the given users to a group (group membership).
+        Returns True if at least one edge was deleted.
+        """
+        pass
+
+    @abstractmethod
     async def batch_upsert_people(
         self,
         people: list[Person],
@@ -1752,6 +2097,52 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: Role data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def list_user_roles(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str | None = None,
+        skip: int = 0,
+        limit: int = 20,
+        search: str | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int]:
+        """
+        List roles accessible by a user (via PERMISSION edge USER -> ROLE),
+        paginated + searchable, optionally filtered by connector_id.
+
+        Returns: (list of role dicts with {id, name, userRole, timestamps, ...}, total_count).
+        """
+        pass
+
+    @abstractmethod
+    async def delete_role_cascade(
+        self,
+        role_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Cascade-delete a role: remove all PERMISSION edges both to and from the role
+        (assignments + permissions the role grants), then delete the role document.
+        """
+        pass
+
+    @abstractmethod
+    async def unassign_role_from_users_edges(
+        self,
+        role_id: str,
+        user_ids: list[str],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Remove PERMISSION edges from the given users to a role (unassign the role).
+        Returns True if at least one edge was deleted.
         """
         pass
 
@@ -1953,6 +2344,28 @@ class IGraphDBProvider(ABC):
             to_record_id (str): Target record ID
             relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "BLOCKS", etc.)
             transaction (Optional[str]): Optional transaction ID
+        """
+        pass
+
+    @abstractmethod
+    async def delete_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Delete a relation edge between two records.
+
+        Args:
+            from_record_id: Source record ID
+            to_record_id: Target record ID
+            relation_type: Type of relation (e.g., "PARENT_CHILD", "LINKED_TO", "ATTACHMENT", ...)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if at least one edge was deleted, False otherwise.
         """
         pass
 
@@ -3360,24 +3773,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if folder exists in KB, False otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def _validate_folder_creation(
-        self,
-        kb_id: str,
-        user_id: str
-    ) -> dict:
-        """
-        Validate user permissions for folder creation.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            user_id (str): User ID (internal key)
-
-        Returns:
-            Dict: Validation result with 'valid' key and user info
         """
         pass
 

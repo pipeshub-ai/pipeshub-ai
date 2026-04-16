@@ -1,13 +1,20 @@
 """
-Knowledge Base Connector
+Custom Connector
 
-Connector for managing local knowledge bases. This connector treats KB as a unified
-connector type that manages all KBs collectively, with no-op sync methods since KBs
-are local storage.
+Generic connector for user-managed, locally-stored data. Instances are backed
+by a recordGroup in the graph database and behave like the Knowledge Base
+connector, but with all builder fields (name, sync/agent/hide flags, app type,
+app group) chosen per instance instead of being hardcoded.
+
+Knowledge Base is one preset of this connector: the org-creation hook
+auto-provisions a CustomConnector instance with KB-preset overrides
+(type=KNOWLEDGE_BASE, app_group=LOCAL_STORAGE, hide_connector=True, etc.).
+Future user-created custom connectors use the same class with type=CUSTOM
+and their own override values.
 """
 
 from logging import Logger
-from typing import Dict, List, Optional
+from typing import Any, Optional
 
 import aiohttp
 from fastapi import HTTPException
@@ -33,37 +40,51 @@ from app.models.entities import Record
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 
-KB_CONNECTOR_NAME = "Collections"
-
-class KBApp(App):
-    """App class for Knowledge Base connector"""
-
-    def __init__(self, connector_id: str) -> None:
-        super().__init__(Connectors.KNOWLEDGE_BASE, AppGroups.LOCAL_STORAGE, connector_id)
+CUSTOM_CONNECTOR_NAME = "Custom"
 
 
-@ConnectorBuilder(KB_CONNECTOR_NAME)\
+class CustomApp(App):
+    """
+    App wrapper for CustomConnector.
+
+    Accepts app_type and app_group as parameters so a single class can back
+    many preset shapes (KB, user-defined customs, etc.).
+    """
+
+    def __init__(
+        self,
+        connector_id: str,
+        app_type: Connectors = Connectors.CUSTOM,
+        app_group: AppGroups = AppGroups.LOCAL_STORAGE,
+    ) -> None:
+        super().__init__(app_type, app_group, connector_id)
+
+
+@ConnectorBuilder(CUSTOM_CONNECTOR_NAME)\
     .in_group("Local Storage")\
     .with_supported_auth_types("NONE")\
-    .with_description("Local knowledge base for organizing and managing documents")\
-    .with_categories(["Knowledge Management", "Storage"])\
+    .with_description("Generic custom connector for user-managed data")\
+    .with_categories(["Custom", "Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
         .with_sync_strategies([SyncStrategy.MANUAL])\
         .with_scheduled_config(False, 0)\
         .with_sync_support(True)
         .with_agent_support(True)
-        .with_hide_connector(True)
+        .with_hide_connector(False)
     )\
     .build_decorator()
 
 
-class KnowledgeBaseConnector(BaseConnector):
+class CustomConnector(BaseConnector):
     """
-    Knowledge Base connector for managing local knowledge bases.
+    Generic custom connector.
 
-    This connector manages all KBs collectively (not per-KB instances).
-    Since KBs are local storage, sync methods are no-ops.
+    Local-storage semantics (no-op sync). Per-instance overrides for
+    `app_type` and `app_group` let the same class back both the default
+    KB instance (type=KNOWLEDGE_BASE, app_group=LOCAL_STORAGE) and
+    user-created custom connector instances (type=CUSTOM, app_group of
+    their choice).
     """
 
     def __init__(
@@ -75,9 +96,11 @@ class KnowledgeBaseConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        app_type: Connectors = Connectors.CUSTOM,
+        app_group: AppGroups = AppGroups.LOCAL_STORAGE,
     ) -> None:
         super().__init__(
-            KBApp(connector_id),
+            CustomApp(connector_id, app_type=app_type, app_group=app_group),
             logger,
             data_entities_processor,
             data_store_provider,
@@ -86,37 +109,32 @@ class KnowledgeBaseConnector(BaseConnector):
             scope,
             created_by,
         )
-        self.connector_name = Connectors.KNOWLEDGE_BASE
-
-        # KB connector doesn't need to maintain KB service instance
-        # The existing KB router and service continue to work independently
-        # This connector is mainly for registration in the connector factory
+        self.connector_name = app_type
 
     async def init(self) -> bool:
-        """Initialize the KB connector"""
+        """Initialize the custom connector"""
         try:
-            # KB connector doesn't need external configuration
-            # It's always available for local storage
-            self.logger.info("✅ Knowledge Base connector initialized (local storage)")
+            self.logger.info(
+                f"✅ Custom connector initialized (connector_id={self.connector_id}, "
+                f"type={self.connector_name}) (local storage)"
+            )
             return True
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize KB connector: {e}")
+            self.logger.error(f"❌ Failed to initialize custom connector: {e}")
             return False
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection - always returns True for local KB"""
-        # KB is local storage, so connection is always available
+        """Test connection - always returns True for local storage"""
         return True
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """
-        Get signed URL for a KB record.
+        Get signed URL for a record stored in the storage service.
 
-        KB records are stored in the storage service. This method calls the storage
-        service to get a pre-signed URL for downloading the file.
+        Custom/KB records with origin=UPLOAD are stored in the storage service.
+        Calls the storage service to get a pre-signed URL for downloading.
         """
         try:
-            # Only KB records with UPLOAD origin are stored in storage service
             if record.origin != OriginTypes.UPLOAD:
                 self.logger.warning(
                     f"Record {record.id} is not an uploaded record (origin: {record.origin})"
@@ -127,7 +145,6 @@ class KnowledgeBaseConnector(BaseConnector):
                 self.logger.warning(f"Record {record.id} has no externalRecordId")
                 return None
 
-            # Get storage endpoint and JWT secret from config
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
@@ -135,14 +152,12 @@ class KnowledgeBaseConnector(BaseConnector):
                 "endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value
             )
 
-            # Create a scoped JWT token for storage service authentication
             jwt_payload = {
                 "orgId": record.org_id,
                 "scopes": ["storage:token"],
             }
             storage_token = await generate_jwt(self.config_service, jwt_payload)
 
-            # Call storage service to get the signed URL
             download_endpoint = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/download"
 
             async with aiohttp.ClientSession() as session:
@@ -153,20 +168,20 @@ class KnowledgeBaseConnector(BaseConnector):
                     if response.status == HttpStatusCode.OK.value:
                         content_type = response.headers.get("Content-Type", "")
 
-                        # Check if response is JSON (cloud storage) or file (local storage)
                         if "application/json" in content_type:
-                            # Cloud storage: response contains signed URL
                             data = await response.json()
                             signed_url = data.get("signedUrl")
                             if signed_url:
                                 return signed_url
                             else:
-                                self.logger.error(f"No signedUrl in storage service response for record {record.id}")
+                                self.logger.error(
+                                    f"No signedUrl in storage service response for record {record.id}"
+                                )
                                 return None
                         else:
-                            # Local storage: the endpoint serves the file directly
-                            # Return None to indicate we need to handle this differently in stream_record
-                            self.logger.info(f"Local storage detected for record {record.id}, will stream with auth")
+                            self.logger.info(
+                                f"Local storage detected for record {record.id}, will stream with auth"
+                            )
                             return None
                     else:
                         error_text = await response.text()
@@ -175,20 +190,21 @@ class KnowledgeBaseConnector(BaseConnector):
                         )
                         return None
         except Exception as e:
-            self.logger.error(f"Failed to get signed URL for record {record.id}: {e}", exc_info=True)
+            self.logger.error(
+                f"Failed to get signed URL for record {record.id}: {e}", exc_info=True
+            )
             return None
 
     async def stream_record(
         self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None
     ) -> Response:
         """
-        Stream a record from KB.
+        Stream a record from the storage service.
 
-        KB records are stored in the storage service. This method fetches the buffer
-        from the storage service and returns it as a response.
+        Fetches the buffer from the storage service and returns it as a FastAPI
+        Response.
         """
         try:
-            # Only KB records with UPLOAD origin are stored in storage service
             if record.origin != OriginTypes.UPLOAD:
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -201,7 +217,6 @@ class KnowledgeBaseConnector(BaseConnector):
                     detail="Record has no externalRecordId"
                 )
 
-            # Get storage endpoint from config
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
@@ -209,27 +224,26 @@ class KnowledgeBaseConnector(BaseConnector):
                 "endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value
             )
 
-            # Build the buffer endpoint
             buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
 
-            # Create a scoped JWT token for storage service authentication
             jwt_payload = {
                 "orgId": record.org_id,
                 "scopes": ["storage:token"],
             }
             storage_token = await generate_jwt(self.config_service, jwt_payload)
 
-            # Fetch the buffer from storage service
             response = await make_api_call(route=buffer_url, token=storage_token)
 
-            # Extract buffer content
             if isinstance(response["data"], dict):
                 data = response['data'].get('data')
                 buffer = bytes(data) if isinstance(data, list) else data
             else:
                 buffer = response['data']
 
-            return Response(content=buffer or b'', media_type=record.mime_type if record.mime_type else "application/octet-stream")
+            return Response(
+                content=buffer or b'',
+                media_type=record.mime_type if record.mime_type else "application/octet-stream"
+            )
 
         except HTTPException:
             raise
@@ -238,39 +252,27 @@ class KnowledgeBaseConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to stream record: {str(e)}"
-            )
+            ) from e
 
     async def run_sync(self) -> None:
-        """No-op for KB connector - KBs are local storage"""
-        self.logger.debug("KB connector sync skipped (local storage)")
-        return
+        """No-op for custom connector - local storage"""
+        self.logger.debug("Custom connector sync skipped (local storage)")
 
     async def run_incremental_sync(self) -> None:
-        """No-op for KB connector - KBs are local storage"""
-        self.logger.debug("KB connector incremental sync skipped (local storage)")
-        return
+        """No-op for custom connector - local storage"""
+        self.logger.debug("Custom connector incremental sync skipped (local storage)")
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
-        """KB connector doesn't support webhooks"""
-        self.logger.debug("KB connector webhook notification ignored (not supported)")
-        return
+    def handle_webhook_notification(self, notification: dict) -> None:
+        """Custom connector doesn't support webhooks"""
+        self.logger.debug("Custom connector webhook notification ignored (not supported)")
 
     async def cleanup(self) -> None:
         """Cleanup resources"""
-        # KB connector doesn't maintain state, so cleanup is a no-op
-        self.logger.info("✅ Knowledge Base connector cleanup completed")
+        self.logger.info("✅ Custom connector cleanup completed")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
-        """
-        Reindex KB records.
-
-        This delegates to existing KB reindexing logic if available.
-        For now, it's a placeholder that can be extended.
-        """
-        self.logger.info(f"Reindexing {len(record_results)} KB records")
-        # TODO: Implement KB-specific reindexing logic if needed
-        # This could delegate to KB service or trigger indexing events
-        pass
+    async def reindex_records(self, record_results: list[Record]) -> None:
+        """Reindex custom connector records (placeholder)."""
+        self.logger.info(f"Reindexing {len(record_results)} custom connector records")
 
     @classmethod
     async def create_connector(
@@ -281,13 +283,23 @@ class KnowledgeBaseConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
-    ) -> "KnowledgeBaseConnector":
-        """Factory method to create a KnowledgeBaseConnector instance"""
+        app_type: Connectors = Connectors.CUSTOM,
+        app_group: AppGroups = AppGroups.LOCAL_STORAGE,
+        **kwargs: Any,
+    ) -> "CustomConnector":
+        """
+        Factory method.
+
+        Accepts optional `app_type` / `app_group` so callers (notably the
+        org-creation hook) can pick the preset the instance represents.
+        Extra kwargs are accepted and ignored for forward-compat with the
+        generic ConnectorFactory plumbing.
+        """
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
-        return KnowledgeBaseConnector(
+        return CustomConnector(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -295,6 +307,8 @@ class KnowledgeBaseConnector(BaseConnector):
             connector_id,
             scope,
             created_by,
+            app_type=app_type,
+            app_group=app_group,
         )
 
     async def get_filter_options(
@@ -305,8 +319,7 @@ class KnowledgeBaseConnector(BaseConnector):
         search: Optional[str] = None,
         cursor: Optional[str] = None
     ) -> FilterOptionsResponse:
-        """KB connector does not support dynamic filter options"""
-        # KBs don't have external sources to filter, so return empty
+        """Custom connector does not support dynamic filter options"""
         from app.connectors.core.registry.filters import (
             FilterOptionsResponse,
         )

@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import (
     AccountType,
+    AppGroups,
     CollectionNames,
     Connectors,
     ConnectorScopes,
@@ -545,12 +546,14 @@ class EntityEventService(BaseEventService):
         name: str = "Private"
     ) -> dict:
         """Get or create a knowledge base for a user, with root folder and permissions."""
+        txn_id = None
         try:
             if not userId or not orgId:
                 self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
                 return {}
 
-            # Check if a knowledge base already exists for this user in this organization
+            # Check if a knowledge base already exists for this user in this organization.
+            # createdBy stores the MongoDB userId — consistent with the APPS collection convention.
             existing_kbs = await self.graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.RECORD_GROUPS.value,
                 filters={
@@ -571,18 +574,20 @@ class EntityEventService(BaseEventService):
             if not kb_app:
                 self.logger.error(f"Failed to get or create KB app for org {orgId}")
                 return {}
-            kb_app_id = kb_app.get('_key')
+            # Use fallback so this works for both ArangoDB (_key) and Neo4j (id)
+            kb_app_id = kb_app.get('_key') or kb_app.get('id')
             current_timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid4())
 
             kb_data = {
                 "id": kb_key,
-                "createdBy": userId,
+                "createdBy": userId,  # MongoDB userId — consistent with APPS collection convention
                 "orgId": orgId,
                 "groupName": name,
                 "groupType": Connectors.KNOWLEDGE_BASE.value,
                 "connectorName": Connectors.KNOWLEDGE_BASE.value,
-                "connectorId": kb_app_id,  # Link KB to the app
+                "connectorId": kb_app_id,
+                "isRestricted": True,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
             }
@@ -599,7 +604,6 @@ class EntityEventService(BaseEventService):
                 "lastUpdatedTimestampAtSource": current_timestamp,
             }
 
-            # Create belongs_to edge from record group to app
             belongs_to_edge = {
                 "from_id": kb_key,
                 "from_collection": CollectionNames.RECORD_GROUPS.value,
@@ -610,11 +614,38 @@ class EntityEventService(BaseEventService):
                 "updatedAtTimestamp": current_timestamp,
             }
 
-            # Insert all in transaction
-            # TODO: Use transaction instead of batch upsert
-            await self.graph_provider.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
-            await self.graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-            await self.graph_provider.batch_create_edges([belongs_to_edge], CollectionNames.BELONGS_TO.value)
+            inherit_permissions_edge = {
+                "from_id": kb_key,
+                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_id": kb_app_id,
+                "to_collection": CollectionNames.APPS.value,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+
+            txn_id = await self.graph_provider.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.RECORD_GROUPS.value,
+                    CollectionNames.PERMISSION.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.INHERIT_PERMISSIONS.value,
+                ],
+            )
+            await self.graph_provider.batch_upsert_nodes(
+                [kb_data], CollectionNames.RECORD_GROUPS.value, transaction=txn_id
+            )
+            await self.graph_provider.batch_create_edges(
+                [permission_edge], CollectionNames.PERMISSION.value, transaction=txn_id
+            )
+            await self.graph_provider.batch_create_edges(
+                [belongs_to_edge], CollectionNames.BELONGS_TO.value, transaction=txn_id
+            )
+            await self.graph_provider.batch_create_edges(
+                [inherit_permissions_edge], CollectionNames.INHERIT_PERMISSIONS.value, transaction=txn_id
+            )
+            await self.graph_provider.commit_transaction(txn_id)
+            txn_id = None
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId} with app connection")
             return {
@@ -628,79 +659,86 @@ class EntityEventService(BaseEventService):
 
         except Exception as e:
             self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+            if txn_id is not None:
+                try:
+                    await self.graph_provider.rollback_transaction(txn_id)
+                except Exception as rb_err:
+                    self.logger.warning(f"Rollback failed: {rb_err}")
             return {}
 
-    async def __create_kb_connector_app_instance(self, org_id: str, created_by_user_id: str | None = None) -> dict | None:
+    async def __create_builtin_connector_app_instance(
+        self,
+        org_id: str,
+        created_by_user_id: str | None,
+        preset: dict,
+    ) -> dict | None:
         """
-        Automatically create a Knowledge Base connector instance when an org is created.
+        Generic auto-provision of a builtin connector instance backed by CustomConnector.
 
-        Args:
-            org_id: Organization ID
-            created_by_user_id: User ID who created the org (optional, can be None for system-created)
+        Used by the org-creation hook (and any future preset-based provisioning) to
+        create a recordGroup-backed connector instance without hardcoding KB
+        specifics. `preset` carries every per-instance override:
 
-        Returns:
-            App document if successful, None otherwise
+            {
+                "connector_id": "knowledgeBase_<orgId>",  # APPS document id
+                "name": "Collections",                     # instance display name
+                "type": Connectors.KNOWLEDGE_BASE.value,   # APPS.type (string)
+                "app_group": AppGroups.LOCAL_STORAGE.value,# APPS.appGroup (string)
+                "app_type_enum": Connectors.KNOWLEDGE_BASE,# enum passed to CustomApp
+                "app_group_enum": AppGroups.LOCAL_STORAGE, # enum passed to CustomApp
+                "auth_type": "NONE",
+                "scope": ConnectorScopes.TEAM.value,
+                "is_active": True,
+                "is_agent_active": True,
+                "is_configured": True,
+                "is_authenticated": True,
+                "hide_connector": True,
+            }
         """
         try:
-            self.logger.info(f"📦 Creating Knowledge Base connector instance for org: {org_id}")
+            instance_key = preset["connector_id"]
+            instance_type = preset["type"]
+            connector_name = preset["name"]
 
-            # Get KB connector metadata from the connector class
-            from app.connectors.sources.localKB.connector import (
-                KB_CONNECTOR_NAME,
-                KnowledgeBaseConnector,
+            self.logger.info(
+                f"📦 Creating builtin connector instance '{connector_name}' "
+                f"(type={instance_type}, id={instance_key}) for org: {org_id}"
             )
 
-            # Check if KB connector metadata exists
-            if not hasattr(KnowledgeBaseConnector, '_connector_metadata'):
-                self.logger.warning("Knowledge Base connector metadata not found, skipping auto-creation")
-                return None
-
-            metadata = KnowledgeBaseConnector._connector_metadata
-            connector_name = metadata.get('name', KB_CONNECTOR_NAME)
-            app_group = metadata.get('appGroup', 'Local Storage')
-
-            # Check if KB connector instance already exists for this org
+            # Skip if an instance of this type already exists for the org
             org_apps = await self.graph_provider.get_org_apps(org_id)
-            existing_kb_app = next(
-                (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
+            existing_app = next(
+                (app for app in org_apps if app.get('type') == instance_type),
                 None
             )
-
-            if existing_kb_app:
-                kb_key = existing_kb_app.get('_key') or existing_kb_app.get('id')
+            if existing_app:
+                existing_key = existing_app.get('_key') or existing_app.get('id')
                 self.logger.info(
-                    f"Knowledge Base connector instance already exists for org {org_id} "
-                    f"(id: {kb_key}), skipping creation"
+                    f"Builtin connector instance (type={instance_type}) already exists "
+                    f"for org {org_id} (id: {existing_key}), skipping creation"
                 )
-                return existing_kb_app
+                return existing_app
 
-            # KB connector uses "NONE" auth type
-            selected_auth_type = 'NONE'
-            # KB connector is team-scoped
-            scope = ConnectorScopes.TEAM.value
-
-            # Use system user if no created_by_user_id provided
             created_by = created_by_user_id if created_by_user_id else "system"
-
-            # Create connector instance document
-            instance_key = f"knowledgeBase_{org_id}"
             current_timestamp = get_epoch_timestamp_in_ms()
 
             instance_document = {
                 'id': instance_key,
                 'name': connector_name,
-                'type': Connectors.KNOWLEDGE_BASE.value,
-                'appGroup': app_group,
-                'authType': selected_auth_type,
-                'scope': scope,
-                'isActive': True,  # KB is always active (local storage)
-                'isAgentActive': True,  # KB supports agents
-                'isConfigured': True,  # KB doesn't need configuration
-                'isAuthenticated': True,  # KB doesn't need authentication (local storage)
+                'type': instance_type,
+                'appGroup': preset["app_group"],
+                'authType': preset.get("auth_type", "NONE"),
+                'scope': preset.get("scope", ConnectorScopes.TEAM.value),
+                'isActive': preset.get("is_active", True),
+                'isAgentActive': preset.get("is_agent_active", True),
+                'isConfigured': preset.get("is_configured", True),
+                'isAuthenticated': preset.get("is_authenticated", True),
+                'isRestricted': preset.get("is_restricted", False),
+                'hideConnector': preset.get("hide_connector", False),
                 'createdBy': created_by,
                 'updatedBy': created_by,
                 'createdAtTimestamp': current_timestamp,
-                'updatedAtTimestamp': current_timestamp
+                'updatedAtTimestamp': current_timestamp,
             }
 
             # Create instance in database
@@ -709,7 +747,7 @@ class EntityEventService(BaseEventService):
                 CollectionNames.APPS.value
             )
 
-            # Create relationship edge between organization and instance
+            # Create org → app edge
             edge_document = {
                 "from_id": org_id,
                 "from_collection": CollectionNames.ORGS.value,
@@ -717,47 +755,77 @@ class EntityEventService(BaseEventService):
                 "to_collection": CollectionNames.APPS.value,
                 "createdAtTimestamp": current_timestamp,
             }
-
             await self.graph_provider.batch_create_edges(
                 [edge_document],
                 CollectionNames.ORG_APP_RELATION.value,
             )
 
-            # Create connector instance and add to connectors_map so it is available in-process
+            # Hydrate into in-process connectors_map via the factory
             config_service = self.app_container.config_service()
             data_store_provider = await self.app_container.data_store()
             if not hasattr(self.app_container, 'connectors_map'):
                 self.logger.info(f"Creating connectors_map for org: {org_id}")
                 self.app_container.connectors_map = {}
 
-            scope = instance_document.get("scope", "personal")
-            created_by = instance_document.get("createdBy", "")
-
             connector = await ConnectorFactory.create_and_start_sync(
-                name="kb",
+                name="custom",
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
                 connector_id=instance_key,
-                scope=scope,
-                created_by=created_by,
+                scope=instance_document["scope"],
+                created_by=instance_document["createdBy"],
+                app_type=preset.get("app_type_enum", Connectors.CUSTOM),
+                app_group=preset.get("app_group_enum", AppGroups.LOCAL_STORAGE),
             )
             if connector:
                 self.app_container.connectors_map[instance_key] = connector
                 self.logger.info(
-                    f"✅ KB connector instance (id: {instance_key}) added to connectors_map for org: {org_id}"
+                    f"✅ Builtin connector instance (id: {instance_key}) added to "
+                    f"connectors_map for org: {org_id}"
                 )
 
             self.logger.info(
-                f"✅ Successfully created Knowledge Base connector instance '{connector_name}' "
+                f"✅ Successfully created builtin connector instance '{connector_name}' "
                 f"(id: {instance_key}) for org: {org_id}"
             )
             return instance_document
 
         except Exception as e:
-            self.logger.error(f"❌ Error creating KB connector instance for org {org_id}: {str(e)}")
-            # Don't fail org creation if KB connector creation fails
+            self.logger.error(
+                f"❌ Error creating builtin connector instance for org {org_id}: {str(e)}"
+            )
+            # Don't fail org creation if builtin connector creation fails
             return None
+
+    async def __create_kb_connector_app_instance(
+        self,
+        org_id: str,
+        created_by_user_id: str | None = None,
+    ) -> dict | None:
+        """
+        Thin wrapper that auto-provisions the default Knowledge Base instance via the
+        generic builtin-connector path. KB is one preset of CustomConnector.
+        """
+        kb_preset = {
+            "connector_id": f"knowledgeBase_{org_id}",
+            "name": "Collections",
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "app_group": AppGroups.LOCAL_STORAGE.value,
+            "app_type_enum": Connectors.KNOWLEDGE_BASE,
+            "app_group_enum": AppGroups.LOCAL_STORAGE,
+            "auth_type": "NONE",
+            "scope": ConnectorScopes.TEAM.value,
+            "is_active": True,
+            "is_agent_active": True,
+            "is_configured": True,
+            "is_authenticated": True,
+            "is_restricted": True,
+            "hide_connector": True,
+        }
+        return await self.__create_builtin_connector_app_instance(
+            org_id, created_by_user_id, kb_preset
+        )
 
     async def __get_or_create_kb_app_for_org(self, org_id: str, created_by_user_id: str | None = None) -> dict | None:
         """
