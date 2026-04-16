@@ -76,6 +76,10 @@ const MAX_TABLE_CHARS = 9500;
 const SLACK_SECTION_TEXT_LIMIT = 3000;
 const SLACK_SECTION_FIELD_TEXT_LIMIT = 2000;
 const SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT = 10;
+const NO_UNFURL_OPTIONS = {
+  unfurl_links: false,
+  unfurl_media: false,
+} as const;
 const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again later.";
 const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
 const STREAM_FAILURE_MESSAGE =
@@ -490,8 +494,7 @@ async function sendUserFacingSlackErrorMessage(
       channel: typedMessage.channel,
       thread_ts: threadId,
       text: truncateForSlack(errorMessage),
-      unfurl_links: false,
-      unfurl_media: false,
+      ...NO_UNFURL_OPTIONS,
     });
   } catch (sendError) {
     console.error("Failed to send Slack user-facing error message:", sendError);
@@ -1765,8 +1768,7 @@ async function processSlackMessage(
           ts: waitingMessageTs,
           text: truncatedText,
           ...(blocks && blocks.length > 0 ? { blocks } : {}),
-          unfurl_links: false,
-          unfurl_media: false,
+          ...NO_UNFURL_OPTIONS,
         });
         return;
       } catch (error) {
@@ -1780,8 +1782,7 @@ async function processSlackMessage(
               channel: typedMessage.channel!,
               ts: waitingMessageTs,
               text: truncatedText,
-              unfurl_links: false,
-              unfurl_media: false,
+              ...NO_UNFURL_OPTIONS,
             });
             return;
           } catch (fallbackError) {
@@ -1801,8 +1802,7 @@ async function processSlackMessage(
         thread_ts: threadId,
         text: truncatedText,
         ...(blocks && blocks.length > 0 ? { blocks } : {}),
-        unfurl_links: false,
-        unfurl_media: false,
+        ...NO_UNFURL_OPTIONS,
       });
     } catch (error) {
       if (blocks && blocks.length > 0) {
@@ -1813,8 +1813,7 @@ async function processSlackMessage(
         channel: typedMessage.channel!,
         thread_ts: threadId,
         text: truncatedText,
-        unfurl_links: false,
-        unfurl_media: false,
+        ...NO_UNFURL_OPTIONS,
       });
     }
   };
@@ -1826,8 +1825,7 @@ async function processSlackMessage(
         thread_ts: threadId,
         text: "",
         blocks: chunk,
-        unfurl_links: false,
-        unfurl_media: false,
+        ...NO_UNFURL_OPTIONS,
       });
     } catch (error) {
       console.error("Error posting Slack chunk as blocks, retrying with text:", error);
@@ -1835,8 +1833,7 @@ async function processSlackMessage(
         channel: typedMessage.channel!,
         thread_ts: threadId,
         text: FAILED_RESPONSE_GENERATION_MESSAGE,
-        unfurl_links: false,
-        unfurl_media: false,
+        ...NO_UNFURL_OPTIONS,
       });
     }
   };
@@ -1903,8 +1900,7 @@ async function processSlackMessage(
         channel: typedMessage.channel!,
         thread_ts: threadId,
         text: "_Thinking..._",
-        unfurl_links: false,
-        unfurl_media: false,
+        ...NO_UNFURL_OPTIONS,
       });
       waitingMessageTs = waitingMessage.ts || null;
     } catch (error) {
@@ -2016,8 +2012,7 @@ async function processSlackMessage(
                 channel: typedMessage.channel!,
                 thread_ts: threadId,
                 markdown_text: chunk,
-                unfurl_links: false,
-                unfurl_media: false,
+                ...NO_UNFURL_OPTIONS,
                 ...streamRecipientPayload,
               },
             )) as StreamStartResult;
@@ -2109,8 +2104,7 @@ async function processSlackMessage(
           channel: typedMessage.channel!,
           ts: waitingMessageTs,
           text: TABLE_STREAMING_PAUSED_HINT,
-          unfurl_links: false,
-          unfurl_media: false,
+          ...NO_UNFURL_OPTIONS,
         });
       } catch (error) {
         console.error("Error updating Slack waiting message with table hint:", error);
@@ -2310,8 +2304,7 @@ async function processSlackMessage(
             ts: streamTs,
             text: "",
             blocks: firstFinalChunk,
-            unfurl_links: false,
-            unfurl_media: false,
+            ...NO_UNFURL_OPTIONS,
           });
           firstChunkSent = true;
         } catch (updateError) {
@@ -2337,8 +2330,7 @@ async function processSlackMessage(
               thread_ts: threadId,
               text: "",
               blocks: firstFinalChunk,
-              unfurl_links: false,
-              unfurl_media: false,
+              ...NO_UNFURL_OPTIONS,
             });
             firstChunkSent = true;
           } catch (replacementError) {
