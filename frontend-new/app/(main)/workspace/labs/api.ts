@@ -2,7 +2,6 @@ import { apiClient } from '@/lib/api';
 
 const BASE = '/api/v1/configurationManager/platform';
 const SETTINGS_URL = `${BASE}/settings`;
-const AVAILABLE_FLAGS_URL = `${BASE}/feature-flags/available`;
 
 const BYTES_PER_MB = 1024 * 1024;
 
@@ -51,9 +50,4 @@ export const LabsApi = {
     await apiClient.post(SETTINGS_URL, payload, { suppressErrorToast: true });
   },
 
-  /** GET /platform/feature-flags/available — descriptor list */
-  async getAvailableFlags(): Promise<AvailableFlagsResponse> {
-    const { data } = await apiClient.get<AvailableFlagsResponse>(AVAILABLE_FLAGS_URL);
-    return data;
-  },
 };
