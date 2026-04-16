@@ -535,14 +535,14 @@ export class TeamsController {
         throw new BadRequestError('User ID is required');
       }
 
-      const { page, limit, search } = req.query;
-      
+      const { page, limit, search, created_by, created_after, created_before } = req.query;
+
       // Validate search parameter for XSS and format specifiers
       if (search) {
         try {
           validateNoXSS(String(search), 'search parameter');
           validateNoFormatSpecifiers(String(search), 'search parameter');
-          
+
           if (String(search).length > 1000) {
             throw new BadRequestError('Search parameter too long (max 1000 characters)');
           }
@@ -552,11 +552,14 @@ export class TeamsController {
           );
         }
       }
-      
+
       const queryParams = new URLSearchParams();
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
+      if (created_by) queryParams.append('created_by', String(created_by));
+      if (created_after) queryParams.append('created_after', String(created_after));
+      if (created_before) queryParams.append('created_before', String(created_before));
       const queryString = queryParams.toString();
 
       const aiCommandOptions: AICommandOptions = {

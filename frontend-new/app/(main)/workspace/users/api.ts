@@ -214,6 +214,10 @@ export const UsersApi = {
 
   // ── Bulk operations ───────────────────────────────────────────
 
+  /**
+   * Remove multiple users from the workspace in parallel.
+   * Uses Promise.allSettled so partial failures don't block others.
+   */
   async bulkRemoveUsers(
     userIds: string[]
   ): Promise<{ succeeded: number; failed: number }> {
@@ -224,6 +228,9 @@ export const UsersApi = {
     return { succeeded, failed: results.length - succeeded };
   },
 
+  /**
+   * Resend invites to multiple pending users in parallel.
+   */
   async bulkResendInvites(
     userIds: string[]
   ): Promise<{ succeeded: number; failed: number }> {
@@ -234,6 +241,10 @@ export const UsersApi = {
     return { succeeded, failed: results.length - succeeded };
   },
 
+  /**
+   * Cancel invites for multiple pending users in parallel.
+   * Cancelling an invite is effectively deleting the pending user.
+   */
   async bulkCancelInvites(
     userIds: string[]
   ): Promise<{ succeeded: number; failed: number }> {

@@ -19,6 +19,9 @@ export const TeamsApi = {
     page?: number;
     limit?: number;
     search?: string;
+    created_by?: string;
+    created_after?: number;
+    created_before?: number;
   }): Promise<{ teams: Team[]; totalCount: number }> {
     const { data } = await apiClient.get<TeamsListResponse>(
       `${BASE_URL}/user/teams`,

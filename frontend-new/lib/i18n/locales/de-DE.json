@@ -551,6 +551,8 @@
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
       "emptyDescription": "Gruppen können die Verwaltung von Zugriff und Berechtigungen im Arbeitsbereich erleichtern.",
+      "noFilterResults": "Keine Gruppen entsprechen den angewendeten Filtern",
+      "noFilterResultsHint": "Versuchen Sie, die obigen Filter anzupassen oder zu entfernen",
       "columns": {
         "name": "Name",
         "description": "Beschreibung",
@@ -617,6 +619,8 @@
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Teams",
       "emptyDescription": "Teams helfen beim Organisieren und Zusammenarbeiten. Teams, an denen Sie beteiligt sind, werden hier angezeigt.",
+      "noFilterResults": "Keine Teams entsprechen den angewendeten Filtern",
+      "noFilterResultsHint": "Versuchen Sie, die obigen Filter anzupassen oder zu entfernen",
       "columns": {
         "name": "Name",
         "description": "Beschreibung",

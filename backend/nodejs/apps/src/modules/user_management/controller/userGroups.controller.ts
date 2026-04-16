@@ -83,10 +83,22 @@ export class UserGroupController {
       100,
     );
     const search = (req.query.search as string)?.trim();
+    const createdAfter = (req.query.createdAfter as string)?.trim();
+    const createdBefore = (req.query.createdBefore as string)?.trim();
 
     const filter: UserGroupFilter = { orgId, isDeleted: false };
     if (search) {
       filter.name = { $regex: search, $options: 'i' };
+    }
+    if (createdAfter || createdBefore) {
+      const dateFilter: Record<string, Date> = {};
+      if (createdAfter) dateFilter.$gte = new Date(createdAfter);
+      if (createdBefore) {
+        const beforeDate = new Date(createdBefore);
+        beforeDate.setHours(23, 59, 59, 999);
+        dateFilter.$lte = beforeDate;
+      }
+      (filter as any).createdAt = dateFilter;
     }
 
     const [groups, totalCount] = await Promise.all([

@@ -35,6 +35,8 @@ import type {
   GraphUserListResponse,
   UserGroupSummary,
 } from '../types/user_management.types';
+import { safeParsePagination } from '../../../utils/safe-integer';
+import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
@@ -105,6 +107,147 @@ export class UserController {
       return;
     }
 
+    // ── Paginated + filtered path (when page param is present) ──
+    const { page: pageParam, limit: limitParam, search, role, hasLoggedIn, groupIds } = req.query;
+
+    if (pageParam) {
+      const orgId = req.user?.orgId;
+      const orgIdObj = new mongoose.Types.ObjectId(orgId);
+      const { page, limit, skip } = safeParsePagination(
+        pageParam as string,
+        limitParam as string,
+        1, 25, 100,
+      );
+
+      // Build MongoDB filter
+      const filter: Record<string, any> = { orgId: orgIdObj, isDeleted: { $ne: true } };
+
+      if (search) {
+        const searchRegex = { $regex: String(search), $options: 'i' };
+        filter.$or = [{ fullName: searchRegex }, { email: searchRegex }];
+      }
+
+      if (hasLoggedIn !== undefined && hasLoggedIn !== '') {
+        filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+      }
+
+      // role / groupIds require looking up UserGroups first
+      if (role || groupIds) {
+        const idConstraints: mongoose.Types.ObjectId[][] = [];
+        let excludeAdminIds: mongoose.Types.ObjectId[] | null = null;
+
+        if (role) {
+          const adminGroups = await UserGroups.find({
+            orgId: orgIdObj, type: 'admin', isDeleted: false,
+          }).select('users').lean().exec();
+          const adminIds = adminGroups.flatMap((g) =>
+            g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
+          );
+          if (String(role) === 'Admin') {
+            idConstraints.push(adminIds);
+          } else {
+            excludeAdminIds = adminIds;
+          }
+        }
+
+        if (groupIds) {
+          const gids = String(groupIds).split(',').filter(Boolean);
+          if (gids.length > 0) {
+            const groups = await UserGroups.find({
+              _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
+              isDeleted: false,
+            }).select('users').lean().exec();
+            const userIdsInGroups = groups.flatMap((g) =>
+              g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString()))
+            );
+            idConstraints.push(userIdsInGroups);
+          }
+        }
+
+        if (idConstraints.length > 0) {
+          let allowed = new Set(idConstraints[0]!.map((id) => id.toString()));
+          for (let i = 1; i < idConstraints.length; i++) {
+            const next = new Set(idConstraints[i]!.map((id) => id.toString()));
+            allowed = new Set([...allowed].filter((id) => next.has(id)));
+          }
+          filter._id = { ...filter._id, $in: [...allowed].map((id) => new mongoose.Types.ObjectId(id)) };
+        }
+
+        if (excludeAdminIds && excludeAdminIds.length > 0) {
+          filter._id = { ...filter._id, $nin: excludeAdminIds };
+        }
+      }
+
+      const [mongoUsers, totalCount] = await Promise.all([
+        Users.find(filter).sort({ fullName: 1 }).skip(skip).limit(limit).lean().exec(),
+        Users.countDocuments(filter),
+      ]);
+
+      const userIds = mongoUsers.map((u) => u._id.toString());
+
+      // Enrich with profile pictures and group counts
+      const [dpDocs, groupDocs] = userIds.length > 0
+        ? await Promise.all([
+            UserDisplayPicture.find({
+              orgId, userId: { $in: userIds }, pic: { $ne: null },
+            }).lean().exec(),
+            UserGroups.find({
+              orgId: orgIdObj, isDeleted: false,
+              users: { $in: userIds.map((id) => new mongoose.Types.ObjectId(id)) },
+            }).select('type users').lean().exec(),
+          ])
+        : [[], []];
+
+      const dpMap = new Map<string, string>();
+      for (const dp of dpDocs) {
+        if (dp.userId && dp.pic) {
+          const mime = dp.mimeType || 'image/jpeg';
+          dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+        }
+      }
+
+      // Count non-everyone groups per user and detect admin membership
+      const groupCountMap = new Map<string, number>();
+      const isAdminMap = new Map<string, boolean>();
+      for (const g of groupDocs) {
+        for (const uid of g.users) {
+          const uidStr = uid.toString();
+          if (g.type !== 'everyone') {
+            groupCountMap.set(uidStr, (groupCountMap.get(uidStr) ?? 0) + 1);
+          }
+          if (g.type === 'admin') {
+            isAdminMap.set(uidStr, true);
+          }
+        }
+      }
+
+      const enrichedUsers = mongoUsers.map((u) => {
+        const uid = u._id.toString();
+        const timestamps = u as typeof u & { createdAt?: Date; updatedAt?: Date };
+        return {
+          id: uid,
+          userId: uid,
+          orgId: u.orgId?.toString(),
+          name: u.fullName,
+          email: u.email,
+          isActive: true,
+          hasLoggedIn: u.hasLoggedIn ?? false,
+          createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
+          updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
+          profilePicture: dpMap.get(uid),
+          role: isAdminMap.get(uid) ? 'Admin' : 'Member',
+          groupCount: groupCountMap.get(uid) ?? 0,
+        };
+      });
+
+      res.status(200).json({
+        users: enrichedUsers,
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+      });
+      return;
+    }
+
+    // ── Legacy path (no pagination — returns all users as array) ──
     const users = await Users.find({
       orgId: req.user?.orgId,
       isDeleted: false,

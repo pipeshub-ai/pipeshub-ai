@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -9,7 +9,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
-import type { DateFilterType } from '@/app/components/ui/date-range-picker';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   EntityPageHeader,
   EntityFilterBar,
@@ -24,6 +24,7 @@ import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { useTeamsStore } from './store';
 import { TeamsApi } from './api';
+import { UsersApi } from '../users/api';
 import type { Team } from './types';
 import { CreateTeamSidebar, TeamDetailSidebar } from './components';
 
@@ -46,44 +47,6 @@ function findCreator(team: Team) {
   return team.members.find((m) => m.id === team.createdBy) ?? null;
 }
 
-/** Check if a timestamp (ms) falls within a date range */
-function isInDateRange(
-  timestampMs: number | undefined,
-  afterDate?: string,
-  beforeDate?: string,
-  dateType?: DateFilterType
-): boolean {
-  if (!timestampMs) return false;
-  if (!afterDate && !beforeDate) return true;
-
-  const itemDate = new Date(timestampMs);
-  itemDate.setHours(0, 0, 0, 0);
-
-  if (dateType === 'on' && afterDate) {
-    const target = new Date(afterDate);
-    target.setHours(0, 0, 0, 0);
-    return itemDate.getTime() === target.getTime();
-  }
-  if (dateType === 'before' && beforeDate) {
-    const before = new Date(beforeDate);
-    before.setHours(0, 0, 0, 0);
-    return itemDate < before;
-  }
-  if (dateType === 'after' && afterDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    return itemDate > after;
-  }
-  // between
-  if (afterDate && beforeDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    const before = new Date(beforeDate);
-    before.setHours(23, 59, 59, 999);
-    return itemDate >= after && itemDate <= before;
-  }
-  return true;
-}
 
 // ========================================
 // Page Component
@@ -127,22 +90,95 @@ function TeamsPageContent() {
     detailTeam,
   } = useTeamsStore();
 
+  // ── Paginated user filter state (for "Created By" filter) ──
+  const [userOptions, setUserOptions] = useState<{ value: string; label: string; icon: string }[]>([]);
+  const [userFilterPage, setUserFilterPage] = useState(1);
+  const [userFilterHasMore, setUserFilterHasMore] = useState(false);
+  const [userFilterLoading, setUserFilterLoading] = useState(false);
+  const [userFilterSearch, setUserFilterSearch] = useState('');
+  const USER_FILTER_LIMIT = 25;
+
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
   }, [isProfileInitialized, isAdmin, router]);
 
-  // ── Fetch teams on mount and on page/search change ──
+  // Fetch users for "Created By" filter dropdown (paginated + searchable)
+  const fetchUserOptions = useCallback(
+    async (search: string, pageNum: number, append: boolean) => {
+      setUserFilterLoading(true);
+      try {
+        const { users, totalCount } = await UsersApi.listGraphUsers({
+          page: pageNum,
+          limit: USER_FILTER_LIMIT,
+          search: search || undefined,
+        });
+
+        const newOptions = users.map((u) => ({
+          value: u.id,
+          label: u.name || u.email || 'Unknown User',
+          icon: 'person',
+        }));
+
+        setUserOptions((prev) => (append ? [...prev, ...newOptions] : newOptions));
+        setUserFilterHasMore(pageNum * USER_FILTER_LIMIT < totalCount);
+      } catch {
+        /* filter dropdown degrades gracefully */
+      } finally {
+        setUserFilterLoading(false);
+      }
+    },
+    []
+  );
+
+  // Initial load
+  useEffect(() => {
+    fetchUserOptions('', 1, false);
+  }, [fetchUserOptions]);
+
+  // Handle search from FilterDropdown
+  const handleUserFilterSearch = useCallback(
+    (query: string) => {
+      setUserFilterSearch(query);
+      setUserFilterPage(1);
+      fetchUserOptions(query, 1, false);
+    },
+    [fetchUserOptions]
+  );
+
+  // Handle scroll-to-bottom from FilterDropdown
+  const handleUserFilterLoadMore = useCallback(() => {
+    const nextPage = userFilterPage + 1;
+    setUserFilterPage(nextPage);
+    fetchUserOptions(userFilterSearch, nextPage, true);
+  }, [userFilterPage, userFilterSearch, fetchUserOptions]);
+
+  // ── Fetch teams (server-paginated + server-filtered) ──
   const fetchTeams = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await TeamsApi.listTeams({
+      const params: Parameters<typeof TeamsApi.listTeams>[0] = {
         page,
         limit,
         search: searchQuery || undefined,
-      });
+      };
+      // Created By filter
+      if (filters.createdBy?.length === 1) {
+        params.created_by = filters.createdBy[0];
+      }
+      // Created On date filter
+      if (filters.createdAfter) {
+        params.created_after = new Date(filters.createdAfter).getTime();
+      }
+      if (filters.createdBefore) {
+        const d = new Date(filters.createdBefore);
+        d.setHours(23, 59, 59, 999);
+        params.created_before = d.getTime();
+      }
+
+      const result = await TeamsApi.listTeams(params);
       setTeams(result.teams, result.totalCount);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load teams';
@@ -150,7 +186,7 @@ function TeamsPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [page, limit, searchQuery, setTeams, setLoading, setError]);
+  }, [page, limit, searchQuery, filters, setTeams, setLoading, setError]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin) {
@@ -319,25 +355,6 @@ function TeamsPageContent() {
     [t]
   );
 
-  // ── Dynamic options for Created By filter ──
-  const creatorOptions = useMemo(() => {
-    const creatorsMap = new Map<string, { name: string; email: string }>();
-    for (const team of teams) {
-      const creator = findCreator(team);
-      if (creator && !creatorsMap.has(creator.id)) {
-        creatorsMap.set(creator.id, {
-          name: creator.userName,
-          email: creator.userEmail,
-        });
-      }
-    }
-    return Array.from(creatorsMap.entries()).map(([id, c]) => ({
-      value: id,
-      label: c.name || c.email,
-      icon: 'person',
-    }));
-  }, [teams]);
-
   // ── Render individual filter components ──
   const renderFilter = useCallback(
     (filter: FilterChipConfig) => {
@@ -347,10 +364,14 @@ function TeamsPageContent() {
             <FilterDropdown
               label={filter.label}
               icon={filter.icon}
-              options={creatorOptions}
+              options={userOptions}
               selectedValues={filters.createdBy || []}
               onSelectionChange={(values) => setFilters({ createdBy: values })}
               searchable
+              onSearch={handleUserFilterSearch}
+              onLoadMore={handleUserFilterLoadMore}
+              isLoadingMore={userFilterLoading}
+              hasMore={userFilterHasMore}
             />
           );
         case 'createdOn':
@@ -384,54 +405,12 @@ function TeamsPageContent() {
           return null;
       }
     },
-    [filters, setFilters, creatorOptions]
+    [filters, setFilters, userOptions, handleUserFilterSearch, handleUserFilterLoadMore, userFilterLoading, userFilterHasMore]
   );
 
-  // ── Client-side search + filter ──
-  const filteredTeams = useMemo(() => {
-    let result = teams;
-
-    // Search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (team) =>
-          team.name?.toLowerCase().includes(q) ||
-          team.description?.toLowerCase().includes(q)
-      );
-    }
-
-    // Created By filter
-    if (filters.createdBy?.length) {
-      const selectedCreators = new Set(filters.createdBy);
-      result = result.filter((team) => team.createdBy && selectedCreators.has(team.createdBy));
-    }
-
-    // Created On date filter
-    if (filters.createdAfter || filters.createdBefore) {
-      result = result.filter((team) =>
-        isInDateRange(
-          team.createdAtTimestamp,
-          filters.createdAfter,
-          filters.createdBefore,
-          filters.createdDateType
-        )
-      );
-    }
-
-    return result;
-  }, [teams, searchQuery, filters]);
-
-  // ── Paginated slice ──
-  const paginatedTeams = useMemo(() => {
-    // If server already paginates, totalCount > 0 and teams.length <= limit
-    if (totalCount > 0 && teams.length <= limit) return filteredTeams;
-    // Client-side pagination fallback
-    const start = (page - 1) * limit;
-    return filteredTeams.slice(start, start + limit);
-  }, [filteredTeams, page, limit, totalCount, teams.length]);
-
-  const effectiveTotalCount = totalCount > 0 ? totalCount : filteredTeams.length;
+  // Filtering and pagination are server-side; use teams directly
+  const paginatedTeams = teams;
+  const effectiveTotalCount = totalCount;
 
   // ── Column definitions ──────────────────
 
@@ -549,7 +528,14 @@ function TeamsPageContent() {
   );
 
   // ── Empty state ──
-  const isEmpty = !isLoading && teams.length === 0;
+  const hasActiveFilters = !!(
+    searchQuery.trim() ||
+    filters.createdBy?.length ||
+    filters.createdAfter ||
+    filters.createdBefore
+  );
+  const isEmpty = !isLoading && teams.length === 0 && !hasActiveFilters;
+  const isEmptyFiltered = !isLoading && teams.length === 0 && hasActiveFilters;
 
   // Guard: don't render until profile is resolved / redirect non-admin users
   if (!isProfileInitialized || isAdmin === false) {
@@ -588,7 +574,7 @@ function TeamsPageContent() {
           overflow: 'hidden',
         }}
       >
-        {isEmpty ? (
+        {isEmpty && !isEmptyFiltered ? (
           <EntityEmptyState
             icon="groups"
             title={t('workspace.teams.emptyTitle')}
@@ -610,26 +596,46 @@ function TeamsPageContent() {
             {/* Filter bar */}
             <EntityFilterBar filters={filterChips} renderFilter={renderFilter} />
 
-            {/* Data table */}
-            <EntityDataTable<Team>
-              columns={columns}
-              data={paginatedTeams}
-              getItemId={(team) => team.id}
-              selectedIds={selectedTeams}
-              onSelectionChange={setSelectedTeams}
-              renderRowActions={renderRowActions}
-              isLoading={isLoading}
-              onRowClick={(team) => navigateToDetailPanel(team)}
-            />
+            {isEmptyFiltered ? (
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                gap="2"
+                style={{ flex: 1, padding: 'var(--space-6)' }}
+              >
+                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+                <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
+                  {t('workspace.teams.noFilterResults', 'No teams match the applied filters')}
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                  {t('workspace.teams.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
+                </Text>
+              </Flex>
+            ) : (
+              <>
+                {/* Data table */}
+                <EntityDataTable<Team>
+                  columns={columns}
+                  data={paginatedTeams}
+                  getItemId={(team) => team.id}
+                  selectedIds={selectedTeams}
+                  onSelectionChange={setSelectedTeams}
+                  renderRowActions={renderRowActions}
+                  isLoading={isLoading}
+                  onRowClick={(team) => navigateToDetailPanel(team)}
+                />
 
-            {/* Pagination */}
-            <EntityPagination
-              page={page}
-              limit={limit}
-              totalCount={effectiveTotalCount}
-              onPageChange={setPage}
-              onLimitChange={setLimit}
-            />
+                {/* Pagination */}
+                <EntityPagination
+                  page={page}
+                  limit={limit}
+                  totalCount={effectiveTotalCount}
+                  onPageChange={setPage}
+                  onLimitChange={setLimit}
+                />
+              </>
+            )}
           </Flex>
         )}
       </Flex>

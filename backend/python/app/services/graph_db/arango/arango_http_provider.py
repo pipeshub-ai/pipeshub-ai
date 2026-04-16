@@ -17511,6 +17511,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
         transaction: str | None = None
     ) -> tuple[list[dict], int]:
         """
@@ -17524,6 +17527,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if search:
                 search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
 
+            # Build created-by / date filters
+            extra_filters = ""
+            if created_by:
+                extra_filters += "\nFILTER team.createdBy == @createdBy"
+            if created_after is not None:
+                extra_filters += "\nFILTER team.createdAtTimestamp >= @createdAfter"
+            if created_before is not None:
+                extra_filters += "\nFILTER team.createdAtTimestamp <= @createdBefore"
+
             # Query to get all teams user is a member of with pagination
             user_teams_query = f"""
             FOR permission IN @@permission_collection
@@ -17531,6 +17543,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team = DOCUMENT(permission._to)
             FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
             {search_filter}
+            {extra_filters}
             SORT team.createdAtTimestamp DESC
             LIMIT @offset, @limit
             LET team_members = (
@@ -17573,18 +17586,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team = DOCUMENT(permission._to)
             FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
             {search_filter}
+            {extra_filters}
             COLLECT WITH COUNT INTO total_count
             RETURN total_count
             """
+
+            # Shared bind vars for filters
+            filter_vars: dict = {}
+            if search:
+                filter_vars["search"] = f"%{search.lower()}%"
+            if created_by:
+                filter_vars["createdBy"] = created_by
+            if created_after is not None:
+                filter_vars["createdAfter"] = created_after
+            if created_before is not None:
+                filter_vars["createdBefore"] = created_before
 
             # Get total count
             count_params = {
                 "userId": f"{CollectionNames.USERS.value}/{user_key}",
                 "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                **filter_vars,
             }
-            if search:
-                count_params["search"] = f"%{search.lower()}%"
 
             count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
             total_count = count_list[0] if count_list else 0
@@ -17595,10 +17619,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@permission_collection": CollectionNames.PERMISSION.value,
                 "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
                 "offset": offset,
-                "limit": limit
+                "limit": limit,
+                **filter_vars,
             }
-            if search:
-                teams_params["search"] = f"%{search.lower()}%"
 
             result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
             return result_list if result_list else [], total_count

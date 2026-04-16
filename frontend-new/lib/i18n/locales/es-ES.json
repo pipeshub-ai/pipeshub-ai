@@ -522,6 +522,8 @@
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
       "emptyDescription": "Los grupos facilitan la gestión del acceso y los permisos en el espacio de trabajo.",
+      "noFilterResults": "Ningún grupo coincide con los filtros aplicados",
+      "noFilterResultsHint": "Intente ajustar o borrar los filtros de arriba",
       "columns": {
         "name": "Nombre",
         "description": "Descripción",
@@ -541,6 +543,8 @@
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no tienes equipos",
       "emptyDescription": "Los equipos ayudan a las personas a organizar el trabajo y colaborar. Los equipos de los que formas parte o que crees se mostrarán aquí.",
+      "noFilterResults": "Ningún equipo coincide con los filtros aplicados",
+      "noFilterResultsHint": "Intente ajustar o borrar los filtros de arriba",
       "columns": {
         "name": "Nombre",
         "description": "Descripción",

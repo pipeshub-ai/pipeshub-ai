@@ -540,6 +540,8 @@
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
       "emptyDescription": "Groups can make it easier to manage access and permissions across the workspace.",
+      "noFilterResults": "No groups match the applied filters",
+      "noFilterResultsHint": "Try adjusting or clearing the filters above",
       "columns": {
         "name": "Name",
         "description": "Description",
@@ -606,6 +608,8 @@
       "searchPlaceholder": "Search...",
       "emptyTitle": "You don't have any teams yet",
       "emptyDescription": "Teams help people organize work and collaborate together. Teams you're part of or create will be shown here.",
+      "noFilterResults": "No teams match the applied filters",
+      "noFilterResultsHint": "Try adjusting or clearing the filters above",
       "columns": {
         "name": "Name",
         "description": "Description",

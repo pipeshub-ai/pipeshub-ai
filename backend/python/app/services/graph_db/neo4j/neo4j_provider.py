@@ -15280,6 +15280,9 @@ class Neo4jProvider(IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
         transaction: str | None = None
     ) -> tuple[list[dict], int]:
         """
@@ -15296,10 +15299,19 @@ class Neo4jProvider(IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(team.name) CONTAINS toLower($search) OR toLower(team.description) CONTAINS toLower($search))"
 
+            # Build extra filters
+            extra_where = ""
+            if created_by:
+                extra_where += " AND team.createdBy = $created_by"
+            if created_after is not None:
+                extra_where += " AND team.createdAtTimestamp >= $created_after"
+            if created_before is not None:
+                extra_where += " AND team.createdAtTimestamp <= $created_before"
+
             # Query to get all teams user is a member of with pagination
             user_teams_query = f"""
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
-            WHERE 1=1 {search_where}
+            WHERE 1=1 {search_where} {extra_where}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
             WHERE member_user IS NOT NULL
             WITH team, properties(p) AS current_user_permission,
@@ -15336,14 +15348,23 @@ class Neo4jProvider(IGraphDBProvider):
             # Count query for pagination
             count_query = f"""
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
-            WHERE 1=1 {search_where}
+            WHERE 1=1 {search_where} {extra_where}
             RETURN count(DISTINCT team) AS total_count
             """
 
-            # Get total count
-            count_params = {"user_key": user_key}
+            # Shared filter params
+            filter_params: dict = {}
             if search:
-                count_params["search"] = search
+                filter_params["search"] = search
+            if created_by:
+                filter_params["created_by"] = created_by
+            if created_after is not None:
+                filter_params["created_after"] = created_after
+            if created_before is not None:
+                filter_params["created_before"] = created_before
+
+            # Get total count
+            count_params = {"user_key": user_key, **filter_params}
 
             count_results = await self.client.execute_query(
                 count_query,
@@ -15356,10 +15377,9 @@ class Neo4jProvider(IGraphDBProvider):
             teams_params = {
                 "user_key": user_key,
                 "offset": offset,
-                "limit": limit
+                "limit": limit,
+                **filter_params,
             }
-            if search:
-                teams_params["search"] = search
 
             result_list = await self.client.execute_query(
                 user_teams_query,

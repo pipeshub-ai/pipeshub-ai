@@ -12,6 +12,8 @@ export const GroupsApi = {
     page?: number;
     limit?: number;
     search?: string;
+    createdAfter?: string;
+    createdBefore?: string;
   }): Promise<{ groups: Group[]; totalCount: number }> {
     const { data } = await apiClient.get<GroupsListResponse>(BASE_URL, { params });
     return {

@@ -226,16 +226,31 @@ function UsersPageContent() {
     fetchGroupOptions(groupFilterSearch, nextPage, true);
   }, [groupFilterPage, groupFilterSearch, fetchGroupOptions]);
 
-  // ── Fetch users (server-paginated, enriched with with-groups) ──────────────────
+  // ── Fetch users (server-paginated + server-filtered) ──────────────────
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await UsersApi.fetchMergedUsers({
+      // Build server-side filter params
+      const params: Parameters<typeof UsersApi.fetchMergedUsers>[0] = {
         page,
         limit,
         search: searchQuery || undefined,
-      });
+      };
+      // Role filter
+      if (filters.roles?.length === 1) {
+        params.role = filters.roles[0];
+      }
+      // Status filter → hasLoggedIn (Active = true, Pending = false)
+      if (filters.statuses?.length === 1) {
+        params.hasLoggedIn = filters.statuses[0] === 'Active' ? 'true' : 'false';
+      }
+      // Group filter → comma-separated group IDs
+      if (filters.groups?.length) {
+        params.groupIds = filters.groups.join(',');
+      }
+
+      const result = await UsersApi.fetchMergedUsers(params);
       setUsers(result.users, result.totalCount);
 
       // Restore profile panel when navigating directly to ?panel=profile&userId=xxx
@@ -252,7 +267,7 @@ function UsersPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [page, limit, searchQuery, setUsers, setLoading, setError, openProfilePanel]);
+  }, [page, limit, searchQuery, filters, setUsers, setLoading, setError, openProfilePanel]);
 
   useEffect(() => {
     fetchUsers();
@@ -444,42 +459,11 @@ function UsersPageContent() {
     [filters, setFilters, groupOptions, handleGroupFilterSearch, handleGroupFilterLoadMore, groupFilterLoading, groupFilterHasMore]
   );
 
-  // ── Client-side search + filter ──
+  // ── Client-side date filters (role/group/status are server-side) ──
   const filteredUsers = useMemo(() => {
     let result = users;
 
-    // Search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (u) =>
-          u.name?.toLowerCase().includes(q) ||
-          u.email?.toLowerCase().includes(q)
-      );
-    }
-
-    // Role filter
-    if (filters.roles?.length) {
-      result = result.filter((u) => filters.roles!.includes(u.role || 'Member'));
-    }
-
-    // Group filter
-    if (filters.groups?.length) {
-      const selectedGroupIds = new Set(filters.groups);
-      result = result.filter((u) =>
-        u.userGroups?.some((ug) => ug._id && selectedGroupIds.has(ug._id))
-      );
-    }
-
-    // Status filter
-    if (filters.statuses?.length) {
-      result = result.filter((u) => {
-        const status = u.isBlocked ? 'Blocked' : u.hasLoggedIn ? 'Active' : 'Pending';
-        return filters.statuses!.includes(status);
-      });
-    }
-
-    // Last Active date filter
+    // Last Active date filter (client-side)
     if (filters.lastActiveAfter || filters.lastActiveBefore) {
       result = result.filter((u) =>
         isInDateRange(
@@ -491,7 +475,7 @@ function UsersPageContent() {
       );
     }
 
-    // Date Joined filter
+    // Date Joined filter (client-side)
     if (filters.dateJoinedAfter || filters.dateJoinedBefore) {
       result = result.filter((u) =>
         isInDateRange(

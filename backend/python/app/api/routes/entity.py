@@ -814,7 +814,10 @@ async def get_user_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page"),
+    created_by: Optional[str] = Query(None, description="Filter by creator user key"),
+    created_after: Optional[int] = Query(None, description="Filter teams created after this timestamp (ms)"),
+    created_before: Optional[int] = Query(None, description="Filter teams created before this timestamp (ms)")
 ) -> JSONResponse:
     """Get all teams that the current user is a member of"""
     services = await get_services(request)
@@ -836,7 +839,10 @@ async def get_user_teams(
             user_key=user['_key'],
             search=search,
             page=page,
-            limit=limit
+            limit=limit,
+            created_by=created_by,
+            created_after=created_after,
+            created_before=created_before
         )
 
         if not result_list:
