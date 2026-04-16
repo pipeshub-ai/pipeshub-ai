@@ -49,22 +49,39 @@ export async function getInstances(): Promise<{ instances: MCPServerInstance[] }
   return data;
 }
 
-export async function createInstance(body: {
+export type CreateCatalogInstanceBody = {
   instanceName: string;
-  serverType?: string;
+  /** Any non-'custom' typeId from the catalog. */
+  serverType: string;
   displayName?: string;
   description?: string;
+  iconPath?: string;
+  authMode?: string;
+  clientId?: string;
+  clientSecret?: string;
+};
+
+export type CreateCustomInstanceBody = {
+  instanceName: string;
+  serverType: 'custom';
+  displayName?: string;
+  description?: string;
+  iconPath?: string;
+  authMode?: string;
   transport?: string;
   command?: string;
   args?: string[];
   url?: string;
-  authMode?: string;
   supportedAuthTypes?: string[];
   requiredEnv?: string[];
-  iconPath?: string;
+  authHeaderMapping?: Record<string, string>;
   clientId?: string;
   clientSecret?: string;
-}): Promise<{ instance: MCPServerInstance; message: string }> {
+};
+
+export async function createInstance(
+  body: CreateCatalogInstanceBody | CreateCustomInstanceBody
+): Promise<{ instance: MCPServerInstance; message: string }> {
   const { data } = await axios.post(`${BASE}/instances`, body);
   return data;
 }

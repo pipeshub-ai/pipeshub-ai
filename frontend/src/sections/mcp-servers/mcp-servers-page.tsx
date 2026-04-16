@@ -251,21 +251,14 @@ const McpServerConfigDialog: React.FC<McpServerConfigDialogProps> = ({
         return;
       }
 
-      const body: Parameters<typeof McpServerApi.createInstance>[0] = {
+      const body: McpServerApi.CreateCatalogInstanceBody = {
         instanceName: instanceName.trim(),
         serverType: template.typeId,
         displayName: template.displayName,
         description: template.description,
-        transport: template.transport,
         authMode: template.authMode,
-        supportedAuthTypes: template.supportedAuthTypes,
         iconPath: template.iconPath,
       };
-
-      if (template.command) body.command = template.command;
-      if (template.defaultArgs) body.args = template.defaultArgs;
-      if (template.url) body.url = template.url;
-      if (template.requiredEnv) body.requiredEnv = template.requiredEnv;
 
       if (isTemplateOAuth && clientId.trim()) {
         body.clientId = clientId.trim();
@@ -423,12 +416,14 @@ const McpServerConfigDialog: React.FC<McpServerConfigDialogProps> = ({
               {isManageMode ? displayName : `Configure ${displayName}`}
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-              <Chip
-                label={transport.toUpperCase()}
-                size="small"
-                variant="outlined"
-                sx={{ fontSize: '0.6875rem', height: 20, fontWeight: 500 }}
-              />
+              {transport && (
+                <Chip
+                  label={transport.toUpperCase()}
+                  size="small"
+                  variant="outlined"
+                  sx={{ fontSize: '0.6875rem', height: 20, fontWeight: 500 }}
+                />
+              )}
               {authMode !== 'none' && (
                 <Chip
                   label={authMode.split('_').join(' ').toUpperCase()}
@@ -1146,24 +1141,26 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, isAdmin = false, 
         onClick={() => setConfigOpen(true)}
       >
         {/* Transport Badge */}
-        <Box
-          sx={{
-            position: 'absolute',
-            top: 8,
-            left: 8,
-            px: 0.75,
-            py: 0.25,
-            borderRadius: 0.75,
-            fontSize: '0.6875rem',
-            fontWeight: 600,
-            color: theme.palette.text.secondary,
-            backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-            border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
-            textTransform: 'uppercase',
-          }}
-        >
-          {server.transport}
-        </Box>
+        {server.transport && (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 8,
+              left: 8,
+              px: 0.75,
+              py: 0.25,
+              borderRadius: 0.75,
+              fontSize: '0.6875rem',
+              fontWeight: 600,
+              color: theme.palette.text.secondary,
+              backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+              border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
+              textTransform: 'uppercase',
+            }}
+          >
+            {server.transport}
+          </Box>
+        )}
 
         {isAuthenticated && (
           <Box

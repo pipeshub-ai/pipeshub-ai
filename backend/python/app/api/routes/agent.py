@@ -3409,43 +3409,93 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         if named_mcp_servers:
             import asyncio as _mcp_asyncio
-            from app.agents.constants.mcp_server_constants import get_mcp_server_config_path
+            from app.agents.constants.mcp_server_constants import (
+                get_mcp_server_config_path,
+                get_mcp_server_instances_path,
+            )
+            from app.agents.mcp.registry import get_mcp_server_registry
 
             mcp_credential_lookup_id = agent_id if is_service_account else executing_user_id
+            mcp_registry = get_mcp_server_registry()
+            mcp_org_id = user_context["orgId"]
 
-            async def _fetch_mcp_config(server: dict) -> tuple[dict, Any]:
+            async def _fetch_mcp_instances() -> list[dict]:
+                try:
+                    data = await services["config_service"].get_config(
+                        get_mcp_server_instances_path(), default=[]
+                    )
+                    if not isinstance(data, list):
+                        return []
+                    return [i for i in data if i.get("orgId") == mcp_org_id]
+                except Exception as exc:
+                    logger.warning(f"Failed to load MCP server instances: {exc}")
+                    return []
+
+            async def _fetch_mcp_user_auth(server: dict) -> tuple[dict, Any]:
                 instance_id = server.get("instanceId")
                 if not instance_id:
                     return server, None
                 try:
                     etcd_path = get_mcp_server_config_path(instance_id, mcp_credential_lookup_id)
-                    config = await services["config_service"].get_config(etcd_path)
-                    return server, config
+                    return server, await services["config_service"].get_config(etcd_path)
                 except Exception as exc:
-                    logger.warning(f"Failed to load MCP server config for '{server.get('name', '')}': {exc}")
+                    logger.warning(f"Failed to load MCP user auth for '{server.get('name', '')}': {exc}")
                     return server, None
 
-            mcp_fetch_results = await _mcp_asyncio.gather(*[_fetch_mcp_config(s) for s in named_mcp_servers])
+            # Fetch instances list + all user_auth records in parallel (single round trip)
+            mcp_all_results = await _mcp_asyncio.gather(
+                _fetch_mcp_instances(),
+                *[_fetch_mcp_user_auth(s) for s in named_mcp_servers],
+            )
+            mcp_instances_by_id: dict[str, dict] = {
+                i.get("_id"): i for i in mcp_all_results[0] if i.get("_id")
+            }
+            mcp_auth_results = mcp_all_results[1:]
 
             configured_mcp_servers = []
             missing_mcp_display_names: list[str] = []
             unauthenticated_mcp_display_names: list[str] = []
 
-            for server, config in mcp_fetch_results:
+            for server, user_auth in mcp_auth_results:
                 instance_id = server.get("instanceId")
                 display_name = server.get("displayName") or server.get("name", "")
+                instance = mcp_instances_by_id.get(instance_id) if instance_id else None
+                inst_auth_mode = instance.get("authMode", "none") if instance else "none"
 
-                if config and config.get("isAuthenticated", False):
-                    mcp_server_configs[instance_id] = config
+                if user_auth and user_auth.get("isAuthenticated", False) and instance:
+                    # Resolve runtime fields fresh from instance + template so that
+                    # instance edits / template deploys propagate without requiring
+                    # users to re-authenticate.
+                    runtime = mcp_registry.resolve_runtime_fields(instance)
+                    mcp_server_configs[instance_id] = {
+                        **runtime,
+                        "authMode": inst_auth_mode,
+                        "instanceId": instance_id,
+                        "serverType": instance.get("serverType", "custom"),
+                        "isAuthenticated": True,
+                        "auth": user_auth.get("auth", {}),
+                        "credentials": user_auth.get("credentials", {}),
+                    }
                     configured_mcp_servers.append(server)
-                elif config:
+                elif user_auth:
                     unauthenticated_mcp_display_names.append(display_name)
+                elif inst_auth_mode == "none":
+                    # Instance requires no auth — still usable without a user_auth record.
+                    # Surface runtime fields so wrapper.py can connect.
+                    if instance:
+                        runtime = mcp_registry.resolve_runtime_fields(instance)
+                        mcp_server_configs[instance_id] = {
+                            **runtime,
+                            "authMode": "none",
+                            "instanceId": instance_id,
+                            "serverType": instance.get("serverType", "custom"),
+                            "isAuthenticated": True,
+                            "auth": {},
+                            "credentials": {},
+                        }
+                    configured_mcp_servers.append(server)
                 else:
-                    auth_mode = server.get("authMode", "none")
-                    if auth_mode == "none":
-                        configured_mcp_servers.append(server)
-                    else:
-                        missing_mcp_display_names.append(display_name)
+                    missing_mcp_display_names.append(display_name)
 
             if missing_mcp_display_names or unauthenticated_mcp_display_names:
                 problem_parts = []

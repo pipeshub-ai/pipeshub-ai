@@ -347,12 +347,18 @@ export interface MCPServerInstance {
   serverType: string;
   displayName: string;
   description?: string;
-  transport: string;
+  /** Custom instances only. For catalog-backed instances, resolve via `/catalog/{serverType}`. */
+  transport?: string;
+  /** Custom instances only. */
   command?: string;
+  /** Custom instances only. */
   args?: string[];
+  /** Custom instances only. */
   url?: string;
   authMode: string;
-  supportedAuthTypes: string[];
+  /** Custom instances only. For catalog-backed instances, resolve via `/catalog/{serverType}`. */
+  supportedAuthTypes?: string[];
+  /** Custom instances only. */
   requiredEnv?: string[];
   iconPath?: string;
   enabled: boolean;

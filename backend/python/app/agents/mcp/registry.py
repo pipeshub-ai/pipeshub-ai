@@ -35,6 +35,55 @@ class MCPServerRegistry:
     def get_template(self, type_id: str) -> MCPServerTemplate | None:
         return get_template(type_id)
 
+    def resolve_runtime_fields(self, instance: dict[str, Any]) -> dict[str, Any]:
+        """Return runtime connection fields for an MCP server instance.
+
+        For custom instances, reads from the stored instance dict.
+        For catalog-backed instances, reads from the template. If the
+        template is missing, logs a warning and returns empty values
+        (connection attempts will then fail meaningfully downstream).
+
+        Used by both the MCP service (tool discovery) and the agent
+        runtime (building mcp_server_configs for wrapper.py) so that
+        connection fields are always fresh — never read from a stale
+        user_auth snapshot.
+        """
+        server_type = instance.get("serverType", "custom")
+        if server_type == "custom":
+            return {
+                "command": instance.get("command", ""),
+                "args": list(instance.get("args", [])),
+                "url": instance.get("url", ""),
+                "transport": instance.get("transport", "stdio"),
+                "requiredEnv": list(instance.get("requiredEnv", [])),
+                "authHeaderMapping": dict(instance.get("authHeaderMapping", {})),
+            }
+        template = self.get_template(server_type)
+        if template is None:
+            logger.warning(
+                "Template '%s' not found for instance '%s'",
+                server_type,
+                instance.get("_id", "?"),
+            )
+            return {
+                "command": "",
+                "args": [],
+                "url": "",
+                "transport": "stdio",
+                "requiredEnv": [],
+                "authHeaderMapping": {},
+            }
+        return {
+            "command": template.command,
+            "args": list(template.default_args),
+            "url": template.url,
+            "transport": template.transport.value,
+            "requiredEnv": list(template.required_env),
+            "authHeaderMapping": (
+                dict(template.auth.env_mapping) if template.auth.env_mapping else {}
+            ),
+        }
+
     def list_templates(
         self,
         search: str | None = None,
