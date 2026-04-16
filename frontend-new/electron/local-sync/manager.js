@@ -5,9 +5,12 @@ const { ConnectorFsWatcher } = require('./watcher');
 const { LocalSyncJournal } = require('./journal');
 const { dispatchFileEventBatch } = require('./dispatcher');
 const { expandWatchEventsForReplay } = require('./replayer');
-const { connectorFileSegment } = require('./watcher-state');
+const { connectorFileSegment, scanSyncRoot } = require('./watcher-state');
 const { scheduleCrawlingManagerJob, unscheduleCrawlingManagerJob } = require('./backend-client');
 const { buildCronFromSchedule } = require('./cron-from-schedule');
+
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 5 * 60_000;
 
 function encryptToken(value) {
   if (!value) return null;
@@ -51,16 +54,37 @@ class LocalSyncManager {
     this.baseDir = path.join(this.app.getPath('userData'), 'local-sync-journal');
     this.journal = new LocalSyncJournal(this.baseDir);
     this.runtimes = new Map();
+    // Retry scheduling keyed on connectorId so it survives even when the
+    // renderer hasn't (yet) called start() — i.e. during offline recovery on
+    // app launch before the window mounts the connector UI.
+    this.retryTimers = new Map();
+    this.retryAttempts = new Map();
   }
 
   async init() {
     const connectorIds = this.journal.listConnectorIds();
     for (const connectorId of connectorIds) {
+      // Recovery order on app restart:
+      //  1. Replay only pending/failed batches from the prior session (NOT
+      //     already-synced ones — replaying stale rename/move events corrupts
+      //     backend state when files have since been renamed again offline).
+      //  2. If replay fails (still offline), arm the retry loop.
+      //  3. Full filesystem crawl is triggered via triggerBackendFullSync()
+      //     after start() so the backend reconciles against actual disk state.
+      //  4. Watcher rescan+reconcile (offline FS deltas) runs inside
+      //     watcher.start() when the renderer calls start().
       try {
         await this.replay(connectorId);
       } catch (error) {
         console.warn(`[local-sync] startup replay failed for ${connectorId}:`, error);
+        this.armRetry(connectorId);
       }
+      // Full-sync: scan every file on disk and send to backend. This covers
+      // files renamed/added/deleted while the app was closed.
+      this.triggerBackendFullSync(connectorId).catch((err) => {
+        console.warn(`[local-sync:${connectorId}] startup full-sync failed:`, err.message || err);
+        this.armRetry(connectorId);
+      });
       // If a connector was set up with SCHEDULED strategy in a prior session,
       // restart its desktop-side timer without a full watcher restart. The
       // watcher itself is only restarted when the renderer calls start() again.
@@ -68,7 +92,6 @@ class LocalSyncManager {
       if (meta && meta.syncStrategy === 'SCHEDULED' && meta.scheduledConfig) {
         const interval = Math.max(1, Number(meta.scheduledConfig.intervalMinutes || 0));
         if (interval) {
-          const periodMs = Math.max(60_000, interval * 60_000);
           // Fire a one-shot tick so pending work is replayed promptly on relaunch,
           // then settle into the regular cadence.
           this.runScheduledTick(connectorId).catch(() => { /* ignore */ });
@@ -169,10 +192,12 @@ class LocalSyncManager {
         });
         this.journal.updateBatchStatus(connectorId, batchId, 'synced', { lastError: null });
         runtime.lastError = null;
+        this.cancelRetry(connectorId);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         this.journal.updateBatchStatus(connectorId, batchId, 'failed', { lastError: msg });
         runtime.lastError = msg;
+        this.armRetry(connectorId);
       }
       this.emitStatus(connectorId);
     };
@@ -195,6 +220,14 @@ class LocalSyncManager {
     await runtime.watcher.start();
     runtime.watcherState = 'watching';
 
+    // Trigger a backend full-sync so it reconciles against actual disk state.
+    // This covers the "app restart → full sync" edge case: the backend crawls
+    // every file in the sync root and upserts/deletes as needed, independent
+    // of journal history.
+    this.triggerBackendFullSync(connectorId).catch((err) => {
+      console.warn(`[local-sync:${connectorId}] backend full-sync trigger failed:`, err.message || err);
+    });
+
     // Scheduled-sync tick (desktop-side mirror of the backend cron job).
     // Fires every `intervalMinutes`, runs replay + rescan — same work the
     // CLI's `localfs:resync` socket listener triggers on each server cron tick.
@@ -211,6 +244,124 @@ class LocalSyncManager {
 
     this.emitStatus(connectorId);
     return this.getStatus(connectorId);
+  }
+
+  // Scan every file in the root folder and send CREATED events to the
+  // backend. The backend upserts idempotently (external_record_id is a
+  // deterministic hash of connector + relative path), so this is safe to
+  // call on every restart — it brings the backend in sync with actual disk
+  // state without relying on replaying historical journal events.
+  async triggerBackendFullSync(connectorId) {
+    const meta = this.journal.getMeta(connectorId);
+    if (!meta || !meta.rootPath || !meta.apiBaseUrl) return;
+    const token = decryptToken(meta.accessTokenEnc) || meta.accessToken;
+    if (!token) return;
+
+    const rootPath = path.resolve(meta.rootPath);
+    if (!fs.existsSync(rootPath)) return;
+
+    const scan = await scanSyncRoot(rootPath, { includeSubfolders: true });
+    const currentFiles = new Set();
+    const events = [];
+    for (const [relPath, entry] of scan) {
+      if (entry.isDirectory) continue;
+      currentFiles.add(relPath);
+      events.push({
+        type: 'CREATED',
+        path: relPath,
+        timestamp: Date.now(),
+        size: entry.size,
+        isDirectory: false,
+      });
+    }
+
+    // Collect every file path the backend might have a record for: union of
+    // watcher state + all paths ever referenced in journal CREATED/MODIFIED/
+    // RENAMED-to events. Then DELETE any that aren't currently on disk.
+    const knownPaths = new Set();
+
+    const oldFiles = loadWatcherStateFiles(this.baseDir, connectorId);
+    for (const oldPath of Object.keys(oldFiles)) {
+      const entry = oldFiles[oldPath];
+      if (entry && !entry.isDirectory) knownPaths.add(oldPath);
+    }
+
+    const journalBatches = this.journal.listBatches(connectorId);
+    for (const batch of journalBatches) {
+      for (const ev of (batch.events || [])) {
+        if (ev.isDirectory) continue;
+        if (ev.path) knownPaths.add(ev.path);
+        if (ev.replayEvents) {
+          for (const re of ev.replayEvents) {
+            if (!re.isDirectory && re.path) knownPaths.add(re.path);
+          }
+        }
+      }
+    }
+
+    for (const oldPath of knownPaths) {
+      if (!currentFiles.has(oldPath)) {
+        events.push({
+          type: 'DELETED',
+          path: oldPath,
+          timestamp: Date.now(),
+          isDirectory: false,
+        });
+      }
+    }
+
+    if (events.length === 0) return;
+
+    // Mark all existing pending/failed journal batches as synced — the full
+    // scan supersedes any stale incremental events.
+    const pending = this.journal.getPendingOrFailedBatches(connectorId);
+    for (const batch of pending) {
+      this.journal.updateBatchStatus(connectorId, batch.batchId, 'synced', { lastError: null });
+    }
+    if (pending.length > 0) {
+      console.log(`[local-sync:${connectorId}] full-sync: marked ${pending.length} stale journal batch(es) as synced`);
+    }
+
+    const batchSize = 50;
+    for (let i = 0; i < events.length; i += batchSize) {
+      const chunk = events.slice(i, i + batchSize);
+      const batchId = `fullsync-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await dispatchFileEventBatch({
+        apiBaseUrl: meta.apiBaseUrl,
+        accessToken: token,
+        connectorId,
+        batchId,
+        timestamp: Date.now(),
+        events: chunk,
+      });
+    }
+    this.cancelRetry(connectorId);
+    console.log(`[local-sync:${connectorId}] backend full-sync: sent ${events.length} file(s)`);
+  }
+
+  // Self-scheduling retry: when a dispatch fails (network down, server 5xx
+  // after dispatcher max attempts), re-run replay() with exponential backoff
+  // until the journal clears. Keyed on connectorId so it works both while the
+  // watcher is running AND during pre-start() startup recovery.
+  armRetry(connectorId) {
+    if (!connectorId || this.retryTimers.has(connectorId)) return;
+    const attempt = this.retryAttempts.get(connectorId) || 0;
+    const delay = Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS);
+    this.retryAttempts.set(connectorId, attempt + 1);
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(connectorId);
+      this.replay(connectorId)
+        .then(() => { this.retryAttempts.delete(connectorId); })
+        .catch(() => { this.armRetry(connectorId); });
+    }, delay);
+    if (timer.unref) timer.unref();
+    this.retryTimers.set(connectorId, timer);
+  }
+
+  cancelRetry(connectorId) {
+    const timer = this.retryTimers.get(connectorId);
+    if (timer) { clearTimeout(timer); this.retryTimers.delete(connectorId); }
+    this.retryAttempts.delete(connectorId);
   }
 
   async runScheduledTick(connectorId) {
@@ -233,6 +384,7 @@ class LocalSyncManager {
       clearInterval(runtime.scheduleTimer);
       runtime.scheduleTimer = null;
     }
+    this.cancelRetry(connectorId);
     if (runtime.watcher) {
       try { await runtime.watcher.stop(); } catch { /* ignore */ }
     }
@@ -370,7 +522,11 @@ class LocalSyncManager {
     }
 
     this.emitStatus(connectorId);
-    if (rethrow) throw rethrow;
+    if (rethrow) {
+      this.armRetry(connectorId);
+      throw rethrow;
+    }
+    if (replayedBatches > 0) this.cancelRetry(connectorId);
     return { replayedBatches, replayedEvents, skippedBatches };
   }
 
