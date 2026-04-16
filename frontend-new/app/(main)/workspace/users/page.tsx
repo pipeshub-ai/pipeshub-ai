@@ -9,6 +9,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 import {
   EntityPageHeader,
@@ -39,7 +40,7 @@ import { InviteUsersSidebar, UserProfileSidebar } from './components';
 // ========================================
 
 const USERS_FILTER_CHIPS: FilterChipConfig[] = [
-  { key: 'role', label: 'Role', icon: 'person' },
+  // { key: 'role', label: 'Role', icon: 'person' },
   { key: 'group', label: 'Group', icon: 'group' },
   { key: 'status', label: 'Status', icon: 'radio_button_checked' },
   { key: 'lastActive', label: 'Last Active', icon: 'schedule' },
@@ -237,13 +238,12 @@ function UsersPageContent() {
         limit,
         search: searchQuery || undefined,
       };
-      // Role filter
-      if (filters.roles?.length === 1) {
-        params.role = filters.roles[0];
-      }
-      // Status filter → hasLoggedIn (Active = true, Pending = false)
-      if (filters.statuses?.length === 1) {
-        params.hasLoggedIn = filters.statuses[0] === 'Active' ? 'true' : 'false';
+      // Status filter → hasLoggedIn and/or isBlocked flags
+      if (filters.statuses?.length) {
+        const selected = new Set(filters.statuses);
+        if (selected.has('Active')) params.hasLoggedIn = 'true';
+        else if (selected.has('Pending')) params.hasLoggedIn = 'false';
+        if (selected.has('Blocked')) params.isBlocked = 'true';
       }
       // Group filter → comma-separated group IDs
       if (filters.groups?.length) {
@@ -361,16 +361,16 @@ function UsersPageContent() {
   const renderFilter = useCallback(
     (filter: FilterChipConfig) => {
       switch (filter.key) {
-        case 'role':
-          return (
-            <FilterDropdown
-              label={filter.label}
-              icon={filter.icon}
-              options={ROLE_OPTIONS}
-              selectedValues={filters.roles || []}
-              onSelectionChange={(values) => setFilters({ roles: values })}
-            />
-          );
+        // case 'role':
+        //   return (
+        //     <FilterDropdown
+        //       label={filter.label}
+        //       icon={filter.icon}
+        //       options={ROLE_OPTIONS}
+        //       selectedValues={filters.roles || []}
+        //       onSelectionChange={(values) => setFilters({ roles: values })}
+        //     />
+        //   );
         case 'group':
           return (
             <FilterDropdown
@@ -493,6 +493,17 @@ function UsersPageContent() {
   // Server already returns the correct page; client-side filters may further narrow the set
   const paginatedUsers = filteredUsers;
   const effectiveTotalCount = totalCount;
+
+  const hasActiveFilters = !!(
+    searchQuery.trim() ||
+    filters.statuses?.length ||
+    filters.groups?.length ||
+    filters.lastActiveAfter ||
+    filters.lastActiveBefore ||
+    filters.dateJoinedAfter ||
+    filters.dateJoinedBefore
+  );
+  const isEmptyFiltered = !isLoading && paginatedUsers.length === 0 && hasActiveFilters;
 
   // ── Bulk action logic ─────────────────────────────────────────
   const selectedUsersList = useMemo(
@@ -918,42 +929,42 @@ function UsersPageContent() {
         // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
         actions = [];
       } else if (isActive && currentRole === 'Admin') {
-        // Active Admin — View Profile + Change Role only
+        // Active Admin — View Profile only
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
-            icon: 'manage_accounts',
-            label: t('workspace.users.actions.changeRole'),
-            subMenu: {
-              type: 'radio' as const,
-              value: currentRole,
-              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
-              options: ROLE_SUB_MENU_OPTIONS,
-            },
-          },
+          // {
+          //   icon: 'manage_accounts',
+          //   label: t('workspace.users.actions.changeRole'),
+          //   subMenu: {
+          //     type: 'radio' as const,
+          //     value: currentRole,
+          //     onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+          //     options: ROLE_SUB_MENU_OPTIONS,
+          //   },
+          // },
         ];
       } else if (isActive) {
-        // Active Member/Guest — full management actions
+        // Active Member/Guest — management actions
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
-            icon: 'manage_accounts',
-            label: t('workspace.users.actions.changeRole'),
-            subMenu: {
-              type: 'radio' as const,
-              value: currentRole,
-              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
-              options: ROLE_SUB_MENU_OPTIONS,
-            },
-          },
+          // {
+          //   icon: 'manage_accounts',
+          //   label: t('workspace.users.actions.changeRole'),
+          //   subMenu: {
+          //     type: 'radio' as const,
+          //     value: currentRole,
+          //     onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+          //     options: ROLE_SUB_MENU_OPTIONS,
+          //   },
+          // },
           {
             icon: 'person_off',
             label: t('workspace.users.actions.deactivate'),
@@ -1034,17 +1045,37 @@ function UsersPageContent() {
         {/* Filter bar */}
         <EntityFilterBar filters={filterChips} renderFilter={renderFilter} />
 
-        {/* Data table */}
-        <EntityDataTable<User>
-          columns={columns}
-          data={paginatedUsers}
-          getItemId={(u) => u.id}
-          selectedIds={selectedUsers}
-          onSelectionChange={setSelectedUsers}
-          renderRowActions={renderRowActions}
-          isLoading={isLoading}
-          onRowClick={(user) => navigateToProfilePanel(user)}
-        />
+        {isEmptyFiltered ? (
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            gap="2"
+            style={{ flex: 1, padding: 'var(--space-6)' }}
+          >
+            <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
+              {t('workspace.users.noFilterResults', 'No users match the applied filters')}
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              {t('workspace.users.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
+            </Text>
+          </Flex>
+        ) : (
+          <>
+            {/* Data table */}
+            <EntityDataTable<User>
+              columns={columns}
+              data={paginatedUsers}
+              getItemId={(u) => u.id}
+              selectedIds={selectedUsers}
+              onSelectionChange={setSelectedUsers}
+              renderRowActions={renderRowActions}
+              isLoading={isLoading}
+              onRowClick={(user) => navigateToProfilePanel(user)}
+            />
+          </>
+        )}
 
         {/* Footer: pagination + bulk action bar */}
         <Flex

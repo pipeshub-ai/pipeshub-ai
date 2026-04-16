@@ -463,6 +463,8 @@
       "subtitle": "Liste aller Benutzer, die Teil Ihres Arbeitsbereichs sind.",
       "inviteButton": "Einladen",
       "searchPlaceholder": "Suchen...",
+      "noFilterResults": "Keine Benutzer entsprechen den angewendeten Filtern",
+      "noFilterResultsHint": "Versuchen Sie, die obigen Filter anzupassen oder zu entfernen",
       "columns": {
         "user": "Benutzer",
         "role": "Rolle",

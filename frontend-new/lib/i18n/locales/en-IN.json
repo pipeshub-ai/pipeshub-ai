@@ -434,6 +434,8 @@
       "subtitle": "List of all the users who are part of your workspace.",
       "inviteButton": "Invite",
       "searchPlaceholder": "Search...",
+      "noFilterResults": "No users match the applied filters",
+      "noFilterResultsHint": "Try adjusting or clearing the filters above",
       "columns": {
         "user": "User",
         "role": "Role",

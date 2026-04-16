@@ -130,10 +130,9 @@ export function InviteUsersSidebar({
   // ^ Only re-run when groups load or edit mode changes. Do NOT add inviteGroupIds
   //   to deps or this will undo manual edits the user makes after opening.
 
-  // Form validation
+  // Form validation (role hidden — not required for now)
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
-  const hasRole = inviteRole !== null;
-  const isFormValid = hasValidEmails && hasRole;
+  const isFormValid = hasValidEmails;
 
   // Group options for dropdown
   const groupOptions: CheckboxOption[] = groups.map((g) => ({
@@ -320,8 +319,8 @@ export function InviteUsersSidebar({
           />
         </FormField>
 
-        {/* Role dropdown */}
-        <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
+        {/* Role dropdown — hidden for now */}
+        {/* <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
           <SelectDropdown
             value={inviteRole}
             onChange={setInviteRole}
@@ -331,7 +330,7 @@ export function InviteUsersSidebar({
               'Assign team member role'
             )}
           />
-        </FormField>
+        </FormField> */}
 
         {/* Groups dropdown */}
         <FormField

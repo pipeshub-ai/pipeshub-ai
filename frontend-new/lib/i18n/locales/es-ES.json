@@ -434,6 +434,8 @@
       "subtitle": "Lista de todos los usuarios que forman parte de tu espacio de trabajo.",
       "inviteButton": "Invitar",
       "searchPlaceholder": "Buscar...",
+      "noFilterResults": "Ningún usuario coincide con los filtros aplicados",
+      "noFilterResultsHint": "Intente ajustar o borrar los filtros de arriba",
       "columns": {
         "user": "Usuario",
         "role": "Rol",
