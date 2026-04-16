@@ -3679,6 +3679,9 @@ class IGraphDBProvider(ABC):
         team_id: str,
         org_id: str,
         user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
         transaction: str | None = None
     ) -> dict | None:
         """
@@ -3688,10 +3691,13 @@ class IGraphDBProvider(ABC):
             team_id (str): Team ID
             org_id (str): Organization ID
             user_key (str): Current user's key (for permission checking)
+            search (Optional[str]): Search query for member name or email
+            page (int): Page number (1-indexed)
+            limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            Optional[Dict]: Team data with all members, None if not found
+            Optional[Dict]: Team data with paginated members, None if not found
         """
         pass
 

@@ -81,7 +81,7 @@ export function TeamDetailSidebar({
     if (!detailTeam) return;
     setIsLoadingMembers(true);
     try {
-      const members = await TeamsApi.getTeamUsers(detailTeam.id);
+      const { members } = await TeamsApi.getTeamUsers(detailTeam.id, { limit: 100 });
       setTeamMembers(members);
     } catch {
       // handled by global interceptor

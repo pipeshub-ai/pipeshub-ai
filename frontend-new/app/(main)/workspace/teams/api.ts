@@ -73,14 +73,26 @@ export const TeamsApi = {
   },
 
   /**
-   * Get team members with profile pictures.
-   * GET /api/v1/teams/:teamId/users
+   * Get team members with profile pictures (paginated).
+   * GET /api/v1/teams/:teamId/users?page=&limit=&search=
    */
-  async getTeamUsers(teamId: string): Promise<TeamMember[]> {
-    const { data } = await apiClient.get<{ members: TeamMember[] }>(
-      `${BASE_URL}/${teamId}/users`
+  async getTeamUsers(
+    teamId: string,
+    params?: { page?: number; limit?: number; search?: string }
+  ): Promise<{ members: TeamMember[]; totalCount: number }> {
+    const { data } = await apiClient.get<{
+      team?: { members?: TeamMember[]; memberCount?: number };
+      members?: TeamMember[];
+      memberCount?: number;
+    }>(
+      `${BASE_URL}/${teamId}/users`,
+      { params }
     );
-    return data?.members ?? [];
+    // Response may be wrapped in `team` or flat
+    const team = data?.team ?? data;
+    const members = team?.members ?? [];
+    const totalCount = team?.memberCount ?? members.length;
+    return { members, totalCount };
   },
 
   /**

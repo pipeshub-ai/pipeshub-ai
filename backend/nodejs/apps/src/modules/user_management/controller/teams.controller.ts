@@ -464,8 +464,15 @@ export class TeamsController {
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+      const { page, limit, search } = req.query;
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      const qs = queryParams.toString();
+
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users${qs ? `?${qs}` : ''}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),

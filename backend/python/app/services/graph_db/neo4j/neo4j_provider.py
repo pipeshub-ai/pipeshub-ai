@@ -15544,21 +15544,29 @@ class Neo4jProvider(IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
         transaction: str | None = None
     ) -> dict | None:
         """
         Get all users in a specific team.
         """
         try:
+            offset = (page - 1) * limit
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            search_where = ""
+            if search:
+                search_where = "AND (toLower(member_user.fullName) CONTAINS toLower($search) OR toLower(member_user.email) CONTAINS toLower($search))"
 
             team_users_query = f"""
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
+            WHERE member_user IS NOT NULL {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT {{
@@ -15569,7 +15577,7 @@ class Neo4jProvider(IGraphDBProvider):
                      role: member_permission.role,
                      joinedAt: member_permission.createdAtTimestamp,
                      isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
+                 }}) AS all_members
             RETURN {{
                 id: team.id,
                 name: team.name,
@@ -15579,21 +15587,27 @@ class Neo4jProvider(IGraphDBProvider):
                 createdAtTimestamp: team.createdAtTimestamp,
                 updatedAtTimestamp: team.updatedAtTimestamp,
                 currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
-                members: team_members,
-                memberCount: size(team_members),
+                members: all_members[$offset..($offset + $limit)],
+                memberCount: size(all_members),
                 canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
                 canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
                 canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
             }} AS result
             """
 
+            params: dict = {
+                "teamId": team_id,
+                "orgId": org_id,
+                "user_key": user_key,
+                "offset": offset,
+                "limit": limit,
+            }
+            if search:
+                params["search"] = search
+
             results = await self.client.execute_query(
                 team_users_query,
-                parameters={
-                    "teamId": team_id,
-                    "orgId": org_id,
-                    "user_key": user_key
-                },
+                parameters=params,
                 txn_id=transaction
             )
 

@@ -1019,7 +1019,13 @@ async def get_users(
         raise HTTPException(status_code=500, detail="Failed to fetch users")
 
 @router.get("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
-async def get_team_users(request: Request, team_id: str) -> JSONResponse:
+async def get_team_users(
+    request: Request,
+    team_id: str,
+    search: Optional[str] = Query(None, description="Search members by name or email"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(100, ge=1, le=100, description="Number of members per page")
+) -> JSONResponse:
     """Get all users in a specific team - requires MEMBER role"""
     services = await get_services(request)
     graph_provider = services["graph_provider"]
@@ -1039,7 +1045,10 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         result = await graph_provider.get_team_users(
             team_id=team_id,
             org_id=user_info.get("orgId"),
-            user_key=user['_key']
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
         )
 
         if not result:
