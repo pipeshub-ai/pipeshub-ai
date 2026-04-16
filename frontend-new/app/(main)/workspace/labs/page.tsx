@@ -61,7 +61,7 @@ function PlatformConfigNote() {
         backgroundColor: 'var(--accent-a2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '16px',
+        padding: 'var(--space-4)',
       }}
     >
       <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
@@ -257,17 +257,17 @@ export default function LabsPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             Labs
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             Manage platform settings
           </Text>
         </Box>
 
         {/* ── File Upload Limit Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <Flex direction="column" gap="3">
             <SettingsSection>
               <Flex align="center" justify="between" style={{ width: '100%' }}>
@@ -325,7 +325,7 @@ export default function LabsPage() {
 
         {/* ── Feature Flags Section ── */}
         {availableFlags.length > 0 && (
-          <Box style={{ marginBottom: 20 }}>
+          <Box style={{ marginBottom: 'var(--space-5)' }}>
             <SettingsSection
               title="Feature Flags"
               description="Toggle platform features on or off"

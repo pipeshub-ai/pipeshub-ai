@@ -103,7 +103,7 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
     // ── Loading state ─────────────────────────────────────
     if (isLoading) {
       return (
-        <Flex align="center" justify="center" style={{ padding: '32px 0' }}>
+        <Flex align="center" justify="center" style={{ padding: 'var(--space-8) 0' }}>
           <Text size="2" style={{ color: 'var(--slate-10)' }}>
             Loading configuration…
           </Text>

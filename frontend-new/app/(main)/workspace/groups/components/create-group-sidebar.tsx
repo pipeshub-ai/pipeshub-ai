@@ -168,10 +168,10 @@ export function CreateGroupSidebar({
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',
-          padding: 16,
+          padding: 'var(--space-4)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 20,
+          gap: 'var(--space-5)',
         }}
       >
         {/* Group Name */}
@@ -188,7 +188,7 @@ export function CreateGroupSidebar({
             )}
             style={{
               width: '100%',
-              height: 32,
+              height: 'var(--space-8)',
               padding: '6px 8px',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
@@ -229,7 +229,7 @@ export function CreateGroupSidebar({
             style={{
               width: '100%',
               minHeight: 88,
-              padding: '8px',
+              padding: 'var(--space-2)',
               backgroundColor: 'var(--color-surface)',
               border: '1px solid var(--slate-a5)',
               borderRadius: 'var(--radius-2)',

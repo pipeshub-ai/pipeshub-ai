@@ -255,12 +255,12 @@ export default function WebSearchPage() {
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
               Web Search Configuration
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
               Configure web search providers for the chatbot to use when searching the web
             </Text>
           </Box>
@@ -288,7 +288,7 @@ export default function WebSearchPage() {
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-1)',
             background: 'var(--olive-2)',
-            marginBottom: 20,
+            marginBottom: 'var(--space-5)',
           }}
         >
           {/* Section header */}

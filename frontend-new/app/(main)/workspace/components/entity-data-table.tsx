@@ -94,7 +94,7 @@ export function EntityDataTable<T>({
       <Flex
         align="center"
         style={{
-          height: '36px',
+          height: 'var(--space-9)',
           borderBottom: '1px solid var(--olive-6)',
           backgroundColor: 'var(--olive-2)',
           flexShrink: 0,
@@ -104,7 +104,7 @@ export function EntityDataTable<T>({
         <Flex
           align="center"
           justify="center"
-          style={{ width: '38px', flexShrink: 0, padding: '0 8px' }}
+          style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
           onClick={(e) => e.stopPropagation()}
         >
           <Checkbox
@@ -193,7 +193,7 @@ export function EntityDataTable<T>({
               <Flex
                 align="center"
                 justify="center"
-                style={{ width: '38px', flexShrink: 0, padding: '0 8px' }}
+                style={{ width: '38px', flexShrink: 0, padding: '0 var(--space-2)' }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Checkbox
@@ -226,7 +226,7 @@ export function EntityDataTable<T>({
                 <Flex
                   align="center"
                   gap="1"
-                  style={{ width: '80px', flexShrink: 0, padding: '0 8px' }}
+                  style={{ width: '80px', flexShrink: 0, padding: '0 var(--space-2)' }}
                 >
                   {renderRowActions(item)}
                 </Flex>

@@ -292,7 +292,7 @@ export function InstanceCard({
         <Flex
           align="center"
           justify="between"
-          style={{ padding: '12px 16px', borderTop: '1px solid var(--gray-a4)', backgroundColor: 'var(--gray-a2)' }}
+          style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--gray-a4)', backgroundColor: 'var(--gray-a2)' }}
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>

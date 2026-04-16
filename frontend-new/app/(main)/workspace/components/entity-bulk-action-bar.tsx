@@ -72,7 +72,7 @@ export function EntityBulkActionBar({
       gap="3"
       style={{
         position: 'absolute',
-        bottom: '8px',
+        bottom: 'var(--space-2)',
         left: '50%',
         transform: 'translateX(-50%)',
         backgroundColor: 'var(--slate-2)',

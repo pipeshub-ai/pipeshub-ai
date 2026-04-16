@@ -54,7 +54,7 @@ function ProfileField({ label, value, valueColor }: ProfileFieldProps) {
         background: 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
-        padding: '12px 16px',
+        padding: 'var(--space-3) var(--space-4)',
       }}
     >
       <Flex direction="column" gap="1">
@@ -115,7 +115,7 @@ export function UserProfileSidebar() {
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            padding: '12px 16px',
+            padding: 'var(--space-3) var(--space-4)',
           }}
         >
           <Flex align="center" justify="between">

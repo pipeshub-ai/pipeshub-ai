@@ -72,7 +72,7 @@ function DocumentationLinkRow({
         backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        padding: '8px 8px 8px 12px',
+        padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
         cursor: 'pointer',
         transition: 'background-color 150ms ease',
       }}

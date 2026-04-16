@@ -43,11 +43,11 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       <Box style={{ padding: '64px 100px' }}>
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             General
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             Your company general information
           </Text>
         </Box>
@@ -317,17 +317,17 @@ export default function GeneralPage() {
       {/* Page content */}
       <Box style={{ padding: '64px 100px' }}>
         {/* Page header */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             General
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             Manage your company profile
           </Text>
         </Box>
 
         {/* ── Company Profile Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection title="Company Profile">
             {/* Logo */}
             <SettingsRow label="Logo" description="Recommended size is 256px by 256px">
@@ -382,7 +382,7 @@ export default function GeneralPage() {
         </Box>
 
         {/* ── Company Address Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <SettingsSection title="Company Address">
             {/* Street Address */}
             <SettingsRow label="Street Address" description="Company's location address">
@@ -460,15 +460,15 @@ export default function GeneralPage() {
               </Flex>
             }
           >
-            <Box style={{ padding: '16px 20px' }}>
+            <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
               <Text
                 size="2"
-                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 12 }}
+                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
               >
                 PipesHub collects and processes personal information for a variety of business
                 purposes.
               </Text>
-              <Flex direction="column" gap="2" style={{ paddingLeft: 4 }}>
+              <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
                 {[
                   'To provide customer service and support for our products',
                   'To send marketing communications',
@@ -480,11 +480,11 @@ export default function GeneralPage() {
                   <Flex key={item} align="start" gap="2">
                     <Box
                       style={{
-                        width: 4,
-                        height: 4,
+                        width: 'var(--space-1)',
+                        height: 'var(--space-1)',
                         borderRadius: '50%',
                         backgroundColor: 'var(--slate-9)',
-                        marginTop: 8,
+                        marginTop: 'var(--space-2)',
                         flexShrink: 0,
                       }}
                     />

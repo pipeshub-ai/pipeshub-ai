@@ -70,17 +70,17 @@ export default function ProfilePage() {
       <Box style={{ padding: '64px 100px' }}>
 
         {/* ── Page header ── */}
-        <Box style={{ marginBottom: 24 }}>
+        <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             Profile
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 4, display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
             Manage all your personal profile details here
           </Text>
         </Box>
 
         {/* ── General section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <GeneralSection
             avatarUrl={avatarUrl}
             avatarInitial={avatarInitial}
@@ -101,7 +101,7 @@ export default function ProfilePage() {
         </Box>
 
         {/* ── Roles & Permissions section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <RolesPermissionsSection role={role} groups={groups} />
         </Box>
 

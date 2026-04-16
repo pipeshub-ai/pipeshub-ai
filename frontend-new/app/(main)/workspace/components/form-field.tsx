@@ -31,7 +31,7 @@ export function FormField({ label, optional, error, children }: FormFieldProps) 
           <Text
             size="1"
             weight="regular"
-            style={{ color: 'var(--slate-9)', marginLeft: 4 }}
+            style={{ color: 'var(--slate-9)', marginLeft: 'var(--space-1)' }}
             as="span"
           >
             (optional)

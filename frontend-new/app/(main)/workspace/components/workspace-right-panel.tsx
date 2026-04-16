@@ -109,7 +109,7 @@ export function WorkspaceRightPanel({
           align="center"
           justify="between"
           style={{
-            padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
@@ -148,7 +148,7 @@ export function WorkspaceRightPanel({
           style={{
             flex: 1,
             overflow: 'auto',
-            padding: '16px',
+            padding: 'var(--space-4)',
             background: 'var(--effects-translucent)',
             // backdropFilter: 'blur(8px)',
           }}
@@ -163,7 +163,7 @@ export function WorkspaceRightPanel({
             justify="end"
             gap="2"
             style={{
-              padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
               borderTop: '1px solid var(--olive-3)',
               background: 'var(--effects-translucent)',
               backdropFilter: 'blur(8px)',

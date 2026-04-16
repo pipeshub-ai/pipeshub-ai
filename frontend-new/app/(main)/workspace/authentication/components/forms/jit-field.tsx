@@ -31,7 +31,7 @@ export function JitField({ providerName, checked, onCheckedChange }: JitFieldPro
         <Switch
           checked={checked}
           onCheckedChange={onCheckedChange}
-          style={{ flexShrink: 0, marginLeft: 16, cursor: 'pointer' }}
+          style={{ flexShrink: 0, marginLeft: 'var(--space-4)', cursor: 'pointer' }}
         />
       </Flex>
     </Box>

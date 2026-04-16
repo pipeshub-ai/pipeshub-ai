@@ -125,7 +125,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           align="center"
           justify="between"
           style={{
-            padding: '12px 16px',
+            padding: 'var(--space-3) var(--space-4)',
             backgroundColor: 'var(--jade-a2)',
             border: '1px solid var(--jade-a4)',
             borderRadius: 'var(--radius-2)',
@@ -288,7 +288,7 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
                 align="center"
                 justify="between"
                 style={{
-                  padding: '8px 0',
+                  padding: 'var(--space-2) 0',
                   borderBottom: '1px solid var(--gray-a3)',
                 }}
               >
@@ -392,7 +392,7 @@ function StatCard({
       onMouseLeave={() => setIsHovered(false)}
       style={{
         flex: 1,
-        padding: '24px 16px',
+        padding: 'var(--space-6) var(--space-4)',
         backgroundColor: isHovered && isClickable ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',

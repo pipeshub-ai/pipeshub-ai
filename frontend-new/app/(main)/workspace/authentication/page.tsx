@@ -229,12 +229,12 @@ export default function AuthenticationPage() {
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
       <Box style={{ padding: '64px 100px 80px' }}>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="5" style={{ color: 'var(--slate-12)' }}>
               Authentication Settings
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
               Configure how users sign in to your application
             </Text>
           </Box>
@@ -266,7 +266,7 @@ export default function AuthenticationPage() {
             borderRadius: 'var(--radius-1)',
             backgroundColor: 'var(--olive-2)',
             backdropFilter: 'blur(6px)',
-            marginBottom: 20,
+            marginBottom: 'var(--space-5)',
             gap: 'var(--space-4)',
           }}
         >
@@ -368,7 +368,7 @@ export default function AuthenticationPage() {
             {!smtpConfigured && (
               <Text
                 size="1"
-                style={{ color: 'var(--amber-11)', display: 'block', marginTop: 4 }}
+                style={{ color: 'var(--amber-11)', display: 'block', marginTop: 'var(--space-1)' }}
               >
                 ⚠ SMTP is not configured. One-Time Password authentication requires SMTP. Configure
                 it under <strong>Workspace → Mail</strong>.

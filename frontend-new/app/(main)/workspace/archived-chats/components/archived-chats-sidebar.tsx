@@ -72,7 +72,7 @@ export function ArchivedChatsSidebar({
           flexShrink: 0,
           display: 'flex',
           alignItems: 'center',
-          padding: '0 16px',
+          padding: '0 var(--space-4)',
           backgroundColor: 'var(--olive-1)',
         }}
       >
@@ -82,7 +82,7 @@ export function ArchivedChatsSidebar({
       </Box>
 
       {/* Search Chats button */}
-      <Box style={{ padding: '0 8px 8px', flexShrink: 0 }}>
+      <Box style={{ padding: '0 var(--space-2) var(--space-2)', flexShrink: 0 }}>
         <SidebarItem
           icon={<MaterialIcon name="search" size={ICON_SIZE_DEFAULT} />}
           label={t('nav.searchChats')}
@@ -97,13 +97,13 @@ export function ArchivedChatsSidebar({
         style={{ flex: 1, overflowY: 'auto', padding: CONTENT_PADDING }}
       >
         {isLoading ? (
-          <Flex align="center" justify="center" style={{ paddingTop: 32 }}>
+          <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
             <Text size="1" style={{ color: 'var(--slate-9)' }}>
               {t('action.loading')}
             </Text>
           </Flex>
         ) : conversations.length === 0 ? (
-          <Flex align="center" justify="center" style={{ paddingTop: 32 }}>
+          <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
             <Text size="1" style={{ color: 'var(--slate-9)' }}>
               {t('workspace.archivedChats.emptyList')}
             </Text>

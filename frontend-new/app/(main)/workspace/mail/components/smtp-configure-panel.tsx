@@ -151,7 +151,7 @@ export function SmtpConfigurePanel({
       color="gray"
       size="1"
       onClick={() => window.open('https://docs.pipeshub.com/smtp', '_blank')}
-      style={{ cursor: 'pointer', gap: 4 }}
+      style={{ cursor: 'pointer', gap: 'var(--space-1)' }}
     >
       <span className="material-icons-outlined" style={{ fontSize: 14 }}>open_in_new</span>
       <Text size="1">Documentation</Text>
@@ -238,7 +238,7 @@ export function SmtpConfigurePanel({
                 </TextField.Slot>
               </TextField.Root>
               {errors.host && (
-                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
                   {errors.host}
                 </Text>
               )}
@@ -262,7 +262,7 @@ export function SmtpConfigurePanel({
                 </TextField.Slot>
               </TextField.Root>
               {errors.port && (
-                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
                   {errors.port}
                 </Text>
               )}
@@ -286,7 +286,7 @@ export function SmtpConfigurePanel({
                 </TextField.Slot>
               </TextField.Root>
               {errors.fromEmail && (
-                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 4, display: 'block' }}>
+                <Text size="1" style={{ color: 'var(--red-a11)', marginTop: 'var(--space-1)', display: 'block' }}>
                   {errors.fromEmail}
                 </Text>
               )}

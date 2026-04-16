@@ -42,15 +42,15 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
         align="center"
         justify="between"
         gap="3"
-        style={{ padding: '12px 16px' }}
+        style={{ padding: 'var(--space-3) var(--space-4)' }}
       >
         <Flex align="center" gap="3">
           <Flex
             align="center"
             justify="center"
             style={{
-              width: 36,
-              height: 36,
+              width: 'var(--space-9)',
+              height: 'var(--space-9)',
               borderRadius: 'var(--radius-1)',
               background: 'var(--slate-a2)',
               flexShrink: 0,
@@ -75,7 +75,7 @@ function PromptSectionCard({ children, action }: PromptSectionCardProps) {
             <Box style={{ height: 1, background: 'var(--olive-3)' }} />
           </Box>
       {/* Content */}
-      <Flex direction="column" gap="3" style={{ padding: 16 }}>
+      <Flex direction="column" gap="3" style={{ padding: 'var(--space-4)' }}>
         {children}
       </Flex>
     </Flex>
@@ -89,7 +89,7 @@ function PromptConfigCallout() {
       gap="3"
       style={{
         background: 'var(--accent-a2)',
-        padding: '12px 16px',
+        padding: 'var(--space-3) var(--space-4)',
       }}
     >
        <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
@@ -190,12 +190,12 @@ export default function PromptsPage() {
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
 
         {/* ── Page Header ── */}
-        <Flex align="center" justify="between" style={{ marginBottom: 24 }}>
+        <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               Custom System Prompt
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
               Configure the custom system prompt for AI responses
             </Text>
           </Box>
@@ -213,7 +213,7 @@ export default function PromptsPage() {
         </Flex>
 
         {/* ── System Prompt Section ── */}
-        <Box style={{ marginBottom: 20 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <PromptSectionCard>
             {/* Label row */}
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
