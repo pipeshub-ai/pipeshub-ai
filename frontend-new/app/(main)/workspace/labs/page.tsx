@@ -7,7 +7,6 @@ import {
   Flex,
   Text,
   Heading,
-  // Switch,
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -135,7 +134,6 @@ function PlatformConfigNote() {
         </Text>
         <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
           Changes to platform settings affect all users and take effect immediately. 
-          {/* Feature flags can be toggled to enable or disable specific functionality across the platform. */}
         </Text>
       </Flex>
     </Flex>
@@ -155,13 +153,11 @@ export default function LabsPage() {
   // ── Store selectors (must run every render; see Rules of Hooks) ──
   const form = useLabsStore((s) => s.form);
   const savedForm = useLabsStore((s) => s.savedForm);
-  // const availableFlags = useLabsStore((s) => s.availableFlags);
   const errors = useLabsStore((s) => s.errors);
   const discardDialogOpen = useLabsStore((s) => s.discardDialogOpen);
   const isLoading = useLabsStore((s) => s.isLoading);
 
   const setFileSizeLimitMb = useLabsStore((s) => s.setFileSizeLimitMb);
-  // const setFlagValue = useLabsStore((s) => s.setFlagValue);
   const setForm = useLabsStore((s) => s.setForm);
   const markSaved = useLabsStore((s) => s.markSaved);
   const setErrors = useLabsStore((s) => s.setErrors);
@@ -188,7 +184,6 @@ export default function LabsPage() {
         ]);
 
         const settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
-        // const availFlags = flagsResult.status === 'fulfilled' ? flagsResult.value.flags : [];
 
         setForm({
             fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',

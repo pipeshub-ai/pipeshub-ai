@@ -273,12 +273,12 @@ export default function GeneralPage() {
       setLogoUploading(true);
       try {
         await OrgApi.uploadLogo(file);
-        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-        if (previousSavedUrl?.startsWith('blob:')) URL.revokeObjectURL(previousSavedUrl);
         const freshUrl = await OrgApi.getLogoUrl();
         setLogoUrl(freshUrl);
         savedLogoUrlRef.current = freshUrl;
         setHasServerLogo(freshUrl !== null);
+        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+        if (previousSavedUrl?.startsWith('blob:')) URL.revokeObjectURL(previousSavedUrl);
         addToast({
           variant: 'success',
           title: 'Logo updated',
