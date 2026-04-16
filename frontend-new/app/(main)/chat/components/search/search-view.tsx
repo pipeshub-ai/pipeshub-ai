@@ -38,6 +38,15 @@ function mergeConversationLists(
   return [...shared, ...own];
 }
 
+function isAbortOrCancelError(err: unknown): boolean {
+  const e = err as { name?: string; code?: string };
+  return (
+    e.name === 'AbortError' ||
+    e.name === 'CanceledError' ||
+    e.code === 'ERR_CANCELED'
+  );
+}
+
 // ── Main component ──
 
 interface ChatSearchProps {
@@ -120,13 +129,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
           mergeConversationLists(result.sharedConversations, result.conversations)
         );
       } catch (err: unknown) {
-        if (
-          (err as { name?: string; code?: string }).name === 'AbortError' ||
-          (err as { name?: string; code?: string }).name === 'CanceledError' ||
-          (err as { code?: string }).code === 'ERR_CANCELED'
-        ) {
-          return;
-        }
+        if (isAbortOrCancelError(err)) return;
         addToast({
           variant: 'error',
           title: t('message.error'),
@@ -164,13 +167,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
           mergeConversationLists(result.sharedConversations, result.conversations)
         );
       } catch (err: unknown) {
-        if (
-          (err as { name?: string; code?: string }).name === 'AbortError' ||
-          (err as { name?: string; code?: string }).name === 'CanceledError' ||
-          (err as { code?: string }).code === 'ERR_CANCELED'
-        ) {
-          return;
-        }
+        if (isAbortOrCancelError(err)) return;
         addToast({
           variant: 'error',
           title: t('message.error'),

@@ -4,7 +4,7 @@ import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useAuthStore } from '@/lib/store/auth-store';
-import { useProfileStore } from '../store';
+import { useProfileStore, isProfileFormDirty } from '../store';
 import { ProfileApi } from '../api';
 import { getUserIdFromToken, getUserEmailFromToken } from '@/lib/utils/jwt';
 import { isProcessedError } from '@/lib/api';
@@ -46,10 +46,8 @@ export function useProfilePage() {
   const setDiscardDialogOpen = useProfileStore((s) => s.setDiscardDialogOpen);
   const setLoading = useProfileStore((s) => s.setLoading);
   /** Subscribe to form + savedForm so Zustand re-renders after markSaved (savedForm-only updates). */
-  const isFormDirty = useProfileStore(
-    (s) =>
-      s.form.fullName !== s.savedForm.fullName ||
-      s.form.designation !== s.savedForm.designation,
+  const isFormDirty = useProfileStore((s) =>
+    isProfileFormDirty(s.form, s.savedForm),
   );
 
   // ── Load profile on mount ─────────────────────────────────────

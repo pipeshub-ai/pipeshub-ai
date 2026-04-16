@@ -64,6 +64,17 @@ const EMPTY_FORM: ProfileFormData = {
   designation: '',
 };
 
+/** Single source of truth for profile form dirty detection — keep in sync with `ProfileFormData` fields. */
+export function isProfileFormDirty(
+  form: ProfileFormData,
+  savedForm: ProfileFormData
+): boolean {
+  return (
+    form.fullName !== savedForm.fullName ||
+    form.designation !== savedForm.designation
+  );
+}
+
 const initialState: ProfileState = {
   form: { ...EMPTY_FORM },
   savedForm: { ...EMPTY_FORM },
@@ -127,10 +138,7 @@ export const useProfileStore = create<ProfileStore>()(
 
       isDirty: () => {
         const { form, savedForm } = get();
-        return (
-          form.fullName !== savedForm.fullName ||
-          form.designation !== savedForm.designation
-        );
+        return isProfileFormDirty(form, savedForm);
       },
 
       reset: () => set(() => ({ ...initialState })),
