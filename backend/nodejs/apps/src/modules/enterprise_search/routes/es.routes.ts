@@ -54,6 +54,10 @@ import {
   regenerateAgentAnswers,
   streamChatInternal,
   addMessageStreamInternal,
+  updateAgentConversationTitle,
+  archiveAgentConversation,
+  unarchiveAgentConversation,
+  listAllArchivesAgentConversation,
 } from '../controller/es_controller';
 import {
   getSpeechCapabilities,
@@ -74,6 +78,8 @@ import {
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
   regenerateAgentAnswersParamsSchema,
+  agentConversationTitleParamsSchema,
+  agentConversationParamsSchema,
 } from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -585,6 +591,57 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
     deleteAgentConversationById,
+  );
+
+  /**
+   * @route PATCH /api/v1/agents/:agentKey/conversations/:conversationId/title
+   * @desc Update title for an agent conversation
+   */
+  router.patch(
+    '/:agentKey/conversations/:conversationId/title',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationTitleParamsSchema),
+    updateAgentConversationTitle,
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/archive
+   * @desc Archive an agent conversation
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/archive',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
+    archiveAgentConversation,
+  );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/unarchive
+   * @desc Unarchive an agent conversation
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/unarchive',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
+    unarchiveAgentConversation,
+  );
+
+  /**
+   * @route GET /api/v1/agents/:agentKey/conversations/show/archives
+   * @desc List all archived agent conversations
+   */
+  router.get(
+    '/:agentKey/conversations/show/archives',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    listAllArchivesAgentConversation,
   );
 
   router.post(

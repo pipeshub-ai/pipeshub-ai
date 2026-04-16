@@ -94,7 +94,11 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     }
     setIsSavingRename(true);
     try {
-      await ChatApi.renameConversation(conversation.id, trimmed);
+      if (agentId) {
+        await AgentsApi.renameAgentConversation(agentId, conversation.id, trimmed);
+      } else {
+        await ChatApi.renameConversation(conversation.id, trimmed);
+      }
       renameConversation(conversation.id, trimmed);
       bumpConversationsVersion();
     } catch {
@@ -159,8 +163,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     }
   };
 
-  // Inline rename mode — render a plain input instead of SidebarItem (main chats only)
-  if (isRenaming && !agentId) {
+  // Inline rename mode — render a plain input instead of SidebarItem
+  if (isRenaming) {
     return (
       <Flex
         align="center"
@@ -218,7 +222,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
               onRename={handleStartRename}
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
-              showRename={!agentId}
+              showRename={true}
               showArchive={!agentId}
             />
           ) : undefined

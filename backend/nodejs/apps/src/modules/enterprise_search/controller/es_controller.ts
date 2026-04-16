@@ -3209,7 +3209,6 @@ export const archiveConversation = async (
             $set: {
               isArchived: true,
               archivedBy: userId,
-              lastActivityAt: Date.now(),
             },
           },
           {
@@ -3320,7 +3319,6 @@ export const unarchiveConversation = async (
             $set: {
               isArchived: false,
               archivedBy: null,
-              lastActivityAt: Date.now(),
             },
           },
           {
@@ -6467,6 +6465,343 @@ export const deleteAgentConversationById = async (
       logger.error('Error deleting conversation', {
       requestId,
       conversationId,
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};
+
+export const archiveAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to archive agent conversation', {
+      requestId,
+      message: 'Attempting to archive agent conversation',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performArchive(s?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne({
+        _id: conversationId,
+        userId,
+        orgId,
+        agentKey,
+        isDeleted: false,
+      });
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      if (conversation.isArchived) {
+        throw new BadRequestError('Agent conversation already archived');
+      }
+
+      const updated = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        {
+          $set: {
+            isArchived: true,
+            archivedBy: userId,
+          },
+        },
+        { new: true, session: s, runValidators: true },
+      ).exec();
+
+      if (!updated) {
+        throw new InternalServerError('Failed to archive agent conversation');
+      }
+      return updated;
+    }
+
+    let updated: any = null;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      session.startTransaction();
+      updated = await performArchive(session);
+      await session.commitTransaction();
+    } else {
+      updated = await performArchive();
+    }
+
+    logger.debug('Agent conversation archived successfully', {
+      requestId,
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      id: updated._id,
+      status: 'archived',
+      archivedBy: userId,
+      archivedAt: updated.updatedAt,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error archiving agent conversation', {
+      requestId,
+      message: 'Error archiving agent conversation',
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  } finally {
+    if (session) await session.endSession();
+  }
+};
+
+export const unarchiveAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to unarchive agent conversation', {
+      requestId,
+      message: 'Attempting to unarchive agent conversation',
+      conversationId,
+      agentKey,
+      userId,
+      timestamp: new Date().toISOString(),
+    });
+
+    async function performUnarchive(s?: ClientSession | null) {
+      const conversation = await AgentConversation.findOne({
+        _id: conversationId,
+        userId,
+        orgId,
+        agentKey,
+        isDeleted: false,
+      });
+
+      if (!conversation) {
+        throw new NotFoundError('Agent conversation not found');
+      }
+
+      if (!conversation.isArchived) {
+        throw new BadRequestError('Agent conversation is not archived');
+      }
+
+      const updated = await AgentConversation.findByIdAndUpdate(
+        conversationId,
+        {
+          $set: {
+            isArchived: false,
+            archivedBy: null,
+          },
+        },
+        { new: true, session: s, runValidators: true },
+      ).exec();
+
+      if (!updated) {
+        throw new InternalServerError('Failed to unarchive agent conversation');
+      }
+      return updated;
+    }
+
+    let updated: any = null;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      session.startTransaction();
+      updated = await performUnarchive(session);
+      await session.commitTransaction();
+    } else {
+      updated = await performUnarchive();
+    }
+
+    logger.debug('Agent conversation unarchived successfully', {
+      requestId,
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      id: updated._id,
+      status: 'unarchived',
+      unarchivedBy: userId,
+      unarchivedAt: updated.updatedAt,
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error unarchiving agent conversation', {
+      requestId,
+      message: 'Error unarchiving agent conversation',
+      error: error.message,
+      stack: error.stack,
+    });
+    next(error);
+  } finally {
+    if (session) await session.endSession();
+  }
+};
+
+export const listAllArchivesAgentConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { agentKey } = req.params;
+
+    logger.debug('Fetching all archived agent conversations', {
+      requestId,
+      userId,
+      agentKey,
+    });
+
+    const { skip, limit, page } = getPaginationParams(req);
+    const filter = {
+      ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
+      isArchived: true,
+      archivedBy: { $exists: true },
+    };
+    const sortOptions = buildSortOptions(req);
+
+    const [conversations, totalCount] = await Promise.all([
+      AgentConversation.find(filter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .select('-__v')
+        .select('-messages')
+        .lean()
+        .exec(),
+      AgentConversation.countDocuments(filter),
+    ]);
+
+    const processedConversations = conversations.map((conversation: any) => ({
+      ...addComputedFields(conversation as IAgentConversation, userId),
+      archivedAt: conversation.updatedAt,
+      archivedBy: conversation.archivedBy,
+    }));
+
+    logger.debug('Successfully fetched archived agent conversations', {
+      requestId,
+      count: conversations.length,
+      totalCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      conversations: processedConversations,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      filters: buildFiltersMetadata(filter, req.query),
+      summary: {
+        totalArchived: totalCount,
+        oldestArchive: processedConversations[0]?.archivedAt,
+        newestArchive: processedConversations[processedConversations.length - 1]?.archivedAt,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error fetching archived agent conversations', {
+      requestId,
+      message: 'Error fetching archived agent conversations',
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};
+
+export const updateAgentConversationTitle = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const { conversationId, agentKey } = req.params;
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    logger.debug('Attempting to update agent conversation title', {
+      requestId,
+      message: 'Attempting to update agent conversation title',
+      conversationId,
+      agentKey,
+      userId,
+      title: req.body.title,
+      timestamp: new Date().toISOString(),
+    });
+
+    const conversation = await AgentConversation.findOne({
+      _id: conversationId,
+      orgId,
+      userId,
+      agentKey,
+      isDeleted: false,
+    });
+
+    if (!conversation) {
+      throw new NotFoundError('Agent conversation not found');
+    }
+
+    conversation.title = req.body.title;
+    await conversation.save();
+
+    logger.debug('Agent conversation title updated successfully', {
+      requestId,
+      message: 'Agent conversation title updated successfully',
+      conversationId,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      conversation: {
+        ...conversation.toObject(),
+        title: conversation.title,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error updating agent conversation title', {
+      requestId,
+      message: 'Error updating agent conversation title',
       error: error.message,
       stack: error.stack,
       duration: Date.now() - startTime,

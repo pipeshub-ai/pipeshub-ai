@@ -420,6 +420,13 @@ export const AgentsApi = {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`);
   },
 
+  /**
+   * PATCH /api/v1/agents/:agentKey/conversations/:conversationId/title
+   */
+  async renameAgentConversation(agentId: string, conversationId: string, title: string): Promise<void> {
+    await apiClient.patch(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}/title`, { title });
+  },
+
   /** POST /api/v1/agents/create */
   async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
     const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
