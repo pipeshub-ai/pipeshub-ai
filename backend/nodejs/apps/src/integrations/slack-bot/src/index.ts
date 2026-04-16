@@ -168,12 +168,16 @@ interface TypedSlackClient {
       thread_ts?: string;
       text: string;
       blocks?: SlackBlock[];
+      unfurl_links?: boolean;
+      unfurl_media?: boolean;
     }) => Promise<{ ts?: string }>;
     update: (params: {
       channel: string;
       ts: string;
       text: string;
       blocks?: SlackBlock[];
+      unfurl_links?: boolean;
+      unfurl_media?: boolean;
     }) => Promise<{ ts?: string }>;
   };
   apiCall: (
@@ -486,6 +490,8 @@ async function sendUserFacingSlackErrorMessage(
       channel: typedMessage.channel,
       thread_ts: threadId,
       text: truncateForSlack(errorMessage),
+      unfurl_links: false,
+      unfurl_media: false,
     });
   } catch (sendError) {
     console.error("Failed to send Slack user-facing error message:", sendError);
@@ -1759,19 +1765,23 @@ async function processSlackMessage(
           ts: waitingMessageTs,
           text: truncatedText,
           ...(blocks && blocks.length > 0 ? { blocks } : {}),
+          unfurl_links: false,
+          unfurl_media: false,
         });
         return;
       } catch (error) {
         console.error("Error updating Slack waiting message:", error);
         if (blocks && blocks.length > 0) {
           throw error;
-        } 
+        }
         else {
           try {
             await typedClient.chat.update({
               channel: typedMessage.channel!,
               ts: waitingMessageTs,
               text: truncatedText,
+              unfurl_links: false,
+              unfurl_media: false,
             });
             return;
           } catch (fallbackError) {
@@ -1791,6 +1801,8 @@ async function processSlackMessage(
         thread_ts: threadId,
         text: truncatedText,
         ...(blocks && blocks.length > 0 ? { blocks } : {}),
+        unfurl_links: false,
+        unfurl_media: false,
       });
     } catch (error) {
       if (blocks && blocks.length > 0) {
@@ -1801,6 +1813,8 @@ async function processSlackMessage(
         channel: typedMessage.channel!,
         thread_ts: threadId,
         text: truncatedText,
+        unfurl_links: false,
+        unfurl_media: false,
       });
     }
   };
@@ -1812,6 +1826,8 @@ async function processSlackMessage(
         thread_ts: threadId,
         text: "",
         blocks: chunk,
+        unfurl_links: false,
+        unfurl_media: false,
       });
     } catch (error) {
       console.error("Error posting Slack chunk as blocks, retrying with text:", error);
@@ -1819,6 +1835,8 @@ async function processSlackMessage(
         channel: typedMessage.channel!,
         thread_ts: threadId,
         text: FAILED_RESPONSE_GENERATION_MESSAGE,
+        unfurl_links: false,
+        unfurl_media: false,
       });
     }
   };
@@ -1885,6 +1903,8 @@ async function processSlackMessage(
         channel: typedMessage.channel!,
         thread_ts: threadId,
         text: "_Thinking..._",
+        unfurl_links: false,
+        unfurl_media: false,
       });
       waitingMessageTs = waitingMessage.ts || null;
     } catch (error) {
@@ -1996,6 +2016,8 @@ async function processSlackMessage(
                 channel: typedMessage.channel!,
                 thread_ts: threadId,
                 markdown_text: chunk,
+                unfurl_links: false,
+                unfurl_media: false,
                 ...streamRecipientPayload,
               },
             )) as StreamStartResult;
@@ -2087,6 +2109,8 @@ async function processSlackMessage(
           channel: typedMessage.channel!,
           ts: waitingMessageTs,
           text: TABLE_STREAMING_PAUSED_HINT,
+          unfurl_links: false,
+          unfurl_media: false,
         });
       } catch (error) {
         console.error("Error updating Slack waiting message with table hint:", error);
@@ -2286,6 +2310,8 @@ async function processSlackMessage(
             ts: streamTs,
             text: "",
             blocks: firstFinalChunk,
+            unfurl_links: false,
+            unfurl_media: false,
           });
           firstChunkSent = true;
         } catch (updateError) {
@@ -2311,6 +2337,8 @@ async function processSlackMessage(
               thread_ts: threadId,
               text: "",
               blocks: firstFinalChunk,
+              unfurl_links: false,
+              unfurl_media: false,
             });
             firstChunkSent = true;
           } catch (replacementError) {
