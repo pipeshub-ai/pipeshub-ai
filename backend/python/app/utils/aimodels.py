@@ -146,11 +146,16 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
     raw_dims = configuration.get("dimensions")
-    dimensions: int | None = int(raw_dims) if raw_dims not in (None, "", 0) else None
+    dimensions: int | None = None
+    if raw_dims not in (None, "", 0):
+        try:
+            dimensions = int(raw_dims)
+        except (ValueError, TypeError):
+            logger.warning(f"Non-numeric dimensions value ignored: {raw_dims!r}")
 
     if provider == EmbeddingProvider.AZURE_AI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
-        if "cohere" or "embed-v" in model_name.lower():
+        if model_name and ("cohere" in model_name.lower() or "embed-v" in model_name.lower()):
             check_embedding_ctx_length = False
         else:
             check_embedding_ctx_length = True

@@ -191,7 +191,7 @@ function toSchemaField(field: AIModelProviderField): SchemaField {
     placeholder: field.placeholder,
     description: field.description,
     isSecret: field.isSecret,
-    options: field.options,
+    options: field.options?.map(o => ({ id: o.value, label: o.label })),
     validation: field.validation as any,
   };
 }

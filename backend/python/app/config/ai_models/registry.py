@@ -136,7 +136,7 @@ class AIModelProviderBuilder:
 
 def _default_provider_id(name: str) -> str:
     """openAI, azureOpenAI, etc. — camelCase the display name."""
-    if not name:
+    if not name or not name.strip():
         return ""
     parts = name.split()
     return parts[0][0].lower() + parts[0][1:] + "".join(p.capitalize() for p in parts[1:])
