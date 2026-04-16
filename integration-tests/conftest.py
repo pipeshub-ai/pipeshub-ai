@@ -113,7 +113,7 @@ _integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
 _integration_test_report_order: List[str] = []
 
 
-def _longrepr_and_streams(report: pytest.TestReport) -> tuple[str, str | None, str | None]:
+def _longrepr_and_streams(report: pytest.TestReport) -> tuple[str, str | None, str | None, str | None]:
     """Failure text and captured streams from a single phase report."""
     longrepr = getattr(report, "longrepr", None)
     longreprtext = getattr(report, "longreprtext", None)
@@ -129,7 +129,7 @@ def _longrepr_and_streams(report: pytest.TestReport) -> tuple[str, str | None, s
 
     stdout_captured = None
     stderr_captured = None
-    for name, content in getattr(report, "sections", []) or []:
+    for name, content in getattr(report, "sections", []):
         if name.startswith("Captured stdout"):
             stdout_captured = (stdout_captured or "") + content
         elif name.startswith("Captured stderr"):
