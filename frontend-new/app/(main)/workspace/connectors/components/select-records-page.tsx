@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { Flex, Text, Box, Button, Checkbox, TextField, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useConnectorsStore } from '../store';
 
 // ========================================
@@ -131,9 +132,7 @@ export function SelectRecordsPage() {
       >
         {isLoadingRecords ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
-              Loading records...
-            </Text>
+            <LottieLoader variant="loader" size={48} />
           </Flex>
         ) : filteredRecords.length === 0 ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>

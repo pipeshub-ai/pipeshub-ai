@@ -10,6 +10,7 @@ import {
   Button,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { AuthMethodRow } from './components/auth-method-row';
@@ -223,6 +224,15 @@ export default function AuthenticationPage() {
     return null;
   }
 
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} />
+      </Flex>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
@@ -303,14 +313,7 @@ export default function AuthenticationPage() {
           </Flex>
 
           {/* Method rows */}
-          {isLoading ? (
-            <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                Loading authentication settings…
-              </Text>
-            </Flex>
-          ) : (
-            <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
+          <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
               {AUTH_METHOD_META.map((meta) => {
                 const state = methods.find((m) => m.type === meta.type) ?? {
                   type: meta.type,
@@ -334,7 +337,6 @@ export default function AuthenticationPage() {
                 );
               })}
             </Flex>
-          )}
         </Flex>
 
         {/* ── Authentication Method Policy info box ── */}

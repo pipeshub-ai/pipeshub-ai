@@ -6,6 +6,7 @@ import { Flex, Grid, Text, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useBreakpoint } from '@/lib/hooks/use-breakpoint';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { EntityEmptyState, EntityPagination } from '../../components';
 import { Oauth2Api } from './api';
 import type { OAuthClient, OAuthClientsPagination } from './types';
@@ -156,9 +157,7 @@ function Oauth2PageContent() {
       >
         {isLoading && (
           <Flex align="center" justify="center" style={{ flex: 1, padding: 'var(--space-6)' }}>
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('workspace.oauth2.loading')}
-            </Text>
+            <LottieLoader variant="loader" size={48} />
           </Flex>
         )}
 

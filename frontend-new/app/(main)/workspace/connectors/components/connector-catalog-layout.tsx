@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { Connector } from '../types';
 import { ConnectorCard } from './connector-card';
 
@@ -215,11 +216,9 @@ export function ConnectorCatalogLayout({
         <Flex
           align="center"
           justify="center"
-          style={{ width: '100%', paddingTop: 80 }}
+          style={{ width: '100%', flex: 1 }}
         >
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            Loading connectors…
-          </Text>
+          <LottieLoader variant="loader" size={48} />
         </Flex>
       ) : filtered.length === 0 ? (
         <Flex

@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Heading, Text, Button } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
 import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorStatsResponse, ConnectorScope } from '../types';
 
@@ -152,10 +153,8 @@ export function ConnectorDetailsLayout({
 
       {/* ── Instance list ── */}
       {isLoading ? (
-        <Flex align="center" justify="center" style={{ paddingTop: 80 }}>
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            Loading instances...
-          </Text>
+        <Flex align="center" justify="center" style={{ flex: 1 }}>
+          <LottieLoader variant="loader" size={48} />
         </Flex>
       ) : instances.length === 0 ? (
         <Flex

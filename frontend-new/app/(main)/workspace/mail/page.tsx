@@ -12,6 +12,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { SmtpApi } from './api';
@@ -84,6 +85,15 @@ export default function MailPage() {
     return null;
   }
 
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} />
+      </Flex>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
@@ -138,13 +148,6 @@ export default function MailPage() {
 
           {/* SMTP row */}
           <Box style={{ padding: '12px 14px' }}>
-            {isLoading ? (
-              <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
-                <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                  Loading…
-                </Text>
-              </Flex>
-            ) : (
               <Flex
                 align="center"
                 gap="3"
@@ -216,7 +219,6 @@ export default function MailPage() {
                   <MaterialIcon name="settings" size={18} color="var(--slate-10)" />
                 </IconButton>
               </Flex>
-            )}
           </Box>
         </Flex>
       </Box>

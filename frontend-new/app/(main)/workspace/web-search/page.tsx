@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Flex, Text, Heading, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -250,6 +251,15 @@ export default function WebSearchPage() {
     ? configuredProviders.find((p) => p.provider === panelProvider) ?? null
     : null;
 
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} />
+      </Flex>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto', position: 'relative' }}>
@@ -327,14 +337,7 @@ export default function WebSearchPage() {
           </Flex>
 
           {/* Provider rows */}
-          {isLoading ? (
-            <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                Loading web search settings…
-              </Text>
-            </Flex>
-          ) : (
-            <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
+          <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
               {WEB_SEARCH_PROVIDER_META.map((meta) => {
                 const state = providers.find((p) => p.type === meta.type) ?? {
                   type: meta.type,
@@ -364,7 +367,6 @@ export default function WebSearchPage() {
                 onToggle={handleSendImagesToggle}
               />
             </Flex>
-          )}
         </Flex>
 
         {/* ── Web Search Provider Policy info box ── */}
