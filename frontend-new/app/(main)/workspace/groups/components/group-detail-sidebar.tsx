@@ -15,8 +15,7 @@ import type { CheckboxOption } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
 import type { GroupUser } from '../types';
-import { UsersApi } from '../../users/api';
-import { useUsersStore } from '../../users/store';
+import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
 // ========================================
 // Component
@@ -49,12 +48,6 @@ export function GroupDetailSidebar({
     setDetailGroup,
   } = useGroupsStore();
 
-  // Shared users cache from the users store (for add-users dropdown)
-  const allUsers = useUsersStore((s) => s.allUsers);
-  const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
-  const setAllUsers = useUsersStore((s) => s.setAllUsers);
-  const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
-
   const [isDeleting, setIsDeleting] = useState(false);
   // Group members fetched via paginated API
   const [groupMembers, setGroupMembers] = useState<GroupUser[]>([]);
@@ -77,7 +70,7 @@ export function GroupDetailSidebar({
     if (!detailGroup) return;
     setIsLoadingMembers(true);
     try {
-      const result = await GroupsApi.getGroupUsers(detailGroup._id, { limit: 100 });
+      const result = await GroupsApi.getGroupUsers(detailGroup._id, { page: 1, limit: 25 });
       setGroupMembers(result.users);
     } catch {
       // handled by global interceptor
@@ -94,43 +87,24 @@ export function GroupDetailSidebar({
     fetchGroupMembers();
   }, [isDetailPanelOpen, detailGroup?._id]);
 
-  // Load all users for the add-users dropdown (edit mode)
-  useEffect(() => {
-    if (!isDetailPanelOpen || !isEditMode) return;
-    if (allUsers.length > 0) return;
+  // ── Paginated user options for add-users dropdown ──
+  const {
+    options: userOptions,
+    isLoading: userFilterLoading,
+    hasMore: userFilterHasMore,
+    onSearch: handleUserSearch,
+    onLoadMore: handleUserLoadMore,
+  } = usePaginatedUserOptions({
+    enabled: isDetailPanelOpen && isEditMode,
+    idField: 'userId',
+  });
 
-    let cancelled = false;
-    const load = async () => {
-      setIsLoadingAllUsers(true);
-      try {
-        const { users: mergedUsers } = await UsersApi.fetchMergedUsers({
-          limit: 100,
-        });
-        if (!cancelled) setAllUsers(mergedUsers);
-      } catch {
-        // handled by global interceptor
-      } finally {
-        if (!cancelled) setIsLoadingAllUsers(false);
-      }
-    };
-
-    load();
-    return () => { cancelled = true; };
-  }, [isDetailPanelOpen, isEditMode, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // User options for add-users dropdown (exclude already-added users)
+  // Exclude already-added members from the options
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailGroup) return [];
     const memberIds = new Set(groupMembers.map((u) => u._id));
-
-    return allUsers
-      .filter((u) => !memberIds.has(u.userId))
-      .map((u) => ({
-        id: u.userId,
-        label: u.name || u.email || 'Unknown User',
-        subtitle: u.email,
-      }));
-  }, [allUsers, groupMembers, detailGroup]);
+    return userOptions.filter((o) => !memberIds.has(o.id));
+  }, [userOptions, groupMembers, detailGroup]);
 
   // Toggle a user for pending removal (deferred — applied on Save Edits)
   const handleRemoveUser = useCallback(
@@ -544,12 +518,12 @@ export function GroupDetailSidebar({
                 'workspace.groups.edit.addUsersPlaceholder',
                 'Search or select user(s) to add to this group'
               )}
-              emptyText={
-                isLoadingAllUsers
-                  ? t('workspace.common.loadingUsers', 'Loading users...')
-                  : t('workspace.common.noUsersAvailable', 'No users available')
-              }
+              emptyText={t('workspace.common.noUsersAvailable', 'No users available')}
               showAvatar
+              onSearch={handleUserSearch}
+              onLoadMore={handleUserLoadMore}
+              isLoadingMore={userFilterLoading}
+              hasMore={userFilterHasMore}
             />
           </Box>
         )}

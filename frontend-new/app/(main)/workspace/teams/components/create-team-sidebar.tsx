@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useMemo, useState } from 'react';
+import React, { useEffect, useCallback, useState } from 'react';
 import { Box, Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -10,11 +10,9 @@ import {
   SearchableCheckboxDropdown,
   SelectDropdown,
 } from '../../components';
-import type { CheckboxOption } from '../../components';
 import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
-import { UsersApi } from '../../users/api';
-import { useUsersStore } from '../../users/store';
+import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 import { ROLE_OPTIONS } from '../constants';
 import type { TeamMemberRole } from '../types';
 
@@ -47,12 +45,6 @@ export function CreateTeamSidebar({
   // Role for all added members
   const [memberRole, setMemberRole] = useState<TeamMemberRole>('READER');
 
-  // Shared users cache from the users store
-  const allUsers = useUsersStore((s) => s.allUsers);
-  const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
-  const setAllUsers = useUsersStore((s) => s.setAllUsers);
-  const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
-
   // Reset form when panel closes
   useEffect(() => {
     if (!isCreatePanelOpen) {
@@ -60,42 +52,17 @@ export function CreateTeamSidebar({
     }
   }, [isCreatePanelOpen, resetCreateForm]);
 
-  // Load all users into the shared store when panel opens (skip if already loaded)
-  useEffect(() => {
-    if (!isCreatePanelOpen) return;
-    if (allUsers.length > 0) return; // already cached
-
-    let cancelled = false;
-    const load = async () => {
-      setIsLoadingAllUsers(true);
-      try {
-        const { users: mergedUsers } = await UsersApi.fetchMergedUsers({
-          limit: 100,
-        });
-        if (!cancelled) setAllUsers(mergedUsers);
-      } catch {
-        // handled by global interceptor
-      } finally {
-        if (!cancelled) setIsLoadingAllUsers(false);
-      }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [isCreatePanelOpen, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // User options for the dropdown — uses user UUID (id) since teams API expects UUIDs
-  const userOptions: CheckboxOption[] = useMemo(
-    () =>
-      allUsers.map((u) => ({
-        id: u.id,
-        label: u.name || u.email || 'Unknown User',
-        subtitle: u.email,
-      })),
-    [allUsers]
-  );
+  // ── Paginated user options for add-users dropdown ──
+  const {
+    options: userOptions,
+    isLoading: userFilterLoading,
+    hasMore: userFilterHasMore,
+    onSearch: handleUserSearch,
+    onLoadMore: handleUserLoadMore,
+  } = usePaginatedUserOptions({
+    enabled: isCreatePanelOpen,
+    idField: 'id',
+  });
 
   // Form validation
   const isFormValid = createTeamName.trim().length > 0;
@@ -281,12 +248,12 @@ export function CreateTeamSidebar({
               'workspace.teams.create.addUsersPlaceholder',
               'Search or select user(s) to add to this team'
             )}
-            emptyText={
-              isLoadingAllUsers
-                ? t('workspace.common.loadingUsers', 'Loading users...')
-                : t('workspace.common.noUsersAvailable', 'No users available')
-            }
+            emptyText={t('workspace.common.noUsersAvailable', 'No users available')}
             showAvatar
+            onSearch={handleUserSearch}
+            onLoadMore={handleUserLoadMore}
+            isLoadingMore={userFilterLoading}
+            hasMore={userFilterHasMore}
           />
         </Flex>
 

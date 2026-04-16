@@ -15,9 +15,8 @@ import {
 import type { CheckboxOption } from '../../components';
 import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
-import { UsersApi } from '../../users/api';
-import { useUsersStore } from '../../users/store';
 import type { TeamMember, TeamMemberRole } from '../types';
+import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 import { ROLE_OPTIONS } from '../constants';
 
 // ========================================
@@ -51,12 +50,6 @@ export function TeamDetailSidebar({
     openDetailPanel,
   } = useTeamsStore();
 
-  // Shared users cache from the users store
-  const allUsers = useUsersStore((s) => s.allUsers);
-  const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
-  const setAllUsers = useUsersStore((s) => s.setAllUsers);
-  const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
-
   const [isDeleting, setIsDeleting] = useState(false);
   const [addMemberRole, setAddMemberRole] = useState<TeamMemberRole>('READER');
   // Team members fetched via API (with profile pictures)
@@ -81,7 +74,7 @@ export function TeamDetailSidebar({
     if (!detailTeam) return;
     setIsLoadingMembers(true);
     try {
-      const { members } = await TeamsApi.getTeamUsers(detailTeam.id, { limit: 100 });
+      const { members } = await TeamsApi.getTeamUsers(detailTeam.id, { page: 1, limit: 25 });
       setTeamMembers(members);
     } catch {
       // handled by global interceptor
@@ -98,43 +91,24 @@ export function TeamDetailSidebar({
     fetchTeamMembers();
   }, [isDetailPanelOpen, detailTeam?.id]);
 
-  // Load all users for the add-users dropdown (edit mode only)
-  useEffect(() => {
-    if (!isDetailPanelOpen || !isEditMode) return;
-    if (allUsers.length > 0) return;
+  // ── Paginated user options for add-users dropdown ──
+  const {
+    options: userOptions,
+    isLoading: userFilterLoading,
+    hasMore: userFilterHasMore,
+    onSearch: handleUserSearch,
+    onLoadMore: handleUserLoadMore,
+  } = usePaginatedUserOptions({
+    enabled: isDetailPanelOpen && isEditMode,
+    idField: 'id',
+  });
 
-    let cancelled = false;
-    const load = async () => {
-      setIsLoadingAllUsers(true);
-      try {
-        const { users: mergedUsers } = await UsersApi.fetchMergedUsers({
-          limit: 100,
-        });
-        if (!cancelled) setAllUsers(mergedUsers);
-      } catch {
-        // handled by global interceptor
-      } finally {
-        if (!cancelled) setIsLoadingAllUsers(false);
-      }
-    };
-
-    load();
-    return () => { cancelled = true; };
-  }, [isDetailPanelOpen, isEditMode, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // User options for add-users dropdown (exclude already-added members by UUID)
+  // Exclude already-added members from the options
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailTeam) return [];
     const memberUuids = new Set(teamMembers.map((m) => m.id));
-
-    return allUsers
-      .filter((u) => !memberUuids.has(u.id))
-      .map((u) => ({
-        id: u.id,
-        label: u.name || u.email || 'Unknown User',
-        subtitle: u.email,
-      }));
-  }, [allUsers, teamMembers, detailTeam]);
+    return userOptions.filter((o) => !memberUuids.has(o.id));
+  }, [userOptions, teamMembers, detailTeam]);
 
   // Toggle a user for pending removal (deferred — applied on Save Edits)
   const handleRemoveUser = useCallback(
@@ -574,12 +548,12 @@ export function TeamDetailSidebar({
                 'workspace.teams.edit.addUsersPlaceholder',
                 'Search or select user(s) to add to this team'
               )}
-              emptyText={
-                isLoadingAllUsers
-                  ? t('workspace.common.loadingUsers', 'Loading users...')
-                  : t('workspace.common.noUsersAvailable', 'No users available')
-              }
+              emptyText={t('workspace.common.noUsersAvailable', 'No users available')}
               showAvatar
+              onSearch={handleUserSearch}
+              onLoadMore={handleUserLoadMore}
+              isLoadingMore={userFilterLoading}
+              hasMore={userFilterHasMore}
             />
           </Box>
         )}

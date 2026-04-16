@@ -30,6 +30,14 @@ interface SearchableCheckboxDropdownProps {
   disabled?: boolean;
   /** Show avatar + subtitle for each option (user-style rows) */
   showAvatar?: boolean;
+  /** Server-side search callback. When provided, search is handled externally. */
+  onSearch?: (query: string) => void;
+  /** Called when user scrolls to bottom of the options list (infinite scroll). */
+  onLoadMore?: () => void;
+  /** Whether more options are being loaded */
+  isLoadingMore?: boolean;
+  /** Whether there are more options to load */
+  hasMore?: boolean;
 }
 
 // ========================================
@@ -53,6 +61,10 @@ export function SearchableCheckboxDropdown({
   emptyText = 'No options available',
   disabled = false,
   showAvatar = false,
+  onSearch,
+  onLoadMore,
+  isLoadingMore = false,
+  hasMore = false,
 }: SearchableCheckboxDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +72,9 @@ export function SearchableCheckboxDropdown({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const chipsContainerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isServerSearch = !!onSearch;
 
   // Close on click outside
   useEffect(() => {
@@ -85,7 +100,9 @@ export function SearchableCheckboxDropdown({
     }
   }, [selectedIds]);
 
+  // Filter options locally only when NOT using server search
   const filteredOptions = useMemo(() => {
+    if (isServerSearch) return options;
     if (!searchQuery.trim()) return options;
     const q = searchQuery.toLowerCase();
     return options.filter(
@@ -93,7 +110,37 @@ export function SearchableCheckboxDropdown({
         o.label.toLowerCase().includes(q) ||
         (o.subtitle && o.subtitle.toLowerCase().includes(q))
     );
-  }, [options, searchQuery]);
+  }, [options, searchQuery, isServerSearch]);
+
+  // Debounced server search
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      if (isServerSearch) {
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = setTimeout(() => onSearch!(value), 300);
+      }
+    },
+    [isServerSearch, onSearch]
+  );
+
+  // Infinite scroll
+  const handleScroll = useCallback(() => {
+    if (!onLoadMore || !hasMore || isLoadingMore) return;
+    const el = listRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+      onLoadMore();
+    }
+  }, [onLoadMore, hasMore, isLoadingMore]);
+
+  // Reset search when dropdown closes
+  useEffect(() => {
+    if (!isOpen) {
+      setSearchQuery('');
+      if (isServerSearch) onSearch!('');
+    }
+  }, [isOpen]);
 
   const toggleOption = useCallback(
     (id: string) => {
@@ -232,7 +279,7 @@ export function SearchableCheckboxDropdown({
               ref={inputRef}
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               onKeyDown={handleSearchKeyDown}
               placeholder={selectedIds.length === 0 ? placeholder : ''}
               style={{
@@ -284,7 +331,9 @@ export function SearchableCheckboxDropdown({
       {/* Dropdown list */}
       {isOpen && (
         <Box
+          ref={listRef}
           className="no-scrollbar"
+          onScroll={handleScroll}
           style={{
             position: 'absolute',
             ...(openDirection === 'down'
@@ -301,7 +350,7 @@ export function SearchableCheckboxDropdown({
             zIndex: 100,
           }}
         >
-          {filteredOptions.length === 0 ? (
+          {filteredOptions.length === 0 && !isLoadingMore ? (
             <Flex
               align="center"
               justify="center"
@@ -412,6 +461,11 @@ export function SearchableCheckboxDropdown({
                 </Flex>
               );
             })
+          )}
+          {isLoadingMore && (
+            <Flex align="center" justify="center" style={{ padding: '8px' }}>
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>Loading...</Text>
+            </Flex>
           )}
         </Box>
       )}
