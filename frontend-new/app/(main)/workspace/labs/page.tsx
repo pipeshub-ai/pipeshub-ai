@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -212,6 +212,8 @@ export default function LabsPage() {
   }, [form.fileSizeLimitMb, setErrors]);
 
   // ── Save ───────────────────────────────────────────────────
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+
   const handleSave = useCallback(async () => {
     if (!validate()) return;
 
@@ -240,11 +242,13 @@ export default function LabsPage() {
         description: 'Some issue has occurred',
         action: {
           label: 'Try Again',
-          onClick: handleSave,
+          onClick: () => handleSaveRef.current(),
         },
       });
     }
   }, [form, savedForm, validate, markSaved, addToast]);
+
+  handleSaveRef.current = handleSave;
 
   // ── Discard ────────────────────────────────────────────────
   const handleDiscard = useCallback(() => {
