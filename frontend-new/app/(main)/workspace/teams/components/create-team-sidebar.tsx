@@ -62,6 +62,7 @@ export function CreateTeamSidebar({
   } = usePaginatedUserOptions({
     enabled: isCreatePanelOpen,
     idField: 'id',
+    source: 'graph',
   });
 
   // Form validation

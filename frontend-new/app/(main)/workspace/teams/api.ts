@@ -82,16 +82,13 @@ export const TeamsApi = {
   ): Promise<{ members: TeamMember[]; totalCount: number }> {
     const { data } = await apiClient.get<{
       team?: { members?: TeamMember[]; memberCount?: number };
-      members?: TeamMember[];
-      memberCount?: number;
+      pagination?: { totalCount?: number };
     }>(
       `${BASE_URL}/${teamId}/users`,
       { params }
     );
-    // Response may be wrapped in `team` or flat
-    const team = data?.team ?? data;
-    const members = team?.members ?? [];
-    const totalCount = team?.memberCount ?? members.length;
+    const members = data?.team?.members ?? [];
+    const totalCount = data?.pagination?.totalCount ?? data?.team?.memberCount ?? members.length;
     return { members, totalCount };
   },
 

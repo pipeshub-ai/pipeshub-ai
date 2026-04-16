@@ -1054,12 +1054,23 @@ async def get_team_users(
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
+        total_count = result.get("memberCount", 0)
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "Team users fetched successfully",
-                "team": result
+                "team": result,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "totalCount": total_count,
+                    "totalPages": total_pages,
+                    "hasNextPage": page < total_pages,
+                    "hasPrevPage": page > 1
+                }
             }
         )
     except HTTPException:

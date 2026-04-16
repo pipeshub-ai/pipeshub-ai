@@ -21,6 +21,7 @@ import { inject, injectable } from 'inversify';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import type {
+  TeamMemberResponse,
   TeamUsersResponse,
   TeamsListResponse,
 } from '../types/user_management.types';
@@ -487,8 +488,9 @@ export class TeamsController {
         return;
       }
 
-      const data = aiResponse.data;
-      const members = data?.members ?? [];
+      const data = aiResponse.data as any;
+      const teamData = data?.team ?? data;
+      const members: TeamMemberResponse[] = teamData?.members ?? [];
 
       // Inject profilePicture into each member
       const memberUserIds = members.map((m) => m.userId).filter(Boolean);
@@ -584,6 +586,44 @@ export class TeamsController {
         return;
       }
       const teamsData = aiResponse.data;
+
+      // Enrich team members with profile pictures
+      const teams = teamsData?.teams ?? [];
+      const allMemberUserIds: string[] = [];
+      for (const team of teams) {
+        if (team.members) {
+          for (const m of team.members) {
+            if (m.userId) allMemberUserIds.push(m.userId);
+          }
+        }
+      }
+
+      if (allMemberUserIds.length > 0) {
+        const uniqueIds = [...new Set(allMemberUserIds)];
+        const dpDocs = await UserDisplayPicture.find({
+          orgId,
+          userId: { $in: uniqueIds },
+          pic: { $ne: null },
+        }).lean().exec();
+
+        const dpMap = new Map<string, string>();
+        for (const dp of dpDocs) {
+          if (dp.userId && dp.pic) {
+            const mime = dp.mimeType || 'image/jpeg';
+            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+          }
+        }
+
+        for (const team of teams) {
+          if (team.members) {
+            for (const member of team.members) {
+              if (member.userId && dpMap.has(member.userId)) {
+                member.profilePicture = dpMap.get(member.userId);
+              }
+            }
+          }
+        }
+      }
 
       res.status(HTTP_STATUS.OK).json(teamsData);
     } catch (error: any) {

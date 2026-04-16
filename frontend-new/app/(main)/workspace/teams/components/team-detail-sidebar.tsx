@@ -101,6 +101,7 @@ export function TeamDetailSidebar({
   } = usePaginatedUserOptions({
     enabled: isDetailPanelOpen && isEditMode,
     idField: 'id',
+    source: 'graph',
   });
 
   // Exclude already-added members from the options

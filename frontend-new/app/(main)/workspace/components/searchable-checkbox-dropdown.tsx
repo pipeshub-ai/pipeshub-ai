@@ -13,6 +13,8 @@ export interface CheckboxOption {
   label: string;
   /** Optional subtitle (e.g. email) shown below the label */
   subtitle?: string;
+  /** Data URI for profile picture */
+  profilePicture?: string;
 }
 
 interface SearchableCheckboxDropdownProps {
@@ -415,6 +417,7 @@ export function SearchableCheckboxDropdown({
                       <Avatar
                         size="2"
                         variant="soft"
+                        src={option.profilePicture}
                         fallback={getInitials(option.label)}
                         style={{
                           width: 28,

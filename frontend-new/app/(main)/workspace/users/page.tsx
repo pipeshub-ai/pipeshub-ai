@@ -600,6 +600,11 @@ function UsersPageContent() {
   }, [selectedUsersList, addToast, t, setSelectedUsers, fetchUsers]);
 
   /** Bulk actions shown in the floating bar — varies by selection composition */
+  const hasAdminSelected = useMemo(
+    () => selectedUsersList.some((u) => u.role === 'Admin'),
+    [selectedUsersList]
+  );
+
   const bulkActions = useMemo<BulkAction[]>(() => {
     if (allSelectedArePending) {
       // All selected are invited (pending) users
@@ -625,13 +630,16 @@ function UsersPageContent() {
     return [
       {
         key: 'remove-from-workspace',
-        label: t('workspace.users.bulk.removeFromWorkspace', 'Remove from Workplace'),
-        icon: 'person_remove',
+        label: hasAdminSelected
+          ? t('workspace.users.bulk.adminCantBeRemoved', 'Admin users cannot be removed')
+          : t('workspace.users.bulk.removeFromWorkspace', 'Remove from Workplace'),
+        icon: hasAdminSelected ? 'block' : 'person_remove',
         variant: 'danger',
+        disabled: hasAdminSelected,
         onClick: handleBulkRemove,
       },
     ];
-  }, [allSelectedArePending, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
+  }, [allSelectedArePending, hasAdminSelected, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
 
   // ── Column definitions ──────────────────
 
