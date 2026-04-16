@@ -20,7 +20,11 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import CitationRefMapper, build_message_content_array, get_flattened_results
+from app.utils.chat_helpers import (
+    CitationRefMapper,
+    build_message_content_array,
+    get_flattened_results,
+)
 
 logger = logging.getLogger(__name__)
 

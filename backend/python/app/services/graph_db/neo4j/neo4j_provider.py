@@ -5290,7 +5290,7 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             team_id = f"all_{org_id}"
             ts = get_epoch_timestamp_in_ms()
-            
+
             # 1. Create team node only if it doesn't exist
             existing_team = await self.get_document(team_id, CollectionNames.TEAMS.value)
             if not existing_team:
@@ -12540,7 +12540,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
             if not people:
-                return
+                return None
 
             collection = CollectionNames.PEOPLE.value
             people_dicts = [

@@ -18,7 +18,6 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
 from typing import Any, Literal, Union
 from uuid import UUID
 
@@ -5161,7 +5160,9 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
                     )
 
         if indexed_apps:
-            from app.modules.agents.capability_summary import format_connector_filter_lines
+            from app.modules.agents.capability_summary import (
+                format_connector_filter_lines,
+            )
             lines.append(
                 "\n**Indexed App Connectors** (search with `connector_ids`):"
             )
