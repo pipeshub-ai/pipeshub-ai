@@ -95,6 +95,7 @@ export const useProfileStore = create<ProfileStore>()(
       markSaved: () =>
         set((state) => {
           state.savedForm = { ...state.form };
+          state.discardDialogOpen = false;
         }),
 
       setErrors: (errors) =>

@@ -39,7 +39,7 @@ export default function ProfilePage() {
     setField,
     setErrors,
     setDiscardDialogOpen,
-    isDirty,
+    isFormDirty,
     handleSave,
     handlePasswordChangeSuccess,
     handleEmailVerificationSent,
@@ -143,7 +143,7 @@ export default function ProfilePage() {
 
       {/* ── Settings Save Bar (visible when form has unsaved changes) ── */}
       <SettingsSaveBar
-        visible={isDirty()}
+        visible={isFormDirty}
         onDiscard={handleDiscard}
         onSave={handleSave}
       />

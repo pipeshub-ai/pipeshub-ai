@@ -45,7 +45,12 @@ export function useProfilePage() {
   const discardChanges = useProfileStore((s) => s.discardChanges);
   const setDiscardDialogOpen = useProfileStore((s) => s.setDiscardDialogOpen);
   const setLoading = useProfileStore((s) => s.setLoading);
-  const isDirty = useProfileStore((s) => s.isDirty);
+  /** Subscribe to form + savedForm so Zustand re-renders after markSaved (savedForm-only updates). */
+  const isFormDirty = useProfileStore(
+    (s) =>
+      s.form.fullName !== s.savedForm.fullName ||
+      s.form.designation !== s.savedForm.designation,
+  );
 
   // ── Load profile on mount ─────────────────────────────────────
   useEffect(() => {
@@ -252,7 +257,7 @@ export function useProfilePage() {
     setField,
     setErrors,
     setDiscardDialogOpen,
-    isDirty,
+    isFormDirty,
     // Handlers
     handleSave,
     handlePasswordChangeSuccess,
