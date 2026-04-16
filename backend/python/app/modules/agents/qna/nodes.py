@@ -246,6 +246,28 @@ class ToolResultExtractor:
         return not any(ind in result_str for ind in error_indicators)
 
     @staticmethod
+    def extract_success_status_for_tool(
+        tool_name: str, result: dict[str, Any] | str | tuple[bool, Any] | None
+    ) -> bool:
+        """Tool-aware success detector to avoid MCP false negatives on plain text."""
+        base_success = ToolResultExtractor.extract_success_status(result)
+        if not tool_name.lower().startswith("mcp_"):
+            return base_success
+
+        if isinstance(result, str):
+            # MCP wrapper returns plain text on success and JSON {"error": "..."} on failure.
+            try:
+                parsed = json.loads(result)
+            except Exception:
+                return bool(result.strip())
+
+            if isinstance(parsed, dict) and parsed.get("error") not in (None, "", "null"):
+                return False
+            return True
+
+        return base_success
+
+    @staticmethod
     def extract_data_from_result(result: dict[str, Any] | str | tuple[bool, Any] | list[Any] | None) -> dict[str, Any] | str | list[Any] | None:
         """
         Extract the actual data from a tool result.
@@ -1386,7 +1408,7 @@ class ToolExecutor:
             )
 
             # Process result
-            success = ToolResultExtractor.extract_success_status(result)
+            success = ToolResultExtractor.extract_success_status_for_tool(tool_name, result)
 
             # Handle retrieval output
             if "retrieval" in tool_name.lower():
