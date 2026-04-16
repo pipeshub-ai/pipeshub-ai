@@ -359,22 +359,59 @@ function ChatContent() {
     }
   }, [conversationsVersion, loadConversations]);
 
-  // Fetch available LLMs on mount and store the default model
+  // Fetch available LLMs and store the default model (agent-aware)
   useEffect(() => {
-    ChatApi.fetchAvailableLlms().then((models) => {
-      const defaultModel = models.find((m) => m.isDefault);
-      if (defaultModel) {
-        useChatStore.getState().setDefaultModel({
-          modelKey: defaultModel.modelKey,
-          modelName: defaultModel.modelName,
-          modelFriendlyName: defaultModel.modelFriendlyName,
-          modelProvider: defaultModel.provider,
-        });
+    let cancelled = false;
+
+    const fetchDefaultModel = async () => {
+      try {
+        let models;
+        
+        if (agentId?.trim()) {
+          // Agent context: fetch agent details and use configured models
+          const { agent } = await AgentsApi.getAgent(agentId);
+          if (cancelled) return;
+          
+          if (!agent?.models || agent.models.length === 0) {
+            console.error('Agent has no configured models:', agentId);
+            return;
+          }
+          
+          models = agent.models;
+        } else {
+          // Regular chat: use all org models
+          models = await ChatApi.fetchAvailableLlms();
+          if (cancelled) return;
+          
+          if (models.length === 0) {
+            console.error('No org models available');
+            return;
+          }
+        }
+
+        // Find and set default model
+        const defaultModel = models.find((m) => m.isDefault);
+        if (defaultModel && !cancelled) {
+          useChatStore.getState().setDefaultModel({
+            modelKey: defaultModel.modelKey,
+            modelName: defaultModel.modelName,
+            modelFriendlyName: defaultModel.modelFriendlyName,
+            modelProvider: defaultModel.provider,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to fetch default model:', error);
+        }
       }
-    }).catch(() => {
-      // Non-fatal: streaming will surface an error if no model is available
-    });
-  }, []);
+    };
+
+    fetchDefaultModel();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
