@@ -30,6 +30,7 @@ export interface UpdateUserPayload {
   firstName?: string;
   lastName?: string;
   designation?: string;
+  email?: string;
 }
 
 export interface ChangePasswordPayload {
@@ -114,7 +115,7 @@ export const ProfileApi = {
 
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Change Email verification flow — stubs (no real API yet)
+  // Change Email verification flow
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
@@ -128,11 +129,15 @@ export const ProfileApi = {
   },
 
   /**
-   * STUB: Sends a verification link to `newEmail` for the given user.
-   * Replace with a real API call (e.g. POST /api/v1/userAccount/email/change)
-   * when the backend endpoint is available.
+   * PUT /api/v1/users/{userId} with `{ email }` — backend sends the verification
+   * link to the new address (see users.controller `updateUser` → `emailChange`).
    */
-  async sendEmailVerificationLink(_userId: string, _newEmail: string): Promise<void> {
-    // Stub: resolves immediately — real endpoint to be wired later.
+  async sendEmailVerificationLink(userId: string, newEmail: string): Promise<void> {
+    const { data } = await apiClient.put<
+      UserData & { meta?: { emailChangeMailStatus?: 'notNeeded' | 'sent' | 'failed' } }
+    >(`${USERS_URL}/${userId}`, { email: newEmail });
+    if (data.meta?.emailChangeMailStatus === 'failed') {
+      throw new Error('Failed to send verification email');
+    }
   },
 };

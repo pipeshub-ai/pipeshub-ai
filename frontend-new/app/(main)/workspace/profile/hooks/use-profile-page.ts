@@ -163,8 +163,7 @@ export function useProfilePage() {
     addToast({
       variant: 'success',
       title: 'Email Verification Link Sent',
-    //   description: 'You will be logged out when you verify the email', // Uncomment once implemented
-      description: 'Coming Soon - This feature doesn\'t exist yet',
+      description: 'You will be logged out when you verify the email', // Uncomment once implemented
       duration: 5000,
     });
   }, [addToast]);

@@ -59,6 +59,30 @@ export default function LoginPage() {
   // (where mount effects are intentionally run twice in development).
   const initAuthCalledRef = useRef(false);
   const samlErrorHandledRef = useRef(false);
+  const emailVerifyHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (emailVerifyHandledRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const emailVerify = params.get('email_verify');
+    if (emailVerify === 'success' || emailVerify === 'error') {
+      emailVerifyHandledRef.current = true;
+      if (emailVerify === 'success') {
+        toast.success('Email verified', {
+          description: 'Your email address was updated. Sign in with your new email.',
+        });
+      } else {
+        const detail = params.get('email_verify_msg');
+        toast.error('Email verification failed', {
+          description: detail?.trim() || 'The link may be invalid or expired.',
+        });
+      }
+      router.replace('/login');
+      return;
+    }
+  }, [isHydrated, router]);
 
   useEffect(() => {
     if (!isHydrated) return;
