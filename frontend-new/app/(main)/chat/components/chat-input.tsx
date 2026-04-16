@@ -775,9 +775,7 @@ export function ChatInput({
         >
           <ModelSelectorPanel
             selectedModel={settings.selectedModel}
-            onModelSelect={(model) => {
-              setSelectedModel(model);
-            }}
+            onModelSelect={setSelectedModel}
             agentId={agentId}
           />
         </ChatInputExpansionPanel>

@@ -127,7 +127,7 @@ export function ModelSelectorPanel({
         onModelSelect({
           modelKey: defaultModel.modelKey,
           modelName: defaultModel.modelName,
-          modelFriendlyName: defaultModel.modelFriendlyName,
+          modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
           modelProvider: defaultModel.provider,
         });
       }
@@ -222,7 +222,7 @@ export function ModelSelectorPanel({
                 variant="soft" 
                 size="2"
                 onClick={() => {
-                  router.push(`/agents/${agentId}/edit`);
+                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
                 }}
               >
                 <MaterialIcon name="settings" size={16} />

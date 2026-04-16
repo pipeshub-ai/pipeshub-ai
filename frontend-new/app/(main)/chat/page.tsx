@@ -395,7 +395,7 @@ function ChatContent() {
           useChatStore.getState().setDefaultModel({
             modelKey: defaultModel.modelKey,
             modelName: defaultModel.modelName,
-            modelFriendlyName: defaultModel.modelFriendlyName,
+            modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
             modelProvider: defaultModel.provider,
           });
         }
