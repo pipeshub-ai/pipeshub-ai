@@ -129,7 +129,7 @@ def create_fetch_url_tool(
                 logger.warning(f"failed to resolve tiny ref url: {url}")
                 return {
                     "ok": False,
-                    "error": f"Failed to get content from that url, please try again with the correct URL, or use a different one."
+                    "error": "Failed to get content from that url, please try again with the correct URL, or use a different one."
                 }
             parsed = urlparse(url)
             if parsed.scheme not in ('http', 'https'):

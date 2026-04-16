@@ -423,7 +423,7 @@ def _build_agent_capability_context(
         (capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data)
         where tools_data is a list of {"full_name": str, "desc": str} dicts.
     """
-    from app.modules.agents.capability_summary import (  # noqa: PLC0415 – lazy import kept for historical reasons
+    from app.modules.agents.capability_summary import (
         classify_knowledge_sources,
         format_connector_filter_lines,
     )

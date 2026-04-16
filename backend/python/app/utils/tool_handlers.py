@@ -15,12 +15,12 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any
 
+from app.utils.chat_helpers import generate_text_fragment_url
 from app.utils.citations import (
     display_url_for_llm,
 )
 from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
-from app.utils.chat_helpers import generate_text_fragment_url
 
 logger = create_logger(__name__)
 
@@ -228,7 +228,7 @@ class UrlContentHandler(ToolResultHandler):
         count = 0
         formatted_blocks = [{
             "type": "text",
-            "text": f"Blocks of content from the URL:",
+            "text": "Blocks of content from the URL:",
         }]
         for index, block in enumerate(blocks):
             block_citation_url = _block_citation_url(url, block)

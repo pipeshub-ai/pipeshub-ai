@@ -1,7 +1,6 @@
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
@@ -430,7 +429,7 @@ def _normalize_markdown_link_citations(
             else:
                 logger.debug(f"No web record found for URL: {url}")
             continue
-            
+
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
             doc = flattened_final_results[idx]
