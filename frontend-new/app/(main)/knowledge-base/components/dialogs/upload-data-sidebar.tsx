@@ -237,7 +237,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
         border: `1px dashed ${isDragOver ? 'var(--accent-9)' : 'var(--slate-9)'}`,
         borderRadius: 'var(--radius-4)',
         background: isDragOver ? 'var(--accent-a2)' : 'rgba(255, 255, 255, 0.00)',
-        padding: isEmpty ? '32px' : '16px',
+        padding: isEmpty ? 'var(--space-8)' : 'var(--space-4)',
         cursor: 'pointer',
         transition: 'all 0.15s ease',
         height: '100%',
@@ -446,7 +446,7 @@ export function UploadDataSidebar({
           align="center"
           justify="between"
           style={{
-            padding: '8px 8px 8px 16px',
+            padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
             backdropFilter: 'blur(8px)',
             backgroundColor: 'var(--effects-translucent)',
@@ -487,7 +487,7 @@ export function UploadDataSidebar({
             gridTemplateRows: '1fr auto 1fr',
             gap: '16px',
             overflowY: 'hidden',
-            padding: '16px',
+            padding: 'var(--space-4)',
             backgroundColor: 'var(--effects-translucent)',
             backdropFilter: 'blur(8px)',
           }}
@@ -499,7 +499,7 @@ export function UploadDataSidebar({
             style={{
               height: '100%',
               minHeight: 0,
-              padding: '16px',
+              padding: 'var(--space-4)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--olive-2)',
@@ -556,7 +556,7 @@ export function UploadDataSidebar({
             style={{
               height: '100%',
               minHeight: 0,
-              padding: '16px',
+              padding: 'var(--space-4)',
               border: '1px solid var(--olive-3)',
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--olive-2)',

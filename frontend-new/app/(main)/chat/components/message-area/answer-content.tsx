@@ -148,7 +148,7 @@ export function AnswerContent({
       </ol>
     ),
     li: ({ children }: { children?: React.ReactNode }) => (
-      <li style={{ marginBottom: '0', lineHeight: '20px', color: 'var(--gray-12)' }}>
+      <li style={{ marginBottom: '0', lineHeight: 'var(--line-height-2)', color: 'var(--gray-12)' }}>
         {processChildren(children, citationMaps, citationCallbacks)}
       </li>
     ),
@@ -167,7 +167,7 @@ export function AnswerContent({
           padding: '2px 6px',
           borderRadius: 'var(--radius-1)',
           fontFamily: 'monospace',
-          fontSize: '14px',
+          fontSize: 'var(--font-size-2)',
         }}
       >
         {children}
@@ -196,7 +196,7 @@ export function AnswerContent({
           marginTop: 'var(--space-1)',
           marginBottom: '0',
           color: 'var(--slate-11)',
-          fontSize: '14px',
+          fontSize: 'var(--font-size-2)',
           lineHeight: 1.6,
         }}
       >
@@ -211,7 +211,7 @@ export function AnswerContent({
         style={{
           color: 'var(--accent-11)',
           textDecoration: 'underline',
-          fontSize: '14px',
+          fontSize: 'var(--font-size-2)',
         }}
       >
         {children}
@@ -233,7 +233,7 @@ export function AnswerContent({
             minWidth: 'max-content',
             width: '100%',
             borderCollapse: 'collapse',
-            fontSize: '14px',
+            fontSize: 'var(--font-size-2)',
           }}
         >
           {children}

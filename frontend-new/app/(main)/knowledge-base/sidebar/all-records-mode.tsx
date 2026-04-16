@@ -215,9 +215,9 @@ export function AllRecordsMode({
               letterSpacing: '0.04px',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
+              gap: 'var(--space-2)',
               padding: '4px 4px',
-              marginBottom: '8px',
+              marginBottom: 'var(--space-2)',
               fontWeight: 400,
               fontStyle: 'normal',
             }}
@@ -225,7 +225,7 @@ export function AllRecordsMode({
             <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
             {t('nav.moreConnectors')}
           </Text>
-          <Flex direction="column" gap="2" style={{ marginTop: '4px' }}>
+          <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
             {moreConnectors.map((connector) => (
               <MoreConnectorItem key={connector.id} connector={connector} />
             ))}
@@ -237,7 +237,7 @@ export function AllRecordsMode({
               style={{
                 width: '100%',
                 justifyContent: 'space-between',
-                paddingLeft: '12px',
+                paddingLeft: 'var(--space-3)',
                 display: 'flex',
                 alignItems: 'center',
               }}

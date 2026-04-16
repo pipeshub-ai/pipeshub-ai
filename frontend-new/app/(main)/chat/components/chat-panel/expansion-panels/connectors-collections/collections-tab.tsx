@@ -205,7 +205,7 @@ export function CollectionsTab({
                   style={{
                     fontSize: 12,
                     fontWeight: 400,
-                    lineHeight: '16px',
+                    lineHeight: 'var(--line-height-1)',
                     letterSpacing: '0.04px',
                     color: 'var(--olive-9)',
                   }}

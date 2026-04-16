@@ -127,7 +127,7 @@ const ChatItemSkeleton = () => (
   >
     <Box
       style={{
-        height: '16px',
+        height: 'var(--space-4)',
         backgroundColor: 'var(--slate-4)',
         borderRadius: 'var(--radius-1)',
         width: '75%',
@@ -189,12 +189,12 @@ export function ChatSidebar() {
       }}
     >
       {/* Header */}
-      <Flex align="center" justify="between" style={{ padding: '0 var(--space-3)', height: '40px' }}>
+      <Flex align="center" justify="between" style={{ padding: '0 var(--space-3)', height: 'var(--space-7)' }}>
         <PipesHubIcon size={24} color="var(--accent-8)" />
         <Box
           style={{
-            width: '24px',
-            height: '24px',
+            width: 'var(--space-5)',
+            height: 'var(--space-5)',
             borderRadius: 'var(--radius-2)',
             backgroundColor: 'var(--slate-4)',
             overflow: 'hidden',
@@ -313,8 +313,8 @@ export function ChatSidebar() {
           align="center"
           justify="center"
           style={{
-            width: '24px',
-            height: '24px',
+            width: 'var(--space-5)',
+            height: 'var(--space-5)',
             borderRadius: 'var(--radius-2)',
             backgroundColor: 'var(--accent-a3)',
           }}

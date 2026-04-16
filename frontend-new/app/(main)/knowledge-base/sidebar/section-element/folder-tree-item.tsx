@@ -158,7 +158,7 @@ export function FolderTreeItem({
   return (
     <>
       <Box
-        style={{ position: 'relative', width: '100%', paddingLeft: '10px', height: `${ELEMENT_HEIGHT}px`, boxSizing: 'border-box', flexShrink: 0, minWidth: 'fit-content' }}
+        style={{ position: 'relative', width: '100%', paddingLeft: 'var(--space-3)', height: `${ELEMENT_HEIGHT}px`, boxSizing: 'border-box', flexShrink: 0, minWidth: 'fit-content' }}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
@@ -191,7 +191,7 @@ export function FolderTreeItem({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                marginRight: '4px',
+                marginRight: 'var(--space-1)',
                 cursor: 'pointer',
               }}
               onClick={(e) => {

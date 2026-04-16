@@ -378,7 +378,7 @@ export function MessageActions({
               size="1"
               style={{
                 color: 'var(--slate-11)',
-                lineHeight: '16px',
+                lineHeight: 'var(--line-height-1)',
                 whiteSpace: 'nowrap',
               }}
             >
@@ -408,7 +408,7 @@ export function MessageActions({
               size="1"
               style={{
                 color: 'var(--slate-11)',
-                lineHeight: '16px',
+                lineHeight: 'var(--line-height-1)',
                 whiteSpace: 'nowrap',
               }}
             >

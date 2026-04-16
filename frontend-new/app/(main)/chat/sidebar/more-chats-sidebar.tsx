@@ -164,7 +164,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
                 padding: KBD_BADGE_PADDING,
                 borderRadius: 'var(--radius-2)',
                 fontSize: 12,
-                lineHeight: '16px',
+                lineHeight: 'var(--line-height-1)',
                 letterSpacing: '0.04px',
                 color: 'var(--slate-12)',
                 fontWeight: 400,
@@ -195,7 +195,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
             <Flex
               align="center"
               justify="center"
-              style={{ padding: '16px 12px' }}
+              style={{ padding: 'var(--space-4) var(--space-3)' }}
             >
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.noChatsYet')}

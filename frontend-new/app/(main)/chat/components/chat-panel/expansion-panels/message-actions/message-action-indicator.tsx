@@ -83,7 +83,7 @@ export function MessageActionIndicator({
   return (
     <Flex direction="column" gap="2" style={{ width: '100%' }}>
       {/* Chip bar: label + dismiss */}
-      <Flex align="center" justify="between" style={{ minHeight: '32px' }}>
+      <Flex align="center" justify="between" style={{ minHeight: 'var(--space-6)' }}>
         <Box
           onClick={handleChipClick}
           onMouseEnter={() => setChipHovered(true)}

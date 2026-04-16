@@ -248,8 +248,8 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
         align="center"
         justify="center"
         style={{
-          width: '16px',
-          height: '16px',
+          width: 'var(--space-4)',
+          height: 'var(--space-4)',
           borderRadius: '50%',
           border: isSelected
             ? '2px solid var(--accent-9)'

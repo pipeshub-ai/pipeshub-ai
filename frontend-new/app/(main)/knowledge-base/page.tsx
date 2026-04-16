@@ -2106,7 +2106,7 @@ function KnowledgeBasePageContent() {
         <Box
           style={{ 
             position: 'absolute',
-            bottom: '24px',
+            bottom: 'var(--space-6)',
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10,

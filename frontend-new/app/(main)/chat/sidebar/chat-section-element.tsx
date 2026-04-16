@@ -140,7 +140,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         align="center"
         style={{
           height: CHAT_ITEM_HEIGHT,
-          padding: '0 12px',
+          padding: '0 var(--space-3)',
           borderRadius: 'var(--radius-1)',
           backgroundColor: 'var(--olive-3)',
           border: '1px solid var(--olive-4)',
@@ -161,7 +161,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
             outline: 'none',
             fontSize: 14,
             fontWeight: 500,
-            lineHeight: '20px',
+            lineHeight: 'var(--line-height-2)',
             color: 'var(--slate-12)',
             font: 'inherit',
           }}

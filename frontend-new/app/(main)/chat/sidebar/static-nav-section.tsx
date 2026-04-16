@@ -43,7 +43,7 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
       padding: KBD_BADGE_PADDING,
       borderRadius: 'var(--radius-2)',
       fontSize: 12,
-      lineHeight: '16px',
+      lineHeight: 'var(--line-height-1)',
       letterSpacing: '0.04px',
       color: 'var(--slate-12)',
       fontWeight: 400,

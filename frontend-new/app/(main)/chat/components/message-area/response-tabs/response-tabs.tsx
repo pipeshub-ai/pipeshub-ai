@@ -33,7 +33,7 @@ function TabItem({ label, count, isActive, isDisabled, onClick }: TabItemProps) 
       style={{
         position: 'relative',
         padding: 'var(--space-4) var(--space-4)',
-        height: '40px',
+        height: 'var(--space-7)',
         cursor: isDisabled ? 'not-allowed' : 'pointer',
         opacity: isDisabled ? 0.5 : 1,
       }}

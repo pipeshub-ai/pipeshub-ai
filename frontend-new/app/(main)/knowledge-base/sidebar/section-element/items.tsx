@@ -54,7 +54,7 @@ export function CollectionItem({ collection, isSelected, onSelect, depth = 1 }: 
           variant="default"
           size={16}
           color="var(--emerald-11)"
-          style={{ marginRight: '4px' }}
+          style={{ marginRight: 'var(--space-1)' }}
         />
         <Text
           size="2"
@@ -91,7 +91,7 @@ interface ConnectorItemComponentProps {
 function getConnectorItemIcon(connectorType: string, isSelected: boolean) {
   const iconColor = isSelected ? 'var(--accent-9)' : 'var(--slate-11)';
   const iconSize = 16;
-  const iconStyle = { marginRight: '4px' };
+  const iconStyle = { marginRight: 'var(--space-1)' };
 
   switch (connectorType) {
     case 'slack':
@@ -177,9 +177,9 @@ export function MoreConnectorItem({ connector }: MoreConnectorItemProps) {
         width: '100%',
         height: `${ELEMENT_HEIGHT}px`,
         justifyContent: 'flex-start',
-        paddingLeft: '12px',
+        paddingLeft: 'var(--space-3)',
         backgroundColor: isHovered ? 'var(--slate-3)' : 'transparent',
-        gap: '8px',
+        gap: 'var(--space-2)',
       }}
     >
       <ConnectorIcon type={connector.type} size={16} color="var(--slate-11)" />

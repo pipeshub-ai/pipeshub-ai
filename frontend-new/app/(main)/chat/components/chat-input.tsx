@@ -550,7 +550,7 @@ export function ChatInput({
                   padding: 'var(--space-2)',
                   backgroundColor: 'var(--olive-a2)',
                   border: '1px solid var(--olive-3)',
-                  borderRadius: '3px',
+                  borderRadius: 'var(--radius-1)',
                 }}
               >
                 <Flex direction="column" gap="2">
@@ -601,7 +601,7 @@ export function ChatInput({
                 flexShrink: 0,
                 width: '76px',
                 border: '1px dashed var(--accent-9)',
-                borderRadius: '3px',
+                borderRadius: 'var(--radius-1)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -707,7 +707,7 @@ export function ChatInput({
         <ChatInputExpansionPanel
           open={isModePanelOpen}
           onClose={() => setIsModePanelOpen(false)}
-          minHeight='0px'
+          minHeight='0'
           height='fit-content'
         >
           <QueryModePanel

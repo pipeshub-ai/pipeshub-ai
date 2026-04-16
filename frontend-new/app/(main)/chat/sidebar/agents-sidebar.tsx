@@ -210,11 +210,11 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
           style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
         >
           {isLoading ? (
-            <Flex align="center" justify="center" style={{ padding: '24px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
               <LottieLoader variant="loader" size={28} showLabel />
             </Flex>
           ) : loadError ? (
-            <Flex align="center" justify="center" style={{ padding: '16px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4) var(--space-3)' }}>
               <Text size="2" style={{ color: 'var(--red-11)', textAlign: 'center' }}>
                 {loadError}
               </Text>
@@ -258,7 +258,7 @@ export const AgentsSidebar = React.memo(function AgentsSidebar({ onBack }: Agent
               )}
             </>
           ) : (
-            <Flex align="center" justify="center" style={{ padding: '16px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4) var(--space-3)' }}>
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.noAgentsFound')}
               </Text>

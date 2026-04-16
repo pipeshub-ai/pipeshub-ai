@@ -760,7 +760,7 @@ function ChatContent() {
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isMobile ? '32px' : '48px',
+              marginBottom: isMobile ? 'var(--space-6)' : 'var(--space-8)',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -885,7 +885,7 @@ function ChatContent() {
       <Box
         style={{
           position: 'absolute',
-          bottom: isMobile ? 0 : '48px',
+          bottom: isMobile ? 0 : 'var(--space-8)',
           left: isMobile ? 0 : '50%',
           right: isMobile ? 0 : undefined,
           transform: isMobile ? undefined : 'translateX(-50%)',

@@ -95,7 +95,7 @@ function KBSidebarFromStore() {
 
   return (
     <SidebarBase header={<SidebarBackHeader title={title} onBack={handleBack} />}>
-      <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px' }}>
+      <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2)' }}>
         {t('action.loading')}
       </Text>
     </SidebarBase>
@@ -290,7 +290,7 @@ function KBSidebarContent({
                   />
                 ))
               ) : (
-                <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
+                <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
                   No items
                 </Text>
               )
@@ -325,7 +325,7 @@ function KBSidebarContent({
                 />
               ))
             ) : (
-              <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px 24px' }}>
+              <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
                 No items
               </Text>
             )}

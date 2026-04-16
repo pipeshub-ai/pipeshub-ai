@@ -88,7 +88,7 @@ export function ReferenceCard({
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
-        gap: '32px',
+        gap: 'var(--space-6)',
       }}
     >
       {/* ── HEADER + BODY ───────────────────────────────────────────── */}

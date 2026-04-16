@@ -254,7 +254,7 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
               />
             ))
           ) : (
-            <Flex align="center" justify="center" style={{ padding: '16px 12px' }}>
+            <Flex align="center" justify="center" style={{ padding: 'var(--space-4) var(--space-3)' }}>
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {searching ? t('message.noResults') : t('chat.noChatsYet')}
               </Text>
