@@ -18,6 +18,7 @@ import { TimeGroupedSkeleton, SearchResultsSkeleton } from './skeleton';
 import { ChatRow } from './chat-row';
 import { SearchResultRow } from './search-result-row';
 import { CommandPalette } from './command-palette';
+import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
 
 // ── Constants ──
 
@@ -30,13 +31,6 @@ const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
   'Previous 7 Days': 'timeGroup.previous7Days',
   'Older': 'timeGroup.older',
 };
-
-function mergeConversationLists(
-  shared: Conversation[],
-  own: Conversation[]
-): Conversation[] {
-  return [...shared, ...own];
-}
 
 function isAbortOrCancelError(err: unknown): boolean {
   const e = err as { name?: string; code?: string };
@@ -71,15 +65,15 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
   const addToast = useToastStore((s) => s.addToast);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [contentLeft, setContentLeft] = useState(0);
 
   const [browseConversations, setBrowseConversations] = useState<Conversation[]>([]);
   const [searchResults, setSearchResults] = useState<Conversation[]>([]);
-  const [listLoading, setListLoading] = useState(false);
-  const [searchLoading, setSearchLoading] = useState(false);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
 
   const dispatch = useCommandStore((s) => s.dispatch);
+
+  const debouncedQuery = useDebouncedSearch(searchQuery.trim(), 350);
 
   // ── Measure main content area offset ──
   useEffect(() => {
@@ -97,86 +91,53 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
     return () => window.removeEventListener('resize', measure);
   }, [open]);
 
-  // Reset input + debounced query when overlay opens
+  // Reset input when overlay opens (debounced value follows via useDebouncedSearch; empty clears immediately)
   useEffect(() => {
     if (!open) return;
     setSearchQuery('');
-    setDebouncedQuery('');
   }, [open]);
 
-  // Debounce search input
+  // Browse (no search) vs search: same API; param omitted when debounced query is empty
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => {
-      setDebouncedQuery(searchQuery.trim());
-    }, 350);
-    return () => window.clearTimeout(id);
-  }, [searchQuery, open]);
 
-  // Browse: fetch when overlay is open and there is no active search query
-  useEffect(() => {
-    if (!open || debouncedQuery !== '') return;
-
-    const ac = new AbortController();
-    setListLoading(true);
-
-    (async () => {
-      try {
-        const result = await ChatApi.fetchConversations(1, OVERLAY_CONVERSATIONS_LIMIT, {
-          signal: ac.signal,
-        });
-        setBrowseConversations(
-          mergeConversationLists(result.sharedConversations, result.conversations)
-        );
-      } catch (err: unknown) {
-        if (isAbortOrCancelError(err)) return;
-        addToast({
-          variant: 'error',
-          title: t('message.error'),
-          description:
-            err instanceof Error ? err.message : 'Could not load conversations',
-        });
-      } finally {
-        setListLoading(false);
-      }
-    })();
-
-    return () => ac.abort();
-  }, [open, debouncedQuery, addToast, t]);
-
-  // Search: fetch when debounced query is non-empty
-  useEffect(() => {
-    if (!open) return;
     const q = debouncedQuery;
-    if (!q) {
-      setSearchResults([]);
-      setSearchLoading(false);
-      return;
-    }
+    const isSearch = q.length > 0;
 
     const ac = new AbortController();
-    setSearchLoading(true);
+    setConversationsLoading(true);
 
     (async () => {
       try {
         const result = await ChatApi.fetchConversations(1, OVERLAY_CONVERSATIONS_LIMIT, {
-          search: q,
+          ...(isSearch ? { search: q } : {}),
           signal: ac.signal,
         });
-        setSearchResults(
-          mergeConversationLists(result.sharedConversations, result.conversations)
-        );
+        const merged = [
+          ...result.sharedConversations,
+          ...result.conversations,
+        ];
+        if (isSearch) {
+          setSearchResults(merged);
+        } else {
+          setBrowseConversations(merged);
+          setSearchResults([]);
+        }
       } catch (err: unknown) {
         if (isAbortOrCancelError(err)) return;
         addToast({
           variant: 'error',
           title: t('message.error'),
           description:
-            err instanceof Error ? err.message : 'Search failed',
+            err instanceof Error
+              ? err.message
+              : isSearch
+                ? 'Search failed'
+                : 'Could not load conversations',
         });
-        setSearchResults([]);
+        if (isSearch) setSearchResults([]);
       } finally {
-        setSearchLoading(false);
+        setConversationsLoading(false);
       }
     })();
 
@@ -225,7 +186,8 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
   const inSearchMode = trimmedInput.length > 0;
   /** True while debounce hasn’t caught up to the input, or a search request is in flight */
   const searchPending =
-    inSearchMode && (debouncedQuery !== trimmedInput || searchLoading);
+    inSearchMode &&
+    (debouncedQuery !== trimmedInput || conversationsLoading);
 
   // ── Handlers ──
   const handleNewChat = useCallback(() => {
@@ -346,7 +308,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                   </Text>
                 </Flex>
               )
-            ) : listLoading ? (
+            ) : conversationsLoading ? (
               <TimeGroupedSkeleton />
             ) : (
               <Flex direction="column" gap="2">
@@ -383,7 +345,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                   </Flex>
                 ))}
 
-                {timeGroups.length === 0 && !listLoading && (
+                {timeGroups.length === 0 && !conversationsLoading && (
                   <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
                     <Text size="2" style={{ color: 'var(--slate-a9)' }}>
                       {t('chat.noChatsYet')}
