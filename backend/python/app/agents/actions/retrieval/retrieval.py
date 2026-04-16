@@ -227,7 +227,6 @@ class Retrieval:
                 user_id=user_id,
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
-                graph_provider=graph_provider,
                 is_service_account=is_service_account,
             )
 

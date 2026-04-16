@@ -15,8 +15,12 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any
 
+from app.utils.citations import (
+    display_url_for_llm,
+)
 from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
+from app.utils.chat_helpers import generate_text_fragment_url
 
 logger = create_logger(__name__)
 
@@ -92,14 +96,12 @@ class RecordsHandler(ToolResultHandler):
 
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         message_contents = context.get("message_contents", [])
-        # return {
-        #     "ok": True,
-        #     "records": message_contents,
-        #     "record_count": tool_result.get("record_count"),
-        #     "not_found": tool_result.get("not_found"),
-        # }
-        flattened_message_contents = [msg for message_content in message_contents for msg in message_content]
-        return flattened_message_contents
+        flattened = [msg for message_content in message_contents for msg in message_content]
+        not_available = tool_result.get("not_available_ids", {})
+        if not_available:
+            ids_str = ", ".join(f"'{rid}'" for rid in not_available)
+            flattened.append({"type": "text", "text": f"\nNote: The following record(s) are not available: {ids_str}"})
+        return flattened
 
 
     def extract_records(self, tool_result: dict[str, Any], org_id: str | None = None) -> list[dict[str, Any]]:
@@ -117,26 +119,25 @@ class WebSearchHandler(ToolResultHandler):
             web_results = []
 
         query = tool_result.get("query", "")
-        url_number = tool_result.get("url_number", 1)
+        ref_mapper = context.get("ref_mapper")
 
         formatted_blocks = [{
             "type": "text",
-            "text": f"web_search_query: {query}\nweb_search_result_count: {len(web_results)}",
+            "text": f"web_search_query: {query}\nBlocks retrieved from web search:",
         }]
 
-        for index, result in enumerate(web_results):
+        for result in web_results:
             if not isinstance(result, dict):
                 continue
-            citation_id = f"W{url_number}-{index}"
             title = result.get("title", "")
-            url = result.get("link", "")
+            link = result.get("link", "")
             snippet = result.get("snippet", "")
+
+            display_url = display_url_for_llm(link, ref_mapper)
+
             formatted_blocks.append({
                 "type": "text",
-                "text": f"""citation_id: {citation_id}
-title: {title}
-url: {url}
-content: {snippet}""",
+                "text": f"title: {title}\nurl/citation id: {display_url}\ncontent: {snippet}",
             })
 
         return formatted_blocks
@@ -146,21 +147,17 @@ content: {snippet}""",
         if not isinstance(web_results, list):
             return []
 
-        url_number = tool_result.get("url_number", 1)
         records = []
-        for index, result in enumerate(web_results):
+        for result in web_results:
             if not isinstance(result, dict):
                 continue
-            url = result.get("link", "")
+            link = result.get("link", "")
             snippet = result.get("snippet", "")
             title = result.get("title", "")
-            citation_id = f"W{url_number}-{index}"
             records.append({
-                "url": url,
-                "url_number": url_number,
-                "block_index": index,
+                "url": link,
+                "title": title,
                 "content": snippet or title or "Search result",
-                "citation_id": citation_id,
                 "source_type": "web",
                 "org_id": org_id,
             })
@@ -168,12 +165,28 @@ content: {snippet}""",
         return records
 
 
+def _block_citation_url(base_url: str, block) -> str:
+    """Build the citation URL for a single block of a fetched page.
+
+    Text blocks get a text-fragment URL derived from their content so each block
+    resolves to its own location. Image blocks use the image's own URL when it is
+    a full http(s) URL; otherwise they fall back to the page URL.
+    """
+    if block.type == "image":
+        img_uri = getattr(block, "url", "") or ""
+        if img_uri.startswith("http"):
+            return img_uri
+        return base_url
+    return generate_text_fragment_url(base_url, getattr(block, "content", "") or "")
+
+
 class UrlContentHandler(ToolResultHandler):
     """Handler for fetched URL content with block structure."""
 
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
-        url_number = tool_result.get("url_number", 1)
+        url = tool_result.get("url", "")
         blocks = tool_result.get("blocks", [])
+        ref_mapper = context.get("ref_mapper")
         include_images = context.get("include_images")
         include_images = include_images if isinstance(include_images, bool) else False
         raw_max_images = context.get("max_images", 3)
@@ -194,7 +207,7 @@ class UrlContentHandler(ToolResultHandler):
                 if block.type == "image":
                     img_uri = block.url
                     if img_uri and img_uri.startswith("http"):
-                        if not (img_uri.endswith(".svg") or img_uri.endswith(".gif") or img_uri.endswith(".ico")):
+                        if not img_uri.endswith((".svg", ".gif", ".ico")):
                             images_to_fetch.append((index, img_uri))
                             count += 1
                             if count >= max_images:
@@ -204,7 +217,7 @@ class UrlContentHandler(ToolResultHandler):
             # Phase 2: Fetch all images in parallel
             if images_to_fetch:
                 logger.info("Fetching %d images in parallel", len(images_to_fetch))
-                fetch_tasks = [_fetch_image_as_base64(url) for (_, url) in images_to_fetch]
+                fetch_tasks = [_fetch_image_as_base64(img_url) for (_, img_url) in images_to_fetch]
                 fetched_images = await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
                 # Create mapping: index -> fetched_result
@@ -213,8 +226,13 @@ class UrlContentHandler(ToolResultHandler):
 
         # Phase 3: Build formatted_blocks using pre-fetched results
         count = 0
-        formatted_blocks = []
+        formatted_blocks = [{
+            "type": "text",
+            "text": f"Blocks of content from the URL:",
+        }]
         for index, block in enumerate(blocks):
+            block_citation_url = _block_citation_url(url, block)
+            display_url = display_url_for_llm(block_citation_url, ref_mapper)
             if block.type == "image":
                 if not include_images or count >= max_images:
                     continue
@@ -230,7 +248,7 @@ class UrlContentHandler(ToolResultHandler):
                             continue
                         formatted_blocks.append({
                             "type": "text",
-                            "text": f'''citation_id: W{url_number}-{index}\ncontent(image):'''
+                            "text": f"url/citation id: {display_url}\ncontent(image):",
                         })
                         formatted_blocks.append({
                             "type": "image",
@@ -247,7 +265,7 @@ class UrlContentHandler(ToolResultHandler):
                                 continue
                             formatted_blocks.append({
                                 "type": "text",
-                                "text": f'''citation_id: W{url_number}-{index}\ncontent(image):'''
+                                "text": f"url/citation id: {display_url}\ncontent(image):",
                             })
                             formatted_blocks.append({
                                 "type": "image",
@@ -260,8 +278,7 @@ class UrlContentHandler(ToolResultHandler):
             else:
                 formatted_blocks.append({
                     "type": "text",
-                    "text": f'''citation_id: W{url_number}-{index}
-content: {block.content}'''
+                    "text": f"url/citation id: {display_url}\ncontent: {block.content}",
                 })
 
         return formatted_blocks
@@ -269,18 +286,18 @@ content: {block.content}'''
     def extract_records(self, tool_result: dict[str, Any], org_id: str | None=None) -> list[dict[str, Any]]:
         """Extract URL blocks as records for citation tracking."""
         url = tool_result.get("url", "")
-        url_number = tool_result.get("url_number", 1)
         blocks = tool_result.get("blocks", [])
 
         records = []
-        for index, block in enumerate(blocks):
-            citation_id = f"W{url_number}-{index}"
+        for block in blocks:
+            block_citation_url = _block_citation_url(url, block)
+            if block.type == "text":
+                content = getattr(block, "content", "") or ""
+            else:
+                content = getattr(block, "alt", "") or "Image"
             records.append({
-                "url": url,
-                "url_number": url_number,
-                "block_index": index,
-                "content": (block.content if block.type == "text" else block.alt) or "Image",
-                "citation_id": citation_id,
+                "url": block_citation_url,
+                "content": content,
                 "source_type": "web",
                 "org_id": org_id,
             })

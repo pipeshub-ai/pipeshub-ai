@@ -37,8 +37,8 @@ from app.modules.qna.prompt_templates import (
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
-from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.logger import create_logger
+from app.utils.image_utils import get_extension_from_mimetype
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -1356,8 +1356,8 @@ def _find_first_block_index_recursive(block_groups: list[dict[str, Any]], childr
     """Recursively search through the first child to find the first block_index.
 
     Args:
-        block_groups: list of block groups
-        children: BlockGroupChildren object or list of child container indices (old format)
+        block_groups: List of block groups
+        children: BlockGroupChildren object or List of child container indices (old format)
 
     Returns:
         First block_index found in the first child, or None if not found
@@ -1411,9 +1411,9 @@ def _extract_text_content_recursive(
     """Recursively extract text content from children and nested children.
 
     Args:
-        block_groups: list of block groups
-        blocks: list of blocks
-        children: BlockGroupChildren object or list of child container indices (old format)
+        block_groups: List of block groups
+        blocks: List of blocks
+        children: BlockGroupChildren object or List of child container indices (old format)
         virtual_record_id: Optional virtual record ID for tracking seen chunks
         seen_chunks: Optional set to track seen chunks
 
@@ -1622,28 +1622,9 @@ Record blocks (sorted):\n\n"""
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
             ref = ref_mapper.get_or_create_ref(block_web_url)
             data = block.get("data", "")
-            if not data:
-                continue
-            if block_type == BlockType.IMAGE.value:
 
-                if isinstance(data, dict) and is_multimodal_llm:
-                    image_uri = data.get("uri")
-                    if image_uri:
-                        content.append({
-                            "type": "text",
-                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
-                        })
-                        mime_type = image_uri.split(";")[0].split(":")[1]
-                        image_base64 = image_uri.split(",")[1]
-                        content.append({
-                            "type": "image",
-                            "base64": image_base64,
-                            "mime_type": mime_type,
-                        })
-                    else:
-                        continue
-                else:
-                    continue
+            if block_type == BlockType.IMAGE.value:
+                continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
@@ -1662,7 +1643,6 @@ Record blocks (sorted):\n\n"""
                     data = corresponding_block_group.get("data", {})
 
                     if block_type == GroupType.TABLE.value:
-
                         children = corresponding_block_group.get("children")
                         rows_to_be_included_list = []
                         if children:
@@ -1698,7 +1678,7 @@ Record blocks (sorted):\n\n"""
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
                                 block_group_web_url="",
-                                table_summary="Not available",
+                                table_summary="Not Available    ",
                                 table_rows=child_results,
                             )
                             content.append({
@@ -1987,12 +1967,6 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
         else:
             continue
 
-    content.append({
-        "type": "text",
-        "text": "</record>"
-    })
-    all_contents.append(content)
-
     if content:
         content.append({
             "type": "text",
@@ -2045,7 +2019,7 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:
     Supports both dict messages and LangChain message objects.
 
     Args:
-        messages: list of message dictionaries or LangChain message objects
+        messages: List of message dictionaries or LangChain message objects
 
     Returns:
         Total number of tokens across all messages
@@ -2088,6 +2062,7 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:
 
     return total_tokens
 
+
 def count_tokens_text(text: str,enc) -> int:
     """Count tokens in text using tiktoken or fallback heuristic"""
     if not text:
@@ -2095,9 +2070,8 @@ def count_tokens_text(text: str,enc) -> int:
     if enc is not None:
         try:
             return len(enc.encode(text))
-        except Exception as e:
+        except Exception:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
-            logger.error(f"Error in count_tokens_text: {str(e)}")
             pass
     else:
         try:
@@ -2142,16 +2116,16 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
     return current_message_tokens, new_tokens
 
 
+
 FRAGMENT_WORD_COUNT = 4
 
-
-def extract_start_end_text(snippet: str) -> tuple[str, str]:
+def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
     if not snippet:
         return "", ""
 
-    PATTERN = re.compile(r'[a-zA-Z0-9 ]+')
+    PATTERN = re.compile(r"(?<!\S)[A-Za-z0-9.',;:]+(?:[ ][A-Za-z0-9.',;:]+)+(?!\S)")
 
-    # --- Find start_text: first matching segment, first 4 words ---
+    # --- Find start_text: first matching segment ---
     first_match = PATTERN.search(snippet)
     if not first_match:
         return "", ""
@@ -2170,7 +2144,7 @@ def extract_start_end_text(snippet: str) -> tuple[str, str]:
     start_text_begin = first_match.start() + leading_spaces
     start_text_end = start_text_begin + len(start_text)
 
-    # --- Find end_text: last matching segment after start_text_end, last words ---
+    # --- Find end_text: last matching segment after start_text_end, last 4 words ---
     # Search backwards by scanning from start_text_end onward for the *last* match
     remaining = snippet[start_text_end:]
 
@@ -2194,13 +2168,16 @@ def extract_start_end_text(snippet: str) -> tuple[str, str]:
     else:
         end_text = ""
 
-    return start_text, end_text
+    while end_text and end_text[-1] == '.':
+        end_text = end_text[:-1]
+
+    return start_text, end_text.strip()
 
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
 
-    Format: base URL, then ``#:~:text=`` plus encoded start (and optional ``,end``).
+    Format: url#:~:text=start_text,end_text
 
     Args:
         base_url: The base URL of the page
@@ -2213,17 +2190,13 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
         return base_url
 
     try:
-
-        if "#:~:text=" in base_url:
-            return base_url
-
         snippet = text_snippet.strip()
         if not snippet:
             return base_url
 
-        # If the URL already carries a #:~:text= fragment (set deliberately by a
-        # connector, e.g. Zoom transcript listing page), preserve it as-is.
-        if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
+        while snippet and not snippet[-1].isalnum():
+            snippet = snippet[:-1]
+        if not snippet:
             return base_url
 
         start_text, end_text = extract_start_end_text(snippet)
@@ -2231,10 +2204,10 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
         if not start_text:
             return base_url
 
-        encoded_start = quote(start_text, safe='')
-        encoded_end = None
+        encoded_start = quote(start_text, safe="';:[]")
+
         if end_text:
-            encoded_end = quote(end_text, safe='')
+            encoded_end = quote(end_text, safe="';:[]")
 
         if '#' in base_url:
             base_url = base_url.split('#')[0]
@@ -2243,6 +2216,7 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
 
     except Exception:
         return base_url
+
 
 
 

@@ -92,7 +92,6 @@ def _search_with_tavily(query: str, config: dict[str, Any]) -> list[dict[str, An
         return results
 
 def create_web_search_tool(
-    url_counter: dict[str, int] | None = None,
     config: dict[str, Any] | None = None,
 ) -> BaseTool:
     """
@@ -107,9 +106,6 @@ def create_web_search_tool(
                 }
             }
     """
-    if url_counter is None:
-        url_counter = {"count": 0}
-
     # Default to DuckDuckGo if no config provided
     if not config:
         config = {"provider": "duckduckgo", "configuration": {}}
@@ -144,14 +140,11 @@ def create_web_search_tool(
         try:
             results = search_func(query, provider_config)
             logger.info(f"Got web search results using {provider}: {len(results)} results")
-            url_counter["count"] += 1
-            url_number = url_counter["count"]
             return {
                 "ok": True,
                 "result_type": "web_search",
                 "web_results": results,
                 "query": query,
-                "url_number": url_number,
             }
         except Exception as e:
             print(f"Web search failed with {provider}: {str(e)}")

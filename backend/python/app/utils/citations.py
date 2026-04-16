@@ -14,8 +14,48 @@ from app.utils.logger import create_logger
 # Initialize logger
 logger = create_logger(__name__)
 
-# Regex that matches both tiny refs (ref1, ref2, ...) and legacy full block web URLs
-_MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|[^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
+# Regex matching markdown links whose target is any of:
+#   - internal tiny ref (ref1, ref2, ...)
+#   - tiny web-ref URL (https://ref1.xyz)
+#   - legacy full block web URL (/record/<id>/preview#blockIndex=N)
+#   - any http(s):// URL used as a web citation target
+# Kept permissive because web citations are arbitrary external URLs.
+_MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)'
+
+# Tiny web-ref URL format exposed to the LLM when the real URL exceeds TINY_URL_THRESHOLD.
+# The embedded refN resolves through the shared CitationRefMapper, same as internal-search refs.
+_TINY_WEB_REF_PATTERN = re.compile(r'^https?://(ref\d+)\.xyz/?$')
+
+# URLs with length <= this are shown to the LLM verbatim; longer URLs are aliased as https://refN.xyz.
+TINY_URL_THRESHOLD = 40
+
+
+def extract_tiny_ref(target: str) -> str | None:
+    """Return the inner refN from a tiny web-ref URL like https://ref1.xyz, else None."""
+    if not target:
+        return None
+    m = _TINY_WEB_REF_PATTERN.match(target)
+    return m.group(1) if m else None
+
+
+def build_tiny_web_ref_url(ref: str) -> str:
+    """Wrap a refN token into its LLM-facing tiny URL form (https://refN.xyz)."""
+    return f"https://{ref}.xyz"
+
+
+def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
+    """Return the citation form the LLM should see for a web URL.
+
+    Short URLs (<= TINY_URL_THRESHOLD) are emitted verbatim so the LLM can cite them
+    directly. Longer URLs are aliased through the ref_mapper as https://refN.xyz so
+    small models do not mangle them.
+    """
+    if not url:
+        return url
+    if len(url) <= TINY_URL_THRESHOLD or ref_mapper is None:
+        return url
+    ref = ref_mapper.get_or_create_ref(url)
+    return build_tiny_web_ref_url(ref)
 
 CITATION_WORD_LIMIT = 4
 
@@ -26,103 +66,6 @@ class ChatDocCitation:
     metadata: dict[str, Any]
     chunkindex: int
 
-def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
-    if not snippet:
-        return "", ""
-
-    PATTERN = re.compile(r"(?<!\S)[A-Za-z0-9.',;:]+(?:[ ][A-Za-z0-9.',;:]+)+(?!\S)")
-
-    # --- Find start_text: first matching segment ---
-    first_match = PATTERN.search(snippet)
-    if not first_match:
-        return "", ""
-
-    first_text = first_match.group().strip()
-    if not first_text:
-        return "", ""
-
-    words = first_text.split()
-    start_text = " ".join(words[:CITATION_WORD_LIMIT])
-    start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
-
-    # Compute exact end position of start_text in snippet
-    # It starts at first_match.start() + leading whitespace offset
-    leading_spaces = len(first_match.group()) - len(first_match.group().lstrip())
-    start_text_begin = first_match.start() + leading_spaces
-    start_text_end = start_text_begin + len(start_text)
-
-    # --- Find end_text: last matching segment after start_text_end, last 4 words ---
-    # Search backwards by scanning from start_text_end onward for the *last* match
-    remaining = snippet[start_text_end:]
-
-    # Find last match in remaining using finditer (but we only keep last)
-    # Alternatively, search from the end using a reverse approach
-    last_text = None
-    for m in PATTERN.finditer(remaining):
-        stripped = m.group().strip()
-        if stripped:
-            last_text = stripped
-
-    if last_text:
-        words = last_text.split()
-        end_text = " ".join(words[-CITATION_WORD_LIMIT:])
-    elif len(first_text.split()) > CITATION_WORD_LIMIT:
-        word_count = len(first_text.split())
-        diff = word_count - CITATION_WORD_LIMIT
-        diff = min(CITATION_WORD_LIMIT, diff)
-        # Fall back to last 4 words of the first segment
-        end_text = " ".join(first_text.split()[-diff:])
-    else:
-        end_text = ""
-
-    while end_text and end_text[-1] == '.':
-        end_text = end_text[:-1]
-
-    return start_text, end_text.strip()
-
-def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
-    """
-    Generate a URL with text fragment for direct navigation to specific text.
-
-    Format: url#:~:text=start_text,end_text
-
-    Args:
-        base_url: The base URL of the page
-        text_snippet: The text to highlight/navigate to
-
-    Returns:
-        URL with text fragment, or base_url if encoding fails
-    """
-    if not base_url or not text_snippet:
-        return base_url
-
-    try:
-        snippet = text_snippet.strip()
-        if not snippet:
-            return base_url
-
-        while snippet and not snippet[-1].isalnum():
-            snippet = snippet[:-1]
-        if not snippet:
-            return base_url
-
-        start_text, end_text = extract_start_end_text(snippet)
-
-        if not start_text:
-            return base_url
-
-        encoded_start = quote(start_text, safe="';:[]")
-
-        if end_text:
-            encoded_end = quote(end_text, safe="';:[]")
-
-        if '#' in base_url:
-            base_url = base_url.split('#')[0]
-
-        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
-
-    except Exception:
-        return base_url
 
 
 def fix_json_string(json_str) -> str:
@@ -172,9 +115,15 @@ def fix_json_string(json_str) -> str:
 
 
 def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
-    """Resolve a citation target — if it's a tiny ref and we have a mapping, return the full URL; otherwise return as-is."""
-    if ref_to_url and target in ref_to_url:
+    """Resolve a citation target — if it's a tiny ref (refN) or tiny web-ref URL (https://refN.xyz),
+    return the full URL from the mapping; otherwise return as-is."""
+    if not ref_to_url:
+        return target
+    if target in ref_to_url:
         return ref_to_url[target]
+    inner_ref = extract_tiny_ref(target)
+    if inner_ref and inner_ref in ref_to_url:
+        return ref_to_url[inner_ref]
     return target
 
 
@@ -213,6 +162,19 @@ def _extract_record_id_from_url(url: str) -> str | None:
     m = re.search(r'/record/([^/]+)/preview', url)
     if m:
         return m.group(1)
+    return None
+
+
+def _find_web_record_by_url(
+    url: str,
+    web_records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Find a web record whose 'url' field matches exactly."""
+    if not url:
+        return None
+    for rec in web_records:
+        if rec.get("url") == url:
+            return rec
     return None
 
 
@@ -310,13 +272,7 @@ def detect_hallucinated_citation_urls(
                 continue
             hallucinated.append(target)
         else:
-            # Full URL: use existing resolution logic
-            if _is_url_resolvable_via_records(
-                target, records, flattened_final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-            ):
-                continue
-            hallucinated.append(target)
+            continue
 
     return hallucinated
 
@@ -327,12 +283,13 @@ def normalize_citations_and_chunks(
     records: list[dict[str, Any]] = None,
     ref_to_url: dict[str, str] | None = None,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    web_records: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping.
 
-    Supports both tiny refs (ref1, ref2) and legacy full URL citations.
+    Supports tiny refs (ref1, ref2), legacy full URL citations, and web citations (#wcite=).
     """
 
     if records is None:
@@ -347,6 +304,7 @@ def normalize_citations_and_chunks(
             answer_text, md_matches, final_results, records,
             ref_to_url=ref_to_url,
             virtual_record_id_to_result=virtual_record_id_to_result,
+            web_records=web_records,
         )
 
     return answer_text, []
@@ -359,11 +317,16 @@ def _normalize_markdown_link_citations(
     records: list[dict[str, Any]],
     ref_to_url: dict[str, str] | None = None,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    web_records: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Normalize markdown link citations [text](target) where target is a tiny ref or full URL.
-    Maps each citation to the corresponding block in final_results and renumbers sequentially.
+    Maps each citation to the corresponding block in final_results, records, or web_records
+    and renumbers sequentially.
     """
+    if web_records is None:
+        web_records = []
+
     url_to_doc_index = {}
     flattened_final_results = []
 
@@ -441,6 +404,33 @@ def _normalize_markdown_link_citations(
         return True
 
     for url in unique_urls:
+    # Match by exact URL against web records (web citations are keyed by URL)
+        if web_records:
+            web_rec = _find_web_record_by_url(url, web_records)
+            if web_rec:
+                web_content = web_rec.get("content", "")
+                if not web_content:
+                    continue
+                new_citations.append({
+                    "content": _safe_stringify_content(value=web_content),
+                    "chunkIndex": new_citation_num,
+                    "metadata": {
+                        "recordId":url.split("#:~:text=")[0],
+                        "mimeType":"text/html",
+                        "recordName": url.split("#:~:text=")[0],
+                        "webUrl": url,
+                        "origin": "WEB_SEARCH",
+                        "orgId": web_rec.get("org_id", ""),
+                        "connector": "WEB",
+                    },
+                    "citationType": "web|url",
+                })
+                url_to_citation_num[url] = new_citation_num
+                new_citation_num += 1
+            else:
+                logger.debug(f"No web record found for URL: {url}")
+            continue
+            
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
             doc = flattened_final_results[idx]
@@ -456,7 +446,7 @@ def _normalize_markdown_link_citations(
 
             new_citations.append({
                 "content": "Image" if is_base64_image(content) else content,
-                "chunkIndex": new_citation_num,  # Use new sequential number
+                "chunkIndex": new_citation_num,
                 "metadata": doc.get("metadata", {}),
                 "citationType": "vectordb|document",
             })
