@@ -1,6 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/lib/store/auth-store';
-import { processError } from './api-error';
+import { extractApiErrorMessage, processError } from './api-error';
 import { showErrorToast } from './error-toast';
 
 declare module 'axios' {
@@ -11,6 +11,9 @@ declare module 'axios' {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 const API_TIMEOUT = 20000;
+
+/** Backend signals refresh cannot recover; skip refresh and log out immediately. */
+const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
 
 // In-memory lock to prevent multiple simultaneous refresh attempts
 let isRefreshing = false;
@@ -65,8 +68,18 @@ apiClient.interceptors.response.use(
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
-    // Handle 401 - attempt token refresh
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Handle 401 - session explicitly ended on server, or attempt token refresh
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+      const apiMessage = extractApiErrorMessage(error.response.data);
+      if (apiMessage === SESSION_EXPIRED_LOGOUT_MESSAGE) {
+        processQueue(new Error(SESSION_EXPIRED_LOGOUT_MESSAGE), null);
+        isRefreshing = false;
+        refreshPromise = null;
+        handleAuthFailure();
+        const processedError = processError(error);
+        return Promise.reject(processedError);
+      }
+
       if (isRefreshing) {
         // If already refreshing, queue this request
         return new Promise((resolve, reject) => {

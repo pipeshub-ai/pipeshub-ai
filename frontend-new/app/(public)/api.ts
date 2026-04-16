@@ -150,6 +150,18 @@ export const AuthApi = {
   },
 
   /**
+   * Complete email change using the JWT from the verification link
+   * (scope: email:validate). Clears client session — user should sign in again.
+   */
+  async validateEmailChange(token: string): Promise<void> {
+    await publicAuthClient.put(
+      '/api/v1/userAccount/validateEmailChange',
+      {},
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  },
+
+  /**
    * Exchange a long-lived refreshToken for a new accessToken.
    */
   async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string }> {
