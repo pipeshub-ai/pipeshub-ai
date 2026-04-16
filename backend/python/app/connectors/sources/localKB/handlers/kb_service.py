@@ -1,4 +1,3 @@
-import uuid
 from typing import Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
@@ -6,8 +5,11 @@ from app.config.constants.arangodb import (
     Connectors,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.sources.custom_connector.handlers.custom_connector_service import (
+    CustomConnectorService,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -17,219 +19,61 @@ write_collections = [
     collection.value for collection in CollectionNames
 ]
 
+
 class KnowledgeBaseService:
-    """Data handler for knowledge base operations."""
+    """Data handler for knowledge base operations.
+
+    Delegates to CustomConnectorService with connector_type=KNOWLEDGE_BASE
+    and is_restricted=True.
+    """
 
     def __init__(
         self,
         logger,
         graph_provider: IGraphDBProvider,
-        kafka_service : KafkaService
+        kafka_service: KafkaService,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
         self.kafka_service = kafka_service
+        self.custom_connector_service = CustomConnectorService(
+            logger=logger,
+            graph_provider=graph_provider,
+            kafka_service=kafka_service,
+        )
+        self.connector_type = Connectors.KNOWLEDGE_BASE.value
+        self.group_type = Connectors.KNOWLEDGE_BASE.value
 
+    # ==================== Instance CRUD ====================
 
     async def create_knowledge_base(
         self,
         user_id: str,
         org_id: str,
-        name: str
+        name: str,
     ) -> Optional[Dict]:
-        """Create a new knowledge base"""
-        try:
-            self.logger.info(f"🚀 Creating KB '{name}' for user {user_id} in org {org_id}")
-
-            # Step 1: Look up user
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                self.logger.warning(f"⚠️ User not found: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-
-            user_key = user.get('id') or user.get('_key')
-            user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
-            self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
-
-            timestamp = get_epoch_timestamp_in_ms()
-            kb_key = str(uuid.uuid4())
-
-            self.logger.info(f"📋 Generated KB ID: {kb_key}")
-
-            # Step 3: Create transaction
-            txn_id = None
-            try:
-                txn_id = await self.graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.RECORD_GROUPS.value,
-                        CollectionNames.RECORDS.value,
-                        CollectionNames.FILES.value,
-                        CollectionNames.IS_OF_TYPE.value,
-                        CollectionNames.BELONGS_TO.value,
-                        CollectionNames.PERMISSION.value,
-                    ],
-                )
-                self.logger.info("🔄 Transaction created")
-            except Exception as tx_error:
-                self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": f"Transaction creation failed: {str(tx_error)}"
-                }
-
-            kb_connector_id = f"knowledgeBase_{org_id}"
-            kb_data = {
-                "id": kb_key,
-                "createdBy": user_key,
-                "orgId": org_id,
-                "groupName": name,
-                "groupType": Connectors.KNOWLEDGE_BASE.value,
-                "connectorName": Connectors.KNOWLEDGE_BASE.value,
-                "connectorId": kb_connector_id,  # Link KB to the app
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-            }
-
-            permission_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.RECORD_GROUPS.value,
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-                "lastUpdatedTimestampAtSource": timestamp,
-            }
-
-            # Create belongs_to edge from record group to app
-            belongs_to_edge = {
-                "from_id": kb_key,
-                "from_collection": CollectionNames.RECORD_GROUPS.value,
-                "to_id": kb_connector_id,
-                "to_collection": CollectionNames.APPS.value,
-                "entityType": Connectors.KNOWLEDGE_BASE.value,
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-            }
-
-            # Step 5: Execute database operations
-            self.logger.info("💾 Executing database operations...")
-            await self.graph_provider.batch_upsert_nodes(
-                [kb_data],
-                CollectionNames.RECORD_GROUPS.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.batch_create_edges(
-                [permission_edge],
-                CollectionNames.PERMISSION.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.batch_create_edges(
-                [belongs_to_edge],
-                CollectionNames.BELONGS_TO.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.commit_transaction(txn_id)
-
-            result = {"success": True}
-            if result and result.get("success"):
-                response = {
-                    "id": kb_data["id"],
-                    "name": kb_data["groupName"],
-                    "createdAtTimestamp": kb_data["createdAtTimestamp"],
-                    "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
-                    "success": True,
-                    "userRole": "OWNER"
-                }
-
-                self.logger.info(f"✅ KB '{name}' created successfully: {kb_key}")
-                return response
-
-            else:
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to create knowledge base in database"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ KB creation failed for '{name}': {str(e)}")
-            if txn_id is not None:
-                try:
-                    await self.graph_provider.rollback_transaction(txn_id)
-                except Exception as rb_err:
-                    self.logger.warning(f"Rollback failed: {rb_err}")
-
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+        """Create a new knowledge base."""
+        return await self.custom_connector_service.create_record_group(
+            user_id=user_id,
+            org_id=org_id,
+            name=name,
+            group_type=self.group_type,
+            connector_id=f"knowledgeBase_{org_id}",
+            is_restricted=True,
+            inherit_permissions=True,
+        )
 
     async def get_knowledge_base(
         self,
-        kb_id:str,
-        user_id:str
-    )-> Optional[Dict]:
-        """Get Knowledge base details"""
-        try:
-            self.logger.info(f"Getting knowledge base {kb_id} for user {user_id}")
-            self.logger.info(f"🔍 Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            # validates permissions and gets kb for the user
-            user_role = await self.graph_provider.get_user_kb_permission(
-                kb_id=kb_id,
-                user_id=user_key
-            )
-            if not user_role:
-                self.logger.warning(f"⚠️ User {user_key} has no access to KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
-
-            result = await self.graph_provider.get_knowledge_base(
-                kb_id = kb_id,
-                user_id = user_key
-            )
-
-            if result:
-                self.logger.info(f"Knowledge base retrieved successfullu: {result}")
-                return result
-            else :
-                self.logger.warning("Knowledge base not found")
-                return {
-                    "success":False,
-                    "reason":"Knowledge base not found",
-                    "code":"404"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code":"500"
-            }
+        kb_id: str,
+        user_id: str,
+    ) -> Optional[Dict]:
+        """Get Knowledge base details."""
+        return await self.custom_connector_service.get_record_group(
+            record_group_id=kb_id,
+            user_id=user_id,
+            group_type=self.group_type,
+        )
 
     async def list_user_knowledge_bases(
         self,
@@ -241,88 +85,23 @@ class KnowledgeBaseService:
         permissions: Optional[List[str]] = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-    ) -> Union[List[Dict],Dict]:
-        """List knowledge bases with pagination and filtering"""
-        try:
-            self.logger.info(f" Listing knowledge bases for user {user_id}")
-
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            # Calculate pagination
-            skip = (page - 1) * limit
-
-            # Validate sort parameters
-            valid_sort_fields = ["name", "updatedAtTimestamp", "updatedAtTimestamp", "userRole"]
-            if sort_by not in valid_sort_fields:
-                sort_by = "name"
-            if sort_order.lower() not in ["asc", "desc"]:
-                sort_order = "asc"
-
-            kbs, total_count, available_filters = await self.graph_provider.list_user_knowledge_bases(
-                user_id=user_key,
-                org_id=org_id,
-                skip=skip,
-                limit=limit,
-                search=search,
-                permissions=permissions,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-
-            if isinstance(kbs, dict) and kbs.get("success") is False:
-                return kbs
-
-            # Calculate pagination metadata
-            total_pages = (total_count + limit - 1) // limit
-
-            # Build applied filters
-            applied_filters = {}
-            if search:
-                applied_filters["search"] = search
-            if permissions:
-                applied_filters["permissions"] = permissions
-            if sort_by != "name":
-                applied_filters["sort_by"] = sort_by
-            if sort_order != "asc":
-                applied_filters["sort_order"] = sort_order
-
-            result = {
-                "knowledgeBases": kbs,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                    "hasNext": page < total_pages,
-                    "hasPrev": page > 1
-                },
-                "filters": {
-                    "applied": applied_filters,
-                    "available": available_filters
-                }
-            }
-
-
-            self.logger.info(f"✅ Found {len(kbs)} knowledge bases (page {page}/{total_pages})")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list knowledge bases: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+    ) -> Union[List[Dict], Dict]:
+        """List knowledge bases with pagination and filtering."""
+        result = await self.custom_connector_service.list_user_record_groups(
+            user_id=user_id,
+            org_id=org_id,
+            group_type=self.group_type,
+            page=page,
+            limit=limit,
+            search=search,
+            permissions=permissions,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        # Rename key for backward compatibility
+        if isinstance(result, dict) and "recordGroups" in result:
+            result["knowledgeBases"] = result.pop("recordGroups")
+        return result
 
     async def update_knowledge_base(
         self,
@@ -330,131 +109,25 @@ class KnowledgeBaseService:
         user_id: str,
         updates: Dict,
     ) -> Optional[Dict]:
-        """Update knowledge base details"""
-        try:
-            self.logger.info(f"🚀 Updating knowledge base {kb_id}")
-            timestamp = get_epoch_timestamp_in_ms()
-            # Check user permissions
-            self.logger.info(f"🔍 Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER","ORGANIZER","FILEORGANIZER"]:
-                self.logger.warning(f"⚠️ User {user_id} lacks permission to update KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
-            updates["updatedAtTimestamp"] = timestamp
-            # Update in database
-            result = await self.graph_provider.update_knowledge_base(
-                kb_id=kb_id,
-                updates=updates
-            )
-
-            if result:
-                self.logger.info("✅ Knowledge base updated successfully")
-                return {
-                    "success":True,
-                    "reason":"Knowledge base updated successfully",
-                    "code":"200"
-                }
-            else:
-                self.logger.warning("⚠️ Failed to update knowledge base")
-                return {
-                    "success":False,
-                    "reason":"Knowledge base not found",
-                    "code":"404"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+        """Update knowledge base details."""
+        return await self.custom_connector_service.update_record_group(
+            record_group_id=kb_id,
+            user_id=user_id,
+            updates=updates,
+        )
 
     async def delete_knowledge_base(
         self,
         kb_id: str,
         user_id: str,
     ) -> Optional[Dict]:
-        """Delete a knowledge base"""
-        try:
-            self.logger.info(f"🚀 Deleting knowledge base {kb_id}")
-            self.logger.info(f"🔍 Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        """Delete a knowledge base."""
+        return await self.custom_connector_service.delete_record_group(
+            record_group_id=kb_id,
+            user_id=user_id,
+        )
 
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
-            self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role != "OWNER":
-                self.logger.warning(f"⚠️ User {user_name} lacks permission to delete KB {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can delete knowledge bases",
-                    "code": 403
-                }
-
-            self.logger.info(f"🔐 User {user_name} has OWNER permission - proceeding with deletion")
-
-            # Delete in database with transaction
-            result = await self.graph_provider.delete_knowledge_base(
-                kb_id=kb_id
-           )
-
-            if result and result.get("success"):
-                self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by {user_name}")
-                return {
-                    "success": True,
-                    "reason": "Knowledge base and all contents deleted successfully",
-                    "code": 200,
-                    "eventData": result.get("eventData")
-                }
-            else:
-                self.logger.warning(f"⚠️ Failed to delete knowledge base {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "Failed to delete knowledge base",
-                    "code": 500
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete knowledge base {kb_id}: {str(e)}")
-            self.logger.error(f"❌ Error type: {type(e).__name__}")
-
-            # Only log full traceback for unexpected errors
-            if not isinstance(e, (ValueError, KeyError, PermissionError)):
-                import traceback
-                self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
-
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+    # ==================== Folder Operations ====================
 
     async def create_folder_in_kb(
         self,
@@ -463,45 +136,16 @@ class KnowledgeBaseService:
         user_id: str,
         org_id: str,
     ) -> Optional[Dict]:
-        """Create folder in KB root"""
-        try:
-            self.logger.info(f"🚀 Creating folder '{name}' in KB {kb_id} root")
-
-            # Validate user and permissions
-            validation_result = await self.graph_provider._validate_folder_creation(kb_id, user_id)
-            if not validation_result["valid"]:
-                return validation_result
-
-            # Check for name conflicts in KB root
-            existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
-                kb_id=kb_id,
-                folder_name=name,
-                parent_folder_id=None,  # KB root
-            )
-
-            if existing_folder:
-                return {
-                    "success": False,
-                    "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
-                }
-
-            # Create folder using unified method
-            result = await self.graph_provider.create_folder(
-                kb_id=kb_id,
-                folder_name=name,
-                org_id=org_id,
-                parent_folder_id=None,  # KB root
-            )
-
-            if result and result.get("success"):
-                return result
-            else:
-                return {"success": False, "code": 500, "reason": "Failed to create folder"}
-
-        except Exception as e:
-            self.logger.error(f"❌ KB folder creation failed: {str(e)}")
-            return {"success": False, "code": 500, "reason": str(e)}
+        """Create folder in KB root."""
+        return await self.custom_connector_service.create_folder(
+            instance_id=kb_id,
+            name=name,
+            user_id=user_id,
+            org_id=org_id,
+            is_restricted=True,
+            inherit_permissions=True,
+            parent_id=None,
+        )
 
     async def create_nested_folder(
         self,
@@ -511,54 +155,16 @@ class KnowledgeBaseService:
         user_id: str,
         org_id: str,
     ) -> Optional[Dict]:
-        """Create folder inside another folder"""
-        try:
-            self.logger.info(f"🚀 Creating nested folder '{name}' in folder {parent_folder_id}")
-
-            # Validate user and permissions
-            validation_result = await self.graph_provider._validate_folder_creation(kb_id, user_id)
-            if not validation_result["valid"]:
-                return validation_result
-
-            # Additional validation for parent folder
-            folder_valid = await self.graph_provider.validate_folder_exists_in_kb(kb_id, parent_folder_id)
-            if not folder_valid:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
-                }
-
-            # Check for name conflicts in KB root
-            existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
-                kb_id=kb_id,
-                folder_name=name,
-                parent_folder_id=parent_folder_id,
-            )
-
-            if existing_folder:
-                return {
-                    "success": False,
-                    "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
-                }
-
-            # Create folder using unified method
-            result = await self.graph_provider.create_folder(
-                kb_id=kb_id,
-                folder_name=name,
-                org_id=org_id,
-                parent_folder_id=parent_folder_id,  # Nested folder
-            )
-
-            if result and result.get("success"):
-                return result
-            else:
-                return {"success": False, "code": 500, "reason": "Failed to create folder"}
-
-        except Exception as e:
-            self.logger.error(f"❌ Nested folder creation failed: {str(e)}")
-            return {"success": False, "code": 500, "reason": str(e)}
+        """Create folder inside another folder."""
+        return await self.custom_connector_service.create_folder(
+            instance_id=kb_id,
+            name=name,
+            user_id=user_id,
+            org_id=org_id,
+            is_restricted=True,
+            inherit_permissions=True,
+            parent_id=parent_folder_id,
+        )
 
     async def get_folder_contents(
         self,
@@ -566,215 +172,42 @@ class KnowledgeBaseService:
         folder_id: str,
         user_id: str,
     ) -> Dict:
-        """Get contents of a folder"""
-        try:
-            self.logger.info(f"🔍 Getting contents of folder {folder_id} in KB {kb_id}")
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if not user_role:
-                self.logger.warning(f"⚠️ User {user_key} lacks access to KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
-
-            # Get folder contents
-            result = await self.graph_provider.get_folder_contents(
-                kb_id=kb_id,
-                folder_id=folder_id,
-            )
-
-            if result:
-                self.logger.info("✅ Folder contents retrieved successfully")
-                return result
-            else:
-                self.logger.warning("⚠️ Folder not found")
-                return {
-                    "success": False,
-                    "code": 400,
-                    "reason": "Failed to get folder contents, or folder not found "
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get folder contents: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+        """Get contents of a folder."""
+        return await self.custom_connector_service.get_folder_contents(
+            instance_id=kb_id,
+            folder_id=folder_id,
+            user_id=user_id,
+        )
 
     async def updateFolder(
         self,
         folder_id: str,
         kb_id: str,
         user_id: str,
-        name: str
+        name: str,
     ) -> Dict:
-        try:
-            self.logger.info(f"🚀 Updating folder {folder_id} in KB {kb_id}")
-            # timestamp = get_epoch_timestamp_in_ms()
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER"]:
-                self.logger.warning(f"⚠️ User {user_key} lacks permission to update folder in KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
-
-             # Validate that folder exists and belongs to the KB
-            folder_exists = await self.graph_provider.validate_folder_in_kb(kb_id, folder_id)
-            if not folder_exists:
-                self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "Folder not found in knowledge base",
-                    "code": "404"
-                }
-
-            updates = {
-                "name": name
-                # "updatedAtTimestamp": timestamp
-            }
-
-            # Check for name conflicts in KB root
-            existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
-                kb_id=kb_id,
-                folder_name=name,
-                parent_folder_id=None,  # KB root
-            )
-
-            if existing_folder:
-                return {
-                    "success": False,
-                    "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
-                }
-
-
-            # Update in database
-            result = await self.graph_provider.update_folder(
-                folder_id=folder_id,
-                updates=updates
-            )
-
-            if result:
-                self.logger.info(f"✅ Folder updated successfully: {folder_id} by user {user_id}")
-                return {
-                    "success": True,
-                    "code": 200,
-                    "reason": "Updated folder successfully"
-                 }
-            else:
-                self.logger.warning(f"⚠️ Failed to update folder {folder_id}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to update the folder"
-                }
-        except Exception as e:
-            self.logger.error(f"Failed to update folder {folder_id} for knowledge base {kb_id}: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+        """Update folder name."""
+        return await self.custom_connector_service.update_folder(
+            instance_id=kb_id,
+            folder_id=folder_id,
+            user_id=user_id,
+            name=name,
+        )
 
     async def delete_folder(
         self,
         kb_id: str,
         folder_id: str,
-        user_id: str
+        user_id: str,
     ) -> Dict:
-        """Delete a folder """
-        try:
-            self.logger.info(f" Deleting folder {folder_id} in  knowledge base {kb_id}")
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        """Delete a folder."""
+        return await self.custom_connector_service.delete_folder(
+            instance_id=kb_id,
+            folder_id=folder_id,
+            user_id=user_id,
+        )
 
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role != "OWNER":
-                self.logger.warning(f"⚠️ User {user_key} lacks permission to delete folder in KB {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "User lacks permission to delete folder",
-                    "code": "403"
-                }
-            # Validate that folder exists and belongs to the KB
-            folder_exists = await self.graph_provider.validate_folder_in_kb(kb_id, folder_id)
-            if not folder_exists:
-                self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "Folder not found in knowledge base",
-                    "code": "404"
-                }
-
-            # Delete in database
-            result = await self.graph_provider.delete_folder(
-                kb_id=kb_id,
-                folder_id=folder_id
-            )
-
-            if result and result.get("success"):
-                self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully by {user_id}")
-                return {
-                    "success": True,
-                    "reason": "Folder and all contents deleted successfully",
-                    "code": 200,
-                    "eventData": result.get("eventData")  # Pass eventData to router
-                }
-            else:
-                self.logger.warning("⚠️ Failed to delete folder")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to delete folder"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete folder: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
+    # ==================== Record Operations ====================
 
     async def update_record(
         self,
@@ -783,63 +216,29 @@ class KnowledgeBaseService:
         updates: Dict,
         file_metadata: Optional[Dict] = None,
     ) -> Optional[Dict]:
-        """
-        Update a record directly in KB root (not in any folder).
-        Only OWNER, WRITER, and FILEORGANIZER can update; READER and COMMENTER cannot.
-        """
+        """Update a record."""
+        # KB uses _get_kb_context_for_record to find the KB, then checks permission
+        # on the KB. We replicate that here since CustomConnectorService.update_record
+        # requires instance_id upfront.
         try:
-            self.logger.info(f"🚀 Updating record {record_id}")
-
-            # Resolve KB context and check edit permission (OWNER/WRITER/FILEORGANIZER only)
-            kb_context = await self.graph_provider._get_kb_context_for_record(record_id)
+            kb_context = await self.graph_provider.get_kb_context_for_record(record_id)
             if not kb_context:
                 return {
                     "success": False,
                     "code": 404,
                     "reason": "Knowledge base context not found for record",
                 }
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}",
-                }
-            user_key = user.get("id") or user.get("_key")
-            user_role = await self.graph_provider.get_user_kb_permission(
-                kb_context.get("kb_id"), user_key
-            )
-            if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
-                return {
-                    "success": False,
-                    "code": 403,
-                    "reason": "User lacks permission to edit records",
-                }
-
-            # Call update method
-            result = await self.graph_provider.update_record(
+            instance_id = kb_context.get("kb_id")
+            return await self.custom_connector_service.update_record(
                 record_id=record_id,
                 user_id=user_id,
+                instance_id=instance_id,
                 updates=updates,
-                file_metadata=file_metadata
+                file_metadata=file_metadata,
             )
-
-            if result and result.get("success"):
-                return result
-            else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to update record",
-                    "code": 500
-                }
-
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB record: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code": 500
-            }
+            self.logger.error(f"Failed to update KB record: {str(e)}")
+            return {"success": False, "reason": str(e), "code": 500}
 
     async def delete_records_in_kb(
         self,
@@ -847,54 +246,13 @@ class KnowledgeBaseService:
         record_ids: List[str],
         user_id: str,
     ) -> Optional[Dict]:
-        """
-        Delete multiple records from KB root (not in any folder)
-        """
-        try:
-            self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from KB {kb_id} root")
-
-            # Step 1: Validate user and permissions
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-
-            user_key = user.get('id') or user.get('_key')
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-
-            if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
-                return {
-                    "success": False,
-                    "reason": "User lacks permission to delete records",
-                    "code": 403
-                }
-
-            # Step 2: Call bulk deletion method (folder_id=None for KB root)
-            result = await self.graph_provider.delete_records(
-                record_ids=record_ids,
-                kb_id=kb_id,
-                folder_id=None  # KB root records
-            )
-
-            if result and result.get("success"):
-                return result
-            else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to delete records",
-                    "code": 500
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete KB records: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code": 500
-            }
+        """Delete multiple records from KB root."""
+        return await self.custom_connector_service.delete_records(
+            record_ids=record_ids,
+            instance_id=kb_id,
+            user_id=user_id,
+            parent_id=None,
+        )
 
     async def delete_records_in_folder(
         self,
@@ -903,109 +261,35 @@ class KnowledgeBaseService:
         record_ids: List[str],
         user_id: str,
     ) -> Optional[Dict]:
-        """
-        Delete multiple records from a specific folder
-        """
-        try:
-            self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from folder {folder_id} in KB {kb_id}")
+        """Delete multiple records from a specific folder."""
+        return await self.custom_connector_service.delete_records(
+            record_ids=record_ids,
+            instance_id=kb_id,
+            user_id=user_id,
+            parent_id=folder_id,
+        )
 
-            # Step 1: Validate user and permissions
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-
-            user_key = user.get('id') or user.get('_key')
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-
-            if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
-                return {
-                    "success": False,
-                    "reason": "User lacks permission to delete records",
-                    "code": 403
-                }
-
-            # Step 2: Validate folder exists in KB
-            folder_exists = await self.graph_provider.validate_folder_exists_in_kb(kb_id, folder_id)
-            if not folder_exists:
-                return {
-                    "success": False,
-                    "reason": "Folder not found in knowledge base",
-                    "code": 404
-                }
-
-        # Step 3 Call bulk deletion method (folder_id=None for KB root)
-            result = await self.graph_provider.delete_records(
-                record_ids=record_ids,
-                kb_id=kb_id,
-                folder_id=folder_id
-            )
-
-            if result and result.get("success"):
-                return result
-            else:
-                return result or {
-                    "success": False,
-                    "reason": "Failed to delete records in folder",
-                    "code": 500
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete folder records: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code": 500
-            }
+    # ==================== Permission Operations ====================
 
     async def create_kb_permissions(
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],  # External user IDs
-        team_ids: List[str],  # External team IDs
+        user_ids: List[str],
+        team_ids: List[str],
         role: str,
     ) -> Optional[Dict]:
-        """Optimized version - single AQL query approach"""
-        try:
-            self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
-
-            # Step 1: Validate inputs early
-            unique_users = list(set(user_ids)) if user_ids else []
-            unique_teams = list(set(team_ids)) if team_ids else []
-
-            if not unique_users and not unique_teams:
-                return {"success": False, "reason": "No users or teams provided", "code": 400}
-
-            # Role is required for users, but not for teams (teams don't have roles)
-            if unique_users:
-                valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
-                if not role or role not in valid_roles:
-                    return {"success": False, "reason": f"Invalid role: {role}. Role is required for users.", "code": 400}
-
-            # Step 2: Single AQL query to do everything at once
-            # Pass role even if only teams (it will be ignored for teams)
-            result = await self.graph_provider.create_kb_permissions(
-                kb_id=kb_id,
-                requester_id=requester_id,
-                user_ids=unique_users,
-                team_ids=unique_teams,
-                role=role if role else "READER"  # Default for teams (won't be used)
-            )
-
-            if result.get("success"):
-                self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted")
-                return result
-            else:
-                self.logger.error(f"❌ Permission creation failed: {result.get('reason')}")
-                return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
-            return {"success": False, "reason": str(e), "code": 500}
+        """Create KB permissions for users and teams."""
+        result = await self.custom_connector_service.add_permissions_to_node(
+            node_id=kb_id,
+            requester_id=requester_id,
+            user_ids=user_ids,
+            team_ids=team_ids,
+            role=role,
+        )
+        if isinstance(result, dict) and "nodeId" in result:
+            result["kbId"] = result.pop("nodeId")
+        return result
 
     async def update_kb_permission(
         self,
@@ -1013,171 +297,19 @@ class KnowledgeBaseService:
         requester_id: str,
         user_ids: List[str],
         team_ids: List[str],
-        new_role: str
+        new_role: str,
     ) -> Optional[Dict]:
-        """Update permissions for users and teams on a knowledge base"""
-        try:
-            self.logger.info(f"🚀 Updating permission for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id} to {new_role}")
-
-            # Check if at least one of user_ids or team_ids is provided
-            if not user_ids and not team_ids:
-                return {
-                    "success": False,
-                    "reason": "No users or teams provided for permission update",
-                    "code": "400"
-                }
-
-            # Teams don't have roles - they just have access or not
-            # So we can only update user permissions, not team permissions
-            if team_ids:
-                return {
-                    "success": False,
-                    "reason": "Teams don't have roles. Only user permissions can be updated.",
-                    "code": "400"
-                }
-
-            self.logger.info(f"Looking up requester by requester: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
-
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
-                }
-            requester_key = requester.get('id') or requester.get('_key')
-
-            # Validate requester has permission to update permissions
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if requester_role not in ["OWNER"]:
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can update permissions",
-                    "code": "403"
-                }
-
-            # Validate new role
-            valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
-            if new_role not in valid_roles:
-                return {
-                    "success": False,
-                    "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
-                }
-
-            # Get current permissions for all users and teams in a single batch query
-            current_permissions = await self.graph_provider.get_kb_permissions(
-                kb_id=kb_id,
-                user_ids=user_ids,
-                team_ids=team_ids
-            )
-
-            # Get owner count for the KB
-            total_owner_count = await self.graph_provider.count_kb_owners(kb_id=kb_id)
-
-            # Filter out users/teams that don't have permissions (skip them instead of erroring)
-            valid_user_ids = []
-            skipped_users = []
-            if user_ids:
-                for user_id in user_ids:
-                    if user_id in current_permissions["users"]:
-                        valid_user_ids.append(user_id)
-                    else:
-                        skipped_users.append(user_id)
-                        self.logger.warning(f"⚠️ Skipping user {user_id} - no permission found on KB {kb_id}")
-
-            valid_team_ids = []
-            skipped_teams = []
-            if team_ids:
-                for team_id in team_ids:
-                    if team_id in current_permissions["teams"]:
-                        valid_team_ids.append(team_id)
-                    else:
-                        skipped_teams.append(team_id)
-                        self.logger.warning(f"⚠️ Skipping team {team_id} - no permission found on KB {kb_id}")
-
-            # Check if we have any valid entities to update
-            if not valid_user_ids and not valid_team_ids:
-                return {
-                    "success": False,
-                    "reason": "No users or teams with existing permissions found to update",
-                    "code": "404",
-                    "skipped_users": skipped_users,
-                    "skipped_teams": skipped_teams
-                }
-
-            owners_being_updated = []
-
-            for user_id in valid_user_ids:
-                current_role = current_permissions["users"].get(user_id)
-                if current_role == "OWNER":
-                    owners_being_updated.append(user_id)
-
-            # Bulk Operation Prevention: Cannot perform bulk operations on Owner permissions
-            if len(valid_user_ids) > 1 and owners_being_updated:
-                # Check if this is a bulk promotion to OWNER (all non-Owners being promoted)
-                if new_role == "OWNER" and len(owners_being_updated) == 0:
-                    # Bulk promotion to OWNER is allowed but should be logged
-                    self.logger.info(f"⚠️ Bulk promotion of {len(valid_user_ids)} users to OWNER role on KB {kb_id}")
-                else:
-                    # Mixed operation or bulk update of existing Owners - reject
-                    return {
-                        "success": False,
-                        "reason": "Cannot perform bulk operations on Owner permissions. Please update Owners one at a time.",
-                        "code": "400"
-                    }
-
-            # Single Owner Update Validation
-            if len(owners_being_updated) == 1 and len(valid_user_ids) == 1:
-                owner_user_id = owners_being_updated[0]
-                if new_role != "OWNER":
-                    # Owner is being downgraded - check minimum requirement using already fetched count
-                    if total_owner_count <= 1:
-                        return {
-                            "success": False,
-                            "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
-                            "code": "400"
-                        }
-                    self.logger.info(f"⚠️ Downgrading Owner {owner_user_id} to {new_role} on KB {kb_id} (remaining owners: {total_owner_count - 1})")
-                # If new_role == "OWNER", it's a no-op (no change), which is fine
-
-            # Update permissions using batch update method for valid entities only
-            result = await self.graph_provider.update_kb_permission(
-                kb_id=kb_id,
-                requester_id=requester_key,
-                user_ids=valid_user_ids,
-                team_ids=valid_team_ids,
-                new_role=new_role
-            )
-
-            if result:
-                success_msg = f"✅ Permission updated successfully for {len(valid_user_ids)} users and {len(valid_team_ids)} teams"
-                if skipped_users or skipped_teams:
-                    success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
-                self.logger.info(success_msg)
-
-                return {
-                    "success": True,
-                    "userIds": valid_user_ids,
-                    "teamIds": valid_team_ids,
-                    "newRole": new_role,
-                    "kbId": kb_id,
-                }
-            else:
-                return {
-                    "success": False,
-                    "reason": "Failed to update permission",
-                    "code": "500"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code": "500"
-            }
+        """Update permissions for users and teams on a knowledge base."""
+        result = await self.custom_connector_service.update_node_permissions(
+            node_id=kb_id,
+            requester_id=requester_id,
+            user_ids=user_ids,
+            team_ids=team_ids,
+            new_role=new_role,
+        )
+        if isinstance(result, dict) and "nodeId" in result:
+            result["kbId"] = result.pop("nodeId")
+        return result
 
     async def remove_kb_permission(
         self,
@@ -1186,177 +318,33 @@ class KnowledgeBaseService:
         user_ids: List[str],
         team_ids: List[str],
     ) -> Optional[Dict]:
-        """Remove permissions for users and teams from a knowledge base"""
-        try:
-            self.logger.info(f"🚀 Removing permission for {len(user_ids)} users and {len(team_ids)} teams from KB {kb_id}")
-
-            # Check if at least one of user_ids or team_ids is provided
-            if not user_ids and not team_ids:
-                return {
-                    "success": False,
-                    "reason": "No users or teams provided for permission removal",
-                    "code": "400"
-                }
-
-            self.logger.info(f"Looking up requester by requester: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
-
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
-                }
-            requester_key = requester.get('id') or requester.get('_key')
-
-            # Validate requester has permission to remove permissions
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if requester_role not in ["OWNER"]:
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can remove permissions",
-                    "code": "403"
-                }
-
-            # Get current permissions for all users and teams in a single batch query
-            current_permissions = await self.graph_provider.get_kb_permissions(
-                kb_id=kb_id,
-                user_ids=user_ids,
-                team_ids=team_ids
-            )
-
-            # Filter out users/teams that don't have permissions and check for owner removal
-            valid_user_ids = []
-            skipped_users = []
-            owner_users_to_remove = []
-
-            if user_ids:
-                for user_id in user_ids:
-                    if user_id in current_permissions["users"]:
-                        current_role = current_permissions["users"][user_id]
-                        if current_role == "OWNER":
-                            owner_users_to_remove.append(user_id)
-                        valid_user_ids.append(user_id)
-                    else:
-                        skipped_users.append(user_id)
-                        self.logger.warning(f"⚠️ Skipping user {user_id} - no permission found on KB {kb_id}")
-
-            valid_team_ids = []
-            skipped_teams = []
-            if team_ids:
-                for team_id in team_ids:
-                    if team_id in current_permissions["teams"]:
-                        valid_team_ids.append(team_id)
-                    else:
-                        skipped_teams.append(team_id)
-                        self.logger.warning(f"⚠️ Skipping team {team_id} - no permission found on KB {kb_id}")
-
-            # Check if we have any valid entities to remove
-            if not valid_user_ids and not valid_team_ids:
-                return {
-                    "success": False,
-                    "reason": "No users or teams with existing permissions found to remove",
-                    "code": "404",
-                    "skipped_users": skipped_users,
-                    "skipped_teams": skipped_teams
-                }
-
-            # Check for owner removal restrictions
-            if owner_users_to_remove:
-                # Count total owners in the KB
-                owner_count = await self.graph_provider.count_kb_owners(kb_id)
-                if owner_count <= len(owner_users_to_remove):
-                    return {
-                        "success": False,
-                        "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
-                        "code": "400",
-                        "owner_users": owner_users_to_remove
-                    }
-
-            # Remove permissions using batch remove method for valid entities only
-            result = await self.graph_provider.remove_kb_permission(
-                kb_id=kb_id,
-                user_ids=valid_user_ids,
-                team_ids=valid_team_ids
-            )
-
-            if result:
-                success_msg = f"✅ Permission removed successfully for {len(valid_user_ids)} users and {len(valid_team_ids)} teams"
-                if skipped_users or skipped_teams:
-                    success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
-                self.logger.info(success_msg)
-
-
-                return {
-                    "success": True,
-                    "userIds": valid_user_ids,
-                    "teamIds": valid_team_ids,
-                    "kbId": kb_id,
-                }
-            else:
-                return {
-                    "success": False,
-                    "reason": "Failed to remove permissions",
-                    "code": "500"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to remove KB permission: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code": "500"
-            }
-
+        """Remove permissions for users and teams from a knowledge base."""
+        result = await self.custom_connector_service.remove_node_permissions(
+            node_id=kb_id,
+            requester_id=requester_id,
+            user_ids=user_ids,
+            team_ids=team_ids,
+        )
+        if isinstance(result, dict) and "nodeId" in result:
+            result["kbId"] = result.pop("nodeId")
+        return result
 
     async def list_kb_permissions(
         self,
         kb_id: str,
         requester_id: str,
     ) -> Optional[Dict]:
-        """List all permissions for a knowledge base"""
-        try:
-            self.logger.info(f"🔍 Listing permissions for KB {kb_id}")
-            self.logger.info(f"Looking up requester by requester: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+        """List all permissions for a knowledge base."""
+        result = await self.custom_connector_service.list_node_permissions(
+            node_id=kb_id,
+            requester_id=requester_id,
+        )
+        # Remap nodeId -> kbId for backward compatibility
+        if isinstance(result, dict) and "nodeId" in result:
+            result["kbId"] = result.pop("nodeId")
+        return result
 
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
-                }
-            requester_key = requester.get('id') or requester.get('_key')
-
-            # Validate requester has access to the KB
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if not requester_role:
-                return {
-                    "success": False,
-                    "reason": "User does not have access to this knowledge base",
-                    "code": "403"
-                }
-
-            # Get all permissions
-            permissions = await self.graph_provider.list_kb_permissions(kb_id)
-
-            self.logger.info(f"✅ Found {len(permissions)} permissions for KB {kb_id}")
-            return {
-                "success": True,
-                "permissions": permissions,
-                "kbId": kb_id,
-                "totalCount": len(permissions),
-            }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
-            return {
-                "success": False,
-                "reason": str(e),
-                "code": "500"
-            }
+    # ==================== Listing Operations ====================
 
     async def list_all_records(
         self,
@@ -1374,83 +362,26 @@ class KnowledgeBaseService:
         date_to: Optional[int] = None,
         sort_by: str = "createdAtTimestamp",
         sort_order: str = "desc",
-        source: str = "all",  # "all", "local", "connector"
+        source: str = "all",
     ) -> Dict:
-        """
-        List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
-        """
-        try:
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            skip = (page - 1) * limit
-            sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-            sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-            ] else "createdAtTimestamp"
-
-            records, total_count, available_filters = await self.graph_provider.list_all_records(
-                user_id=user_key,
-                org_id=org_id,
-                skip=skip,
-                limit=limit,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                permissions=permissions,
-                date_from=date_from,
-                date_to=date_to,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                source=source,
-            )
-
-            total_pages = (total_count + limit - 1) // limit
-
-            applied_filters = {
-                k: v for k, v in {
-                    "search": search,
-                    "recordTypes": record_types,
-                    "origins": origins,
-                    "connectors": connectors,
-                    "indexingStatus": indexing_status,
-                    "source": source if source != "all" else None,
-                    "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-                }.items() if v
-            }
-
-            return {
-                "records": records,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                },
-                "filters": {
-                    "applied": applied_filters,
-                    "available": available_filters,
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list all records: {str(e)}")
-            return {
-                "records": [],
-                "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-                "filters": {"applied": {}, "available": {}},
-                "error": str(e),
-            }
+        """List all records the user can access."""
+        return await self.custom_connector_service.list_all_records(
+            user_id=user_id,
+            org_id=org_id,
+            page=page,
+            limit=limit,
+            search=search,
+            record_types=record_types,
+            origins=origins,
+            connectors=connectors,
+            indexing_status=indexing_status,
+            permissions=permissions,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            source=source,
+        )
 
     async def list_kb_records(
         self,
@@ -1469,79 +400,23 @@ class KnowledgeBaseService:
         sort_by: str = "createdAtTimestamp",
         sort_order: str = "desc",
     ) -> Dict:
-        """
-        List all records in a specific KB (including all folders and direct records), with filters.
-        """
-        try:
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            skip = (page - 1) * limit
-            sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-            sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-            ] else "createdAtTimestamp"
-
-            records, total_count, available_filters = await self.graph_provider.list_kb_records(
-                kb_id=kb_id,
-                user_id=user_key,
-                org_id=org_id,
-                skip=skip,
-                limit=limit,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                date_from=date_from,
-                date_to=date_to,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-
-            total_pages = (total_count + limit - 1) // limit
-
-            applied_filters = {
-                k: v for k, v in {
-                    "search": search,
-                    "recordTypes": record_types,
-                    "origins": origins,
-                    "connectors": connectors,
-                    "indexingStatus": indexing_status,
-                    "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-                }.items() if v
-            }
-
-            return {
-                "records": records,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                },
-                "filters": {
-                    "applied": applied_filters,
-                    "available": available_filters,
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return {
-                "records": [],
-                "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-                "filters": {"applied": {}, "available": {}},
-                "error": str(e),
-            }
+        """List all records in a specific KB."""
+        return await self.custom_connector_service.list_record_group_records(
+            record_group_id=kb_id,
+            user_id=user_id,
+            org_id=org_id,
+            page=page,
+            limit=limit,
+            search=search,
+            record_types=record_types,
+            origins=origins,
+            connectors=connectors,
+            indexing_status=indexing_status,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
 
     async def get_kb_children(
         self,
@@ -1558,97 +433,23 @@ class KnowledgeBaseService:
         sort_by: str = "name",
         sort_order: str = "asc",
     ) -> Dict:
-        """
-        Get KB root contents with pagination and filters
-        """
-        try:
-            self.logger.info(f"🔍 Getting KB {kb_id} children with pagination (page {page}, limit {limit})")
-
-            # Validate user
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return self._error_response(404, f"User not found: {user_id}")
-
-            user_key = user.get('id') or user.get('_key')
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if not user_role:
-                return self._error_response(403, "User has no permission for KnowledgeBase")
-
-            # Calculate offset
-            skip = (page - 1) * limit
-
-            # Validate sort parameters
-            valid_sort_fields = ["name", "created_at", "updated_at", "size", "type"]
-            if sort_by not in valid_sort_fields:
-                sort_by = "name"
-
-            if sort_order.lower() not in ["asc", "desc"]:
-                sort_order = "asc"
-
-            # Get paginated contents
-            result = await self.graph_provider.get_kb_children(
-                kb_id=kb_id,
-                skip=skip,
-                limit=limit,
-                level=level,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-
-            if not result.get("success"):
-                return self._error_response(404, result.get("reason", "KB not found"))
-
-            # Add pagination metadata
-            total_items = result.get("totalCount", 0)
-            total_pages = (total_items + limit - 1) // limit
-
-            # Add user context
-            result["userPermission"] = {
-                "role": user_role,
-                "canUpload": user_role in ["OWNER", "WRITER"],
-                "canCreateFolders": user_role in ["OWNER", "WRITER"],
-                "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"],
-                "canManagePermissions": user_role in ["OWNER"]
-            }
-
-            result["pagination"] = {
-                "page": page,
-                "limit": limit,
-                "totalItems": total_items,
-                "totalPages": total_pages,
-                "hasNext": page < total_pages,
-                "hasPrev": page > 1
-            }
-
-            result["filters"] = {
-                "applied": {
-                    k: v for k, v in {
-                        "search": search,
-                        "record_types": record_types,
-                        "origins": origins,
-                        "connectors": connectors,
-                        "indexing_status": indexing_status,
-                        "sort_by": sort_by,
-                        "sort_order": sort_order,
-                    }.items() if v is not None
-                },
-                "available": result.get("availableFilters", {})
-            }
-
-            self.logger.info(f"✅ KB children retrieved: {result['counts']['folders']} folders, {result['counts']['records']} records")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get KB children with pagination: {str(e)}")
-            return self._error_response(500, str(e))
+        """Get KB root contents with pagination and filters."""
+        return await self.custom_connector_service.get_node_children(
+            instance_id=kb_id,
+            user_id=user_id,
+            node_id=None,
+            node_type="recordGroup",
+            page=page,
+            limit=limit,
+            level=level,
+            search=search,
+            record_types=record_types,
+            origins=origins,
+            connectors=connectors,
+            indexing_status=indexing_status,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
 
     async def get_folder_children(
         self,
@@ -1666,121 +467,60 @@ class KnowledgeBaseService:
         sort_by: str = "name",
         sort_order: str = "asc",
     ) -> Dict:
-        """
-        Get folder contents with pagination and filters
-        """
-        try:
-            self.logger.info(f"🔍 Getting folder {folder_id} children with pagination (page {page}, limit {limit})")
+        """Get folder contents with pagination and filters."""
+        return await self.custom_connector_service.get_node_children(
+            instance_id=kb_id,
+            user_id=user_id,
+            node_id=folder_id,
+            node_type="record",
+            page=page,
+            limit=limit,
+            level=level,
+            search=search,
+            record_types=record_types,
+            origins=origins,
+            connectors=connectors,
+            indexing_status=indexing_status,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
 
-            # Validate user
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return self._error_response(404, f"User not found: {user_id}")
+    # ==================== Upload & Move ====================
 
-            user_key = user.get('id') or user.get('_key')
+    async def upload_records_to_kb(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+    ) -> Dict:
+        """Upload to KB root."""
+        return await self.custom_connector_service.upload_files(
+            instance_id=kb_id,
+            files=files,
+            user_id=user_id,
+            org_id=org_id,
+            is_restricted=True,
+            parent_id=None,
+        )
 
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if not user_role:
-                return self._error_response(403, "User has no permission for KnowledgeBase")
-
-            # Calculate offset
-            skip = (page - 1) * limit
-
-            # Validate sort parameters
-            valid_sort_fields = ["name", "created_at", "updated_at", "size", "type"]
-            if sort_by not in valid_sort_fields:
-                sort_by = "name"
-
-            if sort_order.lower() not in ["asc", "desc"]:
-                sort_order = "asc"
-
-            # Get paginated contents
-            result = await self.graph_provider.get_folder_children(
-                kb_id=kb_id,
-                folder_id=folder_id,
-                skip=skip,
-                limit=limit,
-                level=level,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-
-            if not result.get("success"):
-                return self._error_response(404, result.get("reason", "Folder not found"))
-
-            # Add pagination metadata
-            total_items = result.get("totalCount", 0)
-            total_pages = (total_items + limit - 1) // limit
-
-            # Add user context
-            result["userPermission"] = {
-                "role": user_role,
-                "canUpload": user_role in ["OWNER", "WRITER"],
-                "canCreateFolders": user_role in ["OWNER", "WRITER"],
-                "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"],
-                "canManagePermissions": user_role in ["OWNER"]
-            }
-
-            result["pagination"] = {
-                "page": page,
-                "limit": limit,
-                "totalItems": total_items,
-                "totalPages": total_pages,
-                "hasNext": page < total_pages,
-                "hasPrev": page > 1
-            }
-
-            result["filters"] = {
-                "applied": {
-                    k: v for k, v in {
-                        "search": search,
-                        "record_types": record_types,
-                        "origins": origins,
-                        "connectors": connectors,
-                        "indexing_status": indexing_status,
-                        "sort_by": sort_by,
-                        "sort_order": sort_order,
-                    }.items() if v is not None
-                },
-                "available": result.get("availableFilters", {})
-            }
-
-            # # Add breadcrumb navigation
-            # result["breadcrumbs"] = await self.graph_provider.get_breadcrumb_path(
-            #     kb_id=kb_id,
-            #     folder_id=folder_id
-            # )
-
-            self.logger.info(f"✅ Folder children retrieved: {result['counts']['folders']} folders, {result['counts']['records']} records")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get folder children with pagination: {str(e)}")
-            return self._error_response(500, str(e))
-
-    def _error_response(self, code: int, reason: str) -> Dict:
-        """Create consistent error response"""
-        return {
-            "success": False,
-            "code": code,
-            "reason": reason
-        }
-
-    # Convenience methods that call the unified method
-    async def upload_records_to_kb(self, kb_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
-        """Upload to KB root"""
-        return await self.graph_provider.upload_records(kb_id, user_id, org_id, files, parent_folder_id=None)
-
-    async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
-        """Upload to specific folder"""
-        return await self.graph_provider.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)
+    async def upload_records_to_folder(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+    ) -> Dict:
+        """Upload to specific folder."""
+        return await self.custom_connector_service.upload_files(
+            instance_id=kb_id,
+            files=files,
+            user_id=user_id,
+            org_id=org_id,
+            is_restricted=True,
+            parent_id=folder_id,
+        )
 
     async def move_record(
         self,
@@ -1789,168 +529,17 @@ class KnowledgeBaseService:
         new_parent_id: Optional[str],
         user_id: str,
     ) -> Dict:
-        """
-        Move a record (file or folder) to a new location within the same KB.
+        """Move a record to a new location within the same KB."""
+        result = await self.custom_connector_service.move_record(
+            record_id=record_id,
+            instance_id=kb_id,
+            new_parent_id=new_parent_id,
+            user_id=user_id,
+        )
+        if isinstance(result, dict) and "instanceId" in result:
+            result["kbId"] = result.pop("instanceId")
+        return result
 
-        Args:
-            kb_id:          The knowledge base ID.
-            record_id:      The record to move (_key in RECORDS collection).
-            new_parent_id:  Target folder ID, or None to move to KB root.
-            user_id:        The requesting user's external userId.
-
-        Returns:
-            Dict with success/failure details.
-        """
-        # Normalise: treat empty string the same as None (= move to KB root)
-        new_parent_id = new_parent_id or None
-        txn_id: Optional[str] = None
-
-        try:
-            destination = "KB root" if new_parent_id is None else f"folder {new_parent_id}"
-            self.logger.info(f"🚀 Moving record {record_id} → {destination} in KB {kb_id}")
-
-            # ── 1. Resolve user ──────────────────────────────────────────────
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
-            user_key = user.get("id") or user.get("_key")
-
-            # ── 2. Permission check ──────────────────────────────────────────
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions to move records. Role: {user_role}",
-                }
-
-            self.logger.info(f"User role: {user_role}")
-
-            # ── 3. Verify record belongs to this KB ──────────────────────────
-            kb_context = await self.graph_provider._get_kb_context_for_record(record_id)
-            if not kb_context or kb_context.get("kb_id") != kb_id:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"Record {record_id} not found in KB {kb_id}",
-                }
-            self.logger.info(f"KB context: {kb_context}")
-
-            # ── 4. Get current parent via RECORD_RELATIONS ───────────────────
-            parent_info = await self.graph_provider.get_record_parent_info(record_id)
-            self.logger.info(f"Parent info: {parent_info}")
-            # parent_info = {"parentId": str, "parentType": "record"|"recordGroup", "edgeKey": str} | None
-            # None  →  record is already at KB root (no PARENT_CHILD edge exists)
-            current_parent_id = parent_info.get("id") if parent_info else ""
-            self.logger.info(f"Current parent id: {current_parent_id}")
-            self.logger.info(
-                f"📍 Record {record_id} current parent: {current_parent_id or 'KB root'}"
-            )
-
-            # ── 5. No-op check ───────────────────────────────────────────────
-            if new_parent_id == current_parent_id:
-                self.logger.info(f"↩️  Record {record_id} already at {destination}, skipping")
-                return {
-                    "success": True,
-                    "message": "Record is already in the requested location",
-                    "recordId": record_id,
-                    "newParentId": new_parent_id,
-                }
-
-            # ── 6. Validate target folder (if not moving to root) ────────────
-            if new_parent_id is not None:
-                folder_valid = await self.graph_provider.validate_folder_in_kb(kb_id, new_parent_id)
-                if not folder_valid:
-                    return {
-                        "success": False,
-                        "code": 404,
-                        "reason": f"Target folder {new_parent_id} not found in KB {kb_id}",
-                    }
-
-                # Circular-reference guard (only relevant when moving a folder)
-                if new_parent_id == record_id:
-                    return {"success": False, "code": 400, "reason": "Cannot move a folder into itself"}
-
-                record_is_folder = await self.graph_provider.is_record_folder(record_id)
-                if record_is_folder:
-                    is_circular = await self.graph_provider.is_record_descendant_of(
-                        record_id=new_parent_id,
-                        ancestor_id=record_id,
-                    )
-                    if is_circular:
-                        return {
-                            "success": False,
-                            "code": 400,
-                            "reason": "Cannot move a folder into one of its own sub-folders (circular reference)",
-                        }
-
-            # ── 7. Transactional graph update ────────────────────────────────
-            txn_id = await self.graph_provider.begin_transaction(
-                read=[],
-                write=[
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                ],
-            )
-
-            # 7a. Delete existing PARENT_CHILD edge (only if there is one)
-            if parent_info is not None:
-                deleted = await self.graph_provider.delete_parent_child_edge_to_record(
-                    record_id=record_id,
-                    transaction=txn_id,
-                )
-                if not deleted:
-                    raise RuntimeError(
-                        f"Failed to delete PARENT_CHILD edge for record {record_id} "
-                        f"(current parent: {current_parent_id})"
-                    )
-                self.logger.info(f"🔗 Removed PARENT_CHILD edge from {current_parent_id} → {record_id}")
-
-            # 7b. Create new PARENT_CHILD edge (skip when moving to KB root)
-            if new_parent_id is not None:
-                created = await self.graph_provider.create_parent_child_edge(
-                    parent_id=new_parent_id,
-                    child_id=record_id,
-                    transaction=txn_id,
-                )
-                if not created:
-                    raise RuntimeError(
-                        f"Failed to create PARENT_CHILD edge from folder {new_parent_id} → record {record_id}"
-                    )
-                self.logger.info(f"🔗 Created PARENT_CHILD edge {new_parent_id} → {record_id}")
-
-            # 7c. Update externalParentId on the record document
-            updated = await self.graph_provider.update_record_external_parent_id(
-                record_id=record_id,
-                new_parent_id=new_parent_id,  # None clears it for KB root
-                transaction=txn_id,
-            )
-            if not updated:
-                raise RuntimeError(f"Failed to update externalParentId for record {record_id}")
-            self.logger.info(f"📝 Updated externalParentId → {new_parent_id!r}")
-
-            await self.graph_provider.commit_transaction(txn_id)
-            txn_id = None  # mark committed so rollback is skipped
-
-            self.logger.info(f"✅ Record {record_id} moved → {destination}")
-            return {
-                "success": True,
-                "recordId": record_id,
-                "kbId": kb_id,
-                "newParentId": new_parent_id,
-                "previousParentId": current_parent_id,
-            }
-
-        except Exception as e:
-            self.logger.error(
-                f"❌ move_record failed: record={record_id} target={new_parent_id!r} "
-                f"kb={kb_id} — {str(e)}",
-                exc_info=True,
-            )
-            if txn_id is not None:
-                try:
-                    await self.graph_provider.rollback_transaction(txn_id)
-                    self.logger.info("🔄 Transaction rolled back")
-                except Exception as rb_err:
-                    self.logger.warning(f"Rollback failed: {rb_err}")
-            return {"success": False, "code": 500, "reason": str(e)}
+    def _error_response(self, code: int, reason: str) -> Dict:
+        """Create consistent error response."""
+        return {"success": False, "code": code, "reason": reason}

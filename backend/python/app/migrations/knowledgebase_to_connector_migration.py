@@ -562,20 +562,11 @@ class KnowledgeBaseToConnectorMigrationService:
                 self.logger.debug(f"Found existing KB app via org_apps for org {org_id}: {existing_kb_app.get('_key')}")
                 return existing_kb_app, False, False
 
-            # Create new KB app with the standard key format
-            from app.connectors.sources.localKB.connector import (
-                KB_CONNECTOR_NAME,
-                KnowledgeBaseConnector,
-            )
-
-            # Get KB connector metadata
-            if not hasattr(KnowledgeBaseConnector, '_connector_metadata'):
-                self.logger.warning("Knowledge Base connector metadata not found")
-                return None, False, False
-
-            metadata = KnowledgeBaseConnector._connector_metadata
-            connector_name = metadata.get('name', KB_CONNECTOR_NAME)
-            app_group = metadata.get('appGroup', AppGroups.LOCAL_STORAGE.value)
+            # KB is a preset of CustomConnector; the old class-level metadata lookup
+            # has been replaced with the fixed preset values used by the org-creation
+            # hook (see entity.py::__create_kb_connector_app_instance).
+            connector_name = "Collections"
+            app_group = AppGroups.LOCAL_STORAGE.value
 
             current_timestamp = get_epoch_timestamp_in_ms()
 

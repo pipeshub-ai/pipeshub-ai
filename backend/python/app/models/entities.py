@@ -202,6 +202,7 @@ class Record(BaseModel):
     shared_with_me_record_group_id: str | None = None
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
+    is_restricted: bool | None = Field(default=False, description="Whether this record inherits permissions from its immediate parent (folder or recordGroup)")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -293,6 +294,7 @@ class Record(BaseModel):
             "parentNodeId": self.parent_node_id,
             "hideWeburl": self.hide_weburl,
             "isInternal": self.is_internal,
+            "isRestricted": self.is_restricted,
         }
 
     @staticmethod
@@ -339,6 +341,7 @@ class Record(BaseModel):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_restricted=arango_base_record.get("isRestricted", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -1670,6 +1673,7 @@ class RecordGroup(BaseModel):
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
     inherit_permissions: bool | None = Field(default=False, description="Permissions for the record group")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
+    is_restricted: bool | None = Field(default=False, description="Whether this record group inherits permissions from its parent app")
 
     def to_arango_base_record_group(self) -> dict:
         return {
@@ -1684,6 +1688,7 @@ class RecordGroup(BaseModel):
             "connectorId": self.connector_id,
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
+            "isRestricted": self.is_restricted,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -1704,6 +1709,7 @@ class RecordGroup(BaseModel):
             connector_name=arango_base_record_group.get("connectorName", Connectors.KNOWLEDGE_BASE),
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
+            is_restricted=arango_base_record_group.get("isRestricted", False),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
@@ -2077,6 +2083,7 @@ class AppMetadata(BaseModel):
     updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
     status: str | None = Field(default=None, description="Current sync status")
     is_locked: bool | None = Field(default=None, description="Whether the app is locked")
+    is_restricted: bool | None = Field(default=False, description="Whether this app's child recordGroups inherit permissions from it")
 
     @staticmethod
     def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
@@ -2098,6 +2105,7 @@ class AppMetadata(BaseModel):
             updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
             status=doc.get("status"),
             is_locked=doc.get("isLocked"),
+            is_restricted=doc.get("isRestricted", False),
         )
 
 class MeetingRecord(Record):
