@@ -1,4 +1,5 @@
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -64,8 +65,8 @@ class ChatQuery(BaseModel):
 
 
 def normalize_web_search_image_settings(
-    settings: Optional[Dict[str, Any]],
-) -> Tuple[bool, int]:
+    settings: dict[str, Any] | None,
+) -> tuple[bool, int]:
     include_images = DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
     max_images = DEFAULT_WEB_SEARCH_MAX_IMAGES
 
@@ -75,7 +76,7 @@ def normalize_web_search_image_settings(
             include_images = raw_include_images
 
         raw_max_images = settings.get("maxImages")
-        parsed_max_images: Optional[int] = None
+        parsed_max_images: int | None = None
         if isinstance(raw_max_images, int) and not isinstance(raw_max_images, bool):
             parsed_max_images = raw_max_images
         elif isinstance(raw_max_images, str):
@@ -198,6 +199,45 @@ _CITATION_SYSTEM_RULES = (
 )
 
 
+def _append_conversation_history(
+    messages: list[dict[str, Any]],
+    previous_conversations: list[dict],
+) -> None:
+    """Append prior user/assistant turns to the message list (mutates in place)."""
+    for conversation in previous_conversations:
+        if conversation.get("role") == "user_query":
+            messages.append({"role": "user", "content": conversation.get("content")})
+        elif conversation.get("role") == "bot_response":
+            messages.append({"role": "assistant", "content": conversation.get("content")})
+
+
+def _build_system_prompt(
+    chat_mode: str,
+    ai_models_config: dict[str, Any],
+    current_time: str | None,
+    timezone: str | None,
+    custom_prompt_key: str = "customSystemPrompt",
+    append_citation_rules: bool = False,
+) -> str:
+    """Build the system prompt with optional custom override, time context, and citation rules."""
+    mode_config = get_model_config_for_mode(chat_mode)
+    custom_system_prompt = ai_models_config.get(custom_prompt_key, "")
+    if custom_system_prompt:
+        mode_config["system_prompt"] = custom_system_prompt
+
+    system_prompt = mode_config["system_prompt"]
+    time_context = build_llm_time_context(
+        current_time=current_time,
+        time_zone=timezone,
+    )
+    if time_context:
+        system_prompt += f"\n\n{time_context}"
+    if append_citation_rules:
+        system_prompt += _CITATION_SYSTEM_RULES
+
+    return system_prompt
+
+
 def _build_chat_llm_messages(
     query_info: ChatQuery,
     ai_models_config: dict[str, Any],
@@ -209,35 +249,50 @@ def _build_chat_llm_messages(
     has_sql_connector: bool=False,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
-    mode_config = get_model_config_for_mode(query_info.chatMode)
-    custom_system_prompt = ai_models_config.get("customSystemPrompt", "")
-    if custom_system_prompt:
-        logger.debug(f"Custom system prompt: {custom_system_prompt}")
-        mode_config["system_prompt"] = custom_system_prompt
-
-    system_prompt = mode_config["system_prompt"]
-    time_context = build_llm_time_context(
+    system_prompt = _build_system_prompt(
+        chat_mode=query_info.chatMode,
+        ai_models_config=ai_models_config,
         current_time=query_info.currentTime,
-        time_zone=query_info.timezone,
+        timezone=query_info.timezone,
+        append_citation_rules=bool(final_results),
     )
-    if time_context:
-        system_prompt += f"\n\n{time_context}"
-    if final_results:
-        system_prompt += _CITATION_SYSTEM_RULES
+    if ai_models_config.get("customSystemPrompt"):
+        logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-
-    for conversation in query_info.previousConversations:
-        if conversation.get("role") == "user_query":
-            messages.append({"role": "user", "content": conversation.get("content")})
-        elif conversation.get("role") == "bot_response":
-            messages.append({"role": "assistant", "content": conversation.get("content")})
+    _append_conversation_history(messages, query_info.previousConversations)
 
     content, ref_mapper = get_message_content(
         final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,is_multimodal_llm=is_multimodal_llm,from_tool=False, has_sql_connector=has_sql_connector
     )
     messages.append({"role": "user", "content": content})
     return messages, ref_mapper
+
+
+def _build_web_search_messages(
+    query_info: ChatQuery,
+    ai_models_config: dict[str, Any],
+    original_query: str,
+) -> list[dict[str, Any]]:
+    """Build LLM messages for web search mode."""
+    system_prompt = _build_system_prompt(
+        chat_mode="web_search",
+        ai_models_config=ai_models_config,
+        current_time=query_info.currentTime,
+        timezone=query_info.timezone,
+        custom_prompt_key="customSystemPromptWebSearch",
+    )
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    _append_conversation_history(messages, query_info.previousConversations)
+
+    messages.append({
+        "role": "user",
+        "content": Template(web_search_user_prompt).render(
+            query=original_query,
+        )
+    })
+    return messages
 
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -372,6 +427,290 @@ async def _iter_prepare_chat_queries_for_retrieval(
 
 #     return ai
 
+async def _generate_internal_search_stream(
+    request: Request,
+    query_info: ChatQuery,
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+) -> AsyncGenerator[str, None]:
+    """Stream generator for internal knowledge-base search mode."""
+    try:
+        container = request.app.container
+        logger = container.logger()
+
+        yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
+
+        try:
+            llm, config, ai_models_config = await get_llm_for_chat(
+                config_service,
+                query_info.modelKey,
+                query_info.modelName,
+                query_info.chatMode,
+            )
+            is_multimodal_llm = config.get("isMultimodal")
+            context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+
+            if llm is None:
+                raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+
+            if config.get("provider").lower() == "ollama":
+                query_info.mode = "no_tools"
+            else:
+                query_info.mode = "simple"
+
+            all_queries: list[str] = []
+            async for kind, payload in _iter_prepare_chat_queries_for_retrieval(
+                llm, query_info
+            ):
+                if kind == "status":
+                    yield create_sse_event("status", payload)
+                else:
+                    all_queries = payload
+                    logger.debug(f"All queries: {all_queries}")
+
+            org_id = request.state.user.get("orgId")
+            user_id = request.state.user.get("userId")
+
+            yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
+
+            result = await retrieval_service.search_with_filters(
+                queries=all_queries,
+                org_id=org_id,
+                user_id=user_id,
+                limit=query_info.limit,
+                filter_groups=query_info.filters,
+            )
+
+            search_results = result.get("searchResults", [])
+            virtual_to_record_map = result.get("virtual_to_record_map", {})
+            status_code = result.get("status_code", 500)
+
+            if status_code in [202, 500, 503, 404]:
+                raise HTTPException(status_code=status_code, detail=result)
+
+            yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
+
+            blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
+
+            virtual_record_id_to_result: dict[str, Any] = {}
+            flattened_results = await get_flattened_results(
+                search_results, blob_store, org_id, is_multimodal_llm,
+                virtual_record_id_to_result, virtual_to_record_map,
+                graph_provider=graph_provider,
+            )
+            await enrich_virtual_record_id_to_result_with_fk_children(
+                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+                )
+
+            final_results = sorted(flattened_results, key=lambda x: (x["virtual_record_id"], x["block_index"]))
+
+            send_user_info = request.query_params.get("sendUserInfo", True)
+            user_data = await _build_llm_user_context_string(
+                graph_provider, user_id, org_id, send_user_info,
+            )
+
+            has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+            if has_sql_connector:
+                tools.append(create_execute_query_tool(
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    conversation_id=query_info.conversationId,
+                    blob_store=blob_store,
+                ))
+
+
+            messages, ref_mapper = _build_chat_llm_messages(
+                query_info,
+                ai_models_config,
+                final_results,
+                virtual_record_id_to_result,
+                user_data,
+                logger,
+                is_multimodal_llm=is_multimodal_llm,
+                has_sql_connector=has_sql_connector,
+            )
+
+            fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+            tools = [fetch_tool]
+            tool_runtime_kwargs = {
+                "blob_store": blob_store,
+                "graph_provider": graph_provider,
+                "org_id": org_id,
+            }
+
+        except HTTPException as e:
+            logger.error(f"HTTPException: {str(e)}", exc_info=True)
+            detail = e.detail
+            if isinstance(detail, dict):
+                yield create_sse_event("error", {
+                    "status": detail.get("status", "error"),
+                    "message": detail.get("message", "No results found"),
+                })
+            else:
+                yield create_sse_event("error", {
+                    "status": "error",
+                    "message": str(detail) if detail else f"HTTP {e.status_code} error",
+                })
+            return
+        except Exception as e:
+            logger.error(f"Error processing internal search query: {str(e)}", exc_info=True)
+            yield create_sse_event("error", {"error": str(e)})
+            return
+
+        try:
+            async for stream_event in stream_llm_response_with_tools(
+                llm=llm,
+                messages=messages,
+                final_results=final_results,
+                all_queries=all_queries,
+                retrieval_service=retrieval_service,
+                user_id=user_id,
+                org_id=org_id,
+                virtual_record_id_to_result=virtual_record_id_to_result,
+                blob_store=blob_store,
+                is_multimodal_llm=is_multimodal_llm,
+                context_length=context_length,
+                tools=tools,
+                tool_runtime_kwargs=tool_runtime_kwargs,
+                target_words_per_chunk=1,
+                mode=query_info.mode,
+                ref_mapper=ref_mapper,
+                max_hops=1,
+            ):
+                yield create_sse_event(stream_event["event"], stream_event["data"])
+        except Exception as stream_error:
+            logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
+            yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
+
+    except Exception as e:
+        logger.error(f"Error in internal search stream: {str(e)}", exc_info=True)
+        yield create_sse_event("error", {"error": str(e)})
+
+
+async def _generate_web_search_stream(
+    request: Request,
+    query_info: ChatQuery,
+    config_service: ConfigurationService,
+) -> AsyncGenerator[str, None]:
+    """Stream generator for web search mode."""
+    try:
+        container = request.app.container
+        logger = container.logger()
+
+        yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
+
+        try:
+            original_query = query_info.query
+
+            llm, config, ai_models_config = await get_llm_for_chat(
+                config_service,
+                query_info.modelKey,
+                query_info.modelName,
+                query_info.chatMode,
+            )
+            is_multimodal_llm = config.get("isMultimodal")
+            context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+
+            if llm is None:
+                raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+
+            if config.get("provider").lower() == "ollama":
+                query_info.mode = "no_tools"
+            else:
+                query_info.mode = "simple"
+
+            # Load web search provider configuration
+            web_search_config = await config_service.get_config(
+                config_node_constants.WEB_SEARCH.value,
+                default={},
+                use_cache=False,
+            )
+            web_search_provider_config = None
+            include_images, max_images = normalize_web_search_image_settings(
+                web_search_config.get("settings") if isinstance(web_search_config, dict) else None
+            )
+            if web_search_config and web_search_config.get("providers"):
+                providers = web_search_config.get("providers", [])
+                default_provider = next(
+                    (p for p in providers if p.get("isDefault")), None,
+                )
+                if default_provider:
+                    web_search_provider_config = {
+                        "provider": default_provider.get("provider"),
+                        "configuration": default_provider.get("configuration", {}),
+                    }
+                    logger.info(
+                        "Web search provider selected",
+                        extra={"provider": web_search_provider_config["provider"]},
+                    )
+                else:
+                    logger.warning("Web search config present but no usable provider found")
+            else:
+                logger.warning("No web search config found; proceeding without a configured provider")
+
+            # Build messages for web search
+            messages = _build_web_search_messages(
+                query_info=query_info,
+                ai_models_config=ai_models_config,
+                original_query=original_query,
+            )
+
+            # Prepare web search tools. Share a single CitationRefMapper across tools so
+            # tiny web-ref URLs minted by one tool can be resolved by another (fetch_url
+            # may receive a ref minted by web_search).
+            ref_mapper = CitationRefMapper()
+            tools = [
+                create_web_search_tool(web_search_provider_config),
+                create_fetch_url_tool(
+                    bool(is_multimodal_llm) and include_images,
+                    ref_mapper=ref_mapper,
+                ),
+            ]
+            tool_runtime_kwargs = {
+                "include_images": include_images,
+                "max_images": max_images,
+            }
+
+        except Exception as e:
+            logger.error(f"Error setting up web search: {str(e)}", exc_info=True)
+            yield create_sse_event("error", {"error": str(e)})
+            return
+
+        org_id = request.state.user.get("orgId")
+        user_id = request.state.user.get("userId")
+
+        try:
+            async for stream_event in stream_llm_response_with_tools(
+                llm=llm,
+                messages=messages,
+                final_results=[],
+                all_queries=[query_info.query],
+                retrieval_service=None,
+                user_id=user_id,
+                org_id=org_id,
+                virtual_record_id_to_result={},
+                blob_store=None,
+                is_multimodal_llm=is_multimodal_llm,
+                context_length=context_length,
+                tools=tools,
+                tool_runtime_kwargs=tool_runtime_kwargs,
+                target_words_per_chunk=1,
+                mode=query_info.mode,
+                ref_mapper=ref_mapper,
+                chat_mode="web_search",
+            ):
+                yield create_sse_event(stream_event["event"], stream_event["data"])
+        except Exception as stream_error:
+            logger.error(f"Error during web search LLM streaming: {str(stream_error)}", exc_info=True)
+            yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
+
+    except Exception as e:
+        logger.error(f"Error in web search stream: {str(e)}", exc_info=True)
+        yield create_sse_event("error", {"error": str(e)})
+
+
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAIStream(
@@ -391,179 +730,28 @@ async def askAIStream(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
-    async def generate_stream() -> AsyncGenerator[str, None]:
-        try:
-            
-            container = request.app.container
-            logger = container.logger()
-
-
-            # Send initial status immediately upon connection
-            yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
-
-            # Process query inline with real-time status updates
-            try:
-                original_query = query_info.query
-                # Get LLM based on user selection or fallback to default
-                llm, config, ai_models_config = await get_llm_for_chat(
-                    config_service,
-                    query_info.modelKey,
-                    query_info.modelName,
-                    query_info.chatMode
-                )
-                is_multimodal_llm = config.get("isMultimodal")
-                context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-
-
-                if llm is None:
-                    raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
-
-
-                query_info.mode = "simple"
-
-                all_queries: list[str] = []
-                async for kind, payload in _iter_prepare_chat_queries_for_retrieval(
-                    llm, query_info
-                ):
-                    if kind == "status":
-                        yield create_sse_event("status", payload)
-                    else:
-                        all_queries = payload
-                        logger.debug(f"All queries: {all_queries}")
-
-                # Execute search
-                org_id = request.state.user.get('orgId')
-                user_id = request.state.user.get('userId')
-
-
-                # ── Shared setup ─────────────────────────────────────────────
-                blob_store = BlobStorage(
-                    logger=logger, config_service=config_service, graph_provider=graph_provider
-                )
-
-                # Process search results
-                search_results = result.get("searchResults", [])
-                virtual_to_record_map = result.get("virtual_to_record_map", {})
-                status_code = result.get("status_code", 500)
-
-                if status_code in [202, 500, 503,404]:
-                    raise HTTPException(status_code=status_code, detail=result)
-
-                yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
-
-                blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
-
-                virtual_record_id_to_result = {}
-                flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map, graph_provider=graph_provider
-                )
-                await enrich_virtual_record_id_to_result_with_fk_children(
-                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
-                )
-
-                final_results = sorted(flattened_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
-
-                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
-
-                send_user_info = request.query_params.get('sendUserInfo', True)
-                user_data = await _build_llm_user_context_string(
-                    graph_provider, user_id, org_id, send_user_info
-                )
-
-                messages, ref_mapper = _build_chat_llm_messages(
-                    query_info,
-                    ai_models_config,
-                    final_results,
-                    virtual_record_id_to_result,
-                    user_data,
-                    logger,
-                    is_multimodal_llm=is_multimodal_llm,
-                    has_sql_connector=has_sql_connector,
-                )
-
-                # Prepare tools
-                fetch_tool = create_fetch_full_record_tool(
-                    virtual_record_id_to_result, org_id, graph_provider, blob_store
-                )
-                tools = [fetch_tool]
-                if has_sql_connector:
-                    tools.append(create_execute_query_tool(
-                        config_service=config_service,
-                        graph_provider=graph_provider,
-                        org_id=org_id,
-                        conversation_id=query_info.conversationId,
-                        blob_store=blob_store,
-                    ))
-
-                messages.append({
-                    "role": "user",
-                    "content": Template(web_search_user_prompt).render(
-                        query=original_query,
-                        mode=query_info.mode,
-                    ),
-                })
-
-            except HTTPException as e:
-                logger.error(f"HTTPException: {str(e)}", exc_info=True)
-                detail = e.detail
-                if isinstance(detail, dict):
-                    yield create_sse_event("error", {
-                        "status": detail.get("status", "error"),
-                        "message": detail.get("message", "No results found")
-                    })
-                else:
-                    yield create_sse_event("error", {
-                        "status": "error",
-                        "message": str(detail) if detail else f"HTTP {e.status_code} error"
-                    })
-                return
-            except Exception as e:
-                logger.error(f"Error processing chat query: {str(e)}", exc_info=True)
-                yield create_sse_event("error", {"error": str(e)})
-                return
-
-            # Stream response with enhanced tool support using your existing implementation
-            logger.debug("Starting LLM stream")
-            try:
-                async for stream_event in stream_llm_response_with_tools(
-                    llm=llm,
-                    messages=messages,
-                    final_results=final_results,
-                    all_queries=all_queries,
-                    retrieval_service=retrieval_service,
-                    user_id=user_id,
-                    org_id=org_id,
-                    virtual_record_id_to_result=virtual_record_id_to_result,
-                    blob_store=blob_store,
-                    is_multimodal_llm=is_multimodal_llm,
-                    context_length=context_length,
-                    tools=tools,
-                    tool_runtime_kwargs=tool_runtime_kwargs,
-                    target_words_per_chunk=1,
-                    mode=query_info.mode,
-                    ref_mapper=ref_mapper,
-                    conversation_id=query_info.conversationId,
-                ):
-                    event_type = stream_event["event"]
-                    event_data = stream_event["data"]
-                    yield create_sse_event(event_type, event_data)
-
-                logger.info("Chat stream completed successfully")
-            except Exception as stream_error:
-                logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
-                yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
-
-        except Exception as e:
-            logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
-            yield create_sse_event("error", {"error": str(e)})
+    if query_info.chatMode == "web_search":
+        stream = _generate_web_search_stream(
+            request=request,
+            query_info=query_info,
+            config_service=config_service,
+        )
+    else:
+        stream = _generate_internal_search_stream(
+            request=request,
+            query_info=query_info,
+            retrieval_service=retrieval_service,
+            graph_provider=graph_provider,
+            config_service=config_service,
+        )
 
     return StreamingResponse(
-        generate_stream(),
+        stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Cache-Control"
-        }
+            "Access-Control-Allow-Headers": "Cache-Control",
+        },
     )

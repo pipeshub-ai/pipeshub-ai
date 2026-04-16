@@ -3575,7 +3575,7 @@ export const getCustomSystemPrompt =
       );
 
       if (!encryptedAIConfig) {
-        res.status(200).json({ customSystemPromptInternal: '', customSystemPromptWebSearch: '' }).end();
+        res.status(200).json({ customSystemPrompt: '', customSystemPromptWebSearch: '' }).end();
         return;
       }
 
@@ -3586,9 +3586,9 @@ export const getCustomSystemPrompt =
         ).decrypt(encryptedAIConfig),
       );
 
-      const customSystemPromptInternal = aiModels.customSystemPromptInternal || '';
+      const customSystemPrompt = aiModels.customSystemPrompt || '';
       const customSystemPromptWebSearch = aiModels.customSystemPromptWebSearch || '';
-      res.status(200).json({ customSystemPromptInternal, customSystemPromptWebSearch }).end();
+      res.status(200).json({ customSystemPrompt, customSystemPromptWebSearch }).end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
       next(error);
@@ -3599,10 +3599,10 @@ export const setCustomSystemPrompt =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { customSystemPromptInternal, customSystemPromptWebSearch } = req.body;
+      const { customSystemPrompt, customSystemPromptWebSearch } = req.body;
 
-      if (typeof customSystemPromptInternal !== 'string') {
-        throw new BadRequestError('customSystemPromptInternal must be a string');
+      if (typeof customSystemPrompt !== 'string') {
+        throw new BadRequestError('customSystemPrompt must be a string');
       }
       if (typeof customSystemPromptWebSearch !== 'string') {
         throw new BadRequestError('customSystemPromptWebSearch must be a string');
@@ -3630,7 +3630,7 @@ export const setCustomSystemPrompt =
         }
 
         // Update only the custom prompt fields, keeping everything else intact
-        aiModels.customSystemPromptInternal = customSystemPromptInternal;
+        aiModels.customSystemPrompt = customSystemPrompt;
         aiModels.customSystemPromptWebSearch = customSystemPromptWebSearch;
 
         // Encrypt the updated configuration
@@ -3666,7 +3666,7 @@ export const setCustomSystemPrompt =
 
       res.status(200).json({
         message: 'Custom system prompts updated successfully',
-        customSystemPromptInternal,
+        customSystemPrompt,
         customSystemPromptWebSearch,
       });
     } catch (error: any) {

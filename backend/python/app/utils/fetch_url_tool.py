@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from app.utils.chat_helpers import CitationRefMapper
+from app.utils.citations import extract_tiny_ref
 from app.utils.html_to_blocks import html_to_blocks
 from app.utils.url_fetcher import fetch_url
 
@@ -74,20 +76,38 @@ def split_long_text(text: str, max_words: int = 200) -> list[str]:
 
 
 
+def _resolve_tiny_ref_url(url: str, ref_mapper: CitationRefMapper | None) -> str:
+    """If the incoming URL is a tiny web-ref (https://refN.xyz), resolve it to the
+    real URL stored in the ref_mapper. Otherwise return the URL unchanged.
+
+    Also strips any text-fragment (#:~:text=...) before fetching so the HTTP
+    request targets the page itself, not the fragment.
+    """
+    if not url:
+        return url
+    inner_ref = extract_tiny_ref(url)
+    if inner_ref and ref_mapper is not None:
+        resolved = ref_mapper.ref_to_url.get(inner_ref)
+        if resolved:
+            url = resolved
+    # Drop text fragment: HTTP servers do not use it, and keeping it breaks fetches for some hosts.
+    if "#:~:text=" in url:
+        url = url.split("#:~:text=", 1)[0]
+    return url
+
+
 def create_fetch_url_tool(
-    url_counter: dict[str, int] | None = None,
     is_multimodal_llm: bool = False,
+    ref_mapper: CitationRefMapper | None = None,
 ) -> BaseTool:
     """
     Factory function to create fetch URL tool.
 
     Args:
-        url_counter: Shared counter dict to track URL numbers across multiple calls.
-                    Pass {"count": 0} to track W1, W2, W3, etc.
+        ref_mapper: Shared CitationRefMapper. When the LLM passes a tiny web-ref URL
+                    (https://refN.xyz) as the `url` argument, it is resolved back to
+                    the real URL via this mapper.
     """
-    if url_counter is None:
-        url_counter = {"count": 0}
-
     @tool("fetch_url", args_schema=FetchUrlArgs)
     def fetch_url_tool(url: str) -> dict[str, Any]:
         """
@@ -104,6 +124,13 @@ def create_fetch_url_tool(
             fetch_url(url="https://docs.python.org/3/tutorial/classes.html")
         """
         try:
+            url = _resolve_tiny_ref_url(url, ref_mapper)
+            if "ref" in url and "xyz" in url:
+                logger.warning(f"failed to resolve tiny ref url: {url}")
+                return {
+                    "ok": False,
+                    "error": f"Failed to get content from that url, please try again with the correct URL, or use a different one."
+                }
             parsed = urlparse(url)
             if parsed.scheme not in ('http', 'https'):
                 return {
@@ -141,17 +168,14 @@ def create_fetch_url_tool(
                     "error": "No content available from the url"
                 }
 
-            url_counter["count"] += 1
-            url_number = url_counter["count"]
 
-            logger.info(f"Fetched URL {url}: {len(blocks)} blocks extracted, assigned W{url_number}")
+            logger.info(f"Fetched URL {url}: {len(blocks)} blocks extracted")
 
             return {
                 "ok": True,
                 "result_type": "url_content",
                 "url": url,
                 "blocks": blocks,
-                "url_number": url_number
             }
         except Exception as e:
             logger.exception("Unexpected error fetching URL %s: %s", url, str(e))

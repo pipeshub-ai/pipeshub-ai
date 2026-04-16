@@ -26,18 +26,18 @@ const DEFAULT_WEB_SEARCH_PROMPT =
   'You are a helpful web research assistant.';
 
 type PromptsSettingsData = {
-  customSystemPromptInternal: string;
+  customSystemPrompt: string;
   customSystemPromptWebSearch: string;
 };
 
 export default function PromptsSettings() {
   const theme = useTheme();
   const [settings, setSettings] = useState<PromptsSettingsData>({
-    customSystemPromptInternal: DEFAULT_INTERNAL_PROMPT,
+    customSystemPrompt: DEFAULT_INTERNAL_PROMPT,
     customSystemPromptWebSearch: DEFAULT_WEB_SEARCH_PROMPT,
   });
   const [originalSettings, setOriginalSettings] = useState<PromptsSettingsData>({
-    customSystemPromptInternal: DEFAULT_INTERNAL_PROMPT,
+    customSystemPrompt: DEFAULT_INTERNAL_PROMPT,
     customSystemPromptWebSearch: DEFAULT_WEB_SEARCH_PROMPT,
   });
   const [saving, setSaving] = useState(false);
@@ -56,12 +56,12 @@ export default function PromptsSettings() {
       try {
         const res = await axios.get('/api/v1/configurationManager/prompts/system');
         if (mounted) {
-          const customSystemPromptInternal =
-            res.data?.customSystemPromptInternal || DEFAULT_INTERNAL_PROMPT;
+          const customSystemPrompt =
+            res.data?.customSystemPrompt || DEFAULT_INTERNAL_PROMPT;
           const customSystemPromptWebSearch =
             res.data?.customSystemPromptWebSearch || DEFAULT_WEB_SEARCH_PROMPT;
           const loaded: PromptsSettingsData = {
-            customSystemPromptInternal,
+            customSystemPrompt,
             customSystemPromptWebSearch,
           };
           setSettings(loaded);
@@ -85,7 +85,7 @@ export default function PromptsSettings() {
     setError(null);
     try {
       await axios.put('/api/v1/configurationManager/prompts/system', {
-        customSystemPromptInternal: settings.customSystemPromptInternal,
+        customSystemPrompt: settings.customSystemPrompt,
         customSystemPromptWebSearch: settings.customSystemPromptWebSearch,
       });
       showSuccessSnackbar('Custom system prompts saved successfully');
@@ -107,7 +107,7 @@ export default function PromptsSettings() {
 
   const hasChanges = useMemo(
     () =>
-      settings.customSystemPromptInternal !== originalSettings.customSystemPromptInternal ||
+      settings.customSystemPrompt !== originalSettings.customSystemPrompt ||
       settings.customSystemPromptWebSearch !== originalSettings.customSystemPromptWebSearch,
     [settings, originalSettings]
   );
@@ -338,11 +338,11 @@ export default function PromptsSettings() {
           {renderPromptSection(
             'Internal Search',
             'System prompt used when answering from your internal knowledge base',
-            settings.customSystemPromptInternal,
+            settings.customSystemPrompt,
             DEFAULT_INTERNAL_PROMPT,
             'This prompt guides the AI when answering from internal documents. Changes take effect immediately for new conversations.',
-            (val) => setSettings((prev) => ({ ...prev, customSystemPromptInternal: val })),
-            () => setSettings((prev) => ({ ...prev, customSystemPromptInternal: DEFAULT_INTERNAL_PROMPT }))
+            (val) => setSettings((prev) => ({ ...prev, customSystemPrompt: val })),
+            () => setSettings((prev) => ({ ...prev, customSystemPrompt: DEFAULT_INTERNAL_PROMPT }))
           )}
 
           {renderPromptSection(

@@ -6598,11 +6598,11 @@ async def respond_node(
             tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
-            is_agent=True,  # Use agent schemas (with referenceData support)
             conversation_id=state.get("conversation_id"),
             is_service_account=is_service_account,
             filter_groups=agent_filter_groups,
             ref_mapper=state.get("citation_ref_mapper"),
+            max_hops=1,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

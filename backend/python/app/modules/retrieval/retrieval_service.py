@@ -278,9 +278,7 @@ class RetrievalService:
         filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
         virtual_record_ids_from_tool: list[str] | None = None,
-        graph_provider: IGraphDBProvider | None = None,
         knowledge_search:bool = False,
-        is_agent:bool = False,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
 
@@ -591,7 +589,7 @@ class RetrievalService:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
                     "No records indexed yet. Please upload documents or enable connectors to index content",
-                    Status.EMPTY_RESPONSE if is_agent else Status.VECTOR_DB_EMPTY,
+                    Status.VECTOR_DB_EMPTY,
                 )
         except ValueError as e:
             self.logger.error(f"ValueError: {e}")
