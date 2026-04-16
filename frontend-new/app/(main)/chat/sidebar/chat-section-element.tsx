@@ -181,15 +181,17 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={
-          <ChatItemMenu
-            isParentHovered={isHovered}
-            onOpenChange={setMenuOpen}
-            onRename={handleStartRename}
-            onArchive={() => setArchiveDialogOpen(true)}
-            onDelete={() => setDeleteDialogOpen(true)}
-            showRename={!agentId}
-            showArchive={!agentId}
-          />
+          conversation.isOwner !== false ? (
+            <ChatItemMenu
+              isParentHovered={isHovered}
+              onOpenChange={setMenuOpen}
+              onRename={handleStartRename}
+              onArchive={() => setArchiveDialogOpen(true)}
+              onDelete={() => setDeleteDialogOpen(true)}
+              showRename={!agentId}
+              showArchive={!agentId}
+            />
+          ) : undefined
         }
       />
 

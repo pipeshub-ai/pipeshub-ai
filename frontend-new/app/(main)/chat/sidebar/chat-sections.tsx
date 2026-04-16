@@ -103,7 +103,6 @@ export const ChatSections = React.memo(function ChatSections({
         hasError={!!conversationsError}
         currentConversationId={currentConversationId}
         onSelectConversation={handleSelectConversation}
-        onAdd={handleNewChat}
         onNewChat={handleNewChat}
         skeletonCount={SHARED_CHATS_SKELETON_COUNT}
         hasMore={hasMoreShared}
