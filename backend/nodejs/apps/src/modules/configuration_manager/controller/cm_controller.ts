@@ -57,6 +57,7 @@ import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { getPlatformSettingsFromStore } from '../utils/util';
 import { AIModelsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
+import { WebSearchProviderConfiguration } from '../types/web-search.types';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -4060,7 +4061,7 @@ export const updateWebSearchProvider =
 
       // Find the provider with the specified key
       const targetProvider = webSearchConfig.providers?.find(
-        (p: any) => p.providerKey === providerKey,
+        (p: WebSearchProviderConfiguration) => p.providerKey === providerKey,
       );
 
       if (!targetProvider) {
