@@ -97,6 +97,22 @@ export function normalizeDisplayName(name: string): string {
     .join(' ');
 }
 
+/**
+ * Palette / sidebar titles for toolsets and similar ids: matches canvas nodes
+ * (`normalizeDisplayName`) for snake_case, kebab-case, and dotted slugs; leaves
+ * human-readable phrases that already contain spaces unchanged.
+ */
+export function normalizePaletteLabel(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  const noSpaces = !/\s/.test(s);
+  const snakeOrKebab = /[_\-.]/.test(s);
+  const compactAlnum = /^[a-z0-9]+$/i.test(s);
+  const looksLikeSlug = (snakeOrKebab && noSpaces) || (compactAlnum && noSpaces);
+  if (!looksLikeSlug) return s;
+  return normalizeDisplayName(s.replace(/-/g, '_').replace(/\./g, '_'));
+}
+
 export function formattedProvider(provider: string): string {
   switch (provider) {
     case 'azureOpenAI':
