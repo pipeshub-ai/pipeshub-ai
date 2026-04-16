@@ -279,7 +279,7 @@ export function GroupDetailSidebar({
           gap: 'var(--space-4)',
         }}
       >
-        {/* Group Name */}}
+        {/* Group Name */}
         <FormField
           label={t('workspace.groups.detail.nameLabel', 'Group Name')}
         >
