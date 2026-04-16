@@ -14,4 +14,5 @@ spec:
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: main
 {{- end }}

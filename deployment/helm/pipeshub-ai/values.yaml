@@ -474,7 +474,13 @@ qdrant:
 # Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).
 neo4j:
   enabled: true
-  replicaCount: 3  # Neo4j cluster: 3 core servers for HA (causal clustering)
+  # Neo4j causal clustering requires the Enterprise edition and a license.
+  # The default Community image below does NOT support clustering; running
+  # multiple replicas with Community creates independent instances and will
+  # cause data divergence behind the load-balanced Service.
+  # To run HA: switch image.tag to an enterprise variant (e.g. "5.26.0-enterprise"),
+  # accept the license, add clustering env vars, and set replicaCount to 3.
+  replicaCount: 1
   image:
     repository: neo4j
     tag: "5.26.0"

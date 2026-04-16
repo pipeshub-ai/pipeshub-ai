@@ -193,6 +193,7 @@ backend/python/cleanup.ps1
 .vscode/settings.json
 pyrightconfig.json
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 CLAUDE.md
 nul
 backend/python/requirements.txt

@@ -136,11 +136,17 @@ if ! docker image inspect "${APP_IMAGE}" >/dev/null 2>&1; then
   docker pull "${APP_IMAGE}"
 fi
 echo "Loading app image into kind nodes..."
-if ! kind load docker-image "${APP_IMAGE}" --name "${CLUSTER_NAME}"; then
+# kind load uses `docker save -o $TMPDIR/images.tar`. On hosts where /tmp is tmpfs
+# (most systemd distros default to ~half of RAM), a large image can exceed that
+# budget and fail with "disk quota exceeded". Point TMPDIR at disk-backed storage.
+KIND_LOAD_TMPDIR="${HOME}/.cache/pipeshub-kind"
+mkdir -p "${KIND_LOAD_TMPDIR}"
+if ! TMPDIR="${KIND_LOAD_TMPDIR}" kind load docker-image "${APP_IMAGE}" --name "${CLUSTER_NAME}"; then
   echo "Warning: failed to preload image into kind nodes."
   echo "Falling back to pulling image directly from registry in cluster."
   IMAGE_PULL_POLICY="Always"
 fi
+rm -rf "${KIND_LOAD_TMPDIR}"
 echo ""
 
 kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${NAMESPACE}" >/dev/null

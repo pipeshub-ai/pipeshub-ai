@@ -86,7 +86,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: KAFKA_ZOOKEEPER_CONNECT
-              value: "{{- range $i := until (int .Values.zookeeper.replicaCount) }}{{ include "pipeshub-ai.fullname" $ }}-zookeeper-{{ $i }}.{{ include "pipeshub-ai.fullname" $ }}-zookeeper-headless:2181{{ if lt $i (sub (int $.Values.zookeeper.replicaCount) 1) }},{{ end }}{{- end }}"
+              value: "{{- range $i := until (int .Values.zookeeper.replicaCount) }}{{ include "pipeshub-ai.fullname" $ }}-zookeeper-{{ $i }}.{{ include "pipeshub-ai.fullname" $ }}-zookeeper-headless.{{ $.Release.Namespace }}.svc.cluster.local:2181{{ if lt $i (sub (int $.Values.zookeeper.replicaCount) 1) }},{{ end }}{{- end }}"
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
               value: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
             - name: KAFKA_INTER_BROKER_LISTENER_NAME
