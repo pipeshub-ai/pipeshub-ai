@@ -645,8 +645,6 @@ async def _generate_web_search_stream(
                         "Web search provider selected",
                         extra={"provider": web_search_provider_config["provider"]},
                     )
-                else:
-                    logger.warning("Web search config present but no usable provider found")
             else:
                 logger.warning("No web search config found; proceeding without a configured provider")
 

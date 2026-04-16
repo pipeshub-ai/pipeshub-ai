@@ -9,14 +9,14 @@ class AnswerWithMetadataDict(TypedDict):
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record","Web Search"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
 
 class AnswerWithMetadataJSON(BaseModel):
     """Schema for the answer with metadata"""
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Web Search"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
 
 
 web_search_system_prompt = """You are a helpful web research assistant."""

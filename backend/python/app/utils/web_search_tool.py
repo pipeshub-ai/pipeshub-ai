@@ -24,7 +24,8 @@ def _search_with_duckduckgo(query: str, config: dict[str, Any]) -> list[dict[str
         raw_results = ddgs.text(
             query,
             max_results=10,
-            timelimit=None,
+            backend="duckduckgo",
+            region="wt-wt",
         )
     return [
         {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
