@@ -47,6 +47,53 @@ test('journal records pending batches and marks them synced', () => {
   });
 });
 
+test('failed batch becomes replayable and clears once marked synced', () => {
+  withTempDir((dir) => {
+    const journal = new LocalSyncJournal(dir);
+    const connectorId = 'connector-reconnect';
+
+    journal.appendBatch(connectorId, {
+      batchId: 'batch-r1',
+      timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'a.txt', isDirectory: false }],
+    });
+    journal.updateBatchStatus(connectorId, 'batch-r1', 'failed', { lastError: 'offline' });
+
+    // Simulates the retry loop: getReplayableBatches must still return it.
+    let replayable = journal.getReplayableBatches(connectorId);
+    assert.equal(replayable.length, 1);
+    assert.equal(replayable[0].batchId, 'batch-r1');
+    assert.equal(replayable[0].attemptCount, 1);
+
+    // Network returns → dispatcher succeeds → mark synced.
+    journal.updateBatchStatus(connectorId, 'batch-r1', 'synced', { lastError: null });
+    replayable = journal.getReplayableBatches(connectorId);
+    assert.equal(replayable.length, 0);
+    assert.equal(journal.readCursor(connectorId).lastAckBatchId, 'batch-r1');
+  });
+});
+
+test('startup replay sees pending batches left from prior session', () => {
+  withTempDir((dir) => {
+    const j1 = new LocalSyncJournal(dir);
+    const connectorId = 'connector-restart';
+
+    j1.setMeta(connectorId, { apiBaseUrl: 'http://x', rootPath: '/tmp/x' });
+    j1.appendBatch(connectorId, {
+      batchId: 'batch-s1',
+      timestamp: Date.now(),
+      events: [{ type: 'CREATED', path: 'b.txt', isDirectory: false }],
+    });
+
+    // Simulate app restart: new journal instance over the same baseDir.
+    const j2 = new LocalSyncJournal(dir);
+    assert.deepEqual(j2.listConnectorIds(), [connectorId]);
+    const pending = j2.getReplayableBatches(connectorId);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].status, 'pending');
+  });
+});
+
 test('journal tracks failed batches for replay', () => {
   withTempDir((dir) => {
     const journal = new LocalSyncJournal(dir);
