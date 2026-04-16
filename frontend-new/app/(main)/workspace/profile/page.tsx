@@ -10,6 +10,7 @@ import {
   RolesPermissionsSection,
   PasswordSecuritySection,
 } from './components';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useProfilePage } from './hooks/use-profile-page';
 
 // ========================================
@@ -50,7 +51,7 @@ export default function ProfilePage() {
   if (isLoading) {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
-        <Text size="2" style={{ color: 'var(--gray-9)' }}>Loading...</Text>
+        <LottieLoader variant="loader" size={48} showLabel />
       </Flex>
     );
   }
