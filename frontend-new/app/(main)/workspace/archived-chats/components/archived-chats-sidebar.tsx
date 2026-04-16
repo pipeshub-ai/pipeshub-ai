@@ -27,8 +27,8 @@ interface ArchivedChatsSidebarProps {
 const KbdBadge = ({ children }: { children: React.ReactNode }) => (
   <span
     style={{
-      background: 'var(--slate-1)',
-      border: '1px solid var(--slate-3)',
+      background: 'var(--olive-1)',
+      border: '1px solid var(--olive-3)',
       padding: KBD_BADGE_PADDING,
       borderRadius: 'var(--radius-2)',
       fontSize: 12,
@@ -59,8 +59,8 @@ export function ArchivedChatsSidebar({
         width: `${SIDEBAR_WIDTH}px`,
         flexShrink: 0,
         height: '100%',
-        borderRight: '1px solid var(--slate-6)',
-        backgroundColor: 'var(--slate-1)',
+        borderRight: '1px solid var(--olive-3)',
+        backgroundColor: 'var(--olive-1)',
         overflow: 'hidden',
         fontFamily: 'Manrope, sans-serif',
       }}
@@ -73,7 +73,7 @@ export function ArchivedChatsSidebar({
           display: 'flex',
           alignItems: 'center',
           padding: '0 16px',
-          backgroundColor: 'var(--slate-1)',
+          backgroundColor: 'var(--olive-1)',
         }}
       >
         <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>

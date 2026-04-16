@@ -67,11 +67,14 @@ export function AuthMethodRow({
     <Flex
       align="center"
       gap="3"
+      py="3"
+      px="4"
       style={{
-        padding: '12px 14px',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-1)',
+        backgroundColor: 'var(--olive-2)',
+        backdropFilter: 'blur(25px)',
+        opacity: toggleDisabled ? 0.7 : 1,
       }}
     >
       {/* Icon */}
@@ -147,21 +150,33 @@ export function AuthMethodRow({
           <Tooltip content={disabledReason}>
             <span style={{ display: 'inline-flex', alignItems: 'center' }}>
               <Switch
-                color="jade"
+                color="gray"
                 size="2"
                 checked={state.enabled}
                 disabled={toggleDisabled}
                 onCheckedChange={() => onToggle(state.type)}
+                style={
+                  {
+                    '--accent-9': 'rgba(0, 0, 51, 0.25)',
+                    '--accent-indicator': 'white',
+                  } as React.CSSProperties
+                }
               />
             </span>
           </Tooltip>
         ) : (
           <Switch
-            color="jade"
+            color="gray"
             size="2"
             checked={state.enabled}
             disabled={toggleDisabled}
             onCheckedChange={() => onToggle(state.type)}
+            style={
+              {
+                '--accent-9': 'rgba(0, 0, 51, 0.25)',
+                '--accent-indicator': 'white',
+              } as React.CSSProperties
+            }
           />
         )}
       </Flex>

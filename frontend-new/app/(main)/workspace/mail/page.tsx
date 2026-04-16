@@ -117,14 +117,14 @@ export default function MailPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
             marginBottom: 20,
           }}
         >
           {/* Section header */}
-          <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
+          <Box style={{ padding: '14px 16px' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
               Server Configuration
             </Text>
@@ -134,6 +134,9 @@ export default function MailPage() {
             >
               Configure email and other server settings for authentication
             </Text>
+          </Box>
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
           </Box>
 
           {/* SMTP row */}
@@ -150,9 +153,10 @@ export default function MailPage() {
                 gap="3"
                 style={{
                   padding: '12px 14px',
-                  border: '1px solid var(--slate-4)',
-                  borderRadius: 'var(--radius-2)',
-                  backgroundColor: 'var(--slate-1)',
+                  border: '1px solid var(--slate-3)',
+                  borderRadius: 'var(--radius-1)',
+                  background: 'var(--olive-2)',
+                  backdropFilter: 'blur(25px)',
                 }}
               >
                 {/* Mail icon box */}

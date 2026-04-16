@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, Heading, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -285,9 +285,9 @@ export default function WebSearchPage() {
         <Flex
           direction="column"
           style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
             marginBottom: 20,
           }}
         >
@@ -295,7 +295,7 @@ export default function WebSearchPage() {
           <Flex
             align="center"
             justify="between"
-            style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}
+            style={{ padding: '14px 16px' }}
           >
             <Box>
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
@@ -325,6 +325,9 @@ export default function WebSearchPage() {
               </Button>
             )}
           </Flex>
+           <Box px="4">
+                      <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+                    </Box>
 
           {/* Provider rows */}
           {isLoading ? (
@@ -369,18 +372,16 @@ export default function WebSearchPage() {
 
         {/* ── Web Search Provider Policy info box ── */}
         <Flex
-          align="start"
+          align="center"
           gap="3"
           style={{
-            backgroundColor: 'var(--accent-2)',
-            border: '1px solid var(--accent-6)',
-            borderRadius: 'var(--radius-1)',
+            backgroundColor: 'var(--accent-a2)',
             padding: '12px 16px',
           }}
         >
-          <Box style={{ flexShrink: 0, marginTop: 2 }}>
-            <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-          </Box>
+          <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+            <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+          </IconButton>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
               Web Search Provider Policy

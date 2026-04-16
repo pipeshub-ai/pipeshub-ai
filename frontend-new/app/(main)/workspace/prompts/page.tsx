@@ -6,6 +6,7 @@ import {
   Button,
   Flex,
   Heading,
+  IconButton,
   Text,
   TextArea,
 } from '@radix-ui/themes';
@@ -21,52 +22,58 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 interface PromptSectionCardProps {
   children: React.ReactNode;
+  action?: React.ReactNode;
 }
 
-function PromptSectionCard({ children }: PromptSectionCardProps) {
+function PromptSectionCard({ children, action }: PromptSectionCardProps) {
   return (
     <Flex
       direction="column"
       style={{
-        border: '1px solid var(--slate-5)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         overflow: 'hidden',
-        backgroundColor: 'var(--slate-2)',
+        backgroundColor: 'var(--olive-2)',
         backdropFilter: 'blur(25px)',
       }}
     >
       {/* Card header row */}
       <Flex
         align="center"
+        justify="between"
         gap="3"
         style={{ padding: '12px 16px' }}
       >
-        <Flex
-          align="center"
-          justify="center"
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-1)',
-            backgroundColor: 'var(--accent-2)',
-            flexShrink: 0,
-          }}
-        >
-          <MaterialIcon name="edit_note" size={20} color="var(--accent-9)" />
+        <Flex align="center" gap="3">
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 'var(--radius-1)',
+              background: 'var(--slate-a2)',
+              flexShrink: 0,
+            }}
+          >
+            <MaterialIcon name="chat" size={16} color="var(--slate-11)" />
+          </Flex>
+          <Flex direction="column" gap="1">
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              System Prompt
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
+              Define the behaviour and personality of the AI assistant
+            </Text>
+          </Flex>
         </Flex>
-        <Flex direction="column" gap="1" style={{ flex: 1 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            System Prompt
-          </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
-            Define the behaviour and personality of the AI assistant
-          </Text>
-        </Flex>
+        {action}
       </Flex>
 
       {/* Divider */}
-      <Box style={{ height: 1, backgroundColor: 'var(--slate-5)', width: '100%' }} />
-
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+          </Box>
       {/* Content */}
       <Flex direction="column" gap="3" style={{ padding: 16 }}>
         {children}
@@ -78,18 +85,16 @@ function PromptSectionCard({ children }: PromptSectionCardProps) {
 function PromptConfigCallout() {
   return (
     <Flex
-      align="start"
+      align="center"
       gap="3"
       style={{
-        backgroundColor: 'var(--accent-2)',
-        border: '1px solid var(--accent-6)',
-        borderRadius: 'var(--radius-1)',
+        background: 'var(--accent-a2)',
         padding: '12px 16px',
       }}
     >
-      <Box style={{ flexShrink: 0, marginTop: 1 }}>
-        <MaterialIcon name="info" size={16} color="var(--accent-9)" />
-      </Box>
+       <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+        <MaterialIcon name="info" size={16} color="var(--accent-11)" />
+      </IconButton>
       <Flex direction="column" gap="1">
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
           Prompt Configuration
@@ -211,28 +216,31 @@ export default function PromptsPage() {
         <Box style={{ marginBottom: 20 }}>
           <PromptSectionCard>
             {/* Label row */}
-            <Flex align="center" justify="between">
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Custom System Prompt
-              </Text>
-              <Button
-                variant="outline"
-                color="gray"
-                size="2"
-                onClick={handleUseDefault}
-              >
-                Use Default Prompt
-              </Button>
-            </Flex>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              Custom System Prompt
+            </Text>
 
-            {/* Textarea */}
-            <TextArea
-              rows={6}
-              placeholder="Enter your custom system prompt here"
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              style={{ resize: 'vertical' }}
-            />
+            {/* Textarea + button overlay */}
+            <Box style={{ position: 'relative' }}>
+              <TextArea
+                rows={6}
+                placeholder="Enter your custom system prompt here"
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                style={{ resize: 'vertical' }}
+              />
+              <Box style={{ position: 'absolute', top: 8, right: 8 }}>
+                <Button
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={handleUseDefault}
+                  style={{ border: '1px solid var(--emerald-a8)', borderRadius: 'var(--radius-1)', color: 'var(--emerald-a11)', gap: 4, background: 'var(--olive-2)' }}
+                >
+                  Use Default Prompt
+                </Button>
+              </Box>
+            </Box>
 
             {/* Helper text */}
             <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>

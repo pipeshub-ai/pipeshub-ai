@@ -16,6 +16,7 @@ interface WorkspaceRightPanelProps {
   /** Panel header */
   title: string;
   icon?: React.ReactNode;
+  iconSize?: number;
   /** Optional React node to replace the plain title text (e.g. an instance switcher dropdown) */
   titleNode?: React.ReactNode;
 
@@ -42,6 +43,9 @@ interface WorkspaceRightPanelProps {
 
   /** Tooltip shown on the primary button when it is disabled */
   primaryTooltip?: string;
+
+  /** Override styles for the Dialog.Content container */
+  style?: React.CSSProperties;
 }
 
 // ========================================
@@ -53,6 +57,7 @@ export function WorkspaceRightPanel({
   onOpenChange,
   title,
   icon,
+  iconSize = 24,
   titleNode,
   headerActions,
   children,
@@ -64,6 +69,7 @@ export function WorkspaceRightPanel({
   onSecondaryClick,
   hideFooter = false,
   primaryTooltip,
+  style,
 }: WorkspaceRightPanelProps) {
   const handleClose = () => onOpenChange(false);
   const handleSecondaryClick = onSecondaryClick ?? handleClose;
@@ -91,6 +97,7 @@ export function WorkspaceRightPanel({
           transform: 'none',
           animation: 'slideInFromRight 0.2s ease-out',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
+          ...style,
         }}
       >
         <VisuallyHidden>
@@ -112,7 +119,7 @@ export function WorkspaceRightPanel({
           <Flex align="center" gap="2">
             {icon && (
               typeof icon === 'string'
-                ? <MaterialIcon name={icon} size={24} color="var(--slate-12)"/>
+                ? <MaterialIcon name={icon} size={iconSize} color="var(--slate-12)"/>
                 : icon
             )}
             {titleNode ?? (
