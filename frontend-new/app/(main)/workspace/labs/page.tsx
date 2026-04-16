@@ -7,7 +7,7 @@ import {
   Flex,
   Text,
   Heading,
-  Switch,
+  // Switch,
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -134,8 +134,8 @@ function PlatformConfigNote() {
           Platform Configuration
         </Text>
         <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-          Changes to platform settings affect all users and take effect immediately. Feature flags
-          can be toggled to enable or disable specific functionality across the platform.
+          Changes to platform settings affect all users and take effect immediately. 
+          {/* Feature flags can be toggled to enable or disable specific functionality across the platform. */}
         </Text>
       </Flex>
     </Flex>
@@ -152,28 +152,16 @@ export default function LabsPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
-  // ── Store selectors ────────────────────────────────────────
+  // ── Store selectors (must run every render; see Rules of Hooks) ──
   const form = useLabsStore((s) => s.form);
   const savedForm = useLabsStore((s) => s.savedForm);
-  const availableFlags = useLabsStore((s) => s.availableFlags);
+  // const availableFlags = useLabsStore((s) => s.availableFlags);
   const errors = useLabsStore((s) => s.errors);
   const discardDialogOpen = useLabsStore((s) => s.discardDialogOpen);
   const isLoading = useLabsStore((s) => s.isLoading);
 
   const setFileSizeLimitMb = useLabsStore((s) => s.setFileSizeLimitMb);
-  const setFlagValue = useLabsStore((s) => s.setFlagValue);
+  // const setFlagValue = useLabsStore((s) => s.setFlagValue);
   const setForm = useLabsStore((s) => s.setForm);
   const markSaved = useLabsStore((s) => s.markSaved);
   const setErrors = useLabsStore((s) => s.setErrors);
@@ -182,38 +170,36 @@ export default function LabsPage() {
   const setLoading = useLabsStore((s) => s.setLoading);
   const isDirty = useLabsStore((s) => s.isDirty);
 
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   // ── Load config on mount ───────────────────────────────────
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin === false) {
+      return;
+    }
     const fetchConfig = async () => {
       try {
-        const [settingsResult, flagsResult] = await Promise.allSettled([
+        const [settingsResult] = await Promise.allSettled([
           LabsApi.getSettings(),
-          LabsApi.getAvailableFlags(),
         ]);
 
         const settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
-        const availFlags = flagsResult.status === 'fulfilled' ? flagsResult.value.flags : [];
+        // const availFlags = flagsResult.status === 'fulfilled' ? flagsResult.value.flags : [];
 
-        // Build featureFlags map from current settings, falling back to defaultEnabled
-        const featureFlags: Record<string, boolean> = {};
-        for (const flag of availFlags) {
-          featureFlags[flag.key] =
-            settings?.featureFlags[flag.key] ?? flag.defaultEnabled;
-        }
-
-        setForm(
-          {
+        setForm({
             fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
-            featureFlags,
-          },
-          availFlags
-        );
+          featureFlags: {},
+        }, []);
       } catch {
         setLoading(false);
       }
     };
     fetchConfig();
-  }, [setForm, setLoading]);
+  }, [isProfileInitialized, isAdmin, setForm, setLoading]);
 
   // ── Validation ─────────────────────────────────────────────
   const validate = useCallback((): boolean => {
@@ -235,9 +221,6 @@ export default function LabsPage() {
     if (!validate()) return;
 
     const fileSizeDirty = form.fileSizeLimitMb !== savedForm.fileSizeLimitMb;
-    const changedFlags = availableFlags.filter(
-      (f) => form.featureFlags[f.key] !== savedForm.featureFlags[f.key]
-    );
 
     try {
       await LabsApi.saveSettings({
@@ -255,16 +238,6 @@ export default function LabsPage() {
         });
       }
 
-      for (const flag of changedFlags) {
-        const isNowEnabled = form.featureFlags[flag.key];
-        addToast({
-          variant: 'success',
-          title: isNowEnabled ? `${flag.label} enabled` : `${flag.label} disabled`,
-          description: isNowEnabled
-            ? `${flag.label} is now active`
-            : `${flag.label} has been turned off`,
-        });
-      }
     } catch {
       addToast({
         variant: 'error',
@@ -276,7 +249,7 @@ export default function LabsPage() {
         },
       });
     }
-  }, [form, savedForm, availableFlags, validate, markSaved, addToast]);
+  }, [form, savedForm, validate, markSaved, addToast]);
 
   // ── Discard ────────────────────────────────────────────────
   const handleDiscard = useCallback(() => {
@@ -291,6 +264,11 @@ export default function LabsPage() {
       description: 'Your changes have been reverted',
     });
   }, [discardChanges, addToast]);
+
+  // No UI (and no fetch — see effect guard) until profile is known and user is not a confirmed non-admin.
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── File size limit input handler ──────────────────────────
   const handleFileSizeLimitChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -375,32 +353,6 @@ export default function LabsPage() {
             </Flex>
           </SettingsSection>
         </Box>
-
-        {/* ── Feature Flags Section ── */}
-        {availableFlags.length > 0 && (
-          <Box style={{ marginBottom: 20 }}>
-            <SettingsSection
-              title="Feature Flags"
-              description="Toggle platform features on or off"
-            >
-              {availableFlags.map((flag) => (
-                <SettingsRow
-                  key={flag.key}
-                  label={flag.label}
-                  description={flag.description}
-                >
-                  <Flex justify="end">
-                    <Switch
-                      checked={!!form.featureFlags[flag.key]}
-                      onCheckedChange={(checked) => setFlagValue(flag.key, checked)}
-                      size="2"
-                    />
-                  </Flex>
-                </SettingsRow>
-              ))}
-            </SettingsSection>
-          </Box>
-        )}
 
         {/* ── Platform Configuration note ── */}
         <PlatformConfigNote />

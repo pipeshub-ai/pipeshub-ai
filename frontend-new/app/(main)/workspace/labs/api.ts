@@ -52,8 +52,8 @@ export const LabsApi = {
   },
 
   /** GET /platform/feature-flags/available — descriptor list */
-  async getAvailableFlags(): Promise<AvailableFlagsResponse> {
-    const { data } = await apiClient.get<AvailableFlagsResponse>(AVAILABLE_FLAGS_URL);
-    return data;
-  },
+  // async getAvailableFlags(): Promise<AvailableFlagsResponse> {
+  //   const { data } = await apiClient.get<AvailableFlagsResponse>(AVAILABLE_FLAGS_URL);
+  //   return data;
+  // },
 };
