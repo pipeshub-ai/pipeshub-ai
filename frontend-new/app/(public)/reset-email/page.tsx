@@ -32,7 +32,6 @@ function ResetEmailContent() {
     const hash = window.location.hash;
     const hashMatch = hash.match(/[#&?]?token=([^&]+)/);
     const t = hashMatch ? decodeURIComponent(hashMatch[1]) : null;
-    console.log('[reset-email] token extracted from URL hash:', t);
     setToken(t);
     setUrlReady(true);
     // window.location.hash is stable on mount; no reactive deps needed.
