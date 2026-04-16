@@ -1,9 +1,28 @@
 apiVersion: v2
 name: pipeshub-ai
-description: PipeshubAI Helm Chart
+description: AI-powered workflow automation and integration platform
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "v0.3.0"
+home: https://pipeshub.ai
+icon: https://pipeshub.ai/logo.svg
+sources:
+  - https://github.com/pipeshub-ai/pipeshub-ai
+maintainers:
+  - name: PipesHub Team
+    email: support@pipeshub.ai
+    url: https://pipeshub.ai
+keywords:
+  - ai
+  - workflow
+  - automation
+  - integration
+  - mongodb
+  - redis
+  - neo4j
+annotations:
+  category: AI/ML Platform
+  licenses: Apache-2.0
 
 dependencies:
   - name: mongodb

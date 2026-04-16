@@ -109,6 +109,8 @@ spec:
               value: {{ .Values.kafka.config.defaultReplicationFactor | quote }}
             - name: KAFKA_MIN_INSYNC_REPLICAS
               value: {{ .Values.kafka.config.minInsyncReplicas | quote }}
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data/kafka-data"
           command:
             - bash
             - -ec
@@ -120,6 +122,9 @@ spec:
               # Set up listeners with proper advertised addresses
               export KAFKA_LISTENERS="INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092"
               export KAFKA_ADVERTISED_LISTENERS="INTERNAL://${POD_NAME}.{{ include "pipeshub-ai.fullname" . }}-kafka-headless.{{ .Release.Namespace }}.svc.cluster.local:9093,EXTERNAL://${POD_NAME}.{{ include "pipeshub-ai.fullname" . }}-kafka-headless.{{ .Release.Namespace }}.svc.cluster.local:9092"
+
+              # Avoid ext4 lost+found directory conflict in PV root
+              mkdir -p /var/lib/kafka/data/kafka-data
               
               exec /etc/confluent/docker/run
           resources:

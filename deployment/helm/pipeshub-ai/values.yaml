@@ -1,5 +1,51 @@
 replicaCount: 3  # High Availability: 3 replicas for fault tolerance
 
+# Global configuration
+global:
+  # Image registry and pull policy
+  imageRegistry: ""
+  imagePullPolicy: "IfNotPresent"
+  
+  # Common labels applied to all resources
+  commonLabels: {}
+  
+  # Storage class for persistent volumes
+  storageClass: ""
+
+# Secret management configuration
+secretManagement:
+  # External Secrets Operator integration
+  # Requires External Secrets Operator to be installed in the cluster
+  # See: https://external-secrets.io/latest/introduction/getting-started/
+  externalSecrets:
+    enabled: false
+    apiVersion: "v1"  # Use "v1" for ESO v0.17+ (recommended), "v1beta1" for older versions
+    targetSecretName: ""  # Defaults to <release>-pipeshub-ai-secrets
+    secretStoreRef:
+      name: ""
+      kind: "ClusterSecretStore"  # Or "SecretStore" for namespaced
+    refreshInterval: "1h"
+    # Remote references - map these to your external secret store paths
+    remoteRefs:
+      secretKey: ""  # Path in external store (e.g., "pipeshub/app/secret-key")
+      mongodbUsername: ""
+      mongodbPassword: ""
+      redisPassword: ""
+      neo4jPassword: ""
+      arangoPassword: ""
+      qdrantApiKey: ""
+
+  # Existing Kubernetes secret references
+  # Use this if you pre-create secrets manually or via another tool
+  existingSecrets:
+    enabled: false
+    appSecretName: ""  # Secret containing secretKey, etc.
+    mongodbSecretName: ""
+    redisSecretName: ""
+    neo4jSecretName: ""
+    arangoSecretName: ""
+    qdrantSecretName: ""
+
 # If the startup fails due to permissions of "/app/process_monitor.log", build the image with LOG_FILE="/data/pipeshub/process_monitor.log"
 image:
   repository: pipeshubai/pipeshub-ai
@@ -10,6 +56,15 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
 podAnnotations: {}
 podLabels: {}
 
@@ -19,6 +74,31 @@ securityContext: {}
 
 service:
   type: ClusterIP
+
+# Metrics configuration for Prometheus
+metrics:
+  enabled: true
+  port: 9090  # Port for exposing application metrics
+
+# Monitoring configuration
+monitoring:
+  serviceMonitor:
+    enabled: false  # Requires Prometheus Operator CRDs
+    labels: {}  # Labels to match Prometheus selector
+    annotations: {}
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Telemetry configuration (OpenTelemetry)
+telemetry:
+  enabled: false
+  otlp:
+    endpoint: ""  # OTLP endpoint URL (e.g., "http://otel-collector:4317")
+    headers: {}  # Custom headers for OTLP exporter
+    tls:
+      enabled: false
+      insecure: false
 
 ingress:
   enabled: false
@@ -53,6 +133,21 @@ resources:
     memory: 4Gi
   # For small clusters (e.g. kind), use lower requests so the pod can schedule: --set resources.requests.cpu=500m --set resources.requests.memory=1Gi
 
+# Additional volumes for app deployment
+# Example:
+# extraVolumes:
+#   - name: branding
+#     configMap:
+#       name: pipeshub-branding
+extraVolumes: []
+
+# Additional volume mounts for the main container
+# Example:
+# extraVolumeMounts:
+#   - name: branding
+#     mountPath: /app/public/branding
+extraVolumeMounts: []
+
 volumes: {}
 
 volumeMounts: {}
@@ -62,6 +157,63 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Pod Disruption Budget for High Availability
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1  # Ensure at least 1 pod is always available during voluntary disruptions
+  # maxUnavailable: 1  # Alternative: allow max 1 pod to be unavailable
+
+# Network Policy for pod-to-pod communication control
+networkPolicy:
+  enabled: false
+  ingress:
+    # Allow from ingress controller
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+    # Allow from same namespace
+    - from:
+      - podSelector: {}
+  egress:
+    # Allow DNS
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow all TCP egress (for external API calls, databases, etc.)
+    - to:
+      - podSelector: {}
+      ports:
+        - protocol: TCP
+
+# Health check configuration
+healthCheck:
+  # Startup probe for slow-starting applications
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30  # Allows up to 5 minutes to start (10s * 30 = 300s)
+  
+  # Readiness probe configuration
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 12
+  
+  # Liveness probe configuration
+  livenessProbe:
+    initialDelaySeconds: 120
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
 
 autoscaling:
   enabled: true
@@ -94,7 +246,7 @@ autoscaling:
 
 persistence:
   enabled: true
-  storageClass: "" # Fill
+  storageClass: "" # Fill (uses global.storageClass if not set)
   accessModes:
     - ReadWriteOnce
   size: 10Gi
@@ -129,8 +281,8 @@ mongodb:
         - ALL
   auth:
     enabled: true
+    rootUser: "root"  # MongoDB root username for application
     # rootPassword: ""  # Set via --set mongodb.auth.rootPassword=<password> or use external secret
-    # username: pipeshub
     # password: ""  # Set via --set mongodb.auth.password=<password> or use external secret
     # database: pipeshub
   persistence:

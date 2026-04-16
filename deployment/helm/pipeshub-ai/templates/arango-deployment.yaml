@@ -31,7 +31,7 @@ spec:
             - name: ARANGO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.arangoSecretName" . }}
                   key: arango-password
           volumeMounts:
             - name: arango-data

@@ -101,7 +101,7 @@ spec:
             - name: NEO4J_AUTH
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.neo4jSecretName" . }}
                   key: neo4j-auth
             - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
               value: "yes"

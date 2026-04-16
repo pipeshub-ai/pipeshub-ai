@@ -1,3 +1,5 @@
+{{- /* Validate required secrets before deployment */ -}}
+{{- include "pipeshub-ai.validateRequiredSecrets" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,14 +35,15 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      serviceAccountName: {{ include "pipeshub-ai.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
           ports:
             - name: main
               containerPort: 8091
@@ -57,6 +60,11 @@ spec:
             - name: indexing
               containerPort: 8081
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             # Core environment settings
             - name: PORT
@@ -76,7 +84,7 @@ spec:
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.secretName" . }}
                   key: secret-key
             
             # Public endpoints
@@ -112,7 +120,7 @@ spec:
             - name: ARANGO_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.arangoSecretName" . }}
                   key: arango-password
             {{- end }}
             {{- if .Values.neo4j.enabled }}
@@ -128,7 +136,7 @@ spec:
             - name: NEO4J_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.neo4jSecretName" . }}
                   key: neo4j-password
             - name: NEO4J_DATABASE
               value: {{ .Values.neo4j.auth.database | quote }}
@@ -141,42 +149,42 @@ spec:
             # Redis config
             {{- if eq .Values.redis.architecture "standalone" }}
             - name: REDIS_HOST
-              value: "{{ include "pipeshub-ai.fullname" . }}-redis-master"
+              value: "{{ .Release.Name }}-redis-master"
             - name: REDIS_PORT
               value: "6379"
             {{- if .Values.redis.auth.enabled }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
                   key: redis-password
             - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+              value: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-master:6379"
             {{- else }}
             - name: REDIS_PASSWORD
               value: ""
             - name: REDIS_URL
-              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+              value: "redis://{{ .Release.Name }}-redis-master:6379"
             {{- end }}
             {{- else }}
             {{- /* Replication+Sentinel: connect to node-0 (master) via headless DNS */}}
             - name: REDIS_HOST
-              value: "{{ include "pipeshub-ai.fullname" . }}-redis-node-0.{{ include "pipeshub-ai.fullname" . }}-redis-headless"
+              value: "{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless"
             - name: REDIS_PORT
               value: "6379"
             {{- if .Values.redis.auth.enabled }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.redisSecretName" . }}
                   key: redis-password
             - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis-node-0.{{ include "pipeshub-ai.fullname" . }}-redis-headless:6379"
+              value: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless:6379"
             {{- else }}
             - name: REDIS_PASSWORD
               value: ""
             - name: REDIS_URL
-              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis-node-0.{{ include "pipeshub-ai.fullname" . }}-redis-headless:6379"
+              value: "redis://{{ .Release.Name }}-redis-node-0.{{ .Release.Name }}-redis-headless:6379"
             {{- end }}
             {{- end }}
             
@@ -185,18 +193,18 @@ spec:
             - name: MONGO_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
                   key: mongodb-username
             - name: MONGO_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.mongodbSecretName" . }}
                   key: mongodb-password
             - name: MONGO_URI
-              value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-mongodb:27017/?authSource=admin"
+              value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ .Release.Name }}-mongodb:27017/?authSource=admin"
             {{- else }}
             - name: MONGO_URI
-              value: "mongodb://{{ include "pipeshub-ai.fullname" . }}-mongodb:27017"
+              value: "mongodb://{{ .Release.Name }}-mongodb:27017"
             {{- end }}
             - name: MONGO_DB_NAME
               value: "es"
@@ -207,7 +215,7 @@ spec:
             - name: QDRANT_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.qdrantSecretName" . }}
                   key: qdrant-api-key
             - name: QDRANT_HOST
               value: "{{ include "pipeshub-ai.fullname" . }}-qdrant"
@@ -217,6 +225,16 @@ spec:
               value: "6333"
             - name: HOME
               value: /home/user
+            
+            {{- if .Values.telemetry.enabled }}
+            # OpenTelemetry configuration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlp.endpoint }}
+            {{- if .Values.telemetry.otlp.tls.insecure }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            {{- end }}
+            {{- end }}
 
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -238,22 +256,35 @@ spec:
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.healthCheck.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: backend
+            initialDelaySeconds: {{ .Values.healthCheck.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.startupProbe.failureThreshold }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /api/v1/health
               port: backend
-            initialDelaySeconds: 90
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 12
+            initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.readinessProbe.failureThreshold }}
           livenessProbe:
             httpGet:
               path: /api/v1/health
               port: backend
-            initialDelaySeconds: 120
-            periodSeconds: 15
-            timeoutSeconds: 5
-            failureThreshold: 3
+            initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
           {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -275,5 +306,8 @@ spec:
             claimName: {{ include "pipeshub-ai.fullname" . }}
         {{- end }}
         {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

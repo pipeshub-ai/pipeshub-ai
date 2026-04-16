@@ -101,7 +101,7 @@ spec:
             - name: QDRANT__SERVICE__API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  name: {{ include "pipeshub-ai.qdrantSecretName" . }}
                   key: qdrant-api-key
           {{- if gt (int .Values.qdrant.replicaCount) 1 }}
             - name: QDRANT__CLUSTER__ENABLED

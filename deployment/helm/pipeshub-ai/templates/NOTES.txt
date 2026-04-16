@@ -1,0 +1,82 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm get all {{ .Release.Name }}
+
+== IMPORTANT SECURITY NOTE ==
+
+{{- if not .Values.secretManagement.existingSecrets.enabled }}
+{{- if not .Values.secretManagement.externalSecrets.enabled }}
+
+⚠️  Default passwords are in use! Please set secure passwords:
+
+  MongoDB: --set mongodb.auth.rootPassword=<secure-password>
+  Redis: --set redis.auth.password=<secure-password>
+  {{- if .Values.neo4j.enabled }}
+  Neo4j: --set neo4j.auth.password=<secure-password>
+  {{- end }}
+  {{- if .Values.arango.enabled }}
+  ArangoDB: --set arango.auth.rootPassword=<secure-password>
+  {{- end }}
+  App Secret: --set secretKey=$(openssl rand -hex 32)
+
+{{- end }}
+{{- end }}
+
+== DEFAULT CREDENTIALS ==
+
+MongoDB:
+  Username: {{ .Values.mongodb.auth.rootUser | default "root" }}
+  Password: *** (set via --set mongodb.auth.rootPassword)
+
+Redis:
+  Password: *** (set via --set redis.auth.password)
+
+{{- if .Values.neo4j.enabled }}
+
+Neo4j:
+  Username: {{ .Values.neo4j.auth.username }}
+  Password: *** (set via --set neo4j.auth.password)
+
+{{- end }}
+
+== NEXT STEPS ==
+
+1. Install metrics-server for HPA (if autoscaling is enabled):
+   ./deployment/helm/local-install-metrics-server.sh
+
+2. Configure ingress (if needed):
+   --set ingress.enabled=true --set ingress.className=nginx
+
+3. Verify deployment:
+   kubectl get pods -l "app.kubernetes.io/name=pipeshub-ai,app.kubernetes.io/instance={{ .Release.Name }}"
+
+4. Get application URL:
+   kubectl get svc {{ include "pipeshub-ai.fullname" . }}
+
+5. Forward ports for local access:
+   kubectl port-forward svc/{{ include "pipeshub-ai.fullname" . }} 3001:3001 8088:8088
+
+== SERVICE ENDPOINTS ==
+
+  Main Service:      http://localhost:8091
+  Connector:         http://localhost:8088
+  Backend API:       http://localhost:3001
+  Query Service:     http://localhost:8000
+  Indexing Service:  http://localhost:8081
+
+{{- if .Values.ingress.enabled }}
+
+== INGRESS CONFIGURATION ==
+
+Your application is accessible via the configured ingress:
+{{- range .Values.ingress.hosts }}
+  {{ .host }}
+{{- end }}
+
+{{- end }}
+
+For more information, visit: https://pipeshub.ai
