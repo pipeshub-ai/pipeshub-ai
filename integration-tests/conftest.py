@@ -7,7 +7,7 @@ import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncGenerator, List
+from typing import Dict, TYPE_CHECKING, AsyncGenerator, List
 
 import pytest
 import pytest_asyncio
@@ -108,8 +108,157 @@ from local_auth import obtain_local_oauth_credentials  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
 from sample_data import ensure_sample_data_files_root  # noqa: E402
 
-# Module-level ref so pytest_runtest_logreport can append even when report.config is missing (e.g. some pytest versions)
-_integration_test_reports: List[TestReportEntry] = []
+# Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
+_integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
+_integration_test_report_order: List[str] = []
+
+
+def _longrepr_and_streams(report: pytest.TestReport) -> tuple[str, str | None, str | None, str | None]:
+    """Failure text and captured streams from a single phase report."""
+    longrepr = getattr(report, "longrepr", None)
+    longreprtext = getattr(report, "longreprtext", None)
+    if longreprtext:
+        full_text = longreprtext.strip()
+    elif longrepr is not None:
+        full_text = str(longrepr).strip()
+    else:
+        full_text = ""
+
+    outcome = report.outcome
+    err_full = full_text if outcome == "failed" and full_text else None
+
+    stdout_captured = None
+    stderr_captured = None
+    for name, content in getattr(report, "sections", []):
+        if name.startswith("Captured stdout"):
+            stdout_captured = (stdout_captured or "") + content
+        elif name.startswith("Captured stderr"):
+            stderr_captured = (stderr_captured or "") + content
+    return full_text, err_full, stdout_captured, stderr_captured
+
+
+def _merge_phase_report(
+    existing: TestReportEntry,
+    report: pytest.TestReport,
+    *,
+    full_text: str,
+    err_full: str | None,
+    stdout_captured: str | None,
+    stderr_captured: str | None,
+) -> TestReportEntry:
+    """Combine setup/call/teardown into one row per test (matches JUnit overall outcome)."""
+    when = report.when
+    duration = float(getattr(report, "duration", 0) or 0)
+    new_dur = existing.duration + duration
+
+    def combine_err(prefix: str, prev: str | None, nxt: str | None) -> str | None:
+        if not nxt:
+            return prev
+        block = f"--- Failure during {prefix} ---\n{nxt}"
+        if prev:
+            return f"{prev}\n\n{block}"
+        return block
+
+    if report.outcome == "failed":
+        phase_err = err_full or (full_text.strip() if full_text.strip() else None)
+        merged_err = combine_err(str(when), existing.err_full, phase_err)
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="failed",
+            duration=new_dur,
+            err_full=merged_err,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if existing.outcome == "failed":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="failed",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if when == "call":
+        if report.outcome == "skipped":
+            return TestReportEntry(
+                nodeid=existing.nodeid,
+                outcome="skipped",
+                duration=new_dur,
+                err_full=existing.err_full,
+                stdout_captured=existing.stdout_captured or stdout_captured,
+                stderr_captured=existing.stderr_captured or stderr_captured,
+            )
+        if report.outcome == "passed":
+            return TestReportEntry(
+                nodeid=existing.nodeid,
+                outcome="passed",
+                duration=new_dur,
+                err_full=existing.err_full,
+                stdout_captured=existing.stdout_captured or stdout_captured,
+                stderr_captured=existing.stderr_captured or stderr_captured,
+            )
+
+    # setup/teardown passed (or other): keep call outcome, extend duration, merge streams
+    return TestReportEntry(
+        nodeid=existing.nodeid,
+        outcome=existing.outcome,
+        duration=new_dur,
+        err_full=existing.err_full,
+        stdout_captured=existing.stdout_captured or stdout_captured,
+        stderr_captured=existing.stderr_captured or stderr_captured,
+    )
+
+
+def _initial_entry_from_phase(
+    report: pytest.TestReport,
+    *,
+    full_text: str,
+    err_full: str | None,
+    stdout_captured: str | None,
+    stderr_captured: str | None,
+) -> TestReportEntry:
+    when = report.when
+    duration = float(getattr(report, "duration", 0) or 0)
+    if report.outcome == "failed":
+        phase_err = err_full or (full_text.strip() if full_text.strip() else None)
+        return TestReportEntry(
+            nodeid=report.nodeid,
+            outcome="failed",
+            duration=duration,
+            err_full=phase_err,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
+    if when == "call":
+        if report.outcome == "skipped":
+            return TestReportEntry(
+                nodeid=report.nodeid,
+                outcome="skipped",
+                duration=duration,
+                err_full=None,
+                stdout_captured=stdout_captured,
+                stderr_captured=stderr_captured,
+            )
+        return TestReportEntry(
+            nodeid=report.nodeid,
+            outcome="passed",
+            duration=duration,
+            err_full=None,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
+    # First event is setup/teardown passed: provisional until call runs
+    return TestReportEntry(
+        nodeid=report.nodeid,
+        outcome="passed",
+        duration=duration,
+        err_full=None,
+        stdout_captured=stdout_captured,
+        stderr_captured=stderr_captured,
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -268,62 +417,64 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Initialize report collection for the HTML integration report."""
-    global _integration_test_reports
-    _integration_test_reports = []
-    config._integration_test_reports = _integration_test_reports  # type: ignore[attr-defined]
+    global _integration_test_reports_by_nodeid, _integration_test_report_order
+    _integration_test_reports_by_nodeid = {}
+    _integration_test_report_order = []
+    config._integration_test_reports_by_nodeid = _integration_test_reports_by_nodeid  # type: ignore[attr-defined]
+    config._integration_test_report_order = _integration_test_report_order  # type: ignore[attr-defined]
     config._integration_session_start = time.monotonic()  # type: ignore[attr-defined]
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Collect pass/fail/skip + failure text for HTML report."""
-    if report.when != "call":
+    """Collect pass/fail/skip + failure text for HTML report (setup, call, teardown)."""
+    if report.when not in ("setup", "call", "teardown"):
         return
     config = getattr(report, "config", None)
-    reports: List[TestReportEntry] = (
-        getattr(config, "_integration_test_reports", None) if config else None
+    by_nodeid: Dict[str, TestReportEntry] | None = (
+        getattr(config, "_integration_test_reports_by_nodeid", None) if config else None
     )
-    if reports is None:
-        reports = _integration_test_reports
-    longrepr = getattr(report, "longrepr", None)
-    longreprtext = getattr(report, "longreprtext", None)
-    if longreprtext:
-        full_text = longreprtext.strip()
-    elif longrepr is not None:
-        full_text = str(longrepr).strip()
-    else:
-        full_text = ""
+    order: List[str] | None = (
+        getattr(config, "_integration_test_report_order", None) if config else None
+    )
+    if by_nodeid is None:
+        by_nodeid = _integration_test_reports_by_nodeid
+    if order is None:
+        order = _integration_test_report_order
 
-    duration = float(getattr(report, "duration", 0) or 0)
-    outcome = report.outcome
-    err_full = full_text if outcome == "failed" and full_text else None
-
-    stdout_captured = None
-    stderr_captured = None
-    for name, content in getattr(report, "sections", []) or []:
-        if name == "Captured stdout call" or name == "Captured stdout":
-            stdout_captured = (stdout_captured or "") + content
-        elif name == "Captured stderr call" or name == "Captured stderr":
-            stderr_captured = (stderr_captured or "") + content
-
-    reports.append(
-        TestReportEntry(
-            nodeid=report.nodeid,
-            outcome=outcome,
-            duration=duration,
+    full_text, err_full, stdout_captured, stderr_captured = _longrepr_and_streams(report)
+    nodeid = report.nodeid
+    existing = by_nodeid.get(nodeid)
+    if existing is None:
+        by_nodeid[nodeid] = _initial_entry_from_phase(
+            report,
+            full_text=full_text,
             err_full=err_full,
             stdout_captured=stdout_captured,
             stderr_captured=stderr_captured,
         )
-    )
+        order.append(nodeid)
+    else:
+        by_nodeid[nodeid] = _merge_phase_report(
+            existing,
+            report,
+            full_text=full_text,
+            err_full=err_full,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Write integration test HTML report under reports/ with timestamp."""
-    reports: List[TestReportEntry] = getattr(
-        session.config, "_integration_test_reports", None,
+    by_nodeid: Dict[str, TestReportEntry] | None = getattr(
+        session.config, "_integration_test_reports_by_nodeid", None,
     )
-    if reports is None:
-        reports = _integration_test_reports
+    order: List[str] | None = getattr(session.config, "_integration_test_report_order", None)
+    if by_nodeid is None:
+        by_nodeid = _integration_test_reports_by_nodeid
+    if order is None:
+        order = list(by_nodeid.keys())
+    reports: List[TestReportEntry] = [by_nodeid[n] for n in order if n in by_nodeid]
     env_label = "local" if os.getenv("PIPESHUB_TEST_ENV") == "local" else "remote"
     base_url = os.getenv("PIPESHUB_BASE_URL", "")
     now = datetime.now(timezone.utc)
