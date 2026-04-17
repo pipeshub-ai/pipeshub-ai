@@ -1,12 +1,15 @@
-# ruff: noqa
 from __future__ import annotations
 
-from gitlab import Gitlab
-from typing import Dict, List, Optional, Tuple, Union, cast
-from datetime import datetime
-from app.sources.client.gitlab.gitlab import GitLabResponse
-from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, cast
+
 import httpx
+from gitlab import Gitlab
+
+from app.sources.client.gitlab.gitlab import GitLabResponse
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from datetime import datetime
 
 
 class GitLabDataSource:
@@ -16,7 +19,7 @@ class GitLabDataSource:
     Accepts either a python-gitlab `Gitlab` instance *or* any object with `.get_sdk() -> Gitlab`.
     """
 
-    def __init__(self, client_or_sdk: Union[Gitlab, object]) -> None:
+    def __init__(self, client_or_sdk: Gitlab | object) -> None:
         # Support a raw SDK or a wrapper that exposes `.get_sdk()`
         if hasattr(client_or_sdk, "get_sdk"):
             sdk_obj = getattr(client_or_sdk, "get_sdk")
@@ -38,14 +41,14 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # ---- helpers ----
-    def _project(self, project_id: Union[int, str]) -> object:
+    def _project(self, project_id: int | str) -> object:
         # python-gitlab allows numeric ID or full path for project lookup
         return self._sdk.projects.get(project_id)
 
     @staticmethod
-    def _params(**kwargs: object) -> Dict[str, object]:
+    def _params(**kwargs: object) -> dict[str, object]:
         # Filter out Nones to avoid overriding SDK defaults
-        out: Dict[str, object] = {}
+        out: dict[str, object] = {}
         for k, v in kwargs.items():
             if v is None:
                 continue
@@ -57,12 +60,13 @@ class GitLabDataSource:
 
     def list_projects(
         self,
-        search: Optional[str] = None,
-        membership: Optional[bool] = None,
-        owned: Optional[bool] = None,
-        starred: Optional[bool] = None,
-        simple: Optional[bool] = None,
-        get_all: bool = True,
+        search: str | None = None,
+        *,
+        membership: bool | None = None,
+        owned: bool | None = None,
+        starred: bool | None = None,
+        simple: bool | None = None,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List accessible projects (optionally filtered).  [projects]"""
         try:
@@ -78,7 +82,7 @@ class GitLabDataSource:
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
-    def get_project(self, project_id: Union[int, str]) -> GitLabResponse:
+    def get_project(self, project_id: int | str) -> GitLabResponse:
         """Get a single project by ID or path.  [projects]"""
         p = self._project(project_id)
         return GitLabResponse(success=True, data=p)
@@ -86,11 +90,11 @@ class GitLabDataSource:
     def create_project(
         self,
         name: str,
-        namespace_id: Optional[int] = None,
-        visibility: Optional[str] = None,
-        description: Optional[str] = None,
-        initialize_with_readme: Optional[bool] = None,
-        default_branch: Optional[str] = None,
+        namespace_id: int | None = None,
+        visibility: str | None = None,
+        description: str | None = None,
+        initialize_with_readme: bool | None = None,
+        default_branch: str | None = None,
     ) -> GitLabResponse:
         """Create a project.  [projects]"""
         payload = self._params(
@@ -106,12 +110,12 @@ class GitLabDataSource:
 
     def update_project(
         self,
-        project_id: Union[int, str],
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        visibility: Optional[str] = None,
-        default_branch: Optional[str] = None,
-        topics: Optional[List[str]] = None,
+        project_id: int | str,
+        name: str | None = None,
+        description: str | None = None,
+        visibility: str | None = None,
+        default_branch: str | None = None,
+        topics: list[str] | None = None,
     ) -> GitLabResponse:
         """Update mutable project fields.  [projects]"""
         p = self._project(project_id)
@@ -135,7 +139,7 @@ class GitLabDataSource:
             p.save()
         return GitLabResponse(success=True, data=p)
 
-    def delete_project(self, project_id: Union[int, str]) -> GitLabResponse:
+    def delete_project(self, project_id: int | str) -> GitLabResponse:
         """Delete project.  [projects]"""
         p = self._project(project_id)
         p.delete()
@@ -143,16 +147,16 @@ class GitLabDataSource:
 
     def list_issues(
         self,
-        project_id: Union[int, str],
-        state: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        search: Optional[str] = None,
-        author_id: Optional[int] = None,
-        assignee_id: Optional[int] = None,
+        project_id: int | str,
+        state: str | None = None,
+        labels: list[str] | None = None,
+        search: str | None = None,
+        author_id: int | None = None,
+        assignee_id: int | None = None,
         updated_after: datetime | None = None,
         order_by: str | None = None,
         sort: str | None = None,
-        get_all: bool = True,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List project issues with filters.  [issues]"""
         try:
@@ -172,7 +176,7 @@ class GitLabDataSource:
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
-    def get_issue(self, project_id: Union[int, str], issue_iid: int) -> GitLabResponse:
+    def get_issue(self, project_id: int | str, issue_iid: int) -> GitLabResponse:
         """Get a single issue by IID.  [issues]"""
         try:
             p = self._project(project_id)
@@ -183,12 +187,12 @@ class GitLabDataSource:
 
     def create_issue(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         title: str,
-        description: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        assignee_ids: Optional[List[int]] = None,
-        milestone_id: Optional[int] = None,
+        description: str | None = None,
+        labels: list[str] | None = None,
+        assignee_ids: list[int] | None = None,
+        milestone_id: int | None = None,
     ) -> GitLabResponse:
         """Create an issue.  [issues]"""
         p = self._project(project_id)
@@ -204,12 +208,12 @@ class GitLabDataSource:
 
     def update_issue(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         issue_iid: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        state_event: Optional[str] = None,
+        title: str | None = None,
+        description: str | None = None,
+        labels: list[str] | None = None,
+        state_event: str | None = None,
     ) -> GitLabResponse:
         """Update issue fields; use state_event='close'/'reopen' to change state.  [issues]"""
         p = self._project(project_id)
@@ -231,9 +235,7 @@ class GitLabDataSource:
             issue.save()
         return GitLabResponse(success=True, data=issue)
 
-    def delete_issue(
-        self, project_id: Union[int, str], issue_iid: int
-    ) -> GitLabResponse:
+    def delete_issue(self, project_id: int | str, issue_iid: int) -> GitLabResponse:
         """Delete issue.  [issues]"""
         p = self._project(project_id)
         p.issues.delete(issue_iid)
@@ -241,16 +243,16 @@ class GitLabDataSource:
 
     def list_merge_requests(
         self,
-        project_id: Union[int, str],
-        state: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        search: Optional[str] = None,
-        author_id: Optional[int] = None,
-        assignee_id: Optional[int] = None,
+        project_id: int | str,
+        state: str | None = None,
+        labels: list[str] | None = None,
+        search: str | None = None,
+        author_id: int | None = None,
+        assignee_id: int | None = None,
         order_by: str | None = None,
         sort: str | None = None,
         updated_after: datetime | None = None,
-        get_all: bool = True,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
         try:
@@ -271,9 +273,7 @@ class GitLabDataSource:
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
-    def get_merge_request(
-        self, project_id: Union[int, str], mr_iid: int
-    ) -> GitLabResponse:
+    def get_merge_request(self, project_id: int | str, mr_iid: int) -> GitLabResponse:
         """Get a single merge request by IID.  [mrs]"""
         try:
             p = self._project(project_id)
@@ -283,7 +283,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_merge_request_notes(
-        self, project_id: Union[int, str], mr_iid: int, get_all: bool = True
+        self, project_id: int | str, mr_iid: int, get_all: bool | None = None
     ) -> GitLabResponse:
         """List merge request notes.  [mrs]"""
         try:
@@ -295,7 +295,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_merge_request_changes(
-        self, project_id: Union[int, str], mr_iid: int
+        self, project_id: int | str, mr_iid: int
     ) -> GitLabResponse:
         """List merge request changes."""
         try:
@@ -307,29 +307,29 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_merge_requests_commits(
-        self, project_id: Union[int, str], mr_iid: int
+        self, project_id: int | str, mr_iid: int, get_all: bool | None = None
     ) -> GitLabResponse:
         """List commits of a merge request."""
         try:
             p = self._sdk.projects.get(project_id, lazy=True)
             mr = p.mergerequests.get(id=mr_iid, lazy=True)
-            commits = mr.commits(get_all=True)
+            commits = mr.commits(get_all=get_all)
             return GitLabResponse(success=True, data=commits)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
     def create_merge_request(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         source_branch: str,
         target_branch: str,
         title: str,
-        description: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        assignee_id: Optional[int] = None,
-        assignee_ids: Optional[List[int]] = None,
-        remove_source_branch: Optional[bool] = None,
-        draft: Optional[bool] = None,
+        description: str | None = None,
+        labels: list[str] | None = None,
+        assignee_id: int | None = None,
+        assignee_ids: list[int] | None = None,
+        remove_source_branch: bool | None = None,
+        draft: bool | None = None,
     ) -> GitLabResponse:
         """Create a merge request.  [mrs]"""
         p = self._project(project_id)
@@ -349,12 +349,12 @@ class GitLabDataSource:
 
     def update_merge_request(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         mr_iid: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        labels: Optional[List[str]] = None,
-        state_event: Optional[str] = None,
+        title: str | None = None,
+        description: str | None = None,
+        labels: list[str] | None = None,
+        state_event: str | None = None,
     ) -> GitLabResponse:
         """Update MR fields; use state_event to close/reopen.  [mrs]"""
         p = self._project(project_id)
@@ -377,7 +377,7 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=mr)
 
     def delete_merge_request(
-        self, project_id: Union[int, str], mr_iid: int
+        self, project_id: int | str, mr_iid: int
     ) -> GitLabResponse:
         """Delete a merge request.  [mrs]"""
         p = self._project(project_id)
@@ -386,10 +386,10 @@ class GitLabDataSource:
 
     def merge_merge_request(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         mr_iid: int,
-        merge_when_pipeline_succeeds: Optional[bool] = None,
-        squash: Optional[bool] = None,
+        merge_when_pipeline_succeeds: bool | None = None,
+        squash: bool | None = None,
     ) -> GitLabResponse:
         """Accept/merge a merge request.  [mrs]"""
         p = self._project(project_id)
@@ -401,42 +401,42 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=res)
 
     def list_branches(
-        self, project_id: Union[int, str], get_all: bool = True
+        self, project_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List branches for a project.  [branches]"""
         p = self._project(project_id)
         items = p.branches.list(get_all=get_all)
         return GitLabResponse(success=True, data=items)
 
-    def get_branch(self, project_id: Union[int, str], branch: str) -> GitLabResponse:
+    def get_branch(self, project_id: int | str, branch: str) -> GitLabResponse:
         """Get a single branch.  [branches]"""
         p = self._project(project_id)
         b = p.branches.get(branch)
         return GitLabResponse(success=True, data=b)
 
     def create_branch(
-        self, project_id: Union[int, str], branch: str, ref: str
+        self, project_id: int | str, branch: str, ref: str
     ) -> GitLabResponse:
         """Create a branch from ref.  [branches]"""
         p = self._project(project_id)
         b = p.branches.create({"branch": branch, "ref": ref})
         return GitLabResponse(success=True, data=b)
 
-    def delete_branch(self, project_id: Union[int, str], branch: str) -> GitLabResponse:
+    def delete_branch(self, project_id: int | str, branch: str) -> GitLabResponse:
         """Delete a branch.  [branches]"""
         p = self._project(project_id)
         p.branches.delete(branch)
         return GitLabResponse(success=True, data=True)
 
     def list_tags(
-        self, project_id: Union[int, str], get_all: bool = True
+        self, project_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List tags."""
         p = self._project(project_id)
         items = p.tags.list(get_all=get_all)
         return GitLabResponse(success=True, data=items)
 
-    def get_tag(self, project_id: Union[int, str], tag_name: str) -> GitLabResponse:
+    def get_tag(self, project_id: int | str, tag_name: str) -> GitLabResponse:
         """Get a tag."""
         p = self._project(project_id)
         t = p.tags.get(tag_name)
@@ -444,10 +444,10 @@ class GitLabDataSource:
 
     def create_tag(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         tag_name: str,
         ref: str,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> GitLabResponse:
         """Create a tag."""
         p = self._project(project_id)
@@ -455,7 +455,7 @@ class GitLabDataSource:
         t = p.tags.create(payload)
         return GitLabResponse(success=True, data=t)
 
-    def delete_tag(self, project_id: Union[int, str], tag_name: str) -> GitLabResponse:
+    def delete_tag(self, project_id: int | str, tag_name: str) -> GitLabResponse:
         """Delete a tag."""
         p = self._project(project_id)
         p.tags.delete(tag_name)
@@ -463,11 +463,11 @@ class GitLabDataSource:
 
     def list_commits(
         self,
-        project_id: Union[int, str],
-        ref_name: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        get_all: bool = True,
+        project_id: int | str,
+        ref_name: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List commits (supports ref_name/since/until).  [commits]"""
         p = self._project(project_id)
@@ -475,7 +475,7 @@ class GitLabDataSource:
         items = p.commits.list(get_all=get_all, **params)
         return GitLabResponse(success=True, data=items)
 
-    def get_commit(self, project_id: Union[int, str], sha: str) -> GitLabResponse:
+    def get_commit(self, project_id: int | str, sha: str) -> GitLabResponse:
         """Get a single commit.  [commits]"""
         p = self._project(project_id)
         c = p.commits.get(sha)
@@ -483,10 +483,10 @@ class GitLabDataSource:
 
     def create_commit(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         branch: str,
         commit_message: str,
-        actions: List[Dict[str, str]],
+        actions: list[dict[str, str]],
     ) -> GitLabResponse:
         """Create a commit with actions."""
         p = self._project(project_id)
@@ -500,10 +500,10 @@ class GitLabDataSource:
 
     def list_pipelines(
         self,
-        project_id: Union[int, str],
-        ref: Optional[str] = None,
-        status: Optional[str] = None,
-        get_all: bool = True,
+        project_id: int | str,
+        ref: str | None = None,
+        status: str | None = None,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List pipelines."""
         p = self._project(project_id)
@@ -511,9 +511,7 @@ class GitLabDataSource:
         items = p.pipelines.list(get_all=get_all, **params)
         return GitLabResponse(success=True, data=items)
 
-    def get_pipeline(
-        self, project_id: Union[int, str], pipeline_id: int
-    ) -> GitLabResponse:
+    def get_pipeline(self, project_id: int | str, pipeline_id: int) -> GitLabResponse:
         """Get a pipeline."""
         p = self._project(project_id)
         pl = p.pipelines.get(pipeline_id)
@@ -521,9 +519,9 @@ class GitLabDataSource:
 
     def create_pipeline(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         ref: str,
-        variables: Optional[Dict[str, str]] = None,
+        variables: dict[str, str] | None = None,
     ) -> GitLabResponse:
         """Create a pipeline on a ref."""
         p = self._project(project_id)
@@ -537,7 +535,7 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=pl)
 
     def delete_pipeline(
-        self, project_id: Union[int, str], pipeline_id: int
+        self, project_id: int | str, pipeline_id: int
     ) -> GitLabResponse:
         """Delete a pipeline."""
         p = self._project(project_id)
@@ -545,14 +543,14 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=True)
 
     def list_releases(
-        self, project_id: Union[int, str], get_all: bool = True
+        self, project_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List releases."""
         p = self._project(project_id)
         items = p.releases.list(get_all=get_all)
         return GitLabResponse(success=True, data=items)
 
-    def get_release(self, project_id: Union[int, str], tag_name: str) -> GitLabResponse:
+    def get_release(self, project_id: int | str, tag_name: str) -> GitLabResponse:
         """Get a release by tag."""
         p = self._project(project_id)
         r = p.releases.get(tag_name)
@@ -560,11 +558,11 @@ class GitLabDataSource:
 
     def create_release(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         tag_name: str,
         name: str,
         description: str,
-        ref: Optional[str] = None,
+        ref: str | None = None,
     ) -> GitLabResponse:
         """Create a release."""
         p = self._project(project_id)
@@ -576,10 +574,10 @@ class GitLabDataSource:
 
     def update_release(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         tag_name: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> GitLabResponse:
         """Update a release."""
         p = self._project(project_id)
@@ -595,9 +593,7 @@ class GitLabDataSource:
             r.save()
         return GitLabResponse(success=True, data=r)
 
-    def delete_release(
-        self, project_id: Union[int, str], tag_name: str
-    ) -> GitLabResponse:
+    def delete_release(self, project_id: int | str, tag_name: str) -> GitLabResponse:
         """Delete a release."""
         p = self._project(project_id)
         p.releases.delete(tag_name)
@@ -605,9 +601,9 @@ class GitLabDataSource:
 
     def list_milestones(
         self,
-        project_id: Union[int, str],
-        state: Optional[str] = None,
-        get_all: bool = True,
+        project_id: int | str,
+        state: str | None = None,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List project milestones."""
         p = self._project(project_id)
@@ -615,9 +611,7 @@ class GitLabDataSource:
         items = p.milestones.list(get_all=get_all, **params)
         return GitLabResponse(success=True, data=items)
 
-    def get_milestone(
-        self, project_id: Union[int, str], milestone_id: int
-    ) -> GitLabResponse:
+    def get_milestone(self, project_id: int | str, milestone_id: int) -> GitLabResponse:
         """Get a milestone."""
         p = self._project(project_id)
         m = p.milestones.get(milestone_id)
@@ -625,11 +619,11 @@ class GitLabDataSource:
 
     def create_milestone(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         title: str,
-        description: Optional[str] = None,
-        due_date: Optional[str] = None,
-        start_date: Optional[str] = None,
+        description: str | None = None,
+        due_date: str | None = None,
+        start_date: str | None = None,
     ) -> GitLabResponse:
         """Create a milestone."""
         p = self._project(project_id)
@@ -644,13 +638,13 @@ class GitLabDataSource:
 
     def update_milestone(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         milestone_id: int,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        state_event: Optional[str] = None,
-        due_date: Optional[str] = None,
-        start_date: Optional[str] = None,
+        title: str | None = None,
+        description: str | None = None,
+        state_event: str | None = None,
+        due_date: str | None = None,
+        start_date: str | None = None,
     ) -> GitLabResponse:
         """Update a milestone."""
         p = self._project(project_id)
@@ -671,7 +665,7 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=m)
 
     def delete_milestone(
-        self, project_id: Union[int, str], milestone_id: int
+        self, project_id: int | str, milestone_id: int
     ) -> GitLabResponse:
         """Delete a milestone."""
         p = self._project(project_id)
@@ -679,7 +673,7 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=True)
 
     def list_labels(
-        self, project_id: Union[int, str], get_all: bool = True
+        self, project_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List labels."""
         p = self._project(project_id)
@@ -688,10 +682,10 @@ class GitLabDataSource:
 
     def create_label(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         name: str,
         color: str,
-        description: Optional[str] = None,
+        description: str | None = None,
     ) -> GitLabResponse:
         """Create a label."""
         p = self._project(project_id)
@@ -701,11 +695,11 @@ class GitLabDataSource:
 
     def update_label(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         current_name: str,
-        new_name: Optional[str] = None,
-        color: Optional[str] = None,
-        description: Optional[str] = None,
+        new_name: str | None = None,
+        color: str | None = None,
+        description: str | None = None,
     ) -> GitLabResponse:
         """Update a label."""
         p = self._project(project_id)
@@ -716,14 +710,14 @@ class GitLabDataSource:
         lb = p.labels.update(payload)
         return GitLabResponse(success=True, data=lb)
 
-    def delete_label(self, project_id: Union[int, str], name: str) -> GitLabResponse:
+    def delete_label(self, project_id: int | str, name: str) -> GitLabResponse:
         """Delete a label."""
         p = self._project(project_id)
         p.labels.delete(name)
         return GitLabResponse(success=True, data=True)
 
     def list_project_members(
-        self, project_id: Union[int, str], get_all: bool = True
+        self, project_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List project members."""
         try:
@@ -734,7 +728,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_project_members_all(
-        self, project_id: Union[str, int], get_all: bool = True
+        self, project_id: str | int, get_all: bool | None = None
     ) -> GitLabResponse:
         """List project members including inherited ones"""
         try:
@@ -746,10 +740,10 @@ class GitLabDataSource:
 
     def add_project_member(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         user_id: int,
         access_level: int,
-        expires_at: Optional[str] = None,
+        expires_at: str | None = None,
     ) -> GitLabResponse:
         """Add member to project."""
         p = self._project(project_id)
@@ -761,10 +755,10 @@ class GitLabDataSource:
 
     def update_project_member(
         self,
-        project_id: Union[int, str],
+        project_id: int | str,
         user_id: int,
-        access_level: Optional[int] = None,
-        expires_at: Optional[str] = None,
+        access_level: int | None = None,
+        expires_at: str | None = None,
     ) -> GitLabResponse:
         """Update project member."""
         p = self._project(project_id)
@@ -781,7 +775,7 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=m)
 
     def remove_project_member(
-        self, project_id: Union[int, str], user_id: int
+        self, project_id: int | str, user_id: int
     ) -> GitLabResponse:
         """Remove project member."""
         p = self._project(project_id)
@@ -790,9 +784,9 @@ class GitLabDataSource:
 
     def list_groups(
         self,
-        search: Optional[str] = None,
-        get_all: bool = True,
-        owned: Optional[bool] = None,
+        search: str | None = None,
+        get_all: bool | None = None,
+        owned: bool | None = None,
     ) -> GitLabResponse:
         """List groups."""
         try:
@@ -803,7 +797,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_group_members(
-        self, group_id: Union[int, str], get_all: bool = True
+        self, group_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List group members."""
         try:
@@ -814,17 +808,17 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_group_members_all(
-        self, group_id: Union[int, str], get_all: bool = True
+        self, group_id: int | str, get_all: bool | None = None
     ) -> GitLabResponse:
         """List all group members including inherited ones."""
         try:
-            g = self._sdk.groups.get(group_id,lazy=True)
+            g = self._sdk.groups.get(group_id, lazy=True)
             items = g.members_all.list(get_all=get_all)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
-    def get_group(self, group_id: Union[int, str]) -> GitLabResponse:
+    def get_group(self, group_id: int | str) -> GitLabResponse:
         """Get a group by ID or full path."""
         g = self._sdk.groups.get(group_id)
         return GitLabResponse(success=True, data=g)
@@ -833,9 +827,9 @@ class GitLabDataSource:
         self,
         name: str,
         path: str,
-        parent_id: Optional[int] = None,
-        description: Optional[str] = None,
-        visibility: Optional[str] = None,
+        parent_id: int | None = None,
+        description: str | None = None,
+        visibility: str | None = None,
     ) -> GitLabResponse:
         """Create a group or subgroup (see GitLab.com restriction).  [groups]"""
         payload = self._params(
@@ -850,10 +844,10 @@ class GitLabDataSource:
 
     def update_group(
         self,
-        group_id: Union[int, str],
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        visibility: Optional[str] = None,
+        group_id: int | str,
+        name: str | None = None,
+        description: str | None = None,
+        visibility: str | None = None,
     ) -> GitLabResponse:
         """Update group fields.  [groups]"""
         g = self._sdk.groups.get(group_id)
@@ -871,14 +865,14 @@ class GitLabDataSource:
             g.save()
         return GitLabResponse(success=True, data=g)
 
-    def delete_group(self, group_id: Union[int, str]) -> GitLabResponse:
+    def delete_group(self, group_id: int | str) -> GitLabResponse:
         """Delete a group."""
         g = self._sdk.groups.get(group_id)
         g.delete()
         return GitLabResponse(success=True, data=True)
 
     def list_issue_notes(
-        self, project_id: Union[int, str], issue_iid: int, get_all: bool = True
+        self, project_id: int | str, issue_iid: int, get_all: bool | None = None
     ) -> GitLabResponse:
         try:
             # p = self._project(project_id)
@@ -891,10 +885,10 @@ class GitLabDataSource:
 
     def list_repo_tree(
         self,
-        project_id: Union[int, str],
-        ref: Optional[str] = None,
-        recursive: Optional[bool] = None,
-        get_all: bool = True,
+        project_id: int | str,
+        ref: str | None = None,
+        recursive: bool | None = None,
+        get_all: bool | None = None,
     ) -> GitLabResponse:
         """List repository tree."""
         try:
@@ -910,7 +904,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def get_file_content(
-        self, project_id: Union[int, str], file_path: str, ref: str = "HEAD"
+        self, project_id: int | str, file_path: str, ref: str = "HEAD"
     ) -> GitLabResponse:
         """Get code file content."""
         try:
@@ -936,7 +930,7 @@ class GitLabDataSource:
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://gitlab.com/api/graphql"
+            url = "https://gitlab.com/api/graphql"
             query = """
             query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
             project(fullPath: $fullPath) {
@@ -989,8 +983,8 @@ class GitLabDataSource:
 
     async def get_file_tree_g(
         self,
-        project_id: Union[int, str],
-        ref: Optional[str] = None,
+        project_id: int | str,
+        ref: str | None = None,
         after_cursor: str = "",
     ) -> GitLabResponse:
         """Get file tree using GraphQL API."""
@@ -999,7 +993,7 @@ class GitLabDataSource:
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://gitlab.com/api/graphql"
+            url = "https://gitlab.com/api/graphql"
             query = """
             query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
             project(fullPath: $fullPath) {

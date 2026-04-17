@@ -95,6 +95,22 @@ AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
 TOKEN_URL = "https://gitlab.com/oauth/token"
 
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
+UPLOAD_PATTERN = re.compile(
+    r"""
+    (?P<full>
+                    (?:!\[.*?\]|\[.*?\])      # Image or link markdown
+                    \(
+                    (?P<href>
+                        /uploads/
+                        [a-f0-9]{32}/         # 32-char GitLab hash
+                        (?P<filename>[^)\s]+) # filename
+                    )
+                    \)
+                )
+                """,
+    re.VERBOSE | re.IGNORECASE,
+)
 
 
 class FileAttachment(BaseModel):
@@ -317,13 +333,6 @@ class GitLabConnector(BaseConnector):
                 self.logger.info(" STREAM_TICKET_MARKER ")
                 blocks_container = await self._build_ticket_blocks(record)
 
-                # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                #     json_str = blocks_container.model_dump_json(indent=2)
-                #     chunk_size = 81920
-                #     encoded = json_str.encode("utf-8")
-                #     for i in range(0, len(encoded), chunk_size):
-                #         yield encoded[i : i + chunk_size]
-
                 return StreamingResponse(
                     content=iter([blocks_container]),
                     media_type=MimeTypes.BLOCKS.value,
@@ -334,13 +343,6 @@ class GitLabConnector(BaseConnector):
             elif record.record_type == RecordType.PULL_REQUEST:
                 self.logger.info(" STREAM_MERGE_REQUEST_MARKER ")
                 block_container = await self._build_pull_request_blocks(record)
-
-                # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                #     json_str = block_container.model_dump_json(indent=2)
-                #     chunk_size = 81920
-                #     encoded = json_str.encode("utf-8")
-                #     for i in range(0, len(encoded), chunk_size):
-                #         yield encoded[i : i + chunk_size]
 
                 return StreamingResponse(
                     content=iter([block_container]),
@@ -463,7 +465,9 @@ class GitLabConnector(BaseConnector):
     # ---------------------------Users Sync-----------------------------------#
     async def _sync_users(self) -> None:
         """Fetch all active Gitlab users of groups and projects."""
-        groups_res = self.data_source.list_groups(owned=True)
+        groups_res = await asyncio.to_thread(
+            self.data_source.list_groups, owned=True, get_all=True
+        )
         # TODO: check in enterprise edition do gitlab accounts have members directly in it
         total_groups_synced = 0
         total_groups_skipped = 0
@@ -486,7 +490,9 @@ class GitLabConnector(BaseConnector):
                         continue
                     self.logger.debug(f"syncing users for group {group_id}")
                     members_res = await asyncio.to_thread(
-                        self.data_source.list_group_members_all, group_id
+                        self.data_source.list_group_members_all,
+                        group_id=group_id,
+                        get_all=True,
                     )
                     if not members_res.success:
                         self.logger.info(
@@ -506,7 +512,9 @@ class GitLabConnector(BaseConnector):
                     continue
         # syncing from all projects
 
-        projects_res = self.data_source.list_projects(owned=True)
+        projects_res = await asyncio.to_thread(
+            self.data_source.list_projects, owned=True, get_all=True
+        )
         if not projects_res.success:
             self.logger.info(f"Error in fetching projects: {projects_res.error}")
         if projects_res.success and projects_res.data:
@@ -519,7 +527,9 @@ class GitLabConnector(BaseConnector):
                         total_projects_skipped += 1
                         continue
                     members_res = await asyncio.to_thread(
-                        self.data_source.list_project_members_all, project_id=project_id
+                        self.data_source.list_project_members_all,
+                        project_id=project_id,
+                        get_all=True,
                     )
                     if not members_res.success:
                         self.logger.error(
@@ -953,7 +963,11 @@ class GitLabConnector(BaseConnector):
             if not external_group_id:
                 raise Exception("❌❌ Project id not found.")
 
-            file_res = self.data_source.get_file_content(project_id, file_path)
+            file_res = await asyncio.to_thread(
+                self.data_source.get_file_content,
+                project_id=project_id,
+                file_path=file_path,
+            )
             if not file_res.success:
                 self.logger.error(f"error in fetching file content {file_res.error}")
                 raise
@@ -977,7 +991,9 @@ class GitLabConnector(BaseConnector):
         3.Sync merge requests with sync points
         4.Sync repo code files
         """
-        projects_res = self.data_source.list_projects(owned=True)
+        projects_res = await asyncio.to_thread(
+            self.data_source.list_projects, owned=True, get_all=True
+        )
         if not projects_res.success:
             raise Exception("❌❌ Error in fetching projects")
         if not projects_res.data:
@@ -1002,7 +1018,11 @@ class GitLabConnector(BaseConnector):
         project_name = project.name
         dict_member: dict[int, GroupMember] = {}
         self.logger.info(f"Syncing users for project {project_name}")
-        members_res = self.data_source.list_project_members_all(project_id)
+        members_res = await asyncio.to_thread(
+            self.data_source.list_project_members_all,
+            project_id=project_id,
+            get_all=True,
+        )
         if not members_res.success:
             self.logger.error(f"❌❌Error in fetching members for project {project_id}")
             return
@@ -1217,11 +1237,13 @@ class GitLabConnector(BaseConnector):
             since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
         else:
             since_dt = None
-        issues_res = self.data_source.list_issues(
-            project_id,
+        issues_res = await asyncio.to_thread(
+            self.data_source.list_issues,
+            project_id=project_id,
             updated_after=since_dt,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
+            get_all=True,
         )
         if not issues_res.success:
             raise Exception(f"❌❌ Error in fetching issues for project {project_id}")
@@ -1423,11 +1445,11 @@ class GitLabConnector(BaseConnector):
         raw_url = raw_url.split("/")
         issue_number = int(raw_url[7])
         external_group_id: str = getattr(record, "external_record_group_id")
-        project_id = external_group_id.split("-")[0]
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
-        issue_res = self.data_source.get_issue(
-            project_id=project_id, issue_iid=issue_number
+        project_id = external_group_id.split("-")[0]
+        issue_res = await asyncio.to_thread(
+            self.data_source.get_issue, project_id=project_id, issue_iid=issue_number
         )
         if not issue_res.success:
             raise Exception(
@@ -1518,8 +1540,11 @@ class GitLabConnector(BaseConnector):
         # Fetching issue comments if present
         # TODO: will date wise filtering be needed here, as of now None
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = self.data_source.list_issue_notes(
-            project_id=int(project_id), issue_iid=issue_number
+        comments_res = await asyncio.to_thread(
+            self.data_source.list_issue_notes,
+            project_id=int(project_id),
+            issue_iid=issue_number,
+            get_all=True,
         )
         if not comments_res.success:
             raise Exception(
@@ -1586,8 +1611,11 @@ class GitLabConnector(BaseConnector):
         raw_url = mr_url.split("/")
         mr_number = int(raw_url[7])
         project_id = record.external_record_group_id.split("-")[0]
-        comments_res = self.data_source.list_merge_request_notes(
-            project_id=int(project_id), mr_iid=mr_number
+        comments_res = await asyncio.to_thread(
+            self.data_source.list_merge_request_notes,
+            project_id=int(project_id),
+            mr_iid=mr_number,
+            get_all=True,
         )
         if not comments_res.success:
             raise Exception(
@@ -1698,8 +1726,10 @@ class GitLabConnector(BaseConnector):
         # fetching file changes of mr
         # iterate through each file changes, append with new file content
         # to get file content use mr -> sha as ref with path pf file
-        file_changes_res = self.data_source.list_merge_request_changes(
-            project_id=int(project_id), mr_iid=mr_number
+        file_changes_res = await asyncio.to_thread(
+            self.data_source.list_merge_request_changes,
+            project_id=int(project_id),
+            mr_iid=mr_number,
         )
         if not file_changes_res.success:
             self.logger.error(
@@ -1714,8 +1744,10 @@ class GitLabConnector(BaseConnector):
         # TODO: below call Can be avoided once Base SHA and head sha
         # are included as fields in pull request record while streaming
         # Also the additional properties of pr record included while calling stream record
-        tmp_mr_res = self.data_source.get_merge_request(
-            project_id=int(project_id), mr_iid=mr_number
+        tmp_mr_res = await asyncio.to_thread(
+            self.data_source.get_merge_request,
+            project_id=int(project_id),
+            mr_iid=mr_number,
         )
         tmp_mr = tmp_mr_res.data
         tmp_mr_sha = getattr(tmp_mr, "sha", "")
@@ -1731,8 +1763,11 @@ class GitLabConnector(BaseConnector):
             # fetching new file content only if new or changed
             new_file_content = ""
             if is_new_file or not is_deleted_file:
-                new_file_content_res = self.data_source.get_file_content(
-                    project_id=int(project_id), file_path=file_path, ref=tmp_mr_sha
+                new_file_content_res = await asyncio.to_thread(
+                    self.data_source.get_file_content,
+                    project_id=int(project_id),
+                    file_path=file_path,
+                    ref=tmp_mr_sha,
                 )
                 if not new_file_content_res.success:
                     self.logger.error(
@@ -1787,8 +1822,11 @@ class GitLabConnector(BaseConnector):
         self, issue: ProjectIssue, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes body of issues."""
-        notes_res = self.data_source.list_issue_notes(
-            project_id=int(issue.project_id), issue_iid=issue.iid
+        notes_res = await asyncio.to_thread(
+            self.data_source.list_issue_notes,
+            project_id=int(issue.project_id),
+            issue_iid=issue.iid,
+            get_all=True,
         )
         if not notes_res.success:
             raise Exception(
@@ -1817,8 +1855,11 @@ class GitLabConnector(BaseConnector):
         self, mr: ProjectMergeRequest, record: Record
     ) -> list[RecordUpdate]:
         """Make file records from notes of merge request"""
-        notes_res = self.data_source.list_merge_request_notes(
-            project_id=int(mr.project_id), mr_iid=mr.iid
+        notes_res = await asyncio.to_thread(
+            self.data_source.list_merge_request_notes,
+            project_id=int(mr.project_id),
+            mr_iid=mr.iid,
+            get_all=True,
         )
         if not notes_res.success:
             raise Exception(
@@ -1852,11 +1893,13 @@ class GitLabConnector(BaseConnector):
             since_dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
         else:
             since_dt = None
-        prs_res = self.data_source.list_merge_requests(
-            project_id,
+        prs_res = await asyncio.to_thread(
+            self.data_source.list_merge_requests,
+            project_id=project_id,
             updated_after=since_dt,
             order_by=GitlabLiterals.UPDATED_AT.value,
             sort="asc",
+            get_all=True,
         )
         if not prs_res.success:
             self.logger.error(f"Error in fetching issues for projectId {project_id}")
@@ -2011,8 +2054,8 @@ class GitLabConnector(BaseConnector):
         project_id = external_group_id.split("-")[0]
         if not external_group_id:
             raise Exception("❌❌ Project id not found.")
-        mr_res = self.data_source.get_merge_request(
-            project_id=project_id, mr_iid=mr_number
+        mr_res = await asyncio.to_thread(
+            self.data_source.get_merge_request, project_id=project_id, mr_iid=mr_number
         )
         if not mr_res.success:
             raise Exception(
@@ -2069,8 +2112,11 @@ class GitLabConnector(BaseConnector):
         block_group_number += len(comments_bg)
         list_remaining_attachments.extend(remaining_attachments)
         # list commits of mr
-        mr_commits_res = self.data_source.list_merge_requests_commits(
-            project_id=project_id, mr_iid=mr_number
+        mr_commits_res = await asyncio.to_thread(
+            self.data_source.list_merge_requests_commits,
+            project_id=project_id,
+            mr_iid=mr_number,
+            get_all=True,
         )
         if not mr_commits_res.success:
             raise Exception(
@@ -2337,10 +2383,6 @@ class GitLabConnector(BaseConnector):
 
         return None
 
-    async def _log_rate_limit(self, label: str = "") -> None:
-        """Log GitLab rate limit: remaining, limit, and reset time."""
-        return
-
     async def parse_gitlab_uploads_clean_test(
         self, text: str
     ) -> tuple[list[FileAttachment], str]:
@@ -2350,22 +2392,7 @@ class GitLabConnector(BaseConnector):
             list[FileAttachment]: List of file attachments
             str: Cleaned markdown content
         """
-        IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"}
-        UPLOAD_PATTERN = re.compile(
-            r"""
-                (?P<full>
-                    (?:!\[.*?\]|\[.*?\])      # Image or link markdown
-                    \(
-                    (?P<href>
-                        /uploads/
-                        [a-f0-9]{32}/         # 32-char GitLab hash
-                        (?P<filename>[^)\s]+) # filename
-                    )
-                    \)
-                )
-                """,
-            re.VERBOSE | re.IGNORECASE,
-        )
+
         if not isinstance(text, str):
             return [], ""
 

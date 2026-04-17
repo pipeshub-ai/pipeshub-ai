@@ -897,8 +897,8 @@ class TestGitlabConnectorSyncUsers:
         await connector._sync_users()
 
         # Verify
-        mock_data_source.list_groups.assert_called_once_with(owned=True)
-        mock_data_source.list_projects.assert_called_once_with(owned=True)
+        mock_data_source.list_groups.assert_called_once_with(owned=True, get_all=True)
+        mock_data_source.list_projects.assert_called_once_with(owned=True, get_all=True)
         assert mock_data_source.list_group_members_all.call_count == 2
         assert mock_data_source.list_project_members_all.call_count == 2
 
@@ -2942,7 +2942,10 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Verify calls
         mock_tx_store.get_record_path.assert_called_once_with("record-123")
-        connector.data_source.get_file_content.assert_called_once_with("456", file_path)
+        connector.data_source.get_file_content.assert_called_once_with(
+            project_id="456",
+            file_path=file_path,
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_extracts_project_id(self) -> None:
@@ -2986,7 +2989,10 @@ class TestGitlabConnectorFetchCodeFileContent:
             pass
 
         # Verify project_id was extracted correctly
-        connector.data_source.get_file_content.assert_called_once_with("999", file_path)
+        connector.data_source.get_file_content.assert_called_once_with(
+            project_id="999",
+            file_path=file_path,
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_no_external_group_id(self) -> None:
@@ -3300,7 +3306,9 @@ class TestGitlabConnectorFetchCodeFileContent:
             pass
 
         # Verify nested path was used
-        connector.data_source.get_file_content.assert_called_once_with("456", file_path)
+        connector.data_source.get_file_content.assert_called_once_with(
+            project_id="456", file_path=file_path
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_code_file_content_binary_content(self) -> None:
@@ -3510,7 +3518,7 @@ class TestGitlabConnectorSyncProjects:
         await connector._sync_projects()
 
         # Verify
-        mock_data_source.list_projects.assert_called_once_with(owned=True)
+        mock_data_source.list_projects.assert_called_once_with(owned=True, get_all=True)
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
@@ -4354,7 +4362,9 @@ class TestGitlabConnectorSyncProjectMembersAsPseudo:
         await connector._sync_project_members_as_pseudo(mock_project)
 
         # Verify called with the project id
-        connector.data_source.list_project_members_all.assert_called_once_with(555)
+        connector.data_source.list_project_members_all.assert_called_once_with(
+            project_id=555, get_all=True
+        )
 
     @pytest.mark.asyncio
     async def test_sync_project_members_as_pseudo_access_level_exactly_15(self) -> None:
@@ -5021,7 +5031,11 @@ class TestFetchIssuesBatched:
         await connector._fetch_issues_batched(project_id=5)
 
         connector.data_source.list_issues.assert_called_once_with(
-            5, updated_after=None, order_by=GitlabLiterals.UPDATED_AT.value, sort="asc"
+            project_id=5,
+            updated_after=None,
+            order_by=GitlabLiterals.UPDATED_AT.value,
+            sort="asc",
+            get_all=True,
         )
 
     @pytest.mark.asyncio
@@ -6353,7 +6367,7 @@ class TestBuildCommentBlocks:
         )
 
         connector.data_source.list_issue_notes.assert_called_once_with(
-            project_id=99, issue_iid=7
+            project_id=99, issue_iid=7, get_all=True
         )
 
     @pytest.mark.asyncio
@@ -6648,7 +6662,7 @@ class TestBuildMergeRequestCommentBlocks:
         )
 
         connector.data_source.list_merge_request_notes.assert_called_once_with(
-            project_id=99, mr_iid=7
+            project_id=99, mr_iid=7, get_all=True
         )
 
     # ------------------------------------------------------------------
@@ -7236,7 +7250,9 @@ class TestMakeFilesRecordsFromNotes:
         )
 
         connector.data_source.list_issue_notes.assert_called_once_with(
-            project_id=99, issue_iid=3
+            project_id=99,
+            issue_iid=3,
+            get_all=True,
         )
 
     # ── no attachments in notes ───────────────────────────────────────────────
@@ -7534,7 +7550,7 @@ class TestMakeFilesRecordsFromNotesMr:
         )
 
         connector.data_source.list_merge_request_notes.assert_called_once_with(
-            project_id=77, mr_iid=12
+            project_id=77, mr_iid=12, get_all=True
         )
 
     # ── no attachments in notes ───────────────────────────────────────────────
@@ -7816,7 +7832,11 @@ class TestFetchPrsBatched:
         await connector._fetch_prs_batched(project_id=5)
 
         connector.data_source.list_merge_requests.assert_called_once_with(
-            5, updated_after=None, order_by=GitlabLiterals.UPDATED_AT.value, sort="asc"
+            project_id=5,
+            updated_after=None,
+            order_by=GitlabLiterals.UPDATED_AT.value,
+            sort="asc",
+            get_all=True,
         )
 
     @pytest.mark.asyncio
@@ -7860,7 +7880,11 @@ class TestFetchPrsBatched:
         await connector._fetch_prs_batched(project_id=7)
 
         connector.data_source.list_merge_requests.assert_called_once_with(
-            7, updated_after=None, order_by=GitlabLiterals.UPDATED_AT.value, sort="asc"
+            project_id=7,
+            updated_after=None,
+            order_by=GitlabLiterals.UPDATED_AT.value,
+            sort="asc",
+            get_all=True,
         )
 
     # ── batching behaviour ────────────────────────────────────────────────────
@@ -8848,7 +8872,7 @@ class TestBuildPullRequestBlocks:
         await connector._build_pull_request_blocks(record)
 
         connector.data_source.list_merge_requests_commits.assert_called_once_with(
-            project_id="77", mr_iid=5
+            project_id="77", mr_iid=5, get_all=True
         )
 
     # ── commits failure / empty ───────────────────────────────────────────────
