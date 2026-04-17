@@ -341,6 +341,15 @@ export const KnowledgeHubApi = {
  * folders, and records (upload, create, update, delete, permissions).
  */
 export const KnowledgeBaseApi = {
+  // Get upload limits from server (file size, batch size)
+  async getUploadLimits() {
+    const { data } = await apiClient.get<{ maxFilesPerRequest: number; maxFileSizeBytes?: number }>(
+      '/api/v1/knowledgebase/limits',
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
   // List all knowledge bases
   async listKnowledgeBases() {
     const { data } = await apiClient.get<{ knowledgeBases: Record<string, unknown>[]; total: number }>(BASE_URL);

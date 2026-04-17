@@ -10,7 +10,42 @@ import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
 import { useCallback, useMemo, Suspense, useEffect, useRef, useState } from 'react';
 import { toast } from '@/lib/store/toast-store';
-import type { NodeType, EnhancedFolderTreeNode } from '../../knowledge-base/types';
+import type { NodeType, EnhancedFolderTreeNode, CategorizedNodes } from '../../knowledge-base/types';
+
+/**
+ * Find a node in the categorized tree and return its nodeType + root KB ancestor ID.
+ * Root-level nodes (KB collections) have no rootKbId since they ARE the KB.
+ */
+function findNodeWithRootKb(
+  categorizedNodes: CategorizedNodes | null,
+  targetId: string
+): { nodeType: NodeType; rootKbId: string | null } | null {
+  if (!categorizedNodes) return null;
+
+  const searchTree = (
+    nodes: EnhancedFolderTreeNode[],
+    rootKbId: string | null
+  ): { nodeType: NodeType; rootKbId: string | null } | null => {
+    for (const node of nodes) {
+      if (node.id === targetId) {
+        return { nodeType: node.nodeType, rootKbId };
+      }
+      if (node.children?.length) {
+        // For children of a root node, the rootKbId is the root node's ID
+        const childRootKbId = rootKbId ?? node.id;
+        const found = searchTree(node.children as EnhancedFolderTreeNode[], childRootKbId);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  // Root-level nodes: rootKbId is null (they are the KB themselves)
+  return (
+    searchTree(categorizedNodes.shared, null) ||
+    searchTree(categorizedNodes.private, null)
+  );
+}
 
 function KnowledgeBaseSidebarSlotContent() {
   const router = useRouter();
@@ -375,28 +410,44 @@ function KnowledgeBaseSidebarSlotContent() {
   /** Rename: call API directly (no confirmation dialog needed) */
   const handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
     try {
-      await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
-      toast.success('Collection renamed successfully');
+      // Find node in tree to determine type and root KB
+      const state = useKnowledgeBaseStore.getState();
+      const nodeInfo = findNodeWithRootKb(state.categorizedNodes, nodeId);
 
-      // Clear stale cache for breadcrumb path
+      if (nodeInfo && nodeInfo.nodeType === 'folder' && nodeInfo.rootKbId) {
+        await KnowledgeBaseApi.renameFolder(nodeInfo.rootKbId, nodeId, newName);
+        toast.success('Folder renamed successfully');
+      } else {
+        await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
+        toast.success('Collection renamed successfully');
+      }
+
+      // Clear stale cache: breadcrumb path + parent of renamed node (so re-expand shows new name)
       const currentState = useKnowledgeBaseStore.getState();
+      const cacheIdsToClear: string[] = [];
       if (currentState.tableData?.breadcrumbs) {
-        clearNodeCacheEntries(currentState.tableData.breadcrumbs.map(bc => bc.id));
+        cacheIdsToClear.push(...currentState.tableData.breadcrumbs.map(bc => bc.id));
+      }
+      if (nodeInfo?.rootKbId) {
+        cacheIdsToClear.push(nodeInfo.rootKbId);
+      }
+      if (cacheIdsToClear.length > 0) {
+        clearNodeCacheEntries(cacheIdsToClear);
       }
 
       // Refresh Collections via the KB app children (unified API call)
       await refreshKbTree(reMergeCachedChildrenIntoTree);
     } catch (error: unknown) {
       const httpError = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(httpError?.response?.data?.message || 'Failed to rename collection');
+      toast.error(httpError?.response?.data?.message || 'Failed to rename');
       throw error;
     }
   }, [clearNodeCacheEntries, reMergeCachedChildrenIntoTree]);
 
   /** Delete: set pending action → page.tsx picks it up and opens dialog */
   const handleSidebarDelete = useCallback((nodeId: string) => {
+    const state = useKnowledgeBaseStore.getState();
     const findNodeName = (): string => {
-      const state = useKnowledgeBaseStore.getState();
       const searchTree = (nodes: EnhancedFolderTreeNode[]): string | null => {
         for (const n of nodes) {
           if (n.id === nodeId) return n.name;
@@ -413,7 +464,14 @@ function KnowledgeBaseSidebarSlotContent() {
       }
       return nodeId;
     };
-    setPendingSidebarAction({ type: 'delete', nodeId, nodeName: findNodeName() });
+    const nodeInfo = findNodeWithRootKb(state.categorizedNodes, nodeId);
+    setPendingSidebarAction({
+      type: 'delete',
+      nodeId,
+      nodeName: findNodeName(),
+      nodeType: nodeInfo?.nodeType,
+      rootKbId: nodeInfo?.rootKbId ?? undefined,
+    });
   }, [setPendingSidebarAction]);
 
   /** Add private collection: set pending action → page.tsx picks it up and opens dialog */

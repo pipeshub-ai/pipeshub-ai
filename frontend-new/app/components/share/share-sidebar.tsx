@@ -308,6 +308,13 @@ export function ShareSidebar({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
+        onPointerDownOutside={(e) => {
+          // Prevent dialog from closing when clicking portaled role dropdown.
+          // Check if any role dropdown portal exists in the DOM (it's only mounted when open).
+          if (document.querySelector('[data-role-dropdown-portal]')) {
+            e.preventDefault();
+          }
+        }}
         style={{
           position: 'fixed',
           top: 10,
@@ -513,9 +520,9 @@ export function ShareSidebar({
                           }
                           subtitle={member.email}
                           avatarUrl={member.avatarUrl}
-                          isOwner={member.isOwner}
+                          isOwner={false}
                           role={member.role}
-                          showRoleDropdown={!member.isOwner && !member.isCurrentUser}
+                          showRoleDropdown={!member.isCurrentUser}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: 'Full Access', description: 'Chats do not have roles' }
@@ -527,7 +534,7 @@ export function ShareSidebar({
                               : undefined
                           }
                           onRemove={
-                            !member.isOwner && !member.isCurrentUser
+                            !member.isCurrentUser
                               ? () => handleRemoveMember(member.id, member.type)
                               : undefined
                           }

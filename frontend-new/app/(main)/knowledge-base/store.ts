@@ -127,7 +127,7 @@ interface KnowledgeBaseState {
 
   // Sidebar → Page action bridge (for dialogs rendered in page.tsx)
   pendingSidebarAction:
-    | { type: 'reindex' | 'delete'; nodeId: string; nodeName: string; nodeType?: NodeType }
+    | { type: 'reindex' | 'delete'; nodeId: string; nodeName: string; nodeType?: NodeType; rootKbId?: string }
     | { type: 'create-collection' }
     | null;
 
@@ -248,7 +248,7 @@ interface KnowledgeBaseActions {
   setIsDeletingNode: (nodeId: string, deleting: boolean) => void;
 
   // Sidebar → Page action bridge
-  setPendingSidebarAction: (action: { type: 'reindex' | 'delete'; nodeId: string; nodeName: string; nodeType?: NodeType } | { type: 'create-collection' } | null) => void;
+  setPendingSidebarAction: (action: { type: 'reindex' | 'delete'; nodeId: string; nodeName: string; nodeType?: NodeType; rootKbId?: string } | { type: 'create-collection' } | null) => void;
   clearPendingSidebarAction: () => void;
 
   // Bulk actions

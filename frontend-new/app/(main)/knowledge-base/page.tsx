@@ -370,7 +370,7 @@ function KnowledgeBasePageContent() {
 
   // Single delete confirmation dialog state (sidebar)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string; nodeType?: NodeType; rootKbId?: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
   // Bulk delete confirmation dialog state
@@ -759,16 +759,27 @@ function KnowledgeBasePageContent() {
         }
 
       } catch (error) {
-        console.error('Failed to fetch table data:', error);
-        setTableDataError('Failed to load items. Please try again.');
-        setTableData(null);
+        // ProcessedError from apiClient interceptor has statusCode (not response.status)
+        const status = (error as { statusCode?: number })?.statusCode;
+        if (status === 403) {
+          // Access revoked — clear state, notify, and navigate to KB root
+          const { toast } = await import('@/lib/store/toast-store');
+          clearTableData();
+          toast.error('You no longer have access to this collection');
+          await refreshKbTree();
+          router.push('/knowledge-base');
+        } else {
+          console.error('Failed to fetch table data:', error);
+          setTableDataError('Failed to load items. Please try again.');
+          setTableData(null);
+        }
       } finally {
         setIsLoadingTableData(false);
       }
     },
     // filter/sort are read from getState() inside the function to avoid stale closure on initial load.
     // They are still in deps so fetchTableData re-memoizes when they change, triggering the fetch effect.
-    [filter, sort, setTableData, setIsLoadingTableData, setTableDataError, setSelectedNode, setCollectionsPagination, setCurrentFolderId, expandFolderExclusive, cacheNodeChildren, addNodes, setCategorizedNodes]
+    [filter, sort, setTableData, setIsLoadingTableData, setTableDataError, setSelectedNode, setCollectionsPagination, setCurrentFolderId, expandFolderExclusive, cacheNodeChildren, addNodes, setCategorizedNodes, clearTableData, router]
   );
 
   // Helper to build navigation URLs that preserve view mode
@@ -836,11 +847,11 @@ function KnowledgeBasePageContent() {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
     } else {
-      const { type, nodeId, nodeName, nodeType } = pendingSidebarAction;
+      const { type, nodeId, nodeName, nodeType, rootKbId } = pendingSidebarAction;
       if (type === 'reindex') {
         handleReindexClick({ id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode);
       } else if (type === 'delete') {
-        setItemToDelete({ id: nodeId, name: nodeName });
+        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
         setIsDeleteDialogOpen(true);
       }
     }
@@ -1362,7 +1373,8 @@ function KnowledgeBasePageContent() {
     setIsShareSidebarOpen(true);
   }, [shareAdapter]);
 
-  // Load shared members whenever the selected KB changes
+  // Load shared members whenever the selected KB changes.
+  // If we get a 403, access was revoked — navigate the user away.
   useEffect(() => {
     if (!shareAdapter || isSelectedKbPrivate) {
       setSharedMembers([]);
@@ -1372,10 +1384,19 @@ function KnowledgeBasePageContent() {
       setSharedMembers(
       members.map((m) => ({ id: m.id, name: m.name, avatarUrl: m.avatarUrl, type: m.type }))
       );
-    }).catch(() => {
+    }).catch(async (error) => {
       setSharedMembers([]);
+      // ProcessedError from apiClient interceptor has statusCode (not response.status)
+      const status = (error as { statusCode?: number })?.statusCode;
+      if (status === 403) {
+        const { toast } = await import('@/lib/store/toast-store');
+        clearTableData();
+        toast.error('You no longer have access to this collection');
+        await refreshKbTree();
+        router.push('/knowledge-base');
+      }
     });
-  }, [shareAdapter, isSelectedKbPrivate]);
+  }, [shareAdapter, isSelectedKbPrivate, clearTableData, router]);
 
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -1546,7 +1567,12 @@ function KnowledgeBasePageContent() {
         const hubItem = item as KnowledgeHubNode;
         if (hubItem.nodeType === 'folder' || hubItem.nodeType === 'recordGroup') {
           if (!selectedKbId) throw new Error('No collection context for rename');
-          await KnowledgeBaseApi.renameFolder(selectedKbId, hubItem.id, newName);
+          if (hubItem.id === selectedKbId) {
+            // Root KB collection — use KB rename API
+            await KnowledgeBaseApi.renameKnowledgeBase(hubItem.id, newName);
+          } else {
+            await KnowledgeBaseApi.renameFolder(selectedKbId, hubItem.id, newName);
+          }
         } else if (hubItem.nodeType === 'record') {
           await KnowledgeBaseApi.renameRecord(hubItem.id, newName);
         }
@@ -1585,7 +1611,12 @@ function KnowledgeBasePageContent() {
     try {
       if (nodeType === 'folder' || nodeType === 'recordGroup') {
         if (!selectedKbId) throw new Error('No collection context for rename');
-        await KnowledgeBaseApi.renameFolder(selectedKbId, nodeId, newName);
+        if (nodeId === selectedKbId) {
+          // Root KB collection — use KB rename API
+          await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
+        } else {
+          await KnowledgeBaseApi.renameFolder(selectedKbId, nodeId, newName);
+        }
       }
 
       toast.success('Renamed successfully', {
@@ -1816,28 +1847,59 @@ function KnowledgeBasePageContent() {
     }
   }, [findNodeInTrees, handleReindexClick]);
 
+  // Helper: find node and its root KB ancestor in categorized trees
+  const findNodeRootKb = useCallback((nodeId: string): string | null => {
+    if (!categorizedNodes) return null;
+    const searchTree = (nodes: EnhancedFolderTreeNode[], rootKbId: string | null): string | null => {
+      for (const node of nodes) {
+        if (node.id === nodeId) return rootKbId;
+        if (node.children?.length) {
+          const found = searchTree(node.children as EnhancedFolderTreeNode[], rootKbId ?? node.id);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return searchTree(categorizedNodes.shared, null) || searchTree(categorizedNodes.private, null);
+  }, [categorizedNodes]);
+
   // Sidebar: Rename handler
   const _handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
     const { toast } = await import('@/lib/store/toast-store');
     try {
-      await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
-      toast.success('Collection renamed successfully');
+      const node = findNodeInTrees(nodeId);
+      if (node?.nodeType === 'folder') {
+        const rootKbId = findNodeRootKb(nodeId);
+        if (rootKbId) {
+          await KnowledgeBaseApi.renameFolder(rootKbId, nodeId, newName);
+          toast.success('Folder renamed successfully');
+        }
+      } else {
+        await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
+        toast.success('Collection renamed successfully');
+      }
       await refreshData();
     } catch (error: unknown) {
       const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(err?.response?.data?.message || 'Failed to rename collection');
+      toast.error(err?.response?.data?.message || 'Failed to rename');
       throw error;
     }
-  }, [refreshData]);
+  }, [refreshData, findNodeInTrees, findNodeRootKb]);
 
   // Sidebar: Delete handler
   const _handleSidebarDelete = useCallback((nodeId: string) => {
     const node = findNodeInTrees(nodeId);
     if (node) {
-      setItemToDelete({ id: node.id, name: node.name });
+      const rootKbId = findNodeRootKb(nodeId);
+      setItemToDelete({
+        id: node.id,
+        name: node.name,
+        nodeType: node.nodeType,
+        rootKbId: rootKbId ?? undefined,
+      });
       setIsDeleteDialogOpen(true);
     }
-  }, [findNodeInTrees]);
+  }, [findNodeInTrees, findNodeRootKb]);
 
   // Sidebar: Delete confirm handler
   const handleSidebarDeleteConfirm = useCallback(async () => {
@@ -1845,7 +1907,11 @@ function KnowledgeBasePageContent() {
     setIsDeleting(true);
     const { toast } = await import('@/lib/store/toast-store');
     try {
-      await KnowledgeBaseApi.deleteKnowledgeBase(itemToDelete.id);
+      if (itemToDelete.nodeType === 'folder' && itemToDelete.rootKbId) {
+        await KnowledgeBaseApi.deleteFolder(itemToDelete.rootKbId, itemToDelete.id);
+      } else {
+        await KnowledgeBaseApi.deleteKnowledgeBase(itemToDelete.id);
+      }
       toast.success(`"${itemToDelete.name}" deleted successfully`);
       setIsDeleteDialogOpen(false);
 
@@ -1860,6 +1926,9 @@ function KnowledgeBasePageContent() {
       setItemToDelete(null);
 
       if (deletedCurrentView) {
+        // Clear selectedNode immediately to prevent stale API calls
+        // (e.g. permissions fetch for the now-deleted node)
+        clearTableData();
         await refreshKbTree();
         router.push(buildNavUrl({}));
       } else {
@@ -1867,11 +1936,11 @@ function KnowledgeBasePageContent() {
       }
     } catch (error: unknown) {
       const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(err?.response?.data?.message || 'Failed to delete collection');
+      toast.error(err?.response?.data?.message || `Failed to delete ${itemToDelete.nodeType === 'folder' ? 'folder' : 'collection'}`);
     } finally {
       setIsDeleting(false);
     }
-  }, [itemToDelete, refreshData, refreshKbTree, searchParams, tableData?.breadcrumbs, router, buildNavUrl]);
+  }, [itemToDelete, refreshData, refreshKbTree, clearTableData, searchParams, tableData?.breadcrumbs, router, buildNavUrl]);
 
   // Handle create sub-folder from move dialog
   // ========================================
@@ -2124,7 +2193,7 @@ function KnowledgeBasePageContent() {
           }}
           onConfirm={handleSidebarDeleteConfirm}
           itemName={itemToDelete.name}
-          itemType="KB"
+          itemType={itemToDelete.nodeType === 'folder' ? 'folder' : 'KB'}
           isDeleting={isDeleting}
         />
       )}
@@ -2259,6 +2328,9 @@ function KnowledgeBasePageContent() {
                   type: m.type,
                 }))
               );
+            }).catch(() => {
+              // Access may have been revoked — clear stale members silently
+              setSharedMembers([]);
             });
           }}
         />

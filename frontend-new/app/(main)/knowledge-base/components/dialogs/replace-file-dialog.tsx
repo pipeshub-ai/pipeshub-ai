@@ -6,6 +6,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { KnowledgeHubNode } from '../../types';
+import { KnowledgeBaseApi } from '../../api';
 
 // File type to MIME type mapping
 const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
@@ -27,8 +28,8 @@ const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
   MDX: ['text/mdx', 'text/markdown', 'text/plain'],
 };
 
-const MAX_FILE_SIZE_MB = 30;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const DEFAULT_MAX_FILE_SIZE_MB = 30;
+const DEFAULT_MAX_FILE_SIZE_BYTES = DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024;
 
 interface ReplaceFileDialogProps {
   open: boolean;
@@ -56,7 +57,10 @@ export function ReplaceFileDialog({
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCurrentFileHovered, setIsCurrentFileHovered] = useState(false);
   const [isReplacementFileHovered, setIsReplacementFileHovered] = useState(false);
+  const [maxFileSizeBytes, setMaxFileSizeBytes] = useState(DEFAULT_MAX_FILE_SIZE_BYTES);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const maxFileSizeMB = Math.round(maxFileSizeBytes / (1024 * 1024));
 
   // Get accepted MIME types based on current file type
   const fileType = item?.extension?.toUpperCase() || 'PDF';
@@ -72,6 +76,21 @@ export function ReplaceFileDialog({
     },
     [acceptedMimeTypes, fileType]
   );
+  // Fetch upload limits from server
+  useEffect(() => {
+    let mounted = true;
+    KnowledgeBaseApi.getUploadLimits()
+      .then((resp) => {
+        const s = Number(resp?.maxFileSizeBytes);
+        if (mounted && Number.isFinite(s) && s > 0) {
+          setMaxFileSizeBytes(s);
+        }
+      })
+      .catch(() => {
+        // fallback to default silently
+      });
+    return () => { mounted = false; };
+  }, []);
 
   // Reset state when dialog closes
   useEffect(() => {
@@ -102,7 +121,7 @@ export function ReplaceFileDialog({
       const files = e.dataTransfer.files;
       if (files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && isAcceptedFile(file)) {
+        if (file.size <= maxFileSizeBytes && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
@@ -119,7 +138,7 @@ export function ReplaceFileDialog({
       const files = e.target.files;
       if (files && files.length > 0) {
         const file = files[0];
-        if (file.size <= MAX_FILE_SIZE_BYTES && isAcceptedFile(file)) {
+        if (file.size <= maxFileSizeBytes && isAcceptedFile(file)) {
           setReplacementFile(file);
         }
       }
@@ -328,7 +347,7 @@ export function ReplaceFileDialog({
                   Replace File
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  You can upload files up to the limit of {MAX_FILE_SIZE_MB} MB
+                  You can upload files up to the limit of {maxFileSizeMB} MB
                 </Text>
               </Flex>
               <Box style={{ height: '1px', background: 'var(--olive-3)' }} />

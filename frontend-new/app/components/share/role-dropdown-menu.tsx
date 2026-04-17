@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Text, Flex, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole } from './types';
@@ -66,31 +67,29 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
     };
   }, [open, handleClickOutside, handleKeyDown]);
 
-  // Calculate anchor position when opening with anchorRef
+  // Calculate fixed position from trigger (or anchorRef) using viewport coordinates.
+  // The dropdown is portaled to document.body, so fixed positioning works correctly.
   useEffect(() => {
-    if (open && anchorRef?.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      setAnchorRect({ top: rect.bottom + 4, left: rect.left, width: rect.width });
-    } else if (!open) {
+    if (open) {
+      const el = anchorRef?.current ?? triggerRef.current;
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        if (anchorRef?.current) {
+          setAnchorRect({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+        } else {
+          // Align dropdown right edge with trigger right edge, min width 320
+          const dropdownWidth = 320;
+          setAnchorRect({
+            top: rect.bottom + 4,
+            left: Math.max(8, rect.right - dropdownWidth),
+            width: dropdownWidth,
+          });
+        }
+      }
+    } else {
       setAnchorRect(null);
     }
   }, [open, anchorRef]);
-
-  const useFixedPosition = !!anchorRef && !!anchorRect;
-
-  const menuPositionStyle: React.CSSProperties = useFixedPosition
-    ? {
-        position: 'fixed',
-        top: anchorRect.top,
-        left: anchorRect.left,
-        width: anchorRect.width,
-      }
-    : {
-        position: 'absolute',
-        top: 'calc(100% + 4px)',
-        right: 0,
-        width: 320,
-      };
 
   return (
     <Box style={{ position: 'relative' }}>
@@ -123,12 +122,17 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
         <MaterialIcon name="expand_more" size={16} color="var(--slate-11)" />
       </button>
 
-      {/* Dropdown popover */}
-      {open && (
+      {/* Dropdown popover — portaled to body to escape Dialog overflow clipping */}
+      {open && anchorRect && createPortal(
         <Box
           ref={menuRef}
+          data-role-dropdown-portal
           style={{
-            ...menuPositionStyle,
+            position: 'fixed',
+            top: anchorRect.top,
+            left: anchorRect.left,
+            width: anchorRect.width,
+            pointerEvents: 'auto',
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
@@ -136,7 +140,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
               '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
             padding: 0,
             overflow: 'hidden',
-            zIndex: 100,
+            zIndex: 9999,
           }}
         >
           {isNoRoles ? (
@@ -250,7 +254,8 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
               </Flex>
             </>
           )}
-        </Box>
+        </Box>,
+        document.body
       )}
     </Box>
   );
