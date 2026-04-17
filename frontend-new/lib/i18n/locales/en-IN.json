@@ -5,11 +5,11 @@
     "pageTitle": "Agents",
     "comingSoon": "Coming soon",
     "missingAgentKey": "Missing agent key. Open an agent from the chat sidebar or use a valid link.",
-    "loading": "Loading\u2026"
+    "loading": "Loading…"
   },
   "chatStream": {
-    "thinkingFallback": "Thinking\u2026",
-    "refiningResponse": "Refining response\u2026"
+    "thinkingFallback": "Thinking…",
+    "refiningResponse": "Refining response…"
   },
   "nav": {
     "collections": "Collections",
@@ -362,12 +362,44 @@
       }
     },
     "defaultSuggestions": {
-      "1": { "text": "Find all customer feedback from Slack mentioning latency issues.", "icons": ["slack"] },
-      "2": { "text": "List recurring blockers reported in Jira last month.", "icons": ["jira"] },
-      "3": { "text": "Compare notes from Notion and Slack about the new release.", "icons": ["notion"] },
-      "4": { "text": "Summarize Q3 revenue updates from Jira and Google Sheets", "icons": ["sheets", "jira"] },
-      "5": { "text": "Show all documents tagged 'Compliance' from Confluence and Drive.", "icons": ["confluence"] },
-      "6": { "text": "Show activities updated in GitHub and Jira this week", "icons": ["jira", "github"] }
+      "1": {
+        "text": "Find all customer feedback from Slack mentioning latency issues.",
+        "icons": [
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "List recurring blockers reported in Jira last month.",
+        "icons": [
+          "jira"
+        ]
+      },
+      "3": {
+        "text": "Compare notes from Notion and Slack about the new release.",
+        "icons": [
+          "notion"
+        ]
+      },
+      "4": {
+        "text": "Summarize Q3 revenue updates from Jira and Google Sheets",
+        "icons": [
+          "sheets",
+          "jira"
+        ]
+      },
+      "5": {
+        "text": "Show all documents tagged 'Compliance' from Confluence and Drive.",
+        "icons": [
+          "confluence"
+        ]
+      },
+      "6": {
+        "text": "Show activities updated in GitHub and Jira this week",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      }
     },
     "askMoreQuestionSets": [
       [
@@ -406,7 +438,31 @@
         "Are there any dependencies or blockers to be aware of",
         "What lessons have been learned so far"
       ]
-    ]
+    ],
+    "agentListRowMenuAria": "Agent options",
+    "archive": "Archive",
+    "archiveChatConfirm": "Are you sure?",
+    "archiveChatDescription": "The chat titled",
+    "archiveChatWarning": "will be archived.",
+    "archiving": "Archiving…",
+    "chatArchived": "Chat archived",
+    "chatDeleted": "Chat deleted",
+    "chatRenamed": "Chat renamed",
+    "deleteAgent": "Delete agent",
+    "deleteAgentConfirm": "Delete this agent?",
+    "deleteAgentDescription": "The agent named",
+    "deleteAgentWarning": "will be permanently removed from Pipeshub. Chats that use it may no longer work as expected.",
+    "deleteChat": "Delete",
+    "deleteChatConfirm": "Are you sure?",
+    "deleteChatDescription": "The chat titled",
+    "deleteChatWarning": "will be permanently removed from Pipeshub. All users with shared access will lose their access.",
+    "editAgent": "Edit agent",
+    "failedToArchive": "Failed to archive chat",
+    "failedToDelete": "Failed to delete chat",
+    "failedToDeleteAgent": "Could not delete agent",
+    "failedToRename": "Failed to rename chat",
+    "rename": "Rename",
+    "renaming": "Renaming…"
   },
   "workspaceSettings": {
     "title": "Workspace Settings"
@@ -535,7 +591,54 @@
       },
       "actions": {
         "viewGroup": "View Group",
-        "delete": "Delete"
+        "delete": "Delete",
+        "deleteError": "Failed to delete group",
+        "deleteSuccess": "Group deleted"
+      },
+      "create": {
+        "accessComingSoon": "Access Permissions Coming Soon",
+        "accessLabel": "Access Permissions",
+        "addUsersLabel": "Add Users",
+        "addUsersPlaceholder": "Search or select user(s) to add to this group",
+        "cancel": "Cancel",
+        "descriptionLabel": "Group Description",
+        "descriptionPlaceholder": "Describe the purpose of this group",
+        "errorGeneric": "Failed to create group",
+        "nameLabel": "Group Name",
+        "namePlaceholder": "e.g. Data Engineering",
+        "submit": "Create Group",
+        "successDescription": "\"{{name}}\" has been created successfully",
+        "successTitle": "Group created!",
+        "title": "Create Group"
+      },
+      "detail": {
+        "accessComingSoon": "Access Permissions Coming Soon",
+        "accessPermissions": "Access Permissions",
+        "createdBy": "Created By",
+        "descriptionLabel": "Group Description",
+        "descriptionPlaceholder": "Describe the purpose of this group",
+        "nameLabel": "Group Name",
+        "noUsers": "No users in this group",
+        "users": "Users"
+      },
+      "edit": {
+        "addUsersLabel": "Add Users",
+        "addUsersPlaceholder": "Search or select user(s) to add to this group",
+        "cancel": "Cancel",
+        "deleteButton": "Delete Group",
+        "deleteDescription": "Permanently remove this group from the workspace",
+        "deleteError": "Failed to delete group",
+        "deleteSuccess": "Group deleted",
+        "deleteSuccessDescription": "\"{{name}}\" has been deleted",
+        "deleteTitle": "Delete '{{name}}' Group",
+        "deleting": "Deleting...",
+        "edit": "Edit Group",
+        "remove": "Remove",
+        "save": "Save Edits",
+        "saveError": "Failed to update group",
+        "saveSuccess": "Group updated!",
+        "saveSuccessDescription": "Changes to '{{name}}' saved successfully",
+        "undo": "Undo"
       }
     },
     "teams": {
@@ -556,7 +659,56 @@
       },
       "actions": {
         "viewTeam": "View Team",
-        "delete": "Delete"
+        "delete": "Delete",
+        "deleteError": "Failed to delete team",
+        "deleteSuccess": "Team deleted"
+      },
+      "create": {
+        "accessComingSoon": "Access Permissions Coming Soon",
+        "accessPermissions": "Access Permissions",
+        "addUsersLabel": "Add Members",
+        "addUsersPlaceholder": "Search or select user(s) to add to this team",
+        "cancel": "Cancel",
+        "descriptionLabel": "Team Description",
+        "descriptionPlaceholder": "Describe the purpose of this team",
+        "errorGeneric": "Failed to create team",
+        "nameLabel": "Team Name",
+        "namePlaceholder": "e.g. Product Engineering",
+        "roleLabel": "Role",
+        "submit": "Create Team",
+        "successDescription": "\"{{name}}\" has been created successfully",
+        "successTitle": "Team created!",
+        "title": "Create Team"
+      },
+      "detail": {
+        "accessComingSoon": "Access Permissions Coming Soon",
+        "accessPermissions": "Access Permissions",
+        "createdBy": "Created By",
+        "descriptionLabel": "Team Description",
+        "descriptionPlaceholder": "Describe the purpose of this team",
+        "members": "Members",
+        "nameLabel": "Team Name",
+        "noMembers": "No members in this team",
+        "roleLabel": "Role"
+      },
+      "edit": {
+        "addUsersLabel": "Add Members",
+        "addUsersPlaceholder": "Search or select user(s) to add to this team",
+        "cancel": "Cancel",
+        "deleteButton": "Delete Team",
+        "deleteDescription": "Permanently remove this team from the workspace",
+        "deleteError": "Failed to delete team",
+        "deleteSuccess": "Team deleted",
+        "deleteSuccessDescription": "\"{{name}}\" has been deleted",
+        "deleteTitle": "Delete '{{name}}' Team",
+        "deleting": "Deleting...",
+        "edit": "Edit Team",
+        "remove": "Remove",
+        "save": "Save Edits",
+        "saveError": "Failed to update team",
+        "saveSuccess": "Team updated!",
+        "saveSuccessDescription": "Changes to '{{name}}' saved successfully",
+        "undo": "Undo"
       }
     },
     "oauth2": {
@@ -745,6 +897,24 @@
         "teams": "Teams",
         "webSearch": "Web Search"
       }
+    },
+    "archivedChats": {
+      "deleteConfirmMessage": "This chat will be permanently deleted from Pipeshub. Any shared access will be lost.",
+      "deleteError": "Failed to delete chat",
+      "deleteSuccess": "Deleted Successfully",
+      "deleteSuccessDescription": "Your chat is permanently deleted successfully",
+      "emptyList": "No archived chats",
+      "permanentlyDelete": "Permanently Delete",
+      "restore": "Restore",
+      "restoreError": "Failed to restore chat",
+      "restoreSuccess": "Chat restored",
+      "selectPrompt": "Select an archived chat to preview",
+      "title": "Archived Chats"
+    },
+    "common": {
+      "loadingUsers": "Loading users...",
+      "noUsersAvailable": "No users available",
+      "selected": "{{count}} Selected"
     }
   },
   "filePreview": {
@@ -757,13 +927,13 @@
     "serviceAccountBadge": "Service account",
     "serviceAccountBadgeTooltip": "This agent uses dedicated toolset credentials and full knowledge access for all users.",
     "convertToServiceAccount": "Convert to service account",
-    "convertToServiceAccountTooltip": "Convert permanently \u2014 dedicated toolset credentials and org-wide knowledge access. Cannot be undone.",
+    "convertToServiceAccountTooltip": "Convert permanently — dedicated toolset credentials and org-wide knowledge access. Cannot be undone.",
     "createAsServiceAccount": "Service account",
     "createAsServiceAccountTooltip": "Create as a service account with its own toolset credentials and full knowledge access.",
     "shareWithOrg": "Share with everyone",
     "shareWithOrgTooltip": "Share this agent with everyone in your organisation.",
     "serviceAccountShareTooltip": "Service account agents are always shared with the organisation.",
-    "saving": "Saving\u2026",
+    "saving": "Saving…",
     "saveChanges": "Save changes",
     "createAgent": "Create agent",
     "nameRequired": "Name is required",
@@ -779,11 +949,11 @@
     "remove": "Remove",
     "palette": "Palette",
     "paletteDragHint": "Drag onto the canvas",
-    "paletteViewOnlyServiceAccount": "View only \u2014 palette and toolset setup are locked for this organization service account.",
-    "paletteActionBlockedViewOnly": "View only: you can\u2019t change this organization service agent or its toolsets from here.",
-    "viewerPaletteDragBlocked": "View only: you can\u2019t change the flow from here. You can still authenticate toolsets in Tools below.",
-    "paletteViewerAuthenticateInTools": "View only \u2014 dragging models, knowledge, and tools onto the canvas is disabled. Use Tools below to sign in to toolsets you need.",
-    "searchNodes": "Search nodes\u2026",
+    "paletteViewOnlyServiceAccount": "View only — palette and toolset setup are locked for this organization service account.",
+    "paletteActionBlockedViewOnly": "View only: you can’t change this organization service agent or its toolsets from here.",
+    "viewerPaletteDragBlocked": "View only: you can’t change the flow from here. You can still authenticate toolsets in Tools below.",
+    "paletteViewerAuthenticateInTools": "View only — dragging models, knowledge, and tools onto the canvas is disabled. Use Tools below to sign in to toolsets you need.",
+    "searchNodes": "Search nodes…",
     "aiModels": "AI models",
     "knowledge": "Knowledge",
     "tools": "Tools",
@@ -821,8 +991,8 @@
     "addToolsAriaLabel": "Add tools",
     "removeNodeAriaLabel": "Remove node",
     "removeToolAriaLabel": "Remove {{name}}",
-    "searchToolsets": "Search toolsets\u2026",
-    "noToolsetsMatch": "No toolsets match \u201c{{query}}\u201d.",
+    "searchToolsets": "Search toolsets…",
+    "noToolsetsMatch": "No toolsets match “{{query}}”.",
     "noToolsetsAvailable": "No toolsets available.",
     "oauthSuccessNotify": "Authentication successful. Toolset list refreshed.",
     "toolsetNotConfiguredNotify": "{{name}} is not configured yet. Ask an administrator to add this toolset.",
@@ -830,7 +1000,7 @@
     "toolsetDuplicateNotify": "Only one {{name}} toolset can be on the canvas at a time.",
     "toolsetAuthUpdated": "Toolset authentication updated.",
     "loadMore": "Load more",
-    "loadingMore": "Loading\u2026",
+    "loadingMore": "Loading…",
     "notConfiguredReason": "not configured",
     "notAuthenticatedReason": "not authenticated",
     "manageAgentCredentialsTooltip": "Manage agent credentials for this toolset",
@@ -840,23 +1010,23 @@
     "authenticateToolsetTooltip": "Authenticate this toolset",
     "svcAcctConvertTitle": "Convert to Service Account",
     "svcAcctCreateTitle": "Create Service Account",
-    "svcAcctConvertDesc": "This agent will be permanently converted to a Service Account \u2014 an independent identity with agent-level toolset credentials, shared with your whole organisation.",
-    "svcAcctCreateDesc": "This agent will be created as a Service Account \u2014 an independent identity with agent-level toolset credentials, shared with your whole organisation.",
+    "svcAcctConvertDesc": "This agent will be permanently converted to a Service Account — an independent identity with agent-level toolset credentials, shared with your whole organisation.",
+    "svcAcctCreateDesc": "This agent will be created as a Service Account — an independent identity with agent-level toolset credentials, shared with your whole organisation.",
     "svcAcctConvertLabel": "Convert to Service Account",
     "svcAcctCreateLabel": "Create Service Account Agent",
-    "svcAcctConvertBusy": "Converting\u2026",
-    "svcAcctCreateBusy": "Creating Agent\u2026",
+    "svcAcctConvertBusy": "Converting…",
+    "svcAcctCreateBusy": "Creating Agent…",
     "svcAcctConvertNextSteps": "Save the agent, then use the key icon next to each toolset in the palette to set agent-level credentials. Existing per-user toolset connections are not transferred.",
     "svcAcctCreateNextSteps": "Save the agent, then use the key icon in the palette to configure credentials for each toolset on this Service Account. Add knowledge, set the model, and refine the flow as needed.",
-    "svcAcctDescSuffix": "Here\u2019s what that means:",
+    "svcAcctDescSuffix": "Here’s what that means:",
     "svcAcctAgentLabel": "Agent",
     "svcAcctUnnamed": "(unnamed)",
-    "svcAcctKnowledgeTitle": "Your permissions apply to this agent\u2019s attached knowledge only",
-    "svcAcctKnowledgeNote1": "Retrieval is limited to the knowledge sources you configure on this agent (connectors and collections attached in the builder) \u2014 not everything in the platform.",
+    "svcAcctKnowledgeTitle": "Your permissions apply to this agent’s attached knowledge only",
+    "svcAcctKnowledgeNote1": "Retrieval is limited to the knowledge sources you configure on this agent (connectors and collections attached in the builder) — not everything in the platform.",
     "svcAcctKnowledgeNote2": "Within those attached sources only, search uses your access as the creator.",
     "svcAcctKnowledgeNote3": "Anyone who uses this agent may see answers from content you are allowed to see there, even when their own permissions would not include it.",
-    "svcAcctToolsetsTitle": "Toolsets run on this agent\u2019s credentials",
-    "svcAcctToolsetsDesc": "Toolsets use one set of credentials for the whole agent, shared by everyone who uses it \u2014 not each user\u2019s personal toolset sign-ins.",
+    "svcAcctToolsetsTitle": "Toolsets run on this agent’s credentials",
+    "svcAcctToolsetsDesc": "Toolsets use one set of credentials for the whole agent, shared by everyone who uses it — not each user’s personal toolset sign-ins.",
     "svcAcctToolsetsNote1": "After you enable a Service Account, configure or update toolset auth with the key icon beside toolsets in the left palette.",
     "svcAcctToolsetsNote2Convert": "Toolset nodes that rely on per-user credentials must be removed from the canvas before you can convert. You can add them again afterwards and attach agent-level credentials.",
     "svcAcctToolsetsNote2Create": "Do not add toolsets that require per-user sign-in until you are ready to supply agent-level credentials for them in the palette.",
@@ -868,15 +1038,15 @@
     "svcAcctCreateAction": "create",
     "svcAcctNextStepsLabel": "Next steps:",
     "svcAcctConfirmTitle": "Confirm you have read the above",
-    "svcAcctAckKnowledge": "I understand how attached knowledge and my access apply \u2014 including that other users may see answers from content I can access.",
-    "svcAcctAckToolsets": "I understand toolsets use one agent-level credential set (palette key icon), not each user\u2019s sign-in, and what that means for this agent.",
+    "svcAcctAckKnowledge": "I understand how attached knowledge and my access apply — including that other users may see answers from content I can access.",
+    "svcAcctAckToolsets": "I understand toolsets use one agent-level credential set (palette key icon), not each user’s sign-in, and what that means for this agent.",
     "svcAcctAckOrg": "I understand this Service Account will be available to everyone in my organisation.",
     "svcAcctCheckboxHintConvert": "Check all boxes to enable conversion.",
     "svcAcctCheckboxHintCreate": "Check all boxes to enable creation.",
     "toolsetCredentialsTitle": "Agent toolset credentials",
     "toolsetCredentialsBadge": "Service account",
     "toolsetCredentialsDesc": "Credentials apply to this agent only. All invocations of this toolset through the agent use these credentials.",
-    "loadingSchema": "Loading schema\u2026",
+    "loadingSchema": "Loading schema…",
     "fillRequiredFields": "Please fill in all required fields.",
     "fieldRequired": "{{field}} is required",
     "oauthConnectedDesc": "OAuth is connected for this agent. Use Reconnect to sign in again, or Disconnect to end this session for this agent.",
@@ -888,29 +1058,29 @@
     "credentialUpdateHint": "The agent is authenticated. Enter new values and save to update stored credentials.",
     "availableToolsHeading": "Available tools ({{count}})",
     "authenticateOAuth": "Authenticate with OAuth",
-    "waitingOAuth": "Waiting for OAuth\u2026",
+    "waitingOAuth": "Waiting for OAuth…",
     "clearReauth": "Clear OAuth / re-authenticate",
-    "working": "Working\u2026",
+    "working": "Working…",
     "disconnectOAuth": "Disconnect",
     "disconnectOAuthTitle": "Disconnect {{name}}?",
     "disconnectOAuthDesc": "This ends the OAuth session for {{name}} on this agent. The toolset remains on the agent but is not authenticated until you sign in again.",
-    "disconnectOAuthProgress": "Disconnecting\u2026",
+    "disconnectOAuthProgress": "Disconnecting…",
     "removeCredentials": "Remove credentials",
-    "savingCredentials": "Saving\u2026",
+    "savingCredentials": "Saving…",
     "updateCredentials": "Update credentials",
     "saveCredentials": "Save credentials",
     "noCredentialsRequired": "No credentials are required for this toolset.",
     "noCredentialFields": "No credential fields were returned for this auth type. If this persists, check the toolset registry schema.",
     "removeCredentialsTitle": "Remove credentials?",
     "removeCredentialsDesc": "This removes stored credentials for {{name}} on this agent until you configure them again.",
-    "removing": "Removing\u2026",
+    "removing": "Removing…",
     "authTimeout": "Authentication timed out. Please try again.",
     "authNotCompleted": "Authentication was not completed. Please try again.",
     "oauthSignInSuccess": "Toolset connected successfully.",
     "oauthSignInIncomplete": "Sign-in did not finish. The window may have been closed before completion — try again when you are ready.",
     "oauthSignInCancelled": "Sign-in was cancelled.",
-    "toolsetOAuthCompletingTitle": "Completing toolset sign-in...",
-    "toolsetOAuthProcessing": "Completing toolset sign-in\u2026",
+    "toolsetOAuthCompletingTitle": "Completing toolset sign-in…",
+    "toolsetOAuthProcessing": "Completing toolset sign-in…",
     "toolsetOAuthProcessingHint": "You can keep this window open until it closes automatically.",
     "toolsetOAuthProviderError": "OAuth error: {{error}}",
     "toolsetOAuthNoCode": "No authorisation code was returned.",
@@ -957,7 +1127,7 @@
     "nodeDescUserMessages": "User messages",
     "nodeLabelChatOutput": "Chat output",
     "nodeDescChatReply": "User-visible reply",
-    "chatInputPlaceholder": "Type your message\u2026",
+    "chatInputPlaceholder": "Type your message…",
     "zoomInAria": "Zoom in",
     "zoomOutAria": "Zoom out",
     "fitViewAria": "Fit view",
@@ -977,8 +1147,8 @@
     "dropEnableConnectorToolGroup": "Enable this connector for agents before adding its tool group.",
     "dropOnlyOneToolGroup": "Only one {{type}} tool group is allowed. Remove the existing node first.",
     "toolsetStatusAuthenticated": "Authenticated and ready to use",
-    "toolsetStatusNeedsAuth": "Configured \u2014 sign in to authenticate",
-    "toolsetStatusRegistry": "Registry listing \u2014 not configured for your workspace",
+    "toolsetStatusNeedsAuth": "Configured — sign in to authenticate",
+    "toolsetStatusRegistry": "Registry listing — not configured for your workspace",
     "sidebarCollapseTools": "Collapse tools",
     "sidebarExpandTools": "Expand tools",
     "configureShort": "Configure",
@@ -992,15 +1162,15 @@
     "llmLanguageModelSuffix": "{{provider}} language model",
     "llmProviderModel": "{{provider}} model",
     "toolsetWithToolCount": "{{name}} with {{count}} tools",
-    "toolsetNodeDescriptionTools": "{{name}} \u2014 {{count}} tools",
-    "connectorToolGroupTools": "{{type}} \u2014 {{count}} tools",
+    "toolsetNodeDescriptionTools": "{{name}} — {{count}} tools",
+    "connectorToolGroupTools": "{{type}} — {{count}} tools",
     "agentCoreFlowDescription": "Central orchestrator and decision engine",
     "placeholderModel": "Model",
     "placeholderAiModel": "AI Model",
     "placeholderTool": "Tool",
     "nodeCollectionFallbackName": "Collection",
     "connectorDataDescription": "Connect to {{name}} data and content",
-    "connectorGroupDescription": "{{type}} connector \u2014 tools or knowledge",
+    "connectorGroupDescription": "{{type}} connector — tools or knowledge",
     "appGroupTemplateDescription": "Connect app data ({{count}} connectors)",
     "kbGroupTemplateDescription": "{{count}} collections",
     "kbNodeTemplateDescription": "Collection for retrieval",
@@ -1014,22 +1184,22 @@
     "nodeTemplateChatResponseDesc": "Sends the reply to the user"
   },
   "oauthConsent": {
-    "loading": "Loading authorization request\u2026",
+    "loading": "Loading authorization request…",
     "missingParams": "Missing required OAuth parameters (client_id, redirect_uri).",
     "noData": "No authorization data available.",
     "noRedirect": "No redirect URL received from server.",
     "errorTitle": "Authorization error",
     "signedInAs": "Signed in as {{display}}",
     "requestHeading": "This application is requesting access to:",
-    "legalNotice": "By clicking \u201cAllow\u201d, you authorize {{appName}} to access your data as described above.",
+    "legalNotice": "By clicking “Allow”, you authorize {{appName}} to access your data as described above.",
     "privacyPolicy": "Privacy Policy",
     "deny": "Deny",
     "allow": "Allow",
-    "submitting": "Processing\u2026",
+    "submitting": "Processing…",
     "outcomeSuccessTitle": "Connected",
     "outcomeSuccessLine1": "Authentication succeeded.",
     "outcomeSuccessLine2": "You can close this window.",
-    "outcomeErrorTitle": "Couldn\u2019t connect",
+    "outcomeErrorTitle": "Couldn’t connect",
     "tryAgain": "Try Again",
     "permissionsReviewHeading": "Permissions",
     "permissionStatusAllowed": "Allowed",
@@ -1047,9 +1217,9 @@
       "server_error": "Server error"
     },
     "errorHints": {
-      "invalid_scope": "The application requested scopes that are either not recognised or not allowed for this OAuth app. Check the app\u2019s allowed scopes in Developer Settings.",
+      "invalid_scope": "The application requested scopes that are either not recognised or not allowed for this OAuth app. Check the app’s allowed scopes in Developer Settings.",
       "invalid_request": "The redirect URI provided does not match any URI registered for this application. Verify the redirect URIs configured in Developer Settings.",
-      "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application\u2019s configuration.",
+      "invalid_client": "The client_id does not match any registered OAuth application. Verify the client ID in your application’s configuration.",
       "server_error": "An unexpected error occurred on the server. Please try again later."
     }
   }
