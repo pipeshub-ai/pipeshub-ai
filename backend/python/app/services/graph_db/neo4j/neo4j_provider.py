@@ -8287,15 +8287,34 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         transaction: str | None = None
     ) -> str | None:
-        """Get user's permission role on a knowledge base"""
+        """Get user's effective role on a KB: max(direct user edge, team-derived), same idea as Arango."""
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
-            # Check for direct user permission first
+            # Direct user->KB and user->team->KB both contribute; return highest-priority role (not direct-only).
             query = """
-            MATCH (u:User {id: $user_id})-[r:PERMISSION {type: "USER"}]->(kb:RecordGroup {id: $kb_id})
-            RETURN r.role AS role
+            MATCH (u:User {id: $user_id})
+            MATCH (kb:RecordGroup {id: $kb_id})
+            OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
+            WITH u, kb, d.role AS direct_role
+            OPTIONAL MATCH (u)-[ut:PERMISSION {type: "USER"}]->(team:Teams)-[tb:PERMISSION {type: "TEAM"}]->(kb)
+            WITH direct_role, collect(DISTINCT ut.role) AS team_roles
+            WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
+                 [x IN team_roles WHERE x IS NOT NULL] AS candidates
+            UNWIND candidates AS cand
+            WITH DISTINCT cand AS role
+            WHERE role IS NOT NULL
+            WITH role,
+                 CASE role
+                   WHEN 'OWNER' THEN 4
+                   WHEN 'WRITER' THEN 3
+                   WHEN 'READER' THEN 2
+                   WHEN 'COMMENTER' THEN 1
+                   ELSE 0
+                 END AS priority
+            ORDER BY priority DESC
             LIMIT 1
+            RETURN role AS role
             """
 
             results = await self.client.execute_query(
@@ -8306,36 +8325,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results:
                 role = results[0].get("role")
-                self.logger.info(f"✅ Found direct permission: user {user_id} has role '{role}' on KB {kb_id}")
+                self.logger.info(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
-
-            # If no direct permission, check via teams (Neo4j label is "Teams")
-            team_query = """
-            MATCH (u:User {id: $user_id})-[r1:PERMISSION {type: "USER"}]->(team:Teams)
-            MATCH (team)-[r2:PERMISSION {type: "TEAM"}]->(kb:RecordGroup {id: $kb_id})
-            WITH r1.role AS team_role,
-                 CASE r1.role
-                     WHEN "OWNER" THEN 4
-                     WHEN "WRITER" THEN 3
-                     WHEN "READER" THEN 2
-                     WHEN "COMMENTER" THEN 1
-                     ELSE 0
-                 END AS priority
-            ORDER BY priority DESC
-            RETURN team_role
-            LIMIT 1
-            """
-
-            team_results = await self.client.execute_query(
-                team_query,
-                parameters={"user_id": user_id, "kb_id": kb_id},
-                txn_id=transaction
-            )
-
-            if team_results:
-                team_role = team_results[0].get("team_role")
-                self.logger.info(f"✅ Found team-based permission: user {user_id} has role '{team_role}' on KB {kb_id} via teams")
-                return team_role
 
             self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
             return None

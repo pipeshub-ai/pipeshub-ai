@@ -398,8 +398,6 @@ function KnowledgeBasePageContent() {
   // Upload store actions
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, clearCompleted, updateItemStatus, bulkUpdateItemStatus } = useUploadStore();
 
-  // Refs to track previous page values (to detect user-initiated page changes vs initial mount)
-  const prevCollectionsPageRef = useRef(collectionsPagination.page);
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
 
   // Sync current folder from URL params (Collections mode only).
@@ -543,6 +541,10 @@ function KnowledgeBasePageContent() {
     // They are still in deps so fetchAllRecordsTableData re-memoizes when they change, triggering the fetch effect.
     allRecordsFilter,
     allRecordsSort,
+    setIsLoadingAllRecordsTable,
+    setAllRecordsTableError,
+    setAllRecordsTableData,
+    syncAllRecordsPaginationMeta,
   ]);
 
   // Extract stable primitive values from URL to avoid re-firing effects
@@ -574,6 +576,22 @@ function KnowledgeBasePageContent() {
     }
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
+
+  // All Records mode: Re-fetch when pagination page changes
+  useEffect(() => {
+    if (isAllRecordsMode) {
+      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
+      prevAllRecordsPageRef.current = allRecordsPagination.page;
+      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
+    }
+  }, [allRecordsPagination.page]);
+
+  // All Records mode: Re-fetch when pagination limit changes
+  useEffect(() => {
+    if (isAllRecordsMode && allRecordsPagination.limit !== 50) {
+      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
+    }
+  }, [allRecordsPagination.limit]);
 
   // All Records mode: Transform API response items to include source display info
   const allRecordsItems = useMemo(() => {
@@ -777,9 +795,22 @@ function KnowledgeBasePageContent() {
         setIsLoadingTableData(false);
       }
     },
-    // filter/sort are read from getState() inside the function to avoid stale closure on initial load.
-    // They are still in deps so fetchTableData re-memoizes when they change, triggering the fetch effect.
-    [filter, sort, setTableData, setIsLoadingTableData, setTableDataError, setSelectedNode, setCollectionsPagination, setCurrentFolderId, expandFolderExclusive, cacheNodeChildren, addNodes, setCategorizedNodes, clearTableData, router]
+    // Pagination/filter/sort read via getState() — keep this callback stable so the searchParams
+    // effect is the only collections refetch trigger (avoids double fetch with page/limit effects).
+    [
+      setTableData,
+      setIsLoadingTableData,
+      setTableDataError,
+      setSelectedNode,
+      setCollectionsPagination,
+      setCurrentFolderId,
+      expandFolderExclusive,
+      cacheNodeChildren,
+      addNodes,
+      setCategorizedNodes,
+      clearTableData,
+      router,
+    ]
   );
 
   // Helper to build navigation URLs that preserve view mode
@@ -869,39 +900,7 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
   }, [pageViewMode, setSearchQuery, setAllRecordsSearchQuery]);
 
-  // Collections mode: Re-fetch when pagination page changes
-  useEffect(() => {
-    if (!isAllRecordsMode && selectedNode) {
-      // Skip if page hasn't actually changed (initial mount)
-      if (collectionsPagination.page === prevCollectionsPageRef.current) return;
-      prevCollectionsPageRef.current = collectionsPagination.page;
-      fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
-  }, [collectionsPagination.page]);
-
-  // All Records mode: Re-fetch when pagination page changes
-  useEffect(() => {
-    if (isAllRecordsMode) {
-      // Skip if page hasn't actually changed (initial mount)
-      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-      prevAllRecordsPageRef.current = allRecordsPagination.page;
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
-  }, [allRecordsPagination.page]);
-
-  // Collections mode: Re-fetch when pagination limit changes
-  useEffect(() => {
-    if (!isAllRecordsMode && selectedNode && collectionsPagination.limit !== 50) {
-      fetchTableData(selectedNode.nodeType, selectedNode.nodeId);
-    }
-  }, [collectionsPagination.limit]);
-
-  // All Records mode: Re-fetch when pagination limit changes
-  useEffect(() => {
-    if (isAllRecordsMode && allRecordsPagination.limit !== 50) {
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
-  }, [allRecordsPagination.limit]);
+  // Collections: page/limit changes go through URL sync → searchParams; no separate pagination effects (avoids double fetch).
 
   // Helper function to convert EnhancedFolderTreeNode to FolderTreeNode format for move dialog
   const convertEnhancedToFolderTree = useCallback(
