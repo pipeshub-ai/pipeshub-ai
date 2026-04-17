@@ -165,7 +165,7 @@ export function AnswerContent({
         style={{
           backgroundColor: 'var(--slate-7)',
           fontWeight: 400,
-          padding: '2px 6px',
+          padding: '2px var(--space-1)', /* was: 2px 6px, delta: -2px side */
           borderRadius: 'var(--radius-1)',
           fontFamily: 'monospace',
           fontSize: 'var(--font-size-2)',

@@ -71,7 +71,7 @@ export function AgentStrategyDropdown({
         size="2"
         sideOffset={4}
         align="end"
-        style={{ minWidth: 'min(320px, calc(100vw - 32px))', maxWidth: '360px' }}
+        style={{ minWidth: 'min(320px, calc(100vw - var(--space-6)))', maxWidth: '360px' /* was: 32px offset, delta: 0px */ }}
       >
         {STRATEGIES.map((id) => (
           <DropdownMenu.Item

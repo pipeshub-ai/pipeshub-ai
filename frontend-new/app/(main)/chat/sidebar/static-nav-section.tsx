@@ -80,12 +80,12 @@ export function StaticNavSection() {
         icon={
           <ChatStarIcon
             size={ICON_SIZE_DEFAULT}
-            color="var(--accent-11)"
+            color="var(--accent-a11)"
           />
         }
         label={t('chat.newChat')}
         onClick={handleNewChat}
-        textColor="var(--accent-11)"
+        textColor="var(--accent-a11)"
         fontWeight={500}
       />
       {/* Search Chats — opens command palette (⌘+K) */}

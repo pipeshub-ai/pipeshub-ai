@@ -145,7 +145,7 @@ export function ChatInputOverlayPanel({
                 bottom: 'var(--space-4)',
                 left: 'var(--space-4)',
                 right: 'var(--space-4)',
-                height: '44px',
+                height: 'var(--space-8)', /* was: 44px, delta: +4px */
                 background:
                   'linear-gradient(to bottom, transparent, var(--color-background))',
                 pointerEvents: 'none',

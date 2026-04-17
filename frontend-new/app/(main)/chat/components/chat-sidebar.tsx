@@ -15,7 +15,7 @@ const KbdBadge = ({ children }: { children: React.ReactNode }) => (
     style={{
       backgroundColor: '#ffffff',
       border: '1px solid var(--slate-3)',
-      padding: '2px 4px',
+      padding: '2px var(--space-1)', /* was: 2px 4px, delta: 0px side */
       borderRadius: 'var(--radius-1)',
       fontSize: 'var(--font-size-1)',
       color: 'var(--slate-12)',

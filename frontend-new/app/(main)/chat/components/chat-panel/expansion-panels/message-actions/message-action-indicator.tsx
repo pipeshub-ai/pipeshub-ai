@@ -92,7 +92,7 @@ export function MessageActionIndicator({
             display: 'inline-flex',
             alignItems: 'center',
             gap: 'var(--space-1)',
-            padding: '4px 10px',
+            padding: 'var(--space-1) var(--space-2)', /* was: 4px 10px, delta: 0px/-2px */
             borderRadius: 'var(--radius-2)',
             backgroundColor: chipHovered && action.type === 'editQuery'
               ? 'var(--olive-4)'

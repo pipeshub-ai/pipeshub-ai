@@ -846,7 +846,7 @@ export function MessageList() {
           width: '100%',
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
-          paddingBottom: isMobile ? '40px' : '100px',
+          paddingBottom: isMobile ? 'var(--space-7)' : '100px', /* was: 40px (mobile), delta: 0px */
           paddingLeft: isMobile ? 'var(--space-4)' : undefined,
           paddingRight: isMobile ? 'var(--space-4)' : undefined,
         }}

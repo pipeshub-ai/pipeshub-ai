@@ -78,6 +78,7 @@ export function ChatInput({
   const [isModelPanelOpen, setIsModelPanelOpen] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
+  const [isInputFocused, setIsInputFocused] = useState(false);
   const isMobile = useIsMobile();
   // ── Message action state (local — NOT in Zustand store) ──
   const [activeMessageAction, setActiveMessageAction] = useState<ActiveMessageAction>(null);
@@ -648,10 +649,9 @@ export function ChatInput({
       gap="3"
       style={{
         backdropFilter: 'blur(25px)',
-        background: 'var(--effects-translucent)',
-        // Accent border when the user has typed something OR is in edit mode (per Figma spec).
-        // In regenerate mode the border stays slate since the textarea is disabled.
-        border: (message.trim() || isEditMode || isListening) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
+        background: (isInputFocused || message.trim() || isListening) ? 'var(--olive-2)' : 'var(--effects-translucent)',
+        transition: 'background 0.15s ease',
+        border: (isInputFocused || message.trim() || isEditMode || isListening) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
         // Flatten top corners whenever there is an element directly above (collections bar,
         // uploaded files preview, or the action pill bar) to avoid a double-radius gap.
         borderRadius: (selectedCollections.length > 0 && !isCollectionsPanelOpen && !isModePanelOpen) || uploadedFiles.length > 0 || isActionMode
@@ -759,6 +759,8 @@ export function ChatInput({
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
+          onFocus={() => setIsInputFocused(true)}
+          onBlur={() => setIsInputFocused(false)}
           placeholder={resolvedPlaceholder}
           rows={1}
           style={{
@@ -791,6 +793,8 @@ export function ChatInput({
           value={displayValue}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
+          onFocus={() => setIsInputFocused(true)}
+          onBlur={() => setIsInputFocused(false)}
           placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
           disabled={isRegenerateMode}
           rows={1}

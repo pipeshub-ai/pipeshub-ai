@@ -417,9 +417,63 @@ li > blockquote {
   }
 }
 
+@keyframes generatingShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.generating-shimmer {
+  position: relative;
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.generating-shimmer-base {
+  color: var(--accent-a11);
+}
+
+.generating-shimmer-overlay {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 35%,
+    var(--accent-12) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+          color: transparent;
+  animation: generatingShimmer 1.5s linear infinite;
+  pointer-events: none;
+}
+
 @keyframes msgActionsIn {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+
+/* ========================
+   Sidebar title typing animation
+   Plays once when a new conversation title is revealed after generation.
+   ======================== */
+
+@keyframes typing-reveal {
+  from { width: 0; }
+  to   { width: 100%; }
+}
+
+.title-typing-animation {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  width: 0;
+  animation: typing-reveal 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
 }
 
 /* ========================

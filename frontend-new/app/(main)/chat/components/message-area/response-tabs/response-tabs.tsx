@@ -49,7 +49,7 @@ function TabItem({ label, count, isActive, isDisabled, onClick }: TabItemProps) 
                 ? 'var(--slate-8)'
                 : isHovered
                   ? 'var(--slate-11)'
-                  : 'var(--slate-9)',
+                  : 'var(--slate-a11)',
             transition: 'color 0.15s ease',
           }}
         >
@@ -61,7 +61,7 @@ function TabItem({ label, count, isActive, isDisabled, onClick }: TabItemProps) 
             style={{
               color: 'var(--accent-11)',
               backgroundColor: 'var(--accent-3)',
-              padding: '0 6px',
+              padding: '0 var(--space-1)', /* was: 0 6px, delta: -2px side */
               borderRadius: 'var(--radius-2)',
               fontWeight: 500,
             }}

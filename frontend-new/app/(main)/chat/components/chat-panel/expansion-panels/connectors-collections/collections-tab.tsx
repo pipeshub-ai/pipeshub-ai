@@ -105,7 +105,7 @@ export function CollectionsTab({
           gap="2"
           style={{
             flex: 1,
-            height: '36px',
+            height: 'var(--space-7)', /* was: 36px, delta: +4px */
             border: '1px solid var(--slate-a5)',
             borderRadius: 'var(--radius-2)',
             paddingLeft: 'var(--space-2)',
@@ -129,7 +129,7 @@ export function CollectionsTab({
               outline: 'none',
               backgroundColor: 'transparent',
               color: 'var(--slate-12)',
-              fontSize: '13px',
+              fontSize: 'var(--font-size-2)', /* was: 13px, delta: +1px */
               fontFamily: 'inherit',
             }}
           />
