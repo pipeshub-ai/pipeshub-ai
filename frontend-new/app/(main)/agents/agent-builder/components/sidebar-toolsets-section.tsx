@@ -9,11 +9,11 @@ import type { BuilderSidebarToolset } from '../../toolsets-api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
-  formatToolsetTypeLabel,
   getToolsetSidebarStatus,
   groupToolsetsByType,
   normalizeToolsetTypeKey,
 } from '../sidebar-toolset-utils';
+import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
@@ -106,6 +106,7 @@ function ToolDragRow(props: {
         display: 'flex',
         alignItems: 'center',
         width: '100%',
+        minWidth: 0,
         minHeight: CHAT_ITEM_HEIGHT,
         padding: '0 12px',
         boxSizing: 'border-box',
@@ -122,20 +123,20 @@ function ToolDragRow(props: {
           : 'agent-builder-draggable-row'
       }
     >
-      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
+      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" style={{ flexShrink: 0, lineHeight: 0 }} />
       <span
         style={{
           flex: 1,
+          minWidth: 0,
           fontSize: 14,
-          lineHeight: '20px',
           color: 'var(--slate-11)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
+          whiteSpace: 'normal',
+          overflowWrap: 'anywhere',
+          wordBreak: 'break-word',
           textAlign: 'left',
         }}
       >
-        {tool.name}
+        {normalizePaletteLabel(tool.name)}
       </span>
     </Box>
   );
@@ -335,7 +336,7 @@ export function AgentBuilderToolsetsSection(props: {
     (ts: BuilderSidebarToolset) => {
       onNotify(
         t('agentBuilder.toolsetDuplicateNotify', {
-          name: formatToolsetTypeLabel(ts.toolsetType || ts.name),
+          name: normalizePaletteLabel(ts.toolsetType || ts.name),
         })
       );
     },
@@ -391,7 +392,7 @@ export function AgentBuilderToolsetsSection(props: {
             return (
               <Box key={toolsetType} mb="2">
                 <SidebarCategoryRow
-                  groupLabel={formatToolsetTypeLabel((first.toolsetType || toolsetType) as string)}
+                  groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
                   groupIcon={first.iconPath}
                   itemCount={typeToolsets.length}
                   isExpanded={isTypeExpanded}
@@ -426,7 +427,7 @@ export function AgentBuilderToolsetsSection(props: {
                     return (
                       <SidebarCategoryRow
                         key={ts.instanceId || ts.displayName}
-                        groupLabel={ts.instanceName || ts.displayName}
+                        groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
                         groupIcon={ts.iconPath}
                         itemCount={ts.tools.length}
                         isExpanded={isInstanceExpanded}

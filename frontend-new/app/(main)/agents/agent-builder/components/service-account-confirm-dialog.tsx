@@ -10,17 +10,93 @@ import {
   Dialog,
   Flex,
   IconButton,
-  Separator,
   Text,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+
+const LIST: React.CSSProperties = {
+  margin: 0,
+  marginTop: 4,
+  paddingLeft: '1rem',
+  listStyleType: 'disc',
+  color: 'var(--olive-12)',
+};
+
+const LI: React.CSSProperties = {
+  marginBottom: 6,
+  paddingLeft: 2,
+  lineHeight: 1.45,
+};
+
+const LI_LAST: React.CSSProperties = {
+  ...LI,
+  marginBottom: 0,
+};
+
+const BODY: React.CSSProperties = {
+  color: 'var(--olive-12)',
+  lineHeight: 1.45,
+};
+
+/** Stacked info card — same visual language as original dialog, single column for readability. */
+function InfoCard({
+  icon,
+  iconColor,
+  iconBg,
+  iconBorder,
+  title,
+  children,
+}: {
+  icon: string;
+  iconColor: string;
+  iconBg: string;
+  iconBorder: string;
+  title: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box
+      style={{
+        background: 'var(--olive-2)',
+        border: '1px solid var(--olive-4)',
+        borderRadius: 'var(--radius-2)',
+        padding: 'var(--space-2) var(--space-3)',
+        boxSizing: 'border-box',
+        marginBottom: 'var(--space-2)',
+      }}
+    >
+      <Flex align="start" gap="2">
+        <Box
+          style={{
+            width: 28,
+            height: 28,
+            minWidth: 28,
+            borderRadius: 'var(--radius-1)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: iconBg,
+            border: `1px solid ${iconBorder}`,
+          }}
+        >
+          <MaterialIcon name={icon} size={16} style={{ color: iconColor }} />
+        </Box>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+          <Text size="2" weight="bold" style={{ color: 'var(--olive-12)', lineHeight: 1.35 }}>
+            {title}
+          </Text>
+          {children}
+        </Flex>
+      </Flex>
+    </Box>
+  );
+}
 
 export interface ServiceAccountConfirmDialogProps {
   open: boolean;
   agentName: string;
   creating: boolean;
   error: string | null;
-  hasUserToolsets: boolean;
   isConverting?: boolean;
   onClose: () => void;
   onConfirm: () => void | Promise<void>;
@@ -31,7 +107,6 @@ export function ServiceAccountConfirmDialog({
   agentName,
   creating,
   error,
-  hasUserToolsets,
   isConverting = false,
   onClose,
   onConfirm,
@@ -44,9 +119,6 @@ export function ServiceAccountConfirmDialog({
     : t('agentBuilder.svcAcctCreateDesc');
   const confirmLabel = isConverting ? t('agentBuilder.svcAcctConvertLabel') : t('agentBuilder.svcAcctCreateLabel');
   const busyLabel = isConverting ? t('agentBuilder.svcAcctConvertBusy') : t('agentBuilder.svcAcctCreateBusy');
-  const nextSteps = isConverting
-    ? t('agentBuilder.svcAcctConvertNextSteps')
-    : t('agentBuilder.svcAcctCreateNextSteps');
 
   const [ackKnowledge, setAckKnowledge] = useState(false);
   const [ackToolsets, setAckToolsets] = useState(false);
@@ -57,10 +129,17 @@ export function ServiceAccountConfirmDialog({
     setAckKnowledge(false);
     setAckToolsets(false);
     setAckOrg(false);
+
+    const main = document.querySelector<HTMLElement>('[data-app-main-scroll]');
+    const prevOverflow = main ? main.style.overflow : '';
+    if (main) main.style.overflow = 'hidden';
+    return () => {
+      if (main) main.style.overflow = prevOverflow;
+    };
   }, [open]);
 
   const allAcknowledged = ackKnowledge && ackToolsets && ackOrg;
-  const confirmDisabled = creating || hasUserToolsets || !allAcknowledged;
+  const confirmDisabled = creating || !allAcknowledged;
 
   const handleOpenChange = (next: boolean) => {
     if (!next && !creating) onClose();
@@ -73,7 +152,7 @@ export function ServiceAccountConfirmDialog({
           style={{
             position: 'fixed',
             inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.1)',
+            backgroundColor: 'rgba(15, 23, 42, 0.12)',
             zIndex: 999,
             cursor: creating ? 'not-allowed' : 'pointer',
           }}
@@ -81,25 +160,40 @@ export function ServiceAccountConfirmDialog({
         />
       ) : null}
       <Dialog.Content
+        className="service-account-confirm-dialog"
         style={{
-          maxWidth: 'min(68rem, calc(100vw - 3rem))',
+          maxWidth: 'min(71rem, calc(100vw - 1.5rem))',
           width: '100%',
-          padding: 'var(--space-5)',
+          maxHeight: 'min(88dvh, calc(100svh - 2.5rem), calc(100vh - 2.5rem))',
+          padding: 'var(--space-3)',
+          paddingBottom: 'max(var(--space-3), env(safe-area-inset-bottom, 0px))',
           zIndex: 1000,
           backgroundColor: 'var(--color-panel-solid)',
-          borderRadius: 'var(--radius-5)',
-          border: '1px solid var(--olive-a3)',
+          borderRadius: 'var(--radius-3)',
+          border: '1px solid var(--olive-4)',
           boxShadow:
-            '0 16px 36px -20px rgba(0, 6, 46, 0.2), 0 16px 64px rgba(0, 0, 85, 0.02), 0 12px 60px rgba(0, 0, 0, 0.15)',
+            '0 4px 24px -8px rgba(0, 6, 46, 0.1), 0 16px 40px -20px rgba(0, 0, 0, 0.12)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 0,
+          overflow: 'hidden',
+          boxSizing: 'border-box',
         }}
       >
-        <Flex align="start" justify="between" gap="3" mb="4">
-          <Flex align="center" gap="3" style={{ minWidth: 0 }}>
+        <Flex
+          align="start"
+          justify="between"
+          gap="2"
+          pb="2"
+          mb="2"
+          style={{ flexShrink: 0, borderBottom: '1px solid var(--olive-4)' }}
+        >
+          <Flex align="center" gap="2" style={{ minWidth: 0 }}>
             <Box
               style={{
-                width: 44,
-                height: 44,
-                borderRadius: 'var(--radius-3)',
+                width: 36,
+                height: 36,
+                borderRadius: 'var(--radius-2)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -108,13 +202,23 @@ export function ServiceAccountConfirmDialog({
                 flexShrink: 0,
               }}
             >
-              <MaterialIcon name="admin_panel_settings" size={24} style={{ color: 'var(--accent-11)' }} />
+              <MaterialIcon name="admin_panel_settings" size={20} style={{ color: 'var(--accent-11)' }} />
             </Box>
             <Box style={{ minWidth: 0 }}>
-              <Dialog.Title style={{ marginBottom: 6 }}>{title}</Dialog.Title>
-              <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              <Dialog.Title
+                style={{
+                  marginBottom: 2,
+                  fontSize: '1rem',
+                  fontWeight: 600,
+                  lineHeight: 1.35,
+                  color: 'var(--olive-12)',
+                }}
+              >
+                {title}
+              </Dialog.Title>
+              <Text size="2" style={{ color: 'var(--olive-11)', lineHeight: 1.4 }}>
                 {t('agentBuilder.svcAcctAgentLabel')}{' '}
-                <Text weight="medium" style={{ color: 'var(--slate-12)' }}>
+                <Text weight="medium" size="2" style={{ color: 'var(--olive-12)' }}>
                   {agentName.trim() || t('agentBuilder.svcAcctUnnamed')}
                 </Text>
               </Text>
@@ -127,224 +231,165 @@ export function ServiceAccountConfirmDialog({
             size="2"
             onClick={() => !creating && onClose()}
             aria-label={t('common.close')}
+            style={{ flexShrink: 0 }}
           >
             <MaterialIcon name="close" size={20} />
           </IconButton>
         </Flex>
 
-        <Flex direction="column" gap="3">
-          <Dialog.Description size="2" style={{ color: 'var(--slate-11)', margin: 0, lineHeight: 1.5 }}>
-            {`${description} ${t('agentBuilder.svcAcctDescSuffix')}`}
-          </Dialog.Description>
+        <Box className="service-account-confirm-dialog__body">
+          <Flex direction="column" gap="2">
+            <Dialog.Description size="2" style={{ color: 'var(--olive-11)', margin: 0, lineHeight: 1.5 }}>
+              {description}
+            </Dialog.Description>
 
-          <Callout.Root color="red" variant="outline" size="2">
-            <Callout.Icon>
-              <MaterialIcon name="error" size={20} style={{ color: 'var(--red-11)' }} />
-            </Callout.Icon>
-            <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
-              <Text size="2" weight="bold" style={{ color: 'var(--red-11)' }}>
-                {t('agentBuilder.svcAcctKnowledgeTitle')}
-              </Text>
-              <ul
-                style={{
-                  margin: 0,
-                  paddingLeft: '1.25rem',
-                  listStyleType: 'disc',
-                  color: 'var(--slate-12)',
-                }}
-              >
-                <li style={{ marginBottom: 'var(--space-2)', paddingLeft: 'var(--space-1)', lineHeight: 1.5 }}>
-                  <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.5 }}>
+            <InfoCard
+              icon="shield"
+              iconColor="var(--red-11)"
+              iconBg="var(--red-3)"
+              iconBorder="var(--red-6)"
+              title={t('agentBuilder.svcAcctKnowledgeTitle')}
+            >
+              <ul style={LIST}>
+                <li style={LI}>
+                  <Text size="2" style={BODY}>
                     {t('agentBuilder.svcAcctKnowledgeNote1')}
                   </Text>
                 </li>
-                <li style={{ marginBottom: 'var(--space-2)', paddingLeft: 'var(--space-1)', lineHeight: 1.5 }}>
-                  <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.5 }}>
+                <li style={LI_LAST}>
+                  <Text size="2" style={BODY}>
                     {t('agentBuilder.svcAcctKnowledgeNote2')}
                   </Text>
                 </li>
-                <li style={{ paddingLeft: 'var(--space-1)', lineHeight: 1.5 }}>
-                  <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.5 }}>
-                    {t('agentBuilder.svcAcctKnowledgeNote3')}
-                  </Text>
-                </li>
               </ul>
-            </Flex>
-          </Callout.Root>
+            </InfoCard>
 
-          <Callout.Root color="jade" variant="surface" size="2">
-            <Callout.Icon>
-              <MaterialIcon name="vpn_key" size={18} style={{ color: 'var(--accent-11)' }} />
-            </Callout.Icon>
-            <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
-              <Text size="2" weight="bold" style={{ color: 'var(--slate-12)' }}>
-                {t('agentBuilder.svcAcctToolsetsTitle')}
-              </Text>
-              <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: 1.5 }}>
-                {t('agentBuilder.svcAcctToolsetsDesc')}
-              </Text>
-              <ul
-                style={{
-                  margin: 0,
-                  paddingLeft: '1.25rem',
-                  listStyleType: 'disc',
-                  color: 'var(--slate-12)',
-                }}
-              >
-                <li style={{ marginBottom: 'var(--space-2)', paddingLeft: 'var(--space-1)', lineHeight: 1.5 }}>
-                  <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.5 }}>
+            <InfoCard
+              icon="vpn_key"
+              iconColor="var(--accent-11)"
+              iconBg="var(--accent-3)"
+              iconBorder="var(--accent-6)"
+              title={t('agentBuilder.svcAcctToolsetsTitle')}
+            >
+              <ul style={LIST}>
+                <li style={isConverting ? LI : LI_LAST}>
+                  <Text size="2" style={BODY}>
                     {t('agentBuilder.svcAcctToolsetsNote1')}
                   </Text>
                 </li>
-                <li style={{ paddingLeft: 'var(--space-1)', lineHeight: 1.5 }}>
-                  <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.5 }}>
-                    {isConverting
-                      ? t('agentBuilder.svcAcctToolsetsNote2Convert')
-                      : t('agentBuilder.svcAcctToolsetsNote2Create')}
-                  </Text>
-                </li>
+                {isConverting ? (
+                  <li style={LI_LAST}>
+                    <Text size="2" style={BODY}>
+                      {t('agentBuilder.svcAcctToolsetsNote2Convert')}
+                    </Text>
+                  </li>
+                ) : null}
               </ul>
-            </Flex>
-          </Callout.Root>
+            </InfoCard>
 
-          <Callout.Root color="red" variant="outline" size="2">
-            <Callout.Icon>
-              <MaterialIcon name="error" size={20} style={{ color: 'var(--red-11)' }} />
-            </Callout.Icon>
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-              <Text size="2" weight="bold" style={{ color: 'var(--red-11)' }}>
-                {t('agentBuilder.svcAcctOrgTitle')}
-              </Text>
-              <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.5 }}>
+            <InfoCard
+              icon="groups"
+              iconColor="var(--red-11)"
+              iconBg="var(--red-3)"
+              iconBorder="var(--red-6)"
+              title={t('agentBuilder.svcAcctOrgTitle')}
+            >
+              <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
                 {t('agentBuilder.svcAcctOrgDesc')}
               </Text>
-            </Flex>
-          </Callout.Root>
+            </InfoCard>
 
-          {hasUserToolsets ? (
-            <Callout.Root color="red" variant="surface" size="1">
-              <Callout.Icon>
-                <MaterialIcon name="error" size={16} />
-              </Callout.Icon>
-              <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
-                <Callout.Text weight="bold">{t('agentBuilder.svcAcctRemoveToolsetsTitle')}</Callout.Text>
-                <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
-                  {t('agentBuilder.svcAcctRemoveToolsetsDesc', {
-                    action: isConverting
-                      ? t('agentBuilder.svcAcctConvertAction')
-                      : t('agentBuilder.svcAcctCreateAction'),
-                  })}
+            {error ? (
+              <Callout.Root color="red" variant="soft" size="2">
+                <Callout.Icon>
+                  <MaterialIcon name="error" size={16} />
+                </Callout.Icon>
+                <Callout.Text size="2" style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
+                  {error}
                 </Callout.Text>
-              </Flex>
-            </Callout.Root>
-          ) : null}
-
-          <Callout.Root color="jade" variant="surface" size="1">
-            <Callout.Icon>
-              <MaterialIcon name="lightbulb" size={16} />
-            </Callout.Icon>
-            <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
-              <Text weight="bold" size="1" style={{ color: 'var(--slate-12)' }}>
-                {t('agentBuilder.svcAcctNextStepsLabel')}{' '}
-              </Text>
-              {nextSteps}
-            </Callout.Text>
-          </Callout.Root>
-
-          {error ? (
-            <Callout.Root color="red" variant="surface" size="1">
-              <Callout.Icon>
-                <MaterialIcon name="error" size={16} />
-              </Callout.Icon>
-              <Callout.Text style={{ flex: 1, minWidth: 0 }}>{error}</Callout.Text>
-            </Callout.Root>
-          ) : null}
-
-          <Box
-            p="3"
-            style={{
-              borderRadius: 'var(--radius-3)',
-              border: '1px solid var(--gray-6)',
-              background: 'var(--gray-2)',
-            }}
-          >
-            <Text size="2" weight="medium" mb="3" style={{ color: 'var(--slate-12)' }}>
-              {t('agentBuilder.svcAcctConfirmTitle')}
-            </Text>
-            <Flex direction="column" gap="3">
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', cursor: 'pointer' }}>
-                <Checkbox
-                  size="2"
-                  checked={ackKnowledge}
-                  onCheckedChange={(v) => setAckKnowledge(v === true)}
-                  disabled={creating}
-                  style={{ marginTop: 2 }}
-                />
-                <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.45 }}>
-                  {t('agentBuilder.svcAcctAckKnowledge')}
-                </Text>
-              </label>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', cursor: 'pointer' }}>
-                <Checkbox
-                  size="2"
-                  checked={ackToolsets}
-                  onCheckedChange={(v) => setAckToolsets(v === true)}
-                  disabled={creating}
-                  style={{ marginTop: 2 }}
-                />
-                <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.45 }}>
-                  {t('agentBuilder.svcAcctAckToolsets')}
-                </Text>
-              </label>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', cursor: 'pointer' }}>
-                <Checkbox
-                  size="2"
-                  checked={ackOrg}
-                  onCheckedChange={(v) => setAckOrg(v === true)}
-                  disabled={creating}
-                  style={{ marginTop: 2 }}
-                />
-                <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: 1.45 }}>
-                  {t('agentBuilder.svcAcctAckOrg')}
-                </Text>
-              </label>
-            </Flex>
-            {!allAcknowledged && !hasUserToolsets ? (
-              <Text size="1" mt="3" style={{ color: 'var(--slate-11)' }}>
-                {isConverting
-                  ? t('agentBuilder.svcAcctCheckboxHintConvert')
-                  : t('agentBuilder.svcAcctCheckboxHintCreate')}
-              </Text>
+              </Callout.Root>
             ) : null}
-          </Box>
 
-          <Separator size="4" style={{ background: 'var(--gray-5)' }} />
-
-          <Flex gap="2" justify="end" wrap="wrap">
-            <Button
-              type="button"
-              variant="outline"
-              color="gray"
-              size="2"
-              onClick={onClose}
-              disabled={creating}
+            <Box
+              p="3"
+              style={{
+                borderRadius: 'var(--radius-2)',
+                border: '1px solid var(--olive-4)',
+                background: 'var(--olive-2)',
+              }}
             >
+              <Text size="2" weight="bold" mb="2" style={{ color: 'var(--olive-12)', lineHeight: 1.35 }}>
+                {t('agentBuilder.svcAcctConfirmTitle')}
+              </Text>
+              <Flex direction="column" gap="2">
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                  <Checkbox
+                    size="2"
+                    checked={ackKnowledge}
+                    onCheckedChange={(v) => setAckKnowledge(v === true)}
+                    disabled={creating}
+                    style={{ marginTop: 2 }}
+                  />
+                  <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
+                    {t('agentBuilder.svcAcctAckKnowledge')}
+                  </Text>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                  <Checkbox
+                    size="2"
+                    checked={ackToolsets}
+                    onCheckedChange={(v) => setAckToolsets(v === true)}
+                    disabled={creating}
+                    style={{ marginTop: 2 }}
+                  />
+                  <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
+                    {t('agentBuilder.svcAcctAckToolsets')}
+                  </Text>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                  <Checkbox
+                    size="2"
+                    checked={ackOrg}
+                    onCheckedChange={(v) => setAckOrg(v === true)}
+                    disabled={creating}
+                    style={{ marginTop: 2 }}
+                  />
+                  <Text size="2" style={{ color: 'var(--olive-12)', lineHeight: 1.45 }}>
+                    {t('agentBuilder.svcAcctAckOrg')}
+                  </Text>
+                </label>
+              </Flex>
+              {!allAcknowledged ? (
+                <Text size="1" mt="2" style={{ color: 'var(--olive-11)', lineHeight: 1.4 }}>
+                  {isConverting
+                    ? t('agentBuilder.svcAcctCheckboxHintConvert')
+                    : t('agentBuilder.svcAcctCheckboxHintCreate')}
+                </Text>
+              ) : null}
+            </Box>
+          </Flex>
+        </Box>
+
+        <Box
+          style={{
+            flexShrink: 0,
+            paddingTop: 'var(--space-2)',
+            marginTop: 'var(--space-2)',
+            borderTop: '1px solid var(--olive-4)',
+          }}
+        >
+          <Flex gap="2" justify="end" wrap="wrap">
+            <Button type="button" variant="soft" color="gray" size="2" onClick={onClose} disabled={creating}>
               {t('action.cancel')}
             </Button>
-            <Button
-              type="button"
-              size="2"
-              color="jade"
-              onClick={() => void onConfirm()}
-              disabled={confirmDisabled}
-            >
+            <Button type="button" size="2" color="jade" onClick={() => void onConfirm()} disabled={confirmDisabled}>
               <Flex align="center" gap="2">
                 {creating ? <MaterialIcon name="hourglass_empty" size={18} /> : null}
                 {creating ? busyLabel : confirmLabel}
               </Flex>
             </Button>
           </Flex>
-        </Flex>
+        </Box>
       </Dialog.Content>
     </Dialog.Root>
   );

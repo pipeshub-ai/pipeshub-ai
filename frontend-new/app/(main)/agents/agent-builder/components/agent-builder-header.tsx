@@ -21,6 +21,9 @@ import { useTranslation } from 'react-i18next';
 export function AgentBuilderHeader(props: {
   agentName: string;
   onAgentNameChange: (v: string) => void;
+  /** Inline validation message for the name field (e.g. empty on save). */
+  agentNameError?: string | null;
+  agentNameInputRef?: React.RefObject<HTMLInputElement | null>;
   saving: boolean;
   onSave: () => void;
   shareWithOrg: boolean;
@@ -42,6 +45,8 @@ export function AgentBuilderHeader(props: {
   const {
     agentName,
     onAgentNameChange,
+    agentNameError = null,
+    agentNameInputRef,
     saving,
     onSave,
     shareWithOrg,
@@ -56,6 +61,10 @@ export function AgentBuilderHeader(props: {
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
+
+  const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
+  const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
+  const showAgentMenu = showDeleteOption || showConvertOption;
 
   return (
     <Flex
@@ -83,7 +92,7 @@ export function AgentBuilderHeader(props: {
           <MaterialIcon name="chevron_left" size={22} color="var(--olive-11)" />
         </IconButton>
         <Separator orientation="vertical" size="2" style={{ height: 28 }} />
-        <Box style={{ minWidth: 0, flex: 1, maxWidth: 560 }}>
+        <Box style={{ minWidth: 0, flex: 1, maxWidth: 360 }}>
           <Text
             size="1"
             weight="medium"
@@ -95,17 +104,25 @@ export function AgentBuilderHeader(props: {
           <Flex align="center" gap="3" style={{ width: '100%' }}>
             <Box style={{ flex: 1, minWidth: 0 }}>
               <TextField.Root
+                ref={agentNameInputRef}
                 value={agentName}
                 onChange={(e) => onAgentNameChange(e.target.value)}
                 placeholder={t('agentBuilder.agentNamePlaceholder')}
                 disabled={isFlowStructureLocked}
                 size="2"
+                aria-invalid={agentNameError ? true : undefined}
+                color={agentNameError ? 'red' : undefined}
                 style={{ width: '100%' }}
               >
                 <TextField.Slot side="left">
                   <MaterialIcon name="smart_toy" size={18} color="var(--olive-11)" />
                 </TextField.Slot>
               </TextField.Root>
+              {agentNameError ? (
+                <Text size="1" mt="1" style={{ color: 'var(--red-11)' }}>
+                  {agentNameError}
+                </Text>
+              ) : null}
             </Box>
             {isServiceAccount ? (
               <Tooltip content={t('agentBuilder.serviceAccountBadgeTooltip')}>
@@ -126,40 +143,20 @@ export function AgentBuilderHeader(props: {
                   {t('agentBuilder.serviceAccountBadge')}
                 </Badge>
               </Tooltip>
-            ) : onEnableServiceAccount ? (
-              <Tooltip
-                content={
-                  editing
-                    ? t('agentBuilder.convertToServiceAccountTooltip')
-                    : t('agentBuilder.createAsServiceAccountTooltip')
-                }
-              >
-                <Button
-                  type="button"
-                  size="2"
-                  variant="soft"
-                  color="jade"
-                  disabled={saving}
-                  onClick={onEnableServiceAccount}
-                  style={{ flexShrink: 0 }}
-                >
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="smart_toy" size={18} />
-                    {editing ? t('agentBuilder.convertToServiceAccount') : t('agentBuilder.createAsServiceAccount')}
-                  </Flex>
-                </Button>
-              </Tooltip>
             ) : null}
           </Flex>
         </Box>
       </Flex>
       <Flex align="center" gap="4" style={{ flexShrink: 0 }}>
-        {editing && canDeleteAgent && onRequestDeleteAgent ? (
+        {showAgentMenu ? (
           <DropdownMenu.Root modal={false}>
             <DropdownMenu.Trigger>
               <button
                 type="button"
-                aria-label={t('chat.agentListRowMenuAria')}
+                aria-label={t('agentBuilder.agentActionsMenuAria')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
                 onMouseEnter={() => setAgentMenuTriggerHovered(true)}
                 onMouseLeave={() => setAgentMenuTriggerHovered(false)}
                 style={{
@@ -167,7 +164,7 @@ export function AgentBuilderHeader(props: {
                   border: 'none',
                   background: agentMenuTriggerHovered ? 'var(--olive-5)' : 'transparent',
                   borderRadius: 'var(--radius-1)',
-                  padding: 6,
+                  padding: 2,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -175,24 +172,44 @@ export function AgentBuilderHeader(props: {
                   flexShrink: 0,
                 }}
               >
-                <MaterialIcon name="more_horiz" size={22} color="var(--olive-11)" />
+                <MaterialIcon name="more_horiz" size={18} color="var(--slate-11)" />
               </button>
             </DropdownMenu.Trigger>
-            <DropdownMenu.Content side="bottom" align="end" sideOffset={4} style={{ minWidth: 160 }}>
-              <DropdownMenu.Item
-                color="red"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRequestDeleteAgent();
-                }}
-              >
-                <Flex align="center" gap="2">
-                  <MaterialIcon name="delete" size={16} color="var(--red-11)" />
-                  <Text size="2" style={{ color: 'var(--red-11)' }}>
-                    {t('chat.deleteAgent')}
-                  </Text>
-                </Flex>
-              </DropdownMenu.Item>
+            <DropdownMenu.Content side="bottom" align="end" sideOffset={4} style={{ minWidth: 140 }}>
+              {showConvertOption ? (
+                <DropdownMenu.Item
+                  disabled={saving}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEnableServiceAccount?.();
+                  }}
+                >
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="admin_panel_settings" size={16} color="var(--slate-11)" />
+                    <Text size="2">
+                      {editing
+                        ? t('agentBuilder.agentMenuConvertToServiceAgent')
+                        : t('agentBuilder.agentMenuCreateAsServiceAgent')}
+                    </Text>
+                  </Flex>
+                </DropdownMenu.Item>
+              ) : null}
+              {showDeleteOption ? (
+                <DropdownMenu.Item
+                  color="red"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRequestDeleteAgent?.();
+                  }}
+                >
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
+                    <Text size="2" style={{ color: 'var(--red-11)' }}>
+                      {t('chat.deleteAgent')}
+                    </Text>
+                  </Flex>
+                </DropdownMenu.Item>
+              ) : null}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         ) : null}
@@ -228,7 +245,7 @@ export function AgentBuilderHeader(props: {
         <Button
           size="2"
           onClick={onSave}
-          disabled={saving || !canPersist || !agentName.trim()}
+          disabled={saving || !canPersist}
           style={{ minWidth: 132 }}
         >
           <Flex align="center" gap="2">

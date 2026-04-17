@@ -199,6 +199,7 @@ function AppLayout({
           )}
           <Box
             key="app-main-scroll"
+            data-app-main-scroll
             className="no-scrollbar"
             style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}
           >

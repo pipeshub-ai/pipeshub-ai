@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Badge,
@@ -42,7 +42,8 @@ export interface UserToolsetConfigDialogProps {
   toolset: BuilderSidebarToolset;
   instanceId: string;
   onClose: () => void;
-  onSuccess: () => void;
+  /** Refresh toolsets / follow-up work; must not block closing the dialog. */
+  onSuccess: () => void | Promise<void>;
   onNotify?: (message: string) => void;
 }
 
@@ -76,21 +77,10 @@ export function UserToolsetConfigDialog({
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(toolset.isAuthenticated ?? false);
-  const [oauthJustVerified, setOauthJustVerified] = useState(false);
 
   useEffect(() => {
     setIsAuthenticated(toolset.isAuthenticated ?? false);
   }, [toolset.isAuthenticated]);
-
-  useEffect(() => {
-    setOauthJustVerified(false);
-  }, [instanceId]);
-
-  useEffect(() => {
-    if (!oauthJustVerified) return;
-    const id = window.setTimeout(() => setOauthJustVerified(false), 6000);
-    return () => window.clearTimeout(id);
-  }, [oauthJustVerified]);
 
   useEffect(() => {
     setIconBroken(false);
@@ -172,9 +162,15 @@ export function UserToolsetConfigDialog({
 
   const onOAuthVerified = useCallback(() => {
     setIsAuthenticated(true);
-    setOauthJustVerified(true);
-    onSuccess();
-  }, [onSuccess]);
+    // Close immediately: parent `onClose` already refreshes the list. Do not wait on
+    // `onSuccess` — a slow or stuck `refreshToolsets` would leave this dialog open forever.
+    startTransition(() => {
+      onClose();
+    });
+    void Promise.resolve(onSuccess()).catch(() => {
+      /* extra refresh failed; list was already updated from onClose where applicable */
+    });
+  }, [onClose, onSuccess]);
 
   const onOAuthIncomplete = useCallback(() => {
     setError(t('agentBuilder.oauthSignInIncomplete'));
@@ -225,7 +221,6 @@ export function UserToolsetConfigDialog({
 
   const handleOAuthAuthenticate = async () => {
     setError(null);
-    setOauthJustVerified(false);
     await beginOAuth(
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
@@ -361,17 +356,6 @@ export function UserToolsetConfigDialog({
             {!schemaLoading && error ? (
               <Callout.Root color="red" variant="surface" size="1" mb="3">
                 <Callout.Text style={{ flex: 1, minWidth: 0 }}>{error}</Callout.Text>
-              </Callout.Root>
-            ) : null}
-
-            {!schemaLoading && oauthJustVerified ? (
-              <Callout.Root color="green" variant="surface" size="1" mb="3">
-                <Callout.Icon>
-                  <MaterialIcon name="check_circle" size={18} />
-                </Callout.Icon>
-                <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
-                  {t('agentBuilder.oauthSignInSuccess')}
-                </Callout.Text>
               </Callout.Root>
             ) : null}
 
