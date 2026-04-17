@@ -23,6 +23,7 @@ describe('UserGroupController', () => {
       },
       params: {},
       body: {},
+      query: {},
     };
 
     res = {

@@ -724,7 +724,7 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should throw error when AI service returns null data for getTeamUsers', async () => {
+    it('should return 200 with null data when AI service returns null data for getTeamUsers', async () => {
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: null,
@@ -734,7 +734,8 @@ describe('TeamsController', () => {
 
       await controller.getTeamUsers(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledWith(null)).to.be.true;
     });
 
     it('should throw error when AI service returns null data for updateTeamUsersPermissions', async () => {
