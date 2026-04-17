@@ -36,8 +36,8 @@ export function CollectionRow({
       onMouseLeave={() => setIsHovered(false)}
       style={{
         height: 'var(--space-7)',
-        backgroundColor: isHovered ? 'var(--slate-3)' : 'var(--slate-2)',
-        border: '1px solid var(--slate-3)',
+        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         paddingLeft: 'var(--space-3)',
         paddingRight: 'var(--space-2)',

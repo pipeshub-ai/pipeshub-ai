@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner } from '@radix-ui/themes';
+import { Flex, Text, Badge, Spinner, RadioGroup } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import Image from 'next/image';
 import { ChatApi } from '@/chat/api';
@@ -178,7 +178,6 @@ interface ModelItemProps {
 }
 
 function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
-  const [isHovered, setIsHovered] = useState(false);
   const providerName = PROVIDER_FRIENDLY_NAMES[model.provider] ?? 'Missing Provider Friendly Name';
   const description = MODEL_DESCRIPTIONS[model.modelName] ?? 'Missing model one liner';
 
@@ -187,15 +186,12 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       align="center"
       justify="between"
       onClick={() => onSelect(model)}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius-1)',
         border: '1px solid var(--olive-3)',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        backgroundColor: 'var(--olive-2)',
         cursor: 'pointer',
-        transition: 'background-color 0.12s ease',
       }}
     >
       {/* Left: all content left-aligned */}
@@ -244,30 +240,17 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       </Flex>
 
       {/* Right: Radio indicator — vertically centered */}
-      <Flex
-        align="center"
-        justify="center"
+      <RadioGroup.Root
+        value={isSelected ? 'selected' : ''}
         style={{
-          width: 'var(--space-4)',
-          height: 'var(--space-4)',
-          borderRadius: '50%',
-          border: isSelected
-            ? '2px solid var(--accent-9)'
-            : '1px solid var(--slate-7)',
           flexShrink: 0,
           marginLeft: 'var(--space-3)',
-        }}
+          pointerEvents: 'none',
+          '--accent-indicator': 'var(--accent-9)',
+        } as React.CSSProperties}
       >
-        {isSelected && (
-          <Image
-            src="/icons/common/ellipse-1.svg"
-            alt="selected"
-            width={8}
-            height={8}
-            style={{ display: 'block' }}
-          />
-        )}
-      </Flex>
+        <RadioGroup.Item value="selected" />
+      </RadioGroup.Root>
     </Flex>
   );
 }

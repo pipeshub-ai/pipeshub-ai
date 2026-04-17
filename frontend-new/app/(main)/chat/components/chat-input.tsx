@@ -730,6 +730,7 @@ export function ChatInput({
             selectedModel={settings.selectedModel}
             onModelSelect={(model) => {
               setSelectedModel(model);
+              setIsModelPanelOpen(false);
             }}
           />
         </ChatInputExpansionPanel>
@@ -921,7 +922,7 @@ export function ChatInput({
                       setIsModelPanelOpen(false);
                       setShowUploadArea(false);
                     }}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
                   >
                     <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                   </IconButton>
@@ -938,7 +939,7 @@ export function ChatInput({
                       setIsCollectionsPanelOpen(false);
                       setShowUploadArea(false);
                     }}
-                    style={{ margin: 0, cursor: 'pointer' }}
+                    style={{ margin: 0, cursor: 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
                   >
                     <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
                   </IconButton>
@@ -950,7 +951,7 @@ export function ChatInput({
                     size="2"
                     disabled={isRegenerateMode}
                     onClick={toggleUploadArea}
-                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                    style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer', '--accent-a3': modeColors.bg } as React.CSSProperties}
                   >
                     <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                   </IconButton>
@@ -975,7 +976,8 @@ export function ChatInput({
                       margin: 0,
                       cursor: isRegenerateMode || !isSpeechSupported ? 'default' : 'pointer',
                       ...(isListening && { animation: 'pulse 1.5s ease-in-out infinite' }),
-                    }}
+                      '--accent-a3': modeColors.bg,
+                    } as React.CSSProperties}
                   >
                     <MaterialIcon
                       name={isListening ? 'mic' : 'mic_none'}

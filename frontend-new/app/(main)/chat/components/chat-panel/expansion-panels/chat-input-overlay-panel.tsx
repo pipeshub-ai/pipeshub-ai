@@ -117,7 +117,7 @@ export function ChatInputOverlayPanel({
             height: '512px',
             backdropFilter: 'blur(25px)',
             WebkitBackdropFilter: 'blur(25px)',
-            backgroundColor: 'var(--color-surface)',
+            backgroundColor: 'var(--effects-translucent)',
             border: '1px solid var(--slate-a3)',
             borderRadius: 'var(--radius-2)',
             boxShadow: '0px 20px 48px 0px var(--black-a6)',

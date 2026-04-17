@@ -77,7 +77,7 @@ export function MobileQueryOptionsSheet({ open, onOpenChange }: MobileQueryOptio
       {activePanel === 'models' && (
         <ModelSelectorPanel
           selectedModel={settings.selectedModel}
-          onModelSelect={(model) => setSelectedModel(model)}
+          onModelSelect={(model) => { setSelectedModel(model); handleBack(); }}
           hideHeader
         />
       )}

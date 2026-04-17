@@ -357,6 +357,10 @@ summary {
   color: var(--gray-10);
 }
 
+.collections-search-input::placeholder {
+  color: var(--slate-a9);
+}
+
 /* ========================
    Markdown Content Fixes
    ======================== */
