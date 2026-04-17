@@ -12,6 +12,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { SmtpApi } from './api';
@@ -28,22 +29,16 @@ export default function MailPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
+  const [isConfigured, setIsConfigured] = useState(false);
+  const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
+
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
   }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
-  const [isConfigured, setIsConfigured] = useState(false);
-  const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [panelOpen, setPanelOpen] = useState(false);
 
   // ── Load SMTP status ──────────────────────────────────────
   const loadSmtpConfig = useCallback(async () => {
@@ -60,8 +55,9 @@ export default function MailPage() {
   }, []);
 
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     loadSmtpConfig();
-  }, [loadSmtpConfig]);
+  }, [isProfileInitialized, isAdmin, loadSmtpConfig]);
 
   // ── Save SMTP config ──────────────────────────────────────
   const handleSave = useCallback(
@@ -83,6 +79,20 @@ export default function MailPage() {
       description: 'Your email server settings have been updated',
     });
   }, [addToast]);
+
+  // Prevent rendering while profile is unresolved or for non-admin (redirect above).
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
+
+  // ── Loading state ─────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
+        <LottieLoader variant="loader" size={48} showLabel />
+      </Flex>
+    );
+  }
 
   // ── Render ────────────────────────────────────────────────
   return (
@@ -138,13 +148,6 @@ export default function MailPage() {
 
           {/* SMTP row */}
           <Box style={{ padding: '12px 14px' }}>
-            {isLoading ? (
-              <Flex align="center" justify="center" style={{ padding: '24px 0' }}>
-                <Text size="2" style={{ color: 'var(--slate-10)' }}>
-                  Loading…
-                </Text>
-              </Flex>
-            ) : (
               <Flex
                 align="center"
                 gap="3"
@@ -216,7 +219,6 @@ export default function MailPage() {
                   <MaterialIcon name="settings" size={18} color="var(--slate-10)" />
                 </IconButton>
               </Flex>
-            )}
           </Box>
         </Flex>
       </Box>

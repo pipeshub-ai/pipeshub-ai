@@ -83,6 +83,14 @@ export function FilePreviewFullscreen({
     onTotalPagesDetected: handleTotalPagesDetected,
   };
 
+  const handleHighlightClick = useCallback(
+    (id: string) => {
+      const citation = citations?.find((c) => c.id === id);
+      if (citation) handleCitationClick(citation);
+    },
+    [citations, handleCitationClick]
+  );
+
   return (
     <Box
       style={{
@@ -166,6 +174,9 @@ export function FilePreviewFullscreen({
               pagination={paginationControls}
               highlightBox={hasCitations ? syncHighlightBox : highlightBox}
               highlightPage={hasCitations ? syncHighlightPage : undefined}
+              citations={hasCitations ? citations : undefined}
+              activeCitationId={hasCitations ? activeCitationId : undefined}
+              onHighlightClick={hasCitations ? handleHighlightClick : undefined}
             />
           )}
 

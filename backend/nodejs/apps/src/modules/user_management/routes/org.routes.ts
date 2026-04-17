@@ -165,7 +165,7 @@ export function createOrgRouter(container: Container) {
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024,
+      maxFileSize: 2 * 1024 * 1024,
       strictFileUpload: true,
     }).getMiddleware,
     metricsMiddleware(container),

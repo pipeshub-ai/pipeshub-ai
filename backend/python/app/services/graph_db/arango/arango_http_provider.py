@@ -17540,6 +17540,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
         transaction: str | None = None
     ) -> tuple[list[dict], int]:
         """
@@ -17553,6 +17556,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if search:
                 search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
 
+            # Build created-by / date filters
+            extra_filters = ""
+            if created_by:
+                extra_filters += "\nFILTER team.createdBy == @createdBy"
+            if created_after is not None:
+                extra_filters += "\nFILTER team.createdAtTimestamp >= @createdAfter"
+            if created_before is not None:
+                extra_filters += "\nFILTER team.createdAtTimestamp <= @createdBefore"
+
             # Query to get all teams user is a member of with pagination
             user_teams_query = f"""
             FOR permission IN @@permission_collection
@@ -17560,6 +17572,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team = DOCUMENT(permission._to)
             FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
             {search_filter}
+            {extra_filters}
             SORT team.createdAtTimestamp DESC
             LIMIT @offset, @limit
             LET team_members = (
@@ -17602,18 +17615,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team = DOCUMENT(permission._to)
             FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
             {search_filter}
+            {extra_filters}
             COLLECT WITH COUNT INTO total_count
             RETURN total_count
             """
+
+            # Shared bind vars for filters
+            filter_vars: dict = {}
+            if search:
+                filter_vars["search"] = f"%{search.lower()}%"
+            if created_by:
+                filter_vars["createdBy"] = created_by
+            if created_after is not None:
+                filter_vars["createdAfter"] = created_after
+            if created_before is not None:
+                filter_vars["createdBefore"] = created_before
 
             # Get total count
             count_params = {
                 "userId": f"{CollectionNames.USERS.value}/{user_key}",
                 "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                **filter_vars,
             }
-            if search:
-                count_params["search"] = f"%{search.lower()}%"
 
             count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
             total_count = count_list[0] if count_list else 0
@@ -17624,10 +17648,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@permission_collection": CollectionNames.PERMISSION.value,
                 "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
                 "offset": offset,
-                "limit": limit
+                "limit": limit,
+                **filter_vars,
             }
-            if search:
-                teams_params["search"] = f"%{search.lower()}%"
 
             result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
             return result_list if result_list else [], total_count
@@ -17778,12 +17801,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
         transaction: str | None = None
     ) -> dict | None:
         """
         Get all users in a specific team.
         """
         try:
+            offset = (page - 1) * limit
+
+            search_filter = ""
+            if search:
+                search_filter = "FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)"
+
             team_users_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
             FILTER team._key == @teamId AND team.orgId == @orgId
@@ -17792,10 +17824,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER permission._from == @currentUserId AND permission._to == team._id
                 RETURN permission
             )
-            LET team_members = (
+            LET all_members = (
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
+                FILTER user != null
+                {search_filter}
                 RETURN {{
                     "id": user._key,
                     "userId": user.userId,
@@ -17806,7 +17840,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "isOwner": permission.role == "OWNER"
                 }}
             )
-            LET user_count = LENGTH(team_members)
+            LET total_count = LENGTH(all_members)
+            LET paginated_members = (
+                FOR m IN all_members
+                LIMIT @offset, @limit
+                RETURN m
+            )
             RETURN {{
                 "id": team._key,
                 "name": team.name,
@@ -17816,21 +17855,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "createdAtTimestamp": team.createdAtTimestamp,
                 "updatedAtTimestamp": team.updatedAtTimestamp,
                 "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-                "members": team_members,
-                "memberCount": user_count,
+                "members": paginated_members,
+                "memberCount": total_count,
                 "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
                 "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
                 "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
             }}
             """
 
+            bind_vars: dict = {
+                "teamId": team_id,
+                "orgId": org_id,
+                "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                "offset": offset,
+                "limit": limit,
+            }
+            if search:
+                bind_vars["search"] = f"%{search.lower()}%"
+
             result_list = await self.execute_query(
                 team_users_query,
-                bind_vars={
-                    "teamId": team_id,
-                    "orgId": org_id,
-                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
-                },
+                bind_vars=bind_vars,
                 transaction=transaction
             )
             return result_list[0] if result_list else None

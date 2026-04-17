@@ -6,7 +6,8 @@ import { Box, Flex, Text, IconButton, Popover, Separator, Badge } from '@radix-u
 import { useReactFlow } from '@xyflow/react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
-import { normalizeDisplayName } from '../display-utils';
+import { AGENT_TOOLSET_FALLBACK_ICON, normalizeDisplayName } from '../display-utils';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { NodeHandles } from './node-handles';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
@@ -158,26 +159,19 @@ export function ToolsetFlowNode({
       >
         <Flex align="center" justify="between" gap="2" px="3" py="2">
           <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-            <Box
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 'var(--radius-2)',
-                background: chrome.iconWell,
-                border: `1px solid ${chrome.iconWellBorder}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                boxShadow: 'inset 0 1px 0 var(--gray-a3)',
-              }}
-            >
+            <Flex align="center" justify="center" style={{ flexShrink: 0, lineHeight: 0 }} aria-hidden>
               {isIconUrl(icon) ? (
-                <img src={icon} alt="" width={20} height={20} style={{ objectFit: 'contain' }} />
+                <ThemeableAssetIcon
+                  {...themeableAssetIconPresets.flowNodeHeader}
+                  src={icon}
+                  size={22}
+                  color={chrome.iconColor}
+                  fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
+                />
               ) : (
-                <MaterialIcon name={icon} size={20} color={chrome.iconColor} />
+                <MaterialIcon name={icon} size={22} color={chrome.iconColor} />
               )}
-            </Box>
+            </Flex>
             <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
               <Text
                 weight="medium"

@@ -321,6 +321,23 @@ body {
     0 12px 60px 0 var(--Overlays-Black-Alpha-3, rgba(0, 0, 0, 0.15)) !important;
 }
 
+/* Service account dialog: Radix wraps content in .rt-DialogScroll (overflow auto) — we scroll inside
+   .service-account-confirm-dialog__body only; disable outer scroll to avoid double scrollbars. */
+.radix-themes .rt-DialogScroll:has(.service-account-confirm-dialog) {
+  overflow: visible !important;
+  align-items: center;
+  justify-content: center;
+  padding: max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px))
+    max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+  max-height: 100dvh;
+}
+
+.radix-themes .rt-DialogScrollPadding:has(.service-account-confirm-dialog) {
+  overflow: visible !important;
+  max-height: none !important;
+}
+
 /* ========================
    Cursor Utilities
    ======================== */
@@ -742,6 +759,8 @@ li > blockquote {
 }
 
 .agent-builder-sidebar-category-row {
+  border: 1px solid transparent;
+  background: transparent;
   transition:
     background-color 0.15s ease,
     border-color 0.15s ease;
@@ -750,4 +769,15 @@ li > blockquote {
 .agent-builder-sidebar-category-row:hover {
   background-color: var(--olive-3);
   border-color: var(--olive-4);
+}
+
+.service-account-confirm-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--space-2) 2px var(--space-1) 0;
+  margin-top: var(--space-2);
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }

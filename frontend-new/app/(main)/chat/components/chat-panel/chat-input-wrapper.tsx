@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
 import { useChatStore } from '@/chat/store';
@@ -16,6 +17,25 @@ let currentSearchAbort: AbortController | null = null;
  */
 export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
+  const searchParams = useSearchParams();
+  const rawAgentId = searchParams.get('agentId');
+  const slotAgentId = useChatStore((s) => {
+    const sid = s.activeSlotId;
+    return sid ? (s.slots[sid]?.threadAgentId?.trim() ?? '') : '';
+  });
+  // Determine effective agent ID (prefer slot's agent ID, fallback to URL)
+  const effectiveAgentId = slotAgentId || (rawAgentId?.trim() ? rawAgentId : null);
+  const isAgentChat = Boolean(effectiveAgentId);
+
+  useEffect(() => {
+    if (!isAgentChat) return;
+    const store = useChatStore.getState();
+    store.setQueryMode('agent');
+    if (store.settings.mode === 'search') {
+      store.setMode('chat');
+      store.clearSearchResults();
+    }
+  }, [isAgentChat]);
 
   useEffect(() => {
     return () => {
@@ -72,8 +92,8 @@ export function ChatInputWrapper() {
 
     const store = useChatStore.getState();
 
-    // Search mode: direct API call, no slots/runtime
-    if (store.settings.mode === 'search') {
+    // Search mode: direct API call, no slots/runtime (disabled for agent-scoped chat)
+    if (store.settings.mode === 'search' && !isAgentChat) {
       handleSearchSubmit(message.trim());
       return;
     }
@@ -133,5 +153,5 @@ export function ChatInputWrapper() {
     }
   };
 
-  return <ChatInput onSend={handleSend} />;
+  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} agentId={effectiveAgentId} />;
 }

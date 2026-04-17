@@ -9,22 +9,18 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
+import { AgentStrategyModePanel } from '@/chat/components/chat-panel/expansion-panels/agent-strategy-mode-panel';
 import type { AgentStrategy, QueryMode } from '@/chat/types';
-
-const AGENT_STRATEGIES: AgentStrategy[] = ['auto', 'quick', 'verify', 'deep'];
-
-const AGENT_STRATEGY_ICONS: Record<AgentStrategy, string> = {
-  auto: 'auto_awesome',
-  quick: 'bolt',
-  verify: 'fact_check',
-  deep: 'psychology',
-};
 
 type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-strategy';
 
 interface MobileQueryOptionsSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Agent conversation — meatball menu only exposes model (no connectors row). */
+  isAgentChat?: boolean;
+  /** Agent ID for filtering models to only those configured for the agent */
+  agentId?: string | null;
 }
 
 /**
@@ -35,7 +31,12 @@ interface MobileQueryOptionsSheetProps {
  * (models, connectors, or agent strategy), and the back chevron returns
  * to the root list. All content renders inside a single MobileBottomSheet.
  */
-export function MobileQueryOptionsSheet({ open, onOpenChange }: MobileQueryOptionsSheetProps) {
+export function MobileQueryOptionsSheet({
+  open,
+  onOpenChange,
+  isAgentChat = false,
+  agentId,
+}: MobileQueryOptionsSheetProps) {
   const [activePanel, setActivePanel] = useState<ActivePanel>('root');
   const { t } = useTranslation();
 
@@ -72,13 +73,15 @@ export function MobileQueryOptionsSheet({ open, onOpenChange }: MobileQueryOptio
           queryMode={settings.queryMode}
           agentStrategy={settings.agentStrategy}
           onNavigate={setActivePanel}
+          isAgentChat={isAgentChat}
         />
       )}
       {activePanel === 'models' && (
         <ModelSelectorPanel
           selectedModel={settings.selectedModel}
-          onModelSelect={(model) => setSelectedModel(model)}
+          onModelSelect={setSelectedModel}
           hideHeader
+          agentId={agentId}
         />
       )}
       {activePanel === 'connectors' && (
@@ -94,12 +97,13 @@ export function MobileQueryOptionsSheet({ open, onOpenChange }: MobileQueryOptio
         />
       )}
       {activePanel === 'agent-strategy' && (
-        <AgentStrategyPanel
-          agentStrategy={settings.agentStrategy}
+        <AgentStrategyModePanel
+          activeStrategy={settings.agentStrategy}
           onSelect={(strategy) => {
             setAgentStrategy(strategy);
             handleBack();
           }}
+          hideHeader
         />
       )}
     </MobileBottomSheet>
@@ -114,9 +118,10 @@ interface RootPanelProps {
   queryMode: QueryMode;
   agentStrategy: AgentStrategy;
   onNavigate: (panel: ActivePanel) => void;
+  isAgentChat?: boolean;
 }
 
-function RootPanel({ queryMode, agentStrategy, onNavigate }: RootPanelProps) {
+function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPanelProps) {
   const { t } = useTranslation();
 
   const currentStrategyLabel = t(`chat.agentStrategy.modes.${agentStrategy}.label`);
@@ -134,12 +139,14 @@ function RootPanel({ queryMode, agentStrategy, onNavigate }: RootPanelProps) {
             label={t('chat.models', { defaultValue: 'Models' })}
             onClick={() => onNavigate('models')}
           />
-          <ManageRow
-            icon="hub"
-            label={t('nav.connectors', { defaultValue: 'Connectors' })}
-            onClick={() => onNavigate('connectors')}
-          />
-          {queryMode === 'agent' && (
+          {!isAgentChat && (
+            <ManageRow
+              icon="hub"
+              label={t('nav.connectors', { defaultValue: 'Connectors' })}
+              onClick={() => onNavigate('connectors')}
+            />
+          )}
+          {!isAgentChat && queryMode === 'agent' && (
             <ManageRow
               icon="smart_toy"
               label={t('chat.agentStrategy.triggerTitle', { defaultValue: 'Agent mode' })}
@@ -149,89 +156,6 @@ function RootPanel({ queryMode, agentStrategy, onNavigate }: RootPanelProps) {
           )}
         </Flex>
       </Flex>
-    </Flex>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Agent strategy sub-panel
-// ────────────────────────────────────────────────────────────────────────────
-
-interface AgentStrategyPanelProps {
-  agentStrategy: AgentStrategy;
-  onSelect: (id: AgentStrategy) => void;
-}
-
-function AgentStrategyPanel({ agentStrategy, onSelect }: AgentStrategyPanelProps) {
-  const { t } = useTranslation();
-
-  return (
-    <Flex direction="column" gap="2">
-      {AGENT_STRATEGIES.map((id) => (
-        <AgentStrategyRow
-          key={id}
-          id={id}
-          label={t(`chat.agentStrategy.modes.${id}.label`)}
-          hint={t(`chat.agentStrategy.modes.${id}.hint`)}
-          selected={agentStrategy === id}
-          onSelect={onSelect}
-        />
-      ))}
-    </Flex>
-  );
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Agent strategy selectable row
-// ────────────────────────────────────────────────────────────────────────────
-
-interface AgentStrategyRowProps {
-  id: AgentStrategy;
-  label: string;
-  hint: string;
-  selected: boolean;
-  onSelect: (id: AgentStrategy) => void;
-}
-
-function AgentStrategyRow({ id, label, hint, selected, onSelect }: AgentStrategyRowProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <Flex
-      align="center"
-      gap="3"
-      onClick={() => onSelect(id)}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        padding: 'var(--space-3) var(--space-4)',
-        borderRadius: 'var(--radius-1)',
-        border: `1px solid ${selected ? 'var(--accent-6)' : 'var(--olive-3)'}`,
-        backgroundColor: selected
-          ? 'var(--accent-2)'
-          : isHovered
-            ? 'var(--olive-3)'
-            : 'var(--olive-2)',
-        cursor: 'pointer',
-        transition: 'background-color 0.12s ease, border-color 0.12s ease',
-      }}
-    >
-      <MaterialIcon
-        name={AGENT_STRATEGY_ICONS[id]}
-        size={ICON_SIZES.PRIMARY}
-        color={selected ? 'var(--accent-9)' : 'var(--gray-11)'}
-      />
-      <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-        <Text size="2" weight="medium" style={{ color: selected ? 'var(--accent-11)' : 'var(--gray-12)' }}>
-          {label}
-        </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.4 }}>
-          {hint}
-        </Text>
-      </Flex>
-      {selected && (
-        <MaterialIcon name="check_circle" size={ICON_SIZES.PRIMARY} color="var(--accent-9)" />
-      )}
     </Flex>
   );
 }

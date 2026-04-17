@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
-import { Users } from '../schema/users.schema'; // Adjust path as needed
+import { Users } from '../schema/users.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -9,6 +9,10 @@ import {
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
 import { groupTypes, UserGroups } from '../schema/userGroup.schema';
+import { UserDisplayPicture } from '../schema/userDp.schema';
+import { safeParsePagination } from '../../../utils/safe-integer';
+import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
+import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
 
 @injectable()
 export class UserGroupController {
@@ -71,15 +75,61 @@ export class UserGroupController {
     res: Response,
   ): Promise<void> {
     const orgId = req.user?.orgId;
+    const { page, limit, skip } = safeParsePagination(
+      req.query.page as string,
+      req.query.limit as string,
+      1,
+      25,
+      100,
+    );
+    const search = (req.query.search as string)?.trim();
+    const createdAfter = (req.query.createdAfter as string)?.trim();
+    const createdBefore = (req.query.createdBefore as string)?.trim();
 
-    const groups = await UserGroups.find({
-      orgId,
-      isDeleted: false,
-    })
-      .lean()
-      .exec();
+    const filter: UserGroupFilter = { orgId, isDeleted: false };
+    if (search) {
+      filter.name = { $regex: search, $options: 'i' };
+    }
+    if (createdAfter || createdBefore) {
+      const dateFilter: Record<string, Date> = {};
+      if (createdAfter) dateFilter.$gte = new Date(createdAfter);
+      if (createdBefore) {
+        const beforeDate = new Date(createdBefore);
+        beforeDate.setHours(23, 59, 59, 999);
+        dateFilter.$lte = beforeDate;
+      }
+      (filter as any).createdAt = dateFilter;
+    }
 
-    res.status(200).json(groups);
+    const [groups, totalCount] = await Promise.all([
+      UserGroups.find(filter)
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
+      UserGroups.countDocuments(filter),
+    ]);
+
+    // Return userCount instead of the full users array
+    const result = groups.map((group) => {
+      const timestamps = group as typeof group & { createdAt?: string; updatedAt?: string };
+      return {
+        _id: group._id,
+        name: group.name,
+        type: group.type,
+        orgId: group.orgId,
+        slug: group.slug,
+        isDeleted: group.isDeleted,
+        createdAt: timestamps.createdAt,
+        updatedAt: timestamps.updatedAt,
+        userCount: group.users?.length ?? 0,
+      };
+    });
+
+    res.status(200).json({
+      groups: result,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+    });
   }
 
   async getUserGroupById(
@@ -228,18 +278,75 @@ export class UserGroupController {
   ): Promise<void> {
     const { groupId } = req.params;
     const orgId = req.user?.orgId;
+    const { page, limit, skip } = safeParsePagination(
+      req.query.page as string,
+      req.query.limit as string,
+      1,
+      25,
+      100,
+    );
+    const search = (req.query.search as string)?.trim();
 
     const group = await UserGroups.findOne({
       _id: groupId,
       orgId,
       isDeleted: false,
-    });
+    }).lean().exec();
 
     if (!group) {
       throw new NotFoundError('Group not found');
     }
 
-    res.status(200).json({ users: group.users });
+    const allUserIds = group.users.map((u) => u.toString());
+
+    // Fetch user details with optional search filter
+    const userFilter: UserFilter = { _id: { $in: allUserIds }, isDeleted: { $ne: true } };
+    if (search) {
+      userFilter.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const [userDocs, totalCount] = await Promise.all([
+      Users.find(userFilter)
+        .select('fullName firstName lastName email')
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
+      Users.countDocuments(userFilter),
+    ]);
+
+    // Bulk-fetch DPs for this page of users
+    const pageUserIds = userDocs.map((u) => u._id.toString());
+    const dpMap = new Map<string, string>();
+    if (pageUserIds.length > 0) {
+      const dpDocs = await UserDisplayPicture.find({
+        orgId,
+        userId: { $in: pageUserIds },
+        pic: { $ne: null },
+      }).lean().exec();
+
+      for (const dp of dpDocs) {
+        if (dp.userId && dp.pic) {
+          const mime = dp.mimeType || 'image/jpeg';
+          dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+        }
+      }
+    }
+
+    const users = userDocs.map((u) => ({
+      _id: u._id.toString(),
+      fullName: u.fullName ?? null,
+      email: u.email ?? null,
+      profilePicture: dpMap.get(u._id.toString()) ?? null,
+    }));
+
+    res.status(200).json({
+      users,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+    });
   }
 
   async getGroupsForUser(

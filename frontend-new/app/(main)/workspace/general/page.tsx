@@ -9,6 +9,7 @@ import {
   Switch,
   TextField,
   Avatar,
+  IconButton,
 } from '@radix-ui/themes';
 import {
   ConfirmationDialog,
@@ -22,6 +23,7 @@ import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
 import { OrgApi, MetricsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 
 // ========================================
@@ -95,10 +97,12 @@ export default function GeneralPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Holds the File the user picked — not uploaded until Save is clicked
-  const pendingLogoRef = useRef<File | null>(null);
   // Blob URL for the currently saved logo (fetched via auth)
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  /** True when the org has a logo on the server (controls delete visibility). */
+  const [hasServerLogo, setHasServerLogo] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoDeleting, setLogoDeleting] = useState(false);
   // Last server-confirmed logo URL — used to revert preview on discard
   const savedLogoUrlRef = useRef<string | null>(null);
 
@@ -154,6 +158,7 @@ export default function GeneralPage() {
           setForm(loaded);
           setLogoUrl(logoObjectUrl);
           savedLogoUrlRef.current = logoObjectUrl;
+          setHasServerLogo(logoObjectUrl !== null);
         } else {
           const [org, logoObjectUrl] = await Promise.all([
             OrgApi.getOrg(),
@@ -174,6 +179,7 @@ export default function GeneralPage() {
           setForm(loaded);
           setLogoUrl(logoObjectUrl);
           savedLogoUrlRef.current = logoObjectUrl;
+          setHasServerLogo(logoObjectUrl !== null);
         }
       } catch {
         addToast({
@@ -220,17 +226,7 @@ export default function GeneralPage() {
         dataCollectionConsent: form.dataCollection,
       });
 
-      // 2. Upload logo if a new file was selected
-      if (pendingLogoRef.current) {
-        await OrgApi.uploadLogo(pendingLogoRef.current);
-        pendingLogoRef.current = null;
-        // Refresh the displayed logo from the server
-        const freshUrl = await OrgApi.getLogoUrl();
-        setLogoUrl(freshUrl);
-        savedLogoUrlRef.current = freshUrl;
-      }
-
-      // 3. Toggle metrics collection if the value changed
+      // 2. Toggle metrics collection if the value changed
       if (form.dataCollection !== savedForm.dataCollection) {
         await MetricsApi.toggleMetricsCollection(form.dataCollection);
       }
@@ -255,8 +251,7 @@ export default function GeneralPage() {
   }, [setDiscardDialogOpen]);
 
   const handleDiscardConfirm = useCallback(() => {
-    pendingLogoRef.current = null; // clear any staged logo file
-    setLogoUrl(savedLogoUrlRef.current); // revert preview to last saved logo
+    setLogoUrl(savedLogoUrlRef.current);
     discardChanges();
     addToast({
       variant: 'success',
@@ -265,21 +260,71 @@ export default function GeneralPage() {
     });
   }, [discardChanges, addToast]);
 
-  // Stage the selected logo file — it will be uploaded when the user clicks Save
-  // Show a local preview immediately from the picked file
   const handleFileChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      pendingLogoRef.current = file;
-      setField('logoFileName', file.name);
-      // Show a local preview right away (no upload yet)
+      e.target.value = '';
+
+      const previousSavedUrl = savedLogoUrlRef.current;
       const previewUrl = URL.createObjectURL(file);
       setLogoUrl(previewUrl);
-      e.target.value = ''; // allow re-select of same file
+
+      setLogoUploading(true);
+      try {
+        await OrgApi.uploadLogo(file);
+        const freshUrl = await OrgApi.getLogoUrl();
+        setLogoUrl(freshUrl);
+        savedLogoUrlRef.current = freshUrl;
+        setHasServerLogo(freshUrl !== null);
+        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+        if (previousSavedUrl?.startsWith('blob:')) URL.revokeObjectURL(previousSavedUrl);
+        addToast({
+          variant: 'success',
+          title: 'Logo updated',
+          description: 'Your organization logo has been saved',
+        });
+      } catch {
+        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+        setLogoUrl(savedLogoUrlRef.current);
+        addToast({
+          variant: 'error',
+          title: 'Failed to upload logo',
+          description: 'Could not update the organization logo',
+        });
+      } finally {
+        setLogoUploading(false);
+      }
     },
-    [setField]
+    [addToast]
   );
+
+  const handleDeleteLogo = useCallback(async () => {
+    const saved = savedLogoUrlRef.current;
+    const preview = logoUrl;
+    setLogoDeleting(true);
+    try {
+      await OrgApi.deleteLogo();
+      if (saved?.startsWith('blob:')) URL.revokeObjectURL(saved);
+      if (preview?.startsWith('blob:') && preview !== saved) URL.revokeObjectURL(preview);
+      savedLogoUrlRef.current = null;
+      setLogoUrl(null);
+      setHasServerLogo(false);
+      addToast({
+        variant: 'success',
+        title: 'Logo removed',
+        description: 'Your organization logo has been deleted',
+      });
+    } catch {
+      addToast({
+        variant: 'error',
+        title: 'Failed to remove logo',
+        description: 'Could not delete the organization logo',
+      });
+    } finally {
+      setLogoDeleting(false);
+    }
+  }, [logoUrl, addToast]);
 
   const logoInitial = form.displayName
     ? form.displayName.charAt(0).toUpperCase()
@@ -331,11 +376,33 @@ export default function GeneralPage() {
           <SettingsSection title="Company Profile">
             {/* Logo */}
             <SettingsRow label="Logo" description="Recommended size is 256px by 256px">
-              <AvatarUploadWidget
-                src={logoUrl}
-                initial={logoInitial}
-                onEditClick={() => fileInputRef.current?.click()}
-              />
+              <Flex align="center" justify="end" gap="2" style={{ width: '100%' }}>
+                <AvatarUploadWidget
+                  src={logoUrl}
+                  initial={logoInitial}
+                  uploading={logoUploading || logoDeleting}
+                  onEditClick={() => {
+                    if (logoUploading || logoDeleting) return;
+                    fileInputRef.current?.click();
+                  }}
+                />
+                {hasServerLogo && (
+                  <IconButton
+                    type="button"
+                    variant="soft"
+                    color="red"
+                    size="2"
+                    onClick={handleDeleteLogo}
+                    disabled={logoUploading || logoDeleting}
+                    aria-label="Remove organization logo"
+                    style={{
+                      cursor: logoUploading || logoDeleting ? 'wait' : 'pointer',
+                    }}
+                  >
+                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
+                  </IconButton>
+                )}
+              </Flex>
             </SettingsRow>
 
             {/* Registered Name */}

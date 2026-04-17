@@ -482,7 +482,7 @@ export class OrgController {
         mimeType = 'image/svg+xml';
       } else {
         // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
-        const MAX_LOGO_SIZE_BYTES = 100 * 1024;
+        const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
         const INITIAL_JPEG_QUALITY = 100;
         const MIN_JPEG_QUALITY = 10;
         const JPEG_QUALITY_STEP = 10;
