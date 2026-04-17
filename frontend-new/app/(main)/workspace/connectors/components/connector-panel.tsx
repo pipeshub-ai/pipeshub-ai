@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { Flex, Text, Tabs, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { AuthenticateTab } from './authenticate-tab';
@@ -333,9 +334,7 @@ export function ConnectorPanel() {
           justify="center"
           style={{ height: 200 }}
         >
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>
-            Loading configuration...
-          </Text>
+          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
         </Flex>
       ) : panelView === 'select-records' ? (
         <SelectRecordsPage />

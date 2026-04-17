@@ -115,9 +115,8 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
             style={{
               color: 'var(--slate-12)',
               lineHeight: '20px',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              whiteSpace: 'normal',
+              overflowWrap: 'anywhere',
             }}
           >
             {toast.title}

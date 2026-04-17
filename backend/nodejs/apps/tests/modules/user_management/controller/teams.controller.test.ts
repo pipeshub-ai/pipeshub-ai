@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { TeamsController } from '../../../../src/modules/user_management/controller/teams.controller';
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
+import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 
 describe('TeamsController', () => {
   let controller: TeamsController;
@@ -309,34 +310,12 @@ describe('TeamsController', () => {
     });
   });
 
-  describe('getTeamUsers', () => {
-    it('should get users in a team', async () => {
-      const mockUsers = [{ id: 'u1', name: 'User 1' }];
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockUsers,
-      });
-
-      req.params.teamId = 'team1';
-
-      await controller.getTeamUsers(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should call next with error when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-      req.params.teamId = 'team1';
-
-      await controller.getTeamUsers(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
   describe('getUserTeams', () => {
-    it('should get teams for a user', async () => {
-      const mockTeams = { teams: [{ id: 'team1', name: 'Team 1' }] };
+    it('should return teams data as-is from AI service', async () => {
+      const mockTeams = {
+        teams: [{ id: 'team1', name: 'Team 1', memberCount: 3 }],
+        pagination: { page: 1, limit: 10, total: 1 },
+      };
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: mockTeams,
@@ -366,6 +345,66 @@ describe('TeamsController', () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
 
       await controller.getUserTeams(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+    });
+  });
+
+  describe('getTeamUsers', () => {
+    it('should inject profilePicture into team members', async () => {
+      const memberId = '507f1f77bcf86cd799439099';
+      req.params.teamId = 'team1';
+
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          members: [{ id: 'uuid1', userId: memberId, userName: 'Alice' }],
+        },
+      });
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: memberId, pic: 'base64pic', mimeType: 'image/jpeg' },
+          ]),
+        }),
+      } as any);
+
+      await controller.getTeamUsers(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      const responseArg = res.json.firstCall.args[0];
+      expect(responseArg.members[0].profilePicture).to.equal('data:image/jpeg;base64,base64pic');
+    });
+
+    it('should not add profilePicture when user has no DP', async () => {
+      req.params.teamId = 'team1';
+
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          members: [{ id: 'uuid1', userId: 'noDP', userName: 'Bob' }],
+        },
+      });
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([]),
+        }),
+      } as any);
+
+      await controller.getTeamUsers(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      const responseArg = res.json.firstCall.args[0];
+      expect(responseArg.members[0]).to.not.have.property('profilePicture');
+    });
+
+    it('should call next with error when orgId is missing', async () => {
+      req.user = { userId: '507f1f77bcf86cd799439011' };
+      req.params.teamId = 'team1';
+
+      await controller.getTeamUsers(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -685,7 +724,7 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should throw error when AI service returns null data for getTeamUsers', async () => {
+    it('should return 200 with null data when AI service returns null data for getTeamUsers', async () => {
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: null,
@@ -695,7 +734,8 @@ describe('TeamsController', () => {
 
       await controller.getTeamUsers(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.calledWith(null)).to.be.true;
     });
 
     it('should throw error when AI service returns null data for updateTeamUsersPermissions', async () => {

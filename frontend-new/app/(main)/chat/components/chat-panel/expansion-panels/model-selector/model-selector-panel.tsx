@@ -1,10 +1,13 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner } from '@radix-ui/themes';
+import { Flex, Text, Badge, Spinner, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatApi } from '@/chat/api';
+import { AgentsApi } from '@/app/(main)/agents/api';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
@@ -12,6 +15,24 @@ import {
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { toIconPath } from '@/lib/utils/formatters';
 import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
+import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
+
+/**
+ * Convert agent-configured model to the chat available model format.
+ * This ensures type safety instead of using 'as' cast.
+ */
+function mapAgentModelToAvailable(model: AgentConfiguredModel): AvailableLlmModel {
+  return {
+    modelKey: model.modelKey,
+    modelName: model.modelName,
+    modelFriendlyName: model.modelFriendlyName,
+    provider: model.provider,
+    isDefault: model.isDefault,
+    isReasoning: model.isReasoning,
+    isMultimodal: model.isMultimodal,
+    modelType: model.modelType,
+  };
+}
 
 interface ModelSelectorPanelProps {
   /** Currently selected model override (null = use default from API) */
@@ -20,6 +41,8 @@ interface ModelSelectorPanelProps {
   onModelSelect: (model: ModelOverride) => void;
   /** Hide the "Configured Models / Open Settings" header (used when embedded in a bottom sheet that provides its own header) */
   hideHeader?: boolean;
+  /** Optional agent ID - when provided, shows only agent-configured models */
+  agentId?: string | null;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -51,45 +74,81 @@ export function ModelSelectorPanel({
   selectedModel,
   onModelSelect,
   hideHeader = false,
+  agentId,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
+  const router = useRouter();
+
   const [models, setModels] = useState<AvailableLlmModel[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch models on mount; auto-select the default if no model is selected yet
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
 
-    ChatApi.fetchAvailableLlms()
-      .then((data) => {
-        if (cancelled) return;
-        setModels(data);
+    const fetchModels = async () => {
+      try {
+        if (agentId?.trim()) {
+          const { agent } = await AgentsApi.getAgent(agentId);
+          if (cancelled) return;
 
-        // If no model is selected yet, auto-select the one marked isDefault
-        if (!selectedModel) {
-          const defaultModel = data.find((m) => m.isDefault);
-          if (defaultModel) {
-            onModelSelect({
-              modelKey: defaultModel.modelKey,
-              modelName: defaultModel.modelName,
-              modelFriendlyName: defaultModel.modelFriendlyName,
-              modelProvider: defaultModel.provider,
-            });
+          if (!agent?.models || agent.models.length === 0) {
+            setError(t('chat.agentNoModelsConfigured'));
+            setModels([]);
+            return;
           }
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setError('Failed to load models');
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
 
-    return () => { cancelled = true; };
-  }, []);
+          setModels(agent.models.map(mapAgentModelToAvailable));
+        } else {
+          const orgModels = await ChatApi.fetchAvailableLlms();
+          if (cancelled) return;
+
+          if (orgModels.length === 0) {
+            setError(t('chat.noModelsAvailable'));
+            setModels([]);
+            return;
+          }
+
+          setModels(orgModels);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Failed to fetch models:', err);
+        const errorMessage = agentId?.trim()
+          ? t('chat.failedToLoadAgentConfig')
+          : t('chat.failedToLoadModels');
+        setError(errorMessage);
+        setModels([]);
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    fetchModels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  // Auto-select default model when models are loaded and no model is selected
+  useEffect(() => {
+    if (!selectedModel && models.length > 0) {
+      const defaultModel = models.find((m) => m.isDefault);
+      if (defaultModel) {
+        onModelSelect({
+          modelKey: defaultModel.modelKey,
+          modelName: defaultModel.modelName,
+          modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
+          modelProvider: defaultModel.provider,
+        });
+      }
+    }
+  }, [models, selectedModel, onModelSelect]);
 
   const handleSelect = useCallback(
     (model: AvailableLlmModel) => {
@@ -151,8 +210,41 @@ export function ModelSelectorPanel({
         )}
 
         {!isLoading && error && (
-          <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-            <Text size="2" style={{ color: 'var(--red-9)' }}>{error}</Text>
+          <Flex 
+            direction="column" 
+            align="center" 
+            justify="center" 
+            gap="3"
+            style={{ padding: 'var(--space-6)' }}
+          >
+            <MaterialIcon 
+              name="error_outline" 
+              size={32} 
+              color="var(--red-9)" 
+            />
+            <Text 
+              size="2" 
+              style={{ 
+                color: 'var(--red-9)', 
+                textAlign: 'center',
+                maxWidth: '300px',
+                lineHeight: '1.5'
+              }}
+            >
+              {error}
+            </Text>
+            {error === t('chat.agentNoModelsConfigured') && agentId && (
+              <Button 
+                variant="soft" 
+                size="2"
+                onClick={() => {
+                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
+                }}
+              >
+                <MaterialIcon name="settings" size={16} />
+                {t('chat.configureModels')}
+              </Button>
+            )}
           </Flex>
         )}
 

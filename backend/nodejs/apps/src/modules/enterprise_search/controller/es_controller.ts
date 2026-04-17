@@ -1842,6 +1842,12 @@ export const getAllConversations = async (
     const filter = buildFilter(req, orgId, userId, conversationId as string);
     const sortOptions = buildSortOptions(req);
 
+    // Restrict "Your Chats" to conversations owned by this user.
+    // The default buildFilter includes shared conversations in its $or,
+    // but those are fetched separately via sharedWithMeFilter below.
+    delete filter.$or;
+    filter.userId = new mongoose.Types.ObjectId(`${userId}`);
+
     // sharedWith Me Conversation
     const sharedWithMeFilter = buildSharedWithMeFilter(req);
 

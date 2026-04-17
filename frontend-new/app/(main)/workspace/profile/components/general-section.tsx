@@ -16,6 +16,7 @@ export interface GeneralSectionProps {
   avatarInitial: string;
   avatarUploading: boolean;
   onEditAvatarClick: () => void;
+  onDeleteAvatarClick: () => void;
   fullName: string;
   fullNameError?: string;
   onFullNameChange: (value: string) => void;
@@ -36,6 +37,7 @@ export function GeneralSection({
   avatarInitial,
   avatarUploading,
   onEditAvatarClick,
+  onDeleteAvatarClick,
   fullName,
   fullNameError,
   onFullNameChange,
@@ -58,6 +60,7 @@ export function GeneralSection({
           initial={avatarInitial}
           uploading={avatarUploading}
           onEditClick={onEditAvatarClick}
+          onDeleteClick={onDeleteAvatarClick}
         />
       </SettingsRow>
 
