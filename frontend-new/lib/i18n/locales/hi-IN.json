@@ -5,11 +5,11 @@
     "pageTitle": "एजेंट",
     "comingSoon": "जल्द आ रहा है",
     "missingAgentKey": "एजेंट कुंजी गायब है। चैट साइडबार से एजेंट खोलें या वैध लिंक का उपयोग करें।",
-    "loading": "लोड हो रहा है\u2026"
+    "loading": "लोड हो रहा है…"
   },
   "chatStream": {
-    "thinkingFallback": "सोच रहा है\u2026",
-    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है\u2026"
+    "thinkingFallback": "सोच रहा है…",
+    "refiningResponse": "उत्तर पर दोबारा काम हो रहा है…"
   },
   "nav": {
     "collections": "कलेक्शन",
@@ -362,12 +362,44 @@
       }
     },
     "defaultSuggestions": {
-      "1": { "text": "Slack में सभी ग्राहक फीडबैक खोजें जो लेटेंसी समस्याओं का उल्लेख करते हैं।", "icons": ["slack"] },
-      "2": { "text": "पिछले महीने Jira में रिपोर्ट किए गए बार-बार आने वाले ब्लॉकर्स की सूची बनाएं।", "icons": ["jira"] },
-      "3": { "text": "नए रिलीज़ के बारे में Notion और Slack से नोट्स की तुलना करें।", "icons": ["notion"] },
-      "4": { "text": "Jira और Google Sheets से Q3 राजस्व अपडेट का सारांश दें", "icons": ["sheets", "jira"] },
-      "5": { "text": "Confluence और Drive से 'Compliance' टैग वाले सभी दस्तावेज़ दिखाएँ।", "icons": ["confluence"] },
-      "6": { "text": "इस सप्ताह GitHub और Jira में अपडेट की गई गतिविधियाँ दिखाएँ", "icons": ["jira", "github"] }
+      "1": {
+        "text": "Slack में सभी ग्राहक फीडबैक खोजें जो लेटेंसी समस्याओं का उल्लेख करते हैं।",
+        "icons": [
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "पिछले महीने Jira में रिपोर्ट किए गए बार-बार आने वाले ब्लॉकर्स की सूची बनाएं।",
+        "icons": [
+          "jira"
+        ]
+      },
+      "3": {
+        "text": "नए रिलीज़ के बारे में Notion और Slack से नोट्स की तुलना करें।",
+        "icons": [
+          "notion"
+        ]
+      },
+      "4": {
+        "text": "Jira और Google Sheets से Q3 राजस्व अपडेट का सारांश दें",
+        "icons": [
+          "sheets",
+          "jira"
+        ]
+      },
+      "5": {
+        "text": "Confluence और Drive से 'Compliance' टैग वाले सभी दस्तावेज़ दिखाएँ।",
+        "icons": [
+          "confluence"
+        ]
+      },
+      "6": {
+        "text": "इस सप्ताह GitHub और Jira में अपडेट की गई गतिविधियाँ दिखाएँ",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      }
     },
     "askMoreQuestionSets": [
       [
@@ -406,7 +438,31 @@
         "ध्यान देने योग्य निर्भरताएँ या ब्लॉकर क्या हैं?",
         "अब तक क्या सबक सीखे गए हैं?"
       ]
-    ]
+    ],
+    "agentListRowMenuAria": "एजेंट विकल्प",
+    "archive": "संग्रहित करें",
+    "archiveChatConfirm": "क्या आप सुनिश्चित हैं?",
+    "archiveChatDescription": "शीर्षक वाली चैट",
+    "archiveChatWarning": "संग्रहित की जाएगी।",
+    "archiving": "संग्रहित किया जा रहा है...",
+    "chatArchived": "चैट संग्रहित",
+    "chatDeleted": "चैट हटाई गई",
+    "chatRenamed": "चैट का नाम बदला गया",
+    "deleteAgent": "एजेंट हटाएं",
+    "deleteAgentConfirm": "इस एजेंट को हटाएं?",
+    "deleteAgentDescription": "नाम वाला एजेंट",
+    "deleteAgentWarning": "Pipeshub से स्थायी रूप से हटा दिया जाएगा। इसका उपयोग करने वाली चैट अपेक्षित रूप से काम नहीं कर सकतीं।",
+    "deleteChat": "हटाएं",
+    "deleteChatConfirm": "क्या आप सुनिश्चित हैं?",
+    "deleteChatDescription": "शीर्षक वाली चैट",
+    "deleteChatWarning": "Pipeshub से स्थायी रूप से हटा दी जाएगी। साझा पहुंच वाले सभी उपयोगकर्ता अपनी पहुंच खो देंगे।",
+    "editAgent": "एजेंट संपादित करें",
+    "failedToArchive": "चैट संग्रहित करने में विफल",
+    "failedToDelete": "चैट हटाने में विफल",
+    "failedToDeleteAgent": "एजेंट हटाया नहीं जा सका",
+    "failedToRename": "चैट का नाम बदलने में विफल",
+    "rename": "नाम बदलें",
+    "renaming": "नाम बदला जा रहा है..."
   },
   "workspaceSettings": {
     "title": "वर्कस्पेस सेटिंग्स"
@@ -535,7 +591,54 @@
       },
       "actions": {
         "viewGroup": "समूह देखें",
-        "delete": "हटाएँ"
+        "delete": "हटाएँ",
+        "deleteError": "समूह हटाने में विफल",
+        "deleteSuccess": "समूह हटाया गया"
+      },
+      "create": {
+        "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
+        "accessLabel": "पहुंच अनुमतियां",
+        "addUsersLabel": "उपयोगकर्ता जोड़ें",
+        "addUsersPlaceholder": "इस समूह में जोड़ने के लिए उपयोगकर्ता खोजें या चुनें",
+        "cancel": "रद्द करें",
+        "descriptionLabel": "समूह विवरण",
+        "descriptionPlaceholder": "इस समूह का उद्देश्य वर्णन करें",
+        "errorGeneric": "समूह बनाने में विफल",
+        "nameLabel": "समूह का नाम",
+        "namePlaceholder": "उदा. डेटा इंजीनियरिंग",
+        "submit": "समूह बनाएं",
+        "successDescription": "\"{{name}}\" सफलतापूर्वक बनाया गया है",
+        "successTitle": "समूह बनाया गया!",
+        "title": "समूह बनाएं"
+      },
+      "detail": {
+        "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
+        "accessPermissions": "पहुंच अनुमतियां",
+        "createdBy": "द्वारा बनाया गया",
+        "descriptionLabel": "समूह विवरण",
+        "descriptionPlaceholder": "इस समूह का उद्देश्य वर्णन करें",
+        "nameLabel": "समूह का नाम",
+        "noUsers": "इस समूह में कोई उपयोगकर्ता नहीं",
+        "users": "उपयोगकर्ता"
+      },
+      "edit": {
+        "addUsersLabel": "उपयोगकर्ता जोड़ें",
+        "addUsersPlaceholder": "इस समूह में जोड़ने के लिए उपयोगकर्ता खोजें या चुनें",
+        "cancel": "रद्द करें",
+        "deleteButton": "समूह हटाएं",
+        "deleteDescription": "इस समूह को कार्यक्षेत्र से स्थायी रूप से हटाएं",
+        "deleteError": "समूह हटाने में विफल",
+        "deleteSuccess": "समूह हटाया गया",
+        "deleteSuccessDescription": "\"{{name}}\" हटा दिया गया है",
+        "deleteTitle": "'{{name}}' समूह हटाएं",
+        "deleting": "हटाया जा रहा है...",
+        "edit": "समूह संपादित करें",
+        "remove": "हटाएं",
+        "save": "संपादन सहेजें",
+        "saveError": "समूह अपडेट करने में विफल",
+        "saveSuccess": "समूह अपडेट किया गया!",
+        "saveSuccessDescription": "'{{name}}' में परिवर्तन सफलतापूर्वक सहेजे गए",
+        "undo": "पूर्ववत करें"
       }
     },
     "teams": {
@@ -556,7 +659,56 @@
       },
       "actions": {
         "viewTeam": "टीम देखें",
-        "delete": "हटाएँ"
+        "delete": "हटाएँ",
+        "deleteError": "टीम हटाने में विफल",
+        "deleteSuccess": "टीम हटाई गई"
+      },
+      "create": {
+        "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
+        "accessPermissions": "पहुंच अनुमतियां",
+        "addUsersLabel": "सदस्य जोड़ें",
+        "addUsersPlaceholder": "इस टीम में जोड़ने के लिए उपयोगकर्ता खोजें या चुनें",
+        "cancel": "रद्द करें",
+        "descriptionLabel": "टीम विवरण",
+        "descriptionPlaceholder": "इस टीम का उद्देश्य वर्णन करें",
+        "errorGeneric": "टीम बनाने में विफल",
+        "nameLabel": "टीम का नाम",
+        "namePlaceholder": "उदा. प्रोडक्ट इंजीनियरिंग",
+        "roleLabel": "भूमिका",
+        "submit": "टीम बनाएं",
+        "successDescription": "\"{{name}}\" सफलतापूर्वक बनाई गई है",
+        "successTitle": "टीम बनाई गई!",
+        "title": "टीम बनाएं"
+      },
+      "detail": {
+        "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
+        "accessPermissions": "पहुंच अनुमतियां",
+        "createdBy": "द्वारा बनाया गया",
+        "descriptionLabel": "टीम विवरण",
+        "descriptionPlaceholder": "इस टीम का उद्देश्य वर्णन करें",
+        "members": "सदस्य",
+        "nameLabel": "टीम का नाम",
+        "noMembers": "इस टीम में कोई सदस्य नहीं",
+        "roleLabel": "भूमिका"
+      },
+      "edit": {
+        "addUsersLabel": "सदस्य जोड़ें",
+        "addUsersPlaceholder": "इस टीम में जोड़ने के लिए उपयोगकर्ता खोजें या चुनें",
+        "cancel": "रद्द करें",
+        "deleteButton": "टीम हटाएं",
+        "deleteDescription": "इस टीम को कार्यक्षेत्र से स्थायी रूप से हटाएं",
+        "deleteError": "टीम हटाने में विफल",
+        "deleteSuccess": "टीम हटाई गई",
+        "deleteSuccessDescription": "\"{{name}}\" हटा दिया गया है",
+        "deleteTitle": "'{{name}}' टीम हटाएं",
+        "deleting": "हटाया जा रहा है...",
+        "edit": "टीम संपादित करें",
+        "remove": "हटाएं",
+        "save": "संपादन सहेजें",
+        "saveError": "टीम अपडेट करने में विफल",
+        "saveSuccess": "टीम अपडेट की गई!",
+        "saveSuccessDescription": "'{{name}}' में परिवर्तन सफलतापूर्वक सहेजे गए",
+        "undo": "पूर्ववत करें"
       }
     },
     "oauth2": {
@@ -745,6 +897,24 @@
         "teams": "टीमें",
         "webSearch": "वेब खोज"
       }
+    },
+    "archivedChats": {
+      "deleteConfirmMessage": "यह चैट Pipeshub से स्थायी रूप से हटा दी जाएगी। कोई भी साझा पहुंच खो जाएगी।",
+      "deleteError": "चैट हटाने में विफल",
+      "deleteSuccess": "सफलतापूर्वक हटाया गया",
+      "deleteSuccessDescription": "आपकी चैट सफलतापूर्वक स्थायी रूप से हटा दी गई है",
+      "emptyList": "कोई संग्रहित चैट नहीं",
+      "permanentlyDelete": "स्थायी रूप से हटाएं",
+      "restore": "पुनर्स्थापित करें",
+      "restoreError": "चैट पुनर्स्थापित करने में विफल",
+      "restoreSuccess": "चैट पुनर्स्थापित",
+      "selectPrompt": "पूर्वावलोकन के लिए एक संग्रहित चैट चुनें",
+      "title": "संग्रहित चैट"
+    },
+    "common": {
+      "loadingUsers": "उपयोगकर्ता लोड हो रहे हैं...",
+      "noUsersAvailable": "कोई उपयोगकर्ता उपलब्ध नहीं",
+      "selected": "{{count}} चयनित"
     }
   },
   "filePreview": {
@@ -757,13 +927,13 @@
     "serviceAccountBadge": "सर्विस अकाउंट",
     "serviceAccountBadgeTooltip": "यह एजेंट समर्पित टूलसेट क्रेडेंशियल और सभी उपयोगकर्ताओं के लिए पूर्ण ज्ञान पहुंच का उपयोग करता है।",
     "convertToServiceAccount": "सर्विस अकाउंट में बदलें",
-    "convertToServiceAccountTooltip": "स्थायी रूप से बदलें \u2014 समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच। इसे वापस नहीं किया जा सकता।",
+    "convertToServiceAccountTooltip": "स्थायी रूप से बदलें — समर्पित टूलसेट क्रेडेंशियल और संगठन-व्यापी ज्ञान पहुंच। इसे वापस नहीं किया जा सकता।",
     "createAsServiceAccount": "सर्विस अकाउंट",
     "createAsServiceAccountTooltip": "अपने टूलसेट क्रेडेंशियल और पूर्ण ज्ञान पहुंच के साथ सर्विस अकाउंट के रूप में बनाएं।",
     "shareWithOrg": "सभी के साथ साझा करें",
     "shareWithOrgTooltip": "इस एजेंट को अपने संगठन में सभी के साथ साझा करें।",
     "serviceAccountShareTooltip": "सर्विस अकाउंट एजेंट हमेशा संगठन के साथ साझा किए जाते हैं।",
-    "saving": "सहेजा जा रहा है\u2026",
+    "saving": "सहेजा जा रहा है…",
     "saveChanges": "परिवर्तन सहेजें",
     "createAgent": "एजेंट बनाएं",
     "nameRequired": "नाम आवश्यक है",
@@ -783,7 +953,7 @@
     "paletteActionBlockedViewOnly": "केवल देखें: आप यहाँ से इस संगठन सेवा एजेंट या उसके टूलसेट नहीं बदल सकते।",
     "viewerPaletteDragBlocked": "केवल देखें: आप यहाँ से फ़्लो नहीं बदल सकते। नीचे टूल्स में जाकर टूलसेट प्रमाणित कर सकते हैं।",
     "paletteViewerAuthenticateInTools": "केवल देखें — कैनवास पर मॉडल, ज्ञान और टूल खींचना बंद है। ज़रूरी टूलसेट के लिए नीचे टूल्स में साइन इन करें।",
-    "searchNodes": "नोड खोजें\u2026",
+    "searchNodes": "नोड खोजें…",
     "aiModels": "AI मॉडल",
     "knowledge": "ज्ञान",
     "tools": "टूल",
@@ -821,8 +991,8 @@
     "addToolsAriaLabel": "टूल जोड़ें",
     "removeNodeAriaLabel": "नोड हटाएं",
     "removeToolAriaLabel": "{{name}} हटाएं",
-    "searchToolsets": "टूलसेट खोजें\u2026",
-    "noToolsetsMatch": "\u201c{{query}}\u201d से मेल खाते कोई टूलसेट नहीं।",
+    "searchToolsets": "टूलसेट खोजें…",
+    "noToolsetsMatch": "“{{query}}” से मेल खाते कोई टूलसेट नहीं।",
     "noToolsetsAvailable": "कोई टूलसेट उपलब्ध नहीं।",
     "oauthSuccessNotify": "प्रमाणीकरण सफल। टूलसेट सूची ताज़ा की गई।",
     "toolsetNotConfiguredNotify": "{{name}} अभी तक कॉन्फ़िगर नहीं है। इस टूलसेट को जोड़ने के लिए किसी व्यवस्थापक से पूछें।",
@@ -830,7 +1000,7 @@
     "toolsetDuplicateNotify": "एक समय में केवल एक {{name}} टूलसेट कैनवास पर हो सकता है।",
     "toolsetAuthUpdated": "टूलसेट प्रमाणीकरण अपडेट किया गया।",
     "loadMore": "और लोड करें",
-    "loadingMore": "लोड हो रहा है\u2026",
+    "loadingMore": "लोड हो रहा है…",
     "notConfiguredReason": "कॉन्फ़िगर नहीं",
     "notAuthenticatedReason": "प्रमाणित नहीं",
     "manageAgentCredentialsTooltip": "इस टूलसेट के लिए एजेंट क्रेडेंशियल प्रबंधित करें",
@@ -840,23 +1010,23 @@
     "authenticateToolsetTooltip": "इस टूलसेट को प्रमाणित करें",
     "svcAcctConvertTitle": "सर्विस अकाउंट में बदलें",
     "svcAcctCreateTitle": "सर्विस अकाउंट बनाएं",
-    "svcAcctConvertDesc": "यह एजेंट स्थायी रूप से सर्विस अकाउंट में बदला जाएगा \u2014 एजेंट-स्तरीय टूलसेट क्रेडेंशियल के साथ एक स्वतंत्र पहचान, जो आपके पूरे संगठन के साथ साझा है।",
-    "svcAcctCreateDesc": "यह एजेंट सर्विस अकाउंट के रूप में बनाया जाएगा \u2014 एजेंट-स्तरीय टूलसेट क्रेडेंशियल के साथ एक स्वतंत्र पहचान, जो आपके पूरे संगठन के साथ साझा है।",
+    "svcAcctConvertDesc": "यह एजेंट स्थायी रूप से सर्विस अकाउंट में बदला जाएगा — एजेंट-स्तरीय टूलसेट क्रेडेंशियल के साथ एक स्वतंत्र पहचान, जो आपके पूरे संगठन के साथ साझा है।",
+    "svcAcctCreateDesc": "यह एजेंट सर्विस अकाउंट के रूप में बनाया जाएगा — एजेंट-स्तरीय टूलसेट क्रेडेंशियल के साथ एक स्वतंत्र पहचान, जो आपके पूरे संगठन के साथ साझा है।",
     "svcAcctConvertLabel": "सर्विस अकाउंट में बदलें",
     "svcAcctCreateLabel": "सर्विस अकाउंट एजेंट बनाएं",
-    "svcAcctConvertBusy": "बदला जा रहा है\u2026",
-    "svcAcctCreateBusy": "एजेंट बनाया जा रहा है\u2026",
+    "svcAcctConvertBusy": "बदला जा रहा है…",
+    "svcAcctCreateBusy": "एजेंट बनाया जा रहा है…",
     "svcAcctConvertNextSteps": "एजेंट सहेजें, फिर पैलेट में प्रत्येक टूलसेट के बगल में कुंजी आइकन का उपयोग करके एजेंट-स्तरीय क्रेडेंशियल सेट करें। मौजूदा प्रति-उपयोगकर्ता टूलसेट कनेक्शन स्थानांतरित नहीं किए जाते।",
     "svcAcctCreateNextSteps": "एजेंट सहेजें, फिर पैलेट में कुंजी आइकन का उपयोग करके इस सर्विस अकाउंट के प्रत्येक टूलसेट के लिए क्रेडेंशियल कॉन्फ़िगर करें। ज्ञान जोड़ें, मॉडल सेट करें और आवश्यकतानुसार फ्लो को परिष्कृत करें।",
     "svcAcctDescSuffix": "इसका अर्थ यहां है:",
     "svcAcctAgentLabel": "एजेंट",
     "svcAcctUnnamed": "(अनाम)",
     "svcAcctKnowledgeTitle": "आपकी अनुमतियां केवल इस एजेंट के संलग्न ज्ञान पर लागू होती हैं",
-    "svcAcctKnowledgeNote1": "पुनर्प्राप्ति उन ज्ञान स्रोतों तक सीमित है जिन्हें आप इस एजेंट पर कॉन्फ़िगर करते हैं (बिल्डर में संलग्न कनेक्टर और संग्रह) \u2014 प्लेटफॉर्म में सब कुछ नहीं।",
+    "svcAcctKnowledgeNote1": "पुनर्प्राप्ति उन ज्ञान स्रोतों तक सीमित है जिन्हें आप इस एजेंट पर कॉन्फ़िगर करते हैं (बिल्डर में संलग्न कनेक्टर और संग्रह) — प्लेटफॉर्म में सब कुछ नहीं।",
     "svcAcctKnowledgeNote2": "केवल उन संलग्न स्रोतों के भीतर, खोज निर्माता के रूप में आपकी पहुंच का उपयोग करती है।",
     "svcAcctKnowledgeNote3": "जो कोई भी इस एजेंट का उपयोग करता है, वह उस सामग्री के उत्तर देख सकता है जिसे आप देखने की अनुमति रखते हैं, भले ही उनकी अपनी अनुमतियां इसे शामिल न करें।",
     "svcAcctToolsetsTitle": "टूलसेट इस एजेंट के क्रेडेंशियल पर चलते हैं",
-    "svcAcctToolsetsDesc": "टूलसेट पूरे एजेंट के लिए क्रेडेंशियल का एक सेट उपयोग करते हैं, जिसे इसका उपयोग करने वाले सभी लोग साझा करते हैं \u2014 प्रत्येक उपयोगकर्ता के व्यक्तिगत टूलसेट साइन-इन नहीं।",
+    "svcAcctToolsetsDesc": "टूलसेट पूरे एजेंट के लिए क्रेडेंशियल का एक सेट उपयोग करते हैं, जिसे इसका उपयोग करने वाले सभी लोग साझा करते हैं — प्रत्येक उपयोगकर्ता के व्यक्तिगत टूलसेट साइन-इन नहीं।",
     "svcAcctToolsetsNote1": "सर्विस अकाउंट सक्षम करने के बाद, बाईं पैलेट में टूलसेट के बगल में कुंजी आइकन से टूलसेट प्रमाणीकरण कॉन्फ़िगर या अपडेट करें।",
     "svcAcctToolsetsNote2Convert": "प्रति-उपयोगकर्ता क्रेडेंशियल पर निर्भर टूलसेट नोड को बदलने से पहले कैनवास से हटाना होगा। आप उन्हें बाद में फिर से जोड़ सकते हैं और एजेंट-स्तरीय क्रेडेंशियल संलग्न कर सकते हैं।",
     "svcAcctToolsetsNote2Create": "जब तक आप पैलेट में उनके लिए एजेंट-स्तरीय क्रेडेंशियल प्रदान करने के लिए तैयार न हों, तब तक प्रति-उपयोगकर्ता साइन-इन की आवश्यकता वाले टूलसेट न जोड़ें।",
@@ -868,7 +1038,7 @@
     "svcAcctCreateAction": "बनाएं",
     "svcAcctNextStepsLabel": "अगले कदम:",
     "svcAcctConfirmTitle": "पुष्टि करें कि आपने उपरोक्त पढ़ा है",
-    "svcAcctAckKnowledge": "मैं समझता/समझती हूं कि संलग्न ज्ञान और मेरी पहुंच कैसे लागू होती है \u2014 इसमें यह भी शामिल है कि अन्य उपयोगकर्ता उस सामग्री के उत्तर देख सकते हैं जिसे मैं एक्सेस कर सकता/सकती हूं।",
+    "svcAcctAckKnowledge": "मैं समझता/समझती हूं कि संलग्न ज्ञान और मेरी पहुंच कैसे लागू होती है — इसमें यह भी शामिल है कि अन्य उपयोगकर्ता उस सामग्री के उत्तर देख सकते हैं जिसे मैं एक्सेस कर सकता/सकती हूं।",
     "svcAcctAckToolsets": "मैं समझता/समझती हूं कि टूलसेट एजेंट-स्तरीय क्रेडेंशियल सेट (पैलेट कुंजी आइकन) का उपयोग करते हैं, प्रत्येक उपयोगकर्ता के साइन-इन का नहीं, और इसका इस एजेंट के लिए क्या अर्थ है।",
     "svcAcctAckOrg": "मैं समझता/समझती हूं कि यह सर्विस अकाउंट मेरे संगठन में सभी के लिए उपलब्ध होगा।",
     "svcAcctCheckboxHintConvert": "रूपांतरण सक्षम करने के लिए सभी बॉक्स चेक करें।",
@@ -876,7 +1046,7 @@
     "toolsetCredentialsTitle": "एजेंट टूलसेट क्रेडेंशियल",
     "toolsetCredentialsBadge": "सर्विस अकाउंट",
     "toolsetCredentialsDesc": "क्रेडेंशियल केवल इस एजेंट पर लागू होते हैं। एजेंट के माध्यम से इस टूलसेट के सभी आह्वान इन क्रेडेंशियल का उपयोग करते हैं।",
-    "loadingSchema": "स्कीमा लोड हो रहा है\u2026",
+    "loadingSchema": "स्कीमा लोड हो रहा है…",
     "fillRequiredFields": "कृपया सभी आवश्यक फ़ील्ड भरें।",
     "fieldRequired": "{{field}} आवश्यक है",
     "oauthConnectedDesc": "OAuth इस एजेंट के लिए कनेक्ट है। फिर से साइन इन के लिए Reconnect का उपयोग करें, या इस एजेंट पर सत्र समाप्त करने के लिए Disconnect।",
@@ -888,29 +1058,29 @@
     "credentialUpdateHint": "एजेंट प्रमाणित है। संग्रहीत क्रेडेंशियल अपडेट करने के लिए नए मान दर्ज करें और सहेजें।",
     "availableToolsHeading": "उपलब्ध टूल ({{count}})",
     "authenticateOAuth": "OAuth से प्रमाणित करें",
-    "waitingOAuth": "OAuth की प्रतीक्षा में\u2026",
+    "waitingOAuth": "OAuth की प्रतीक्षा में…",
     "clearReauth": "OAuth साफ़ करें / पुनः प्रमाणित करें",
-    "working": "काम हो रहा है\u2026",
+    "working": "काम हो रहा है…",
     "disconnectOAuth": "डिस्कनेक्ट करें",
     "disconnectOAuthTitle": "{{name}} डिस्कनेक्ट करें?",
     "disconnectOAuthDesc": "यह इस एजेंट पर {{name}} के लिए OAuth सत्र समाप्त करता है। टूलसेट एजेंट पर बना रहता है, लेकिन जब तक आप फिर से साइन इन नहीं करते, तब तक प्रमाणित नहीं होगा।",
-    "disconnectOAuthProgress": "डिस्कनेक्ट हो रहा है\u2026",
+    "disconnectOAuthProgress": "डिस्कनेक्ट हो रहा है…",
     "removeCredentials": "क्रेडेंशियल हटाएं",
-    "savingCredentials": "सहेजा जा रहा है\u2026",
+    "savingCredentials": "सहेजा जा रहा है…",
     "updateCredentials": "क्रेडेंशियल अपडेट करें",
     "saveCredentials": "क्रेडेंशियल सहेजें",
     "noCredentialsRequired": "इस टूलसेट के लिए कोई क्रेडेंशियल आवश्यक नहीं हैं।",
     "noCredentialFields": "इस प्रमाणीकरण प्रकार के लिए कोई क्रेडेंशियल फ़ील्ड वापस नहीं किए गए। यदि यह जारी रहता है, तो टूलसेट रजिस्ट्री स्कीमा जांचें।",
     "removeCredentialsTitle": "क्रेडेंशियल हटाएं?",
     "removeCredentialsDesc": "यह इस एजेंट पर {{name}} के लिए संग्रहीत क्रेडेंशियल हटा देता है जब तक आप उन्हें फिर से कॉन्फ़िगर नहीं करते।",
-    "removing": "हटाया जा रहा है\u2026",
+    "removing": "हटाया जा रहा है…",
     "authTimeout": "प्रमाणीकरण समय समाप्त हो गया। कृपया पुनः प्रयास करें।",
     "authNotCompleted": "प्रमाणीकरण पूरा नहीं हुआ। कृपया पुनः प्रयास करें।",
     "oauthSignInSuccess": "टूलसेट सफलतापूर्वक कनेक्ट हो गया।",
     "oauthSignInIncomplete": "साइन-इन पूरा नहीं हुआ। पूर्णता से पहले विंडो बंद हो गई हो — तैयार होने पर पुनः प्रयास करें।",
     "oauthSignInCancelled": "साइन-इन रद्द कर दिया गया।",
     "toolsetOAuthCompletingTitle": "टूलसेट साइन-इन पूरा किया जा रहा है...",
-    "toolsetOAuthProcessing": "टूलसेट साइन-इन पूरा किया जा रहा है\u2026",
+    "toolsetOAuthProcessing": "टूलसेट साइन-इन पूरा किया जा रहा है…",
     "toolsetOAuthProcessingHint": "यह विंडो स्वचालित रूप से बंद होने तक खुली रख सकते हैं।",
     "toolsetOAuthProviderError": "OAuth त्रुटि: {{error}}",
     "toolsetOAuthNoCode": "कोई प्राधिकरण कोड नहीं मिला।",
@@ -957,7 +1127,7 @@
     "nodeDescUserMessages": "उपयोगकर्ता संदेश",
     "nodeLabelChatOutput": "चैट आउटपुट",
     "nodeDescChatReply": "उपयोगकर्ता को दिखाई देने वाला उत्तर",
-    "chatInputPlaceholder": "अपना संदेश टाइप करें\u2026",
+    "chatInputPlaceholder": "अपना संदेश टाइप करें…",
     "zoomInAria": "ज़ूम इन",
     "zoomOutAria": "ज़ूम आउट",
     "fitViewAria": "दृश्य फिट करें",
@@ -977,8 +1147,8 @@
     "dropEnableConnectorToolGroup": "अपना टूल समूह जोड़ने से पहले इस कनेक्टर को एजेंटों के लिए सक्षम करें।",
     "dropOnlyOneToolGroup": "केवल एक {{type}} टूल समूह की अनुमति है। पहले मौजूदा नोड हटाएं।",
     "toolsetStatusAuthenticated": "प्रमाणित और उपयोग के लिए तैयार",
-    "toolsetStatusNeedsAuth": "कॉन्फ़िगर किया गया \u2014 प्रमाणित करने के लिए साइन इन करें",
-    "toolsetStatusRegistry": "रजिस्ट्री सूची \u2014 आपके वर्कस्पेस के लिए कॉन्फ़िगर नहीं",
+    "toolsetStatusNeedsAuth": "कॉन्फ़िगर किया गया — प्रमाणित करने के लिए साइन इन करें",
+    "toolsetStatusRegistry": "रजिस्ट्री सूची — आपके वर्कस्पेस के लिए कॉन्फ़िगर नहीं",
     "sidebarCollapseTools": "टूल संकुचित करें",
     "sidebarExpandTools": "टूल विस्तृत करें",
     "configureShort": "कॉन्फ़िगर करें",
@@ -992,15 +1162,15 @@
     "llmLanguageModelSuffix": "{{provider}} भाषा मॉडल",
     "llmProviderModel": "{{provider}} मॉडल",
     "toolsetWithToolCount": "{{name}} में {{count}} टूल",
-    "toolsetNodeDescriptionTools": "{{name}} \u2014 {{count}} टूल",
-    "connectorToolGroupTools": "{{type}} \u2014 {{count}} टूल",
+    "toolsetNodeDescriptionTools": "{{name}} — {{count}} टूल",
+    "connectorToolGroupTools": "{{type}} — {{count}} टूल",
     "agentCoreFlowDescription": "केंद्रीय ऑर्केस्ट्रेटर और निर्णय इंजन",
     "placeholderModel": "मॉडल",
     "placeholderAiModel": "AI मॉडल",
     "placeholderTool": "टूल",
     "nodeCollectionFallbackName": "संग्रह",
     "connectorDataDescription": "{{name}} डेटा और सामग्री से कनेक्ट करें",
-    "connectorGroupDescription": "{{type}} कनेक्टर \u2014 टूल या ज्ञान",
+    "connectorGroupDescription": "{{type}} कनेक्टर — टूल या ज्ञान",
     "appGroupTemplateDescription": "ऐप डेटा कनेक्ट करें ({{count}} कनेक्टर)",
     "kbGroupTemplateDescription": "{{count}} संग्रह",
     "kbNodeTemplateDescription": "पुनर्प्राप्ति के लिए संग्रह",
@@ -1014,18 +1184,18 @@
     "nodeTemplateChatResponseDesc": "उपयोगकर्ता को उत्तर भेजता है"
   },
   "oauthConsent": {
-    "loading": "प्राधिकरण अनुरोध लोड हो रहा है\u2026",
+    "loading": "प्राधिकरण अनुरोध लोड हो रहा है…",
     "missingParams": "आवश्यक OAuth पैरामीटर गुम हैं (client_id, redirect_uri)।",
     "noData": "कोई प्राधिकरण डेटा उपलब्ध नहीं है।",
     "noRedirect": "सर्वर से कोई रीडायरेक्ट URL नहीं मिला।",
     "errorTitle": "प्राधिकरण त्रुटि",
     "signedInAs": "{{display}} के रूप में साइन इन",
     "requestHeading": "यह ऐप्लिकेशन इस तक पहुँच माँग रहा है:",
-    "legalNotice": "\u201cअनुमति दें\u201d पर क्लिक करके, आप {{appName}} को ऊपर वर्णित अनुसार अपने डेटा तक पहुँच की अनुमति देते हैं।",
+    "legalNotice": "“अनुमति दें” पर क्लिक करके, आप {{appName}} को ऊपर वर्णित अनुसार अपने डेटा तक पहुँच की अनुमति देते हैं।",
     "privacyPolicy": "गोपनीयता नीति",
     "deny": "अस्वीकार करें",
     "allow": "अनुमति दें",
-    "submitting": "प्रक्रिया जारी है\u2026",
+    "submitting": "प्रक्रिया जारी है…",
     "outcomeSuccessTitle": "जुड़ गया",
     "outcomeSuccessLine1": "प्रमाणीकरण सफल रहा।",
     "outcomeSuccessLine2": "आप इस विंडो को बंद कर सकते हैं।",
