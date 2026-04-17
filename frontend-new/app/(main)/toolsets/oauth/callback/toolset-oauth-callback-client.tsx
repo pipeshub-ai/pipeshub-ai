@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
-import { ToolsetsApi } from '@/app/(main)/agents/toolsets-api';
+import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import { isProcessedError } from '@/lib/api';
 import {
   postToolsetOAuthErrorToOpener,

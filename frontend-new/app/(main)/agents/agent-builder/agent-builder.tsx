@@ -25,7 +25,7 @@ import { AgentBuilderCanvas } from './components/agent-builder-canvas';
 import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
-import type { BuilderSidebarToolset } from '../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { FlowNodeData } from './types';
 import { normalizeDisplayName, formattedProvider } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
@@ -64,9 +64,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     loadedAgent,
     error,
     setError,
-    loadMoreToolsets,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
     refreshToolsets,
     refreshAgent,
   } = useAgentBuilderData(editingKey);
@@ -679,9 +676,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             configuredConnectors={configuredConnectors}
             toolsets={toolsets}
             activeToolsetTypes={activeToolsetTypes}
-            toolsetsHasMore={toolsetsHasMore}
-            toolsetsLoadingMore={toolsetsLoadingMore}
-            onLoadMoreToolsets={loadMoreToolsets}
             refreshToolsets={refreshToolsets}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}

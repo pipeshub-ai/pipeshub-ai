@@ -432,7 +432,7 @@
     "disconnectOAuthProgress": "Disconnecting\u2026",
     "removeCredentials": "Remove credentials",
     "savingCredentials": "Saving\u2026",
-    "updateCredentials": "Update credentials",
+    "updateCredentials": "Save changes",
     "saveCredentials": "Save credentials",
     "noCredentialsRequired": "No credentials are required for this toolset.",
     "noCredentialFields": "No credential fields were returned for this auth type. If this persists, check the toolset registry schema.",

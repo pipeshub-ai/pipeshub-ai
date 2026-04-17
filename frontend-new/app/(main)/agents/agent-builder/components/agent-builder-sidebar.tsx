@@ -6,7 +6,7 @@ import { Box, Flex, Text, TextField, IconButton, ScrollArea } from '@radix-ui/th
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { CONTENT_PADDING, HEADER_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
-import type { BuilderSidebarToolset } from '../../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
@@ -101,9 +101,6 @@ export function AgentBuilderSidebar(props: {
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypes: string[];
-  toolsetsHasMore: boolean;
-  toolsetsLoadingMore: boolean;
-  onLoadMoreToolsets: () => void;
   refreshToolsets: (
     agentKey?: string | null,
     isServiceAccount?: boolean,
@@ -128,9 +125,6 @@ export function AgentBuilderSidebar(props: {
     configuredConnectors,
     toolsets,
     activeToolsetTypes,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
-    onLoadMoreToolsets,
     refreshToolsets,
     onNotify,
     agentKey = null,
@@ -442,9 +436,6 @@ export function AgentBuilderSidebar(props: {
                 toolsets={toolsets}
                 loading={loading}
                 refreshToolsets={refreshToolsets}
-                loadMoreToolsets={onLoadMoreToolsets}
-                toolsetsHasMore={toolsetsHasMore}
-                toolsetsLoadingMore={toolsetsLoadingMore}
                 activeToolsetTypes={activeToolsetTypes}
                 isServiceAccount={isServiceAccount}
                 agentKey={agentKey}

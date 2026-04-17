@@ -1,4 +1,4 @@
-import type { BuilderSidebarToolset, BuilderToolsetTool } from '../toolsets-api';
+import type { BuilderSidebarToolset, BuilderToolsetTool } from '@/app/(main)/toolsets/api';
 import { normalizePaletteLabel } from './display-utils';
 
 /** @deprecated Prefer {@link normalizePaletteLabel} from `./display-utils`; kept for call-site imports. */

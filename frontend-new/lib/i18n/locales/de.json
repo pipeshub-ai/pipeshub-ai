@@ -413,7 +413,7 @@
     "disconnectOAuthProgress": "Verbindung wird getrennt\u2026",
     "removeCredentials": "Anmeldedaten entfernen",
     "savingCredentials": "Wird gespeichert\u2026",
-    "updateCredentials": "Anmeldedaten aktualisieren",
+    "updateCredentials": "\u00c4nderungen speichern",
     "saveCredentials": "Anmeldedaten speichern",
     "noCredentialsRequired": "F\u00fcr dieses Toolset sind keine Anmeldedaten erforderlich.",
     "noCredentialFields": "F\u00fcr diesen Authentifizierungstyp wurden keine Anmeldedatenfelder zur\u00fcckgegeben. Wenn dies anh\u00e4lt, \u00fcberpr\u00fcfen Sie das Toolset-Registry-Schema.",
