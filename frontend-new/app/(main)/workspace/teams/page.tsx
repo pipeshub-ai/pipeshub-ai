@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -27,6 +27,7 @@ import { TeamsApi } from './api';
 import { UsersApi } from '../users/api';
 import type { Team } from './types';
 import { CreateTeamSidebar, TeamDetailSidebar } from './components';
+import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
 
 // ========================================
 // Constants
@@ -90,69 +91,24 @@ function TeamsPageContent() {
     detailTeam,
   } = useTeamsStore();
 
-  // ── Paginated user filter state (for "Created By" filter) ──
-  const [userOptions, setUserOptions] = useState<{ value: string; label: string; icon: string }[]>([]);
-  const [userFilterPage, setUserFilterPage] = useState(1);
-  const [userFilterHasMore, setUserFilterHasMore] = useState(false);
-  const [userFilterLoading, setUserFilterLoading] = useState(false);
-  const [userFilterSearch, setUserFilterSearch] = useState('');
-  const USER_FILTER_LIMIT = 25;
+  // ── Paginated user filter (for "Created By" filter) ──
+  const userFilter = usePaginatedFilterOptions({
+    fetcher: async (search, page, limit) => {
+      const { users, totalCount } = await UsersApi.listGraphUsers({ page, limit, search });
+      return { items: users, totalCount };
+    },
+    mapOption: (u) => ({
+      value: u.id,
+      label: u.name || u.email || 'Unknown User',
+      icon: 'person',
+    }),
+  });
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
   }, [isProfileInitialized, isAdmin, router]);
-
-  // Fetch users for "Created By" filter dropdown (paginated + searchable)
-  const fetchUserOptions = useCallback(
-    async (search: string, pageNum: number, append: boolean) => {
-      setUserFilterLoading(true);
-      try {
-        const { users, totalCount } = await UsersApi.listGraphUsers({
-          page: pageNum,
-          limit: USER_FILTER_LIMIT,
-          search: search || undefined,
-        });
-
-        const newOptions = users.map((u) => ({
-          value: u.id,
-          label: u.name || u.email || 'Unknown User',
-          icon: 'person',
-        }));
-
-        setUserOptions((prev) => (append ? [...prev, ...newOptions] : newOptions));
-        setUserFilterHasMore(pageNum * USER_FILTER_LIMIT < totalCount);
-      } catch {
-        /* filter dropdown degrades gracefully */
-      } finally {
-        setUserFilterLoading(false);
-      }
-    },
-    []
-  );
-
-  // Initial load
-  useEffect(() => {
-    fetchUserOptions('', 1, false);
-  }, [fetchUserOptions]);
-
-  // Handle search from FilterDropdown
-  const handleUserFilterSearch = useCallback(
-    (query: string) => {
-      setUserFilterSearch(query);
-      setUserFilterPage(1);
-      fetchUserOptions(query, 1, false);
-    },
-    [fetchUserOptions]
-  );
-
-  // Handle scroll-to-bottom from FilterDropdown
-  const handleUserFilterLoadMore = useCallback(() => {
-    const nextPage = userFilterPage + 1;
-    setUserFilterPage(nextPage);
-    fetchUserOptions(userFilterSearch, nextPage, true);
-  }, [userFilterPage, userFilterSearch, fetchUserOptions]);
 
   // ── Fetch teams (server-paginated + server-filtered) ──
   const fetchTeams = useCallback(async () => {
@@ -364,14 +320,14 @@ function TeamsPageContent() {
             <FilterDropdown
               label={filter.label}
               icon={filter.icon}
-              options={userOptions}
+              options={userFilter.options}
               selectedValues={filters.createdBy || []}
               onSelectionChange={(values) => setFilters({ createdBy: values })}
               searchable
-              onSearch={handleUserFilterSearch}
-              onLoadMore={handleUserFilterLoadMore}
-              isLoadingMore={userFilterLoading}
-              hasMore={userFilterHasMore}
+              onSearch={userFilter.onSearch}
+              onLoadMore={userFilter.onLoadMore}
+              isLoadingMore={userFilter.isLoading}
+              hasMore={userFilter.hasMore}
             />
           );
         case 'createdOn':
@@ -405,7 +361,7 @@ function TeamsPageContent() {
           return null;
       }
     },
-    [filters, setFilters, userOptions, handleUserFilterSearch, handleUserFilterLoadMore, userFilterLoading, userFilterHasMore]
+    [filters, setFilters, userFilter]
   );
 
   // Filtering and pagination are server-side; use teams directly

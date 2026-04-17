@@ -34,6 +34,7 @@ import { GroupsApi } from '../groups/api';
 import type { Group } from '../groups/types';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
+import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
 
 // ========================================
 // Constants
@@ -148,14 +149,36 @@ function UsersPageContent() {
     closeProfilePanel,
   } = useUsersStore();
 
-  // ── Paginated group filter state ──
+  // ── Paginated group filter ──
   const groupsRef = useRef<Group[]>([]);
-  const [groupOptions, setGroupOptions] = useState<{ value: string; label: string; icon: string }[]>([]);
-  const [groupFilterPage, setGroupFilterPage] = useState(1);
-  const [groupFilterHasMore, setGroupFilterHasMore] = useState(false);
-  const [groupFilterLoading, setGroupFilterLoading] = useState(false);
-  const [groupFilterSearch, setGroupFilterSearch] = useState('');
-  const GROUP_FILTER_LIMIT = 25;
+  const groupFilter = usePaginatedFilterOptions<Group>({
+    fetcher: async (search, page, limit) => {
+      const { groups, totalCount } = await GroupsApi.listGroups({ page, limit, search });
+      return { items: groups, totalCount };
+    },
+    mapOption: (g) => ({
+      value: g._id,
+      label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
+      icon: 'group',
+    }),
+    onFetched: (groups, page, search) => {
+      // Cache the admin group for role changes (from first page, no search)
+      if (!search && page === 1) {
+        groupsRef.current = groups;
+        adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
+      } else {
+        groupsRef.current = [...groupsRef.current, ...groups];
+      }
+    },
+  });
+  // Filter out "everyone" group from displayed options
+  const groupOptions = useMemo(
+    () => groupFilter.options.filter((o) => {
+      const group = groupsRef.current.find((g) => g._id === o.value);
+      return !group || group.type !== GROUP_TYPES.EVERYONE;
+    }),
+    [groupFilter.options]
+  );
 
   // Capture userId from initial URL load so we can restore the profile panel
   // after fetchUsers completes (users list is empty on first render).
@@ -166,66 +189,6 @@ function UsersPageContent() {
     const userId = searchParams.get('userId');
     pendingProfileUserIdRef.current = (panel === 'profile' && userId) ? userId : null;
   }, []);
-
-  // Fetch groups for filter dropdown (paginated + searchable)
-  const fetchGroupOptions = useCallback(
-    async (search: string, pageNum: number, append: boolean) => {
-      setGroupFilterLoading(true);
-      try {
-        const { groups, totalCount } = await GroupsApi.listGroups({
-          page: pageNum,
-          limit: GROUP_FILTER_LIMIT,
-          search: search || undefined,
-        });
-
-        // Also cache the admin group for role changes (from first page, no search)
-        if (!search && pageNum === 1) {
-          groupsRef.current = groups;
-          adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
-        } else if (append) {
-          groupsRef.current = [...groupsRef.current, ...groups];
-        }
-
-        const newOptions = groups
-          .filter((g) => g.type !== GROUP_TYPES.EVERYONE)
-          .map((g) => ({
-            value: g._id,
-            label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
-            icon: 'group',
-          }));
-
-        setGroupOptions((prev) => (append ? [...prev, ...newOptions] : newOptions));
-        setGroupFilterHasMore(pageNum * GROUP_FILTER_LIMIT < totalCount);
-      } catch {
-        /* filter dropdown degrades gracefully */
-      } finally {
-        setGroupFilterLoading(false);
-      }
-    },
-    []
-  );
-
-  // Initial load
-  useEffect(() => {
-    fetchGroupOptions('', 1, false);
-  }, [fetchGroupOptions]);
-
-  // Handle search from FilterDropdown
-  const handleGroupFilterSearch = useCallback(
-    (query: string) => {
-      setGroupFilterSearch(query);
-      setGroupFilterPage(1);
-      fetchGroupOptions(query, 1, false);
-    },
-    [fetchGroupOptions]
-  );
-
-  // Handle scroll-to-bottom from FilterDropdown
-  const handleGroupFilterLoadMore = useCallback(() => {
-    const nextPage = groupFilterPage + 1;
-    setGroupFilterPage(nextPage);
-    fetchGroupOptions(groupFilterSearch, nextPage, true);
-  }, [groupFilterPage, groupFilterSearch, fetchGroupOptions]);
 
   // ── Fetch users (server-paginated + server-filtered) ──────────────────
   const fetchUsers = useCallback(async () => {
@@ -380,10 +343,10 @@ function UsersPageContent() {
               selectedValues={filters.groups || []}
               onSelectionChange={(values) => setFilters({ groups: values })}
               searchable
-              onSearch={handleGroupFilterSearch}
-              onLoadMore={handleGroupFilterLoadMore}
-              isLoadingMore={groupFilterLoading}
-              hasMore={groupFilterHasMore}
+              onSearch={groupFilter.onSearch}
+              onLoadMore={groupFilter.onLoadMore}
+              isLoadingMore={groupFilter.isLoading}
+              hasMore={groupFilter.hasMore}
             />
           );
         case 'status':
@@ -456,7 +419,7 @@ function UsersPageContent() {
           return null;
       }
     },
-    [filters, setFilters, groupOptions, handleGroupFilterSearch, handleGroupFilterLoadMore, groupFilterLoading, groupFilterHasMore]
+    [filters, setFilters, groupOptions, groupFilter]
   );
 
   // ── Client-side date filters (role/group/status are server-side) ──
@@ -488,7 +451,7 @@ function UsersPageContent() {
     }
 
     return result;
-  }, [users, searchQuery, filters]);
+  }, [users, filters]);
 
   // Server already returns the correct page; client-side filters may further narrow the set
   const paginatedUsers = filteredUsers;

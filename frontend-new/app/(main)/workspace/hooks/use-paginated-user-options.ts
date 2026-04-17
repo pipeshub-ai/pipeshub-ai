@@ -75,9 +75,11 @@ export function usePaginatedUserOptions({
     [limit, idField, source]
   );
 
-  // Load first page when enabled
+  // Load first page when enabled; reset state when disabled
   useEffect(() => {
     if (enabled) {
+      setSearch('');
+      setPage(1);
       fetchOptions('', 1, false);
     }
   }, [enabled, fetchOptions]);

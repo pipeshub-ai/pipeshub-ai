@@ -152,7 +152,7 @@ export function FilterDropdown({
       setSearchQuery('');
       if (isServerSearch) onSearch!('');
     }
-  }, [isOpen]);
+  }, [isOpen, isServerSearch, onSearch]);
 
   // Toggle option selection
   const toggleOption = (value: string) => {

@@ -142,7 +142,7 @@ export function SearchableCheckboxDropdown({
       setSearchQuery('');
       if (isServerSearch) onSearch!('');
     }
-  }, [isOpen]);
+  }, [isOpen, isServerSearch, onSearch]);
 
   const toggleOption = useCallback(
     (id: string) => {

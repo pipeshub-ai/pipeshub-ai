@@ -463,7 +463,7 @@ function GroupsPageContent() {
           overflow: 'hidden',
         }}
       >
-        {isEmpty && !isEmptyFiltered ? (
+        {isEmpty ? (
           <EntityEmptyState
             icon="group"
             title={t('workspace.groups.emptyTitle')}
