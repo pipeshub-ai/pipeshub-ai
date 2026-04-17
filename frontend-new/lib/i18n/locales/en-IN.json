@@ -444,7 +444,7 @@
     "archiveChatConfirm": "Are you sure?",
     "archiveChatDescription": "The chat titled",
     "archiveChatWarning": "will be archived.",
-    "archiving": "Archiving...",
+    "archiving": "Archiving…",
     "chatArchived": "Chat archived",
     "chatDeleted": "Chat deleted",
     "chatRenamed": "Chat renamed",
@@ -462,7 +462,7 @@
     "failedToDeleteAgent": "Could not delete agent",
     "failedToRename": "Failed to rename chat",
     "rename": "Rename",
-    "renaming": "Renaming..."
+    "renaming": "Renaming…"
   },
   "workspaceSettings": {
     "title": "Workspace Settings"
@@ -1079,7 +1079,7 @@
     "oauthSignInSuccess": "Toolset connected successfully.",
     "oauthSignInIncomplete": "Sign-in did not finish. The window may have been closed before completion — try again when you are ready.",
     "oauthSignInCancelled": "Sign-in was cancelled.",
-    "toolsetOAuthCompletingTitle": "Completing toolset sign-in...",
+    "toolsetOAuthCompletingTitle": "Completing toolset sign-in…",
     "toolsetOAuthProcessing": "Completing toolset sign-in…",
     "toolsetOAuthProcessingHint": "You can keep this window open until it closes automatically.",
     "toolsetOAuthProviderError": "OAuth error: {{error}}",

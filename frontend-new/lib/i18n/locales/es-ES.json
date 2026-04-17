@@ -444,7 +444,7 @@
     "archiveChatConfirm": "¿Estás seguro?",
     "archiveChatDescription": "El chat titulado",
     "archiveChatWarning": "será archivado.",
-    "archiving": "Archivando...",
+    "archiving": "Archivando…",
     "chatArchived": "Chat archivado",
     "chatDeleted": "Chat eliminado",
     "chatRenamed": "Chat renombrado",
@@ -462,7 +462,7 @@
     "failedToDeleteAgent": "No se pudo eliminar el agente",
     "failedToRename": "Error al renombrar el chat",
     "rename": "Renombrar",
-    "renaming": "Renombrando..."
+    "renaming": "Renombrando…"
   },
   "workspaceSettings": {
     "title": "Configuración del espacio de trabajo"
@@ -1079,7 +1079,7 @@
     "oauthSignInSuccess": "Conjunto de herramientas conectado correctamente.",
     "oauthSignInIncomplete": "El inicio de sesión no terminó. Es posible que se cerrara la ventana antes de completar — inténtelo de nuevo cuando esté listo.",
     "oauthSignInCancelled": "Inicio de sesión cancelado.",
-    "toolsetOAuthCompletingTitle": "Completando el inicio de sesión del conjunto de herramientas...",
+    "toolsetOAuthCompletingTitle": "Completando el inicio de sesión del conjunto de herramientas…",
     "toolsetOAuthProcessing": "Completando el inicio de sesión del conjunto de herramientas…",
     "toolsetOAuthProcessingHint": "Puede mantener esta ventana abierta hasta que se cierre automáticamente.",
     "toolsetOAuthProviderError": "Error de OAuth: {{error}}",

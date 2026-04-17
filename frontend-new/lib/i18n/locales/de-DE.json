@@ -444,7 +444,7 @@
     "archiveChatConfirm": "Sind Sie sicher?",
     "archiveChatDescription": "Der Chat mit dem Titel",
     "archiveChatWarning": "wird archiviert.",
-    "archiving": "Archiviere...",
+    "archiving": "Archiviere…",
     "chatArchived": "Chat archiviert",
     "chatDeleted": "Chat gelöscht",
     "chatRenamed": "Chat umbenannt",
@@ -462,7 +462,7 @@
     "failedToDeleteAgent": "Agent konnte nicht gelöscht werden",
     "failedToRename": "Chat konnte nicht umbenannt werden",
     "rename": "Umbenennen",
-    "renaming": "Umbenennen..."
+    "renaming": "Umbenennen…"
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -924,7 +924,7 @@
     "serviceAccountBadge": "Dienstkonto",
     "serviceAccountBadgeTooltip": "Dieser Agent verwendet dedizierte Toolset-Anmeldedaten und vollen Wissenszugriff für alle Benutzer.",
     "convertToServiceAccount": "In Dienstkonto umwandeln",
-    "convertToServiceAccountTooltip": "Dauerhaft umwandeln — dedizierte Toolset-Anmeldedaten und organisationsweiter Wissenszugriff. Kann nicht rükgängig gemacht werden.",
+    "convertToServiceAccountTooltip": "Dauerhaft umwandeln — dedizierte Toolset-Anmeldedaten und organisationsweiter Wissenszugriff. Kann nicht rückgängig gemacht werden.",
     "createAsServiceAccount": "Dienstkonto",
     "createAsServiceAccountTooltip": "Als Dienstkonto mit eigenen Toolset-Anmeldedaten und vollem Wissenszugriff erstellen.",
     "shareWithOrg": "Mit allen teilen",
@@ -1076,7 +1076,7 @@
     "oauthSignInSuccess": "Toolset erfolgreich verbunden.",
     "oauthSignInIncomplete": "Anmeldung nicht abgeschlossen. Das Fenster wurde möglicherweise zu früh geschlossen — versuchen Sie es erneut, wenn Sie bereit sind.",
     "oauthSignInCancelled": "Anmeldung abgebrochen.",
-    "toolsetOAuthCompletingTitle": "Toolset-Anmeldung wird abgeschlossen...",
+    "toolsetOAuthCompletingTitle": "Toolset-Anmeldung wird abgeschlossen…",
     "toolsetOAuthProcessing": "Toolset-Anmeldung wird abgeschlossen…",
     "toolsetOAuthProcessingHint": "Sie können dieses Fenster geöffnet lassen, bis es sich automatisch schließt.",
     "toolsetOAuthProviderError": "OAuth-Fehler: {{error}}",
