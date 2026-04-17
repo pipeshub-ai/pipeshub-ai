@@ -290,7 +290,7 @@ export function ChatItemSkeleton() {
       label={
         <Box
           style={{
-            height: 16,
+            height: 'var(--space-4)',
             backgroundColor: 'var(--slate-4)',
             borderRadius: 'var(--radius-1)',
             width: '75%',

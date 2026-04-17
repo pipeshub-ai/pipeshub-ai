@@ -17,7 +17,7 @@ export function ChatSidebarHeader() {
 
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
-      <PipesHubIcon size={HEADER_ELEMENT_SIZE} color="var(--accent-8)" />
+      <PipesHubIcon size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
       <div
         onClick={() => router.push('/workspace/profile')}
         style={{ cursor: 'pointer' }}

@@ -205,9 +205,9 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
 
           {/* Sentinel + spinner: only shown when more pages exist */}
           {(hasNextPage || isLoadingMore) && (
-            <Box ref={sentinelRef} style={{ padding: '8px 0', textAlign: 'center' }}>
+            <Box ref={sentinelRef} style={{ padding: 'var(--space-2) 0', textAlign: 'center' }}>
               {isLoadingMore && (
-                <Flex align="center" justify="center" gap="2" style={{ padding: '4px 0' }}>
+                <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-1) 0' }}>
                   <LottieLoader variant="loader" size={20} showLabel />
                 </Flex>
               )}

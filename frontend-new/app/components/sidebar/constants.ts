@@ -41,10 +41,10 @@ export const HEADER_ELEMENT_SIZE = 24;
 // ============================================
 
 /** Padding for the scrollable content area */
-export const CONTENT_PADDING = '16px 8px';
+export const CONTENT_PADDING = 'var(--space-4) var(--space-2)';
 
 /** Padding for section headers (collapsible sections) */
-export const SECTION_HEADER_PADDING = '4px 8px';
+export const SECTION_HEADER_PADDING = 'var(--space-1) var(--space-2)';
 
 /** Top padding for a sidebar section */
 export const SECTION_PADDING_TOP = 4;

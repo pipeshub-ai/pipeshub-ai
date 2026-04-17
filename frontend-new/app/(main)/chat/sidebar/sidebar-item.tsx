@@ -76,7 +76,7 @@ export function SidebarItem({
         // Layout
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        gap: 'var(--space-2)',
         width: '100%',
         height: CHAT_ITEM_HEIGHT,
         padding: '0 var(--space-3)',

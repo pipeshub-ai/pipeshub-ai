@@ -289,7 +289,7 @@ const TableCellMemo = memo(function TableCellMemo({
         whiteSpace: 'nowrap',
         backgroundColor: bg,
         color: isDark ? '#e1e3e7' : 'var(--olive-12)',
-        fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif',
+        fontFamily: "'Manrope', sans-serif",
       }}
     >
       {display || (isHeaderRow ? <span style={{ color: isDark ? '#666' : 'var(--olive-8)', fontStyle: 'italic' }}>(Empty)</span> : '')}
@@ -498,7 +498,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName: _fileName, citations, a
             minWidth: '100%',
             tableLayout: 'fixed',
             borderCollapse: 'collapse',
-            fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif',
+            fontFamily: "'Manrope', sans-serif",
           }}
         >
           {/* Column letter header (A, B, C...) */}
@@ -674,7 +674,7 @@ function SheetTabs({
                 : (isDark ? '#999' : 'var(--olive-10)'),
               backgroundColor: 'transparent',
               transition: 'color 0.15s ease, border-color 0.15s ease',
-              fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif',
+              fontFamily: "'Manrope', sans-serif",
             }}
             onMouseEnter={(e) => {
               if (!isActive) {

@@ -145,7 +145,7 @@ export function HtmlRenderer({ fileUrl, fileName: _fileName, citations, activeCi
     style.id = styleId;
     style.textContent = `
       .${HTML_CONTENT_CLASS} {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        font-family: 'Manrope', sans-serif;
         line-height: 1.6;
         max-width: 100%;
         word-wrap: break-word;
