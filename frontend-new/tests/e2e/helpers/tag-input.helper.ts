@@ -9,11 +9,8 @@ import type { Page, Locator } from '@playwright/test';
 
 /** Get the tag input element (the raw <input> inside the tag container) */
 function getTagInput(page: Page): Locator {
-  // The TagInput renders a plain <input> with no id — identify by its container context
-  // The input has minWidth: 120 and is inside a Flex with wrap="wrap"
-  return page.locator('input[type="text"]').filter({
-    has: page.locator('xpath=ancestor::div[contains(@style, "min-height")]'),
-  });
+  const dialog = page.getByRole('dialog');
+  return dialog.getByRole('textbox').first();
 }
 
 /** Paste multiple emails (comma-separated) into the TagInput */

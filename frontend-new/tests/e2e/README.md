@@ -34,7 +34,7 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
 | `npm run test:e2e` | Run all tests (starts dev server automatically) |
 | `npm run test:e2e:ui` | Open Playwright UI for interactive debugging |
 | `npm run test:e2e:headed` | Run tests in a visible browser |
-| `npm run test:e2e:seed` | Seed bulk test data (1000 users, 100 groups, 1000 teams) |
+| `npm run test:e2e:seed` | Seed bulk test data (30 users, 30 groups, 30 teams) |
 | `npm run test:e2e:cleanup` | Delete all seeded test data |
 | `npm run test:e2e:users` | Run only user-related tests |
 | `npm run test:e2e:groups` | Run only group-related tests |

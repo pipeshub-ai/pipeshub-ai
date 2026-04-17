@@ -16,7 +16,9 @@ test.describe.serial('Seed Groups', () => {
 
     for (let i = 1; i <= UI_GROUPS; i++) {
       // Ensure no dialog is open before clicking CTA
-      await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
+      if (await page.getByRole('dialog').isVisible()) {
+        await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 10_000 });
+      }
 
       // Click the "Create Group" CTA
       const ctaButton = page.locator('button').filter({ hasText: /Create/ });

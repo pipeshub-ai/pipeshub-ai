@@ -37,10 +37,10 @@ test.describe('Chat Basic', () => {
   });
 
   test('sidebar shows conversation history', async ({ page }) => {
-    // Chat sidebar should be visible on desktop
-    const sidebar = page.locator('text=/conversation|history|recent|chat/i').first();
-    const hasSidebar = await sidebar.isVisible().catch(() => false);
-    // Sidebar may or may not be visible depending on viewport
-    expect(true).toBeTruthy();
+    const viewport = page.viewportSize();
+    if (viewport && viewport.width > 768) {
+      const sidebar = page.locator('nav, [data-sidebar]').first();
+      await expect(sidebar).toBeVisible({ timeout: 5_000 });
+    }
   });
 });

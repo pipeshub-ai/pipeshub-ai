@@ -35,10 +35,8 @@ test.describe('Login Page', () => {
     await page.fill('#password-field', 'definitelywrongpassword123');
     await page.click('button[type="submit"]');
 
-    // Wait for error message to appear
-    await page.waitForTimeout(2_000);
     const errorText = page.locator('text=/Incorrect|incorrect|wrong|Wrong|invalid|Invalid|failed|Failed/');
-    await expect(errorText.first()).toBeVisible({ timeout: 5_000 });
+    await expect(errorText.first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('successful login redirects to /chat', async ({ page }) => {

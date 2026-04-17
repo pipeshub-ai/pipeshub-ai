@@ -30,7 +30,7 @@ test.describe('Workspace Sidebar Navigation', () => {
       if (await sidebarLink.isVisible()) {
         await sidebarLink.click();
         await page.waitForURL(`**${item.url}`, { timeout: 5_000 });
-        await expect(page).toHaveURL(new RegExp(item.url.replace(/\//g, '\\/')));
+        await expect(page).toHaveURL(new RegExp(item.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       }
     });
   }

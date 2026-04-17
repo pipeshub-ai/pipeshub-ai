@@ -16,7 +16,9 @@ test.describe.serial('Seed Teams', () => {
 
     for (let i = 1; i <= UI_TEAMS; i++) {
       // Ensure no dialog is open before clicking CTA
-      await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
+      if (await page.getByRole('dialog').isVisible()) {
+        await page.getByRole('dialog').waitFor({ state: 'detached', timeout: 10_000 });
+      }
 
       // Click the "Create Team" CTA
       const ctaButton = page.locator('button').filter({ hasText: /Create/ });

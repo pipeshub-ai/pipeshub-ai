@@ -15,7 +15,7 @@ test.describe('Workspace General Settings', () => {
     const nameInput = page.locator('input[placeholder="eg: Paypal Co. LLC"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
     const value = await nameInput.inputValue();
-    expect(value.length).toBeGreaterThanOrEqual(0);
+    expect(value.length).toBeGreaterThan(0);
   });
 
   test('can edit and save org name', async ({ page }) => {
