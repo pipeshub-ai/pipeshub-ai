@@ -111,14 +111,14 @@ export function AnswerContent({
       </Heading>
     ),
     h3: ({ children }: { children?: React.ReactNode }) => (
-      <Heading size="3" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
+      <Heading size="4" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-2)', color: 'var(--slate-12)' }}>
         {children}
       </Heading>
     ),
     h4: ({ children }: { children?: React.ReactNode }) => (
-      <Text size="3" weight="bold" as="p" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)', color: 'var(--slate-12)' }}>
+      <Heading size="3" weight="bold" style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-1)', color: 'var(--slate-12)' }}>
         {children}
-      </Text>
+      </Heading>
     ),
     p: ({ children }: { children?: React.ReactNode }) => (
       <Text size="2" as="p" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
@@ -148,7 +148,7 @@ export function AnswerContent({
       </ol>
     ),
     li: ({ children }: { children?: React.ReactNode }) => (
-      <li style={{ marginBottom: '0', lineHeight: 'var(--line-height-2)', color: 'var(--gray-12)' }}>
+      <li style={{ marginBottom: 'var(--space-4)', lineHeight: 'var(--line-height-2)', color: 'var(--gray-12)', fontSize: '14px' }}>
         {processChildren(children, citationMaps, citationCallbacks)}
       </li>
     ),
@@ -163,7 +163,8 @@ export function AnswerContent({
     code: ({ children }: { children?: React.ReactNode }) => (
       <code
         style={{
-          backgroundColor: 'var(--slate-3)',
+          backgroundColor: 'var(--slate-7)',
+          fontWeight: 400,
           padding: '2px 6px',
           borderRadius: 'var(--radius-1)',
           fontFamily: 'monospace',

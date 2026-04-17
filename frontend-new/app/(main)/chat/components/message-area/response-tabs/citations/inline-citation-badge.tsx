@@ -32,6 +32,11 @@ export function InlineCitationBadge({
     ? citation.recordName.replace(/\.[^/.]+$/, '')
     : '';
 
+  const truncatedName =
+    fileNameWithoutExt.length > 24
+      ? fileNameWithoutExt.slice(0, 24) + '…'
+      : fileNameWithoutExt;
+
   // ── No citation data yet (early streaming) → simple numbered badge ──
   if (!citation) {
     return (
@@ -88,21 +93,18 @@ export function InlineCitationBadge({
       {/* Connector icon */}
       <ConnectorIcon type={connector} size={14} />
 
-      {/* Source label — file name without extension */}
+      {/* Source label — file name without extension, truncated to 24 chars */}
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--accent-11)',
-          lineHeight: 2,
+          lineHeight: 1,
           fontSize: '11px',
           whiteSpace: 'nowrap',
-          maxWidth: '300px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
         }}
       >
-        {fileNameWithoutExt}
+        {truncatedName}
       </Text>
 
       {/* Citation number in a nested mini-badge */}

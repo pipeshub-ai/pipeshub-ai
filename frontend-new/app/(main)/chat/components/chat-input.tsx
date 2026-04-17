@@ -773,7 +773,7 @@ export function ChatInput({
             maxHeight: '120px',
             fontFamily: 'Manrope, sans-serif',
             height: 'auto',
-            overflow: message.split('\n').length > 5 ? 'auto' : 'hidden',
+            overflow: 'auto',
           }}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement;
@@ -806,7 +806,7 @@ export function ChatInput({
             maxHeight: '120px',
             fontFamily: 'Manrope, sans-serif',
             height: 'auto',
-            overflow: message.split('\n').length > 5 ? 'auto' : 'hidden',
+            overflow: 'auto',
           }}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement;
