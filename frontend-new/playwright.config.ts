@@ -3,13 +3,30 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.test' });
 
+const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
+
+const defaultReporter: any[] = [['html', { open: 'never' }]];
+const coverageReporter: any[] = [
+  ['monocart-reporter', {
+    name: 'E2E Coverage Report',
+    outputFile: 'coverage/e2e/report.html',
+    coverage: {
+      reports: ['v8', 'console-details', 'lcov'],
+      outputDir: 'coverage/e2e',
+      entryFilter: (entry: { url: string }) => entry.url.includes('localhost'),
+      sourceFilter: (sourcePath: string) =>
+        sourcePath.includes('app/') && !sourcePath.includes('node_modules'),
+    },
+  }],
+];
+
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: [['html', { open: 'never' }]],
+  reporter: COVERAGE_ENABLED ? coverageReporter : defaultReporter,
 
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:5005',

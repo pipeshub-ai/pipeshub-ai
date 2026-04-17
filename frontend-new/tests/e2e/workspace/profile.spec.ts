@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/base.fixture';
 
 test.describe('Workspace Profile Settings', () => {
   test.beforeEach(async ({ page }) => {

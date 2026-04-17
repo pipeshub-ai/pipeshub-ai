@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../fixtures/base.fixture';
 
 test.describe('Logout', () => {
   test('logout clears auth and redirects to login', async ({ page }) => {

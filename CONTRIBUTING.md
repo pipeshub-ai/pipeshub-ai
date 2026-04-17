@@ -344,6 +344,12 @@ All commands below run from the `frontend-new/` directory.
 | `npm run test:e2e:groups` | Run only group-related tests |
 | `npm run test:e2e:teams` | Run only team-related tests |
 | `npm run test:e2e:report` | Open the HTML test report |
+| `npm run test:e2e:coverage` | Run all tests with V8 code coverage |
+| `npm run test:e2e:coverage-report` | Open the coverage HTML report |
+
+#### Code Coverage
+
+Run `npm run test:e2e:coverage` to collect V8 code coverage. Reports are generated in `coverage/e2e/` with V8, LCOV, and console summary formats. Open the HTML report with `npm run test:e2e:coverage-report`.
 
 #### Debugging & Verbose Output
 

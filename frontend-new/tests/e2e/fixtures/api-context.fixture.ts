@@ -1,4 +1,5 @@
-import { test as base, request, type APIRequestContext } from '@playwright/test';
+import { request, type APIRequestContext } from '@playwright/test';
+import { test as base } from './base.fixture';
 import * as fs from 'fs';
 
 /**
@@ -50,4 +51,4 @@ export const test = base.extend<ApiFixtures>({
   },
 });
 
-export { expect } from '@playwright/test';
+export { expect } from './base.fixture';
