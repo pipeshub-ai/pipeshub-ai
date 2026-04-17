@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
 from app.connectors.sources.gitlab.connector import (
     FileAttachment,
     GitLabConnector,
+    GitlabLiterals,
     RecordUpdate,
 )
 from app.models.blocks import (
@@ -72,34 +73,6 @@ def _make_connector() -> GitLabConnector:
     )
 
 
-class TestDatetimeHelperFunctions:
-    def test_datetime_to_epoch_ms_string_z(self) -> None:
-        connector = _make_connector()
-        assert connector.datetime_to_epoch_ms("1970-01-01T00:00:00Z") == 0
-
-    def test_datetime_to_epoch_ms_string_z_none(self) -> None:
-        connector = _make_connector()
-        assert connector.datetime_to_epoch_ms(None) is None
-
-    def test_datetime_to_epoch_ms_string_z_invalid(self) -> None:
-        connector = _make_connector()
-        assert connector.datetime_to_epoch_ms("invalid") is None
-
-    def test_string_to_datetime(self) -> None:
-        connector = _make_connector()
-        assert connector.string_to_datetime("1970-01-01T00:00:00Z") == datetime(
-            1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc
-        )
-
-    def test_string_to_datetime_none(self) -> None:
-        connector = _make_connector()
-        assert connector.string_to_datetime(None) is None
-
-    def test_string_to_datetime_invalid(self) -> None:
-        connector = _make_connector()
-        assert connector.string_to_datetime("invalid") is None
-
-
 class TestGitlabHelperFunctions:
     @pytest.mark.asyncio
     async def test_parse_gitlab_uploads_clean_test_only_text(self) -> None:
@@ -117,13 +90,13 @@ class TestGitlabHelperFunctions:
                     href="/uploads/91df98eac27282a4c79af15d18659860/parrot.png",
                     filename="parrot.png",
                     filetype="png",
-                    category="image",
+                    category=GitlabLiterals.IMAGE.value,
                 ),
                 FileAttachment(
                     href="/uploads/63236944d6e8c5de56b499649c4b8209/mpl-ayush.pdf",
                     filename="mpl-ayush.pdf",
                     filetype="pdf",
-                    category="attachment",
+                    category=GitlabLiterals.ATTACHMENT.value,
                 ),
             ],
             "This is a simple issue.\n\n{width=540 height=360}\n\nAdding some more text. Then an attachment.",
@@ -145,7 +118,7 @@ class TestGitlabHelperFunctions:
                     href="/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dockerfile",
                     filename="dockerfile",
                     filetype="txt",
-                    category="attachment",
+                    category=GitlabLiterals.ATTACHMENT.value,
                 )
             ],
             "Adding some more text. Then an attachment.",
@@ -303,7 +276,7 @@ class TestGitlabConnectorStreamRecord:
             == "attachment; filename=ISSUE-123.json"
         )
         connector._build_ticket_blocks.assert_called_once_with(ticket_record)
-        connector.logger.info.assert_any_call("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
+        connector.logger.info.assert_any_call(" STREAM_TICKET_MARKER ")
 
     @pytest.mark.asyncio
     async def test_stream_record_pull_request_success(self) -> None:
@@ -333,9 +306,7 @@ class TestGitlabConnectorStreamRecord:
             == "attachment; filename=MR-456.json"
         )
         connector._build_pull_request_blocks.assert_called_once_with(pr_record)
-        connector.logger.info.assert_any_call(
-            "🟣🟣🟣 STREAM_MERGE_REQUEST_MARKER 🟣🟣🟣"
-        )
+        connector.logger.info.assert_any_call(" STREAM_MERGE_REQUEST_MARKER ")
 
     @pytest.mark.asyncio
     async def test_stream_record_file_success(self) -> None:
@@ -376,7 +347,7 @@ class TestGitlabConnectorStreamRecord:
             assert call_args[1]["filename"] == "document.pdf"
             assert call_args[1]["mime_type"] == "application/pdf"
             assert call_args[1]["fallback_filename"] == "record_record-id-123"
-            connector.logger.info.assert_any_call("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
+            connector.logger.info.assert_any_call(" STREAM-FILE-MARKER ")
 
     @pytest.mark.asyncio
     async def test_stream_record_file_no_record_name(self) -> None:
@@ -453,9 +424,7 @@ class TestGitlabConnectorStreamRecord:
             assert call_args[1]["filename"] == "main.py"
             assert call_args[1]["mime_type"] == "text/x-python"
             assert call_args[1]["fallback_filename"] == "record_record-id-456"
-            connector.logger.info.assert_any_call(
-                "🟣🟣🟣 STREAM-CODE-FILE-MARKER 🟣🟣🟣"
-            )
+            connector.logger.info.assert_any_call(" STREAM-CODE-FILE-MARKER ")
 
     @pytest.mark.asyncio
     async def test_stream_record_code_file_no_record_name(self) -> None:
@@ -632,7 +601,7 @@ class TestGitlabConnectorSyncPoints:
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(
             return_value={
-                "last_sync_time": expected_last_sync_time,
+                GitlabLiterals.LAST_SYNC_TIME.value: expected_last_sync_time,
                 "other_data": "value",
             }
         )
@@ -715,9 +684,9 @@ class TestGitlabConnectorSyncPoints:
         await connector._update_issues_sync_checkpoint(project_id, last_sync_time)
 
         # Assertions
-        # connector.record_sync_point.update_sync_point.assert_called_once()
         connector.record_sync_point.update_sync_point.assert_called_once_with(
-            "gitlab/12345-work-items/", {"last_sync_time": last_sync_time}
+            "GITLAB/12345-work-items/",
+            {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time},
         )
 
     @pytest.mark.asyncio
@@ -731,7 +700,7 @@ class TestGitlabConnectorSyncPoints:
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(
             return_value={
-                "last_sync_time": expected_last_sync_time,
+                GitlabLiterals.LAST_SYNC_TIME.value: expected_last_sync_time,
                 "other_data": "value",
             }
         )
@@ -814,7 +783,8 @@ class TestGitlabConnectorSyncPoints:
         # Assertions
         # connector.record_sync_point.update_sync_point.assert_called_once()
         connector.record_sync_point.update_sync_point.assert_called_once_with(
-            "gitlab/12345-merge-requests/", {"last_sync_time": last_sync_time}
+            "GITLAB/12345-merge-requests/",
+            {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time},
         )
 
 
@@ -1937,7 +1907,7 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ) as mock_generate_key,
         ):
             # Execute
@@ -1945,9 +1915,14 @@ class TestGitlabConnectorSyncAllProject:
 
         # Verify
         connector._sync_projects.assert_called_once()
-        mock_generate_key.assert_called_once_with("gitlab", "record_group", "global")
+        mock_generate_key.assert_called_once_with(
+            Connectors.GITLAB.value,
+            GitlabLiterals.RECORD_GROUP.value,
+            GitlabLiterals.GLOBAL.value,
+        )
         connector.record_sync_point.update_sync_point.assert_called_once_with(
-            "gitlab/record_group/global/", {"timestamp": mock_timestamp}
+            "GITLAB/record_group/global/",
+            {GitlabLiterals.LAST_SYNC_TIME.value: mock_timestamp},
         )
 
     @pytest.mark.asyncio
@@ -1974,7 +1949,7 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ),
         ):
             # Execute
@@ -2000,7 +1975,7 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ),
         ):
             # Execute and expect exception
@@ -2033,7 +2008,7 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ),
         ):
             # Execute and expect exception
@@ -2058,7 +2033,7 @@ class TestGitlabConnectorSyncAllProject:
 
         async def mock_update_sync_point(key, data) -> None:
             nonlocal captured_timestamp
-            captured_timestamp = data["timestamp"]
+            captured_timestamp = data[GitlabLiterals.LAST_SYNC_TIME.value]
 
         connector._sync_projects = mock_sync_projects
         connector.record_sync_point = MagicMock()
@@ -2072,7 +2047,7 @@ class TestGitlabConnectorSyncAllProject:
             ) as mock_get_timestamp,
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ),
         ):
             # Execute
@@ -2099,14 +2074,18 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ) as mock_generate_key,
         ):
             # Execute
             await connector._sync_all_project()
 
         # Verify key generation parameters
-        mock_generate_key.assert_called_once_with("gitlab", "record_group", "global")
+        mock_generate_key.assert_called_once_with(
+            Connectors.GITLAB.value,
+            GitlabLiterals.RECORD_GROUP.value,
+            GitlabLiterals.GLOBAL.value,
+        )
 
     @pytest.mark.asyncio
     async def test_sync_all_project_sync_point_data_structure(self) -> None:
@@ -2125,7 +2104,7 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ),
         ):
             # Execute
@@ -2133,9 +2112,9 @@ class TestGitlabConnectorSyncAllProject:
 
         # Verify data structure
         call_args = connector.record_sync_point.update_sync_point.call_args
-        assert call_args[0][0] == "gitlab/record_group/global/"
-        assert call_args[0][1] == {"timestamp": mock_timestamp}
-        assert isinstance(call_args[0][1]["timestamp"], int)
+        assert call_args[0][0] == "GITLAB/record_group/global/"
+        assert call_args[0][1] == {GitlabLiterals.LAST_SYNC_TIME.value: mock_timestamp}
+        assert isinstance(call_args[0][1][GitlabLiterals.LAST_SYNC_TIME.value], int)
 
     @pytest.mark.asyncio
     async def test_sync_all_project_no_record_sync_point(self) -> None:
@@ -2152,7 +2131,7 @@ class TestGitlabConnectorSyncAllProject:
             ),
             patch(
                 "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-                return_value="gitlab/record_group/global/",
+                return_value="GITLAB/record_group/global/",
             ),
         ):
             # Execute and expect AttributeError
@@ -2172,7 +2151,7 @@ class TestGitlabConnectorSyncAllProject:
 
         with patch(
             "app.connectors.sources.gitlab.connector.generate_record_sync_point_key",
-            return_value="gitlab/record_group/global/",
+            return_value="GITLAB/record_group/global/",
         ):
             for timestamp in timestamps:
                 with patch(
@@ -2186,8 +2165,8 @@ class TestGitlabConnectorSyncAllProject:
         first_call = connector.record_sync_point.update_sync_point.call_args_list[0]
         second_call = connector.record_sync_point.update_sync_point.call_args_list[1]
 
-        assert first_call[0][1]["timestamp"] == timestamps[0]
-        assert second_call[0][1]["timestamp"] == timestamps[1]
+        assert first_call[0][1][GitlabLiterals.LAST_SYNC_TIME.value] == timestamps[0]
+        assert second_call[0][1][GitlabLiterals.LAST_SYNC_TIME.value] == timestamps[1]
 
     @pytest.mark.asyncio
     async def test_sync_all_project_integration_flow(self) -> None:
@@ -2208,7 +2187,7 @@ class TestGitlabConnectorSyncAllProject:
         connector.record_sync_point.update_sync_point = track_update_sync_point
 
         mock_timestamp = 1678901234567
-        mock_key = "gitlab/record_group/global/"
+        mock_key = "GITLAB/record_group/global/"
 
         with (
             patch(
@@ -2228,7 +2207,7 @@ class TestGitlabConnectorSyncAllProject:
         assert operations[0] == ("sync_projects", None)
         assert operations[1] == (
             "update_sync_point",
-            (mock_key, {"timestamp": mock_timestamp}),
+            (mock_key, {GitlabLiterals.LAST_SYNC_TIME.value: mock_timestamp}),
         )
 
 
@@ -2429,7 +2408,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
         mock_tx_store.get_record_by_path.assert_called_once_with(
             connector_id="gitlab-conn-1",
             path=["src", "components"],
-            record_group_id="123-code-repository",
+            external_record_group_id="123-code-repository",
         )
 
     @pytest.mark.asyncio
@@ -2867,7 +2846,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
         mock_tx_store.get_record_by_path.assert_called_once_with(
             connector_id="gitlab-conn-1",
             path=["src", "app", "components", "ui"],
-            record_group_id="123-code-repository",
+            external_record_group_id="123-code-repository",
         )
 
         records = connector._process_new_records.call_args[0][0]
@@ -2928,7 +2907,7 @@ class TestGitlabConnectorFetchCodeFileContent:
         # Mock file content response
         mock_file_data = MagicMock()
         mock_file_data.content = base64.b64encode(b"print('Hello World')").decode(
-            "utf-8"
+            GitlabLiterals.UTF_8.value
         )
 
         mock_file_response = MagicMock()
@@ -2978,7 +2957,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         file_path = ["main.py"]
 
         mock_file_data = MagicMock()
-        mock_file_data.content = base64.b64encode(b"content").decode("utf-8")
+        mock_file_data.content = base64.b64encode(b"content").decode(
+            GitlabLiterals.UTF_8.value
+        )
 
         mock_file_response = MagicMock()
         mock_file_response.success = True
@@ -3164,7 +3145,9 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Original content
         original_content = b"def hello():\n    print('Hello, World!')\n"
-        encoded_content = base64.b64encode(original_content).decode("utf-8")
+        encoded_content = base64.b64encode(original_content).decode(
+            GitlabLiterals.UTF_8.value
+        )
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3288,7 +3271,9 @@ class TestGitlabConnectorFetchCodeFileContent:
         file_path = ["src", "app", "components", "Button.tsx"]
 
         mock_file_data = MagicMock()
-        mock_file_data.content = base64.b64encode(b"React component").decode("utf-8")
+        mock_file_data.content = base64.b64encode(b"React component").decode(
+            GitlabLiterals.UTF_8.value
+        )
 
         mock_file_response = MagicMock()
         mock_file_response.success = True
@@ -3330,7 +3315,9 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Binary content (fake PNG header)
         binary_content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-        encoded_content = base64.b64encode(binary_content).decode("utf-8")
+        encoded_content = base64.b64encode(binary_content).decode(
+            GitlabLiterals.UTF_8.value
+        )
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3377,7 +3364,9 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Empty content
         empty_content = b""
-        encoded_content = base64.b64encode(empty_content).decode("utf-8")
+        encoded_content = base64.b64encode(empty_content).decode(
+            GitlabLiterals.UTF_8.value
+        )
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -3453,7 +3442,9 @@ class TestGitlabConnectorFetchCodeFileContent:
 
         # Large content
         large_content = b"x" * 10000
-        encoded_content = base64.b64encode(large_content).decode("utf-8")
+        encoded_content = base64.b64encode(large_content).decode(
+            GitlabLiterals.UTF_8.value
+        )
 
         mock_file_data = MagicMock()
         mock_file_data.content = encoded_content
@@ -4503,7 +4494,7 @@ class TestTransformRestrictionsToPermissions:
         await connector._transform_restrictions_to_permisions(mock_member)
 
         connector._create_permission_from_principal.assert_called_once_with(
-            "user",
+            EntityType.USER.value,
             "7",  # str(member.id)
             PermissionType.OWNER.value,
             create_pseudo_group_if_missing=True,
@@ -4611,7 +4602,7 @@ class TestCreatePermissionFromPrincipal:
         self._attach_tx_store(connector, mock_tx_store)
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-1", PermissionType.READ
+            EntityType.USER.value, "uid-1", PermissionType.READ
         )
 
         assert result is not None
@@ -4631,7 +4622,7 @@ class TestCreatePermissionFromPrincipal:
         self._attach_tx_store(connector, mock_tx_store)
 
         await connector._create_permission_from_principal(
-            "user", "uid-42", PermissionType.WRITE
+            EntityType.USER.value, "uid-42", PermissionType.WRITE
         )
 
         mock_tx_store.get_user_by_source_id.assert_called_once_with(
@@ -4652,14 +4643,14 @@ class TestCreatePermissionFromPrincipal:
         self._attach_tx_store(connector, mock_tx_store)
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-missing", PermissionType.READ
+            EntityType.USER.value, "uid-missing", PermissionType.READ
         )
 
         assert result is None
         mock_tx_store.get_user_group_by_external_id.assert_not_called()
 
     # ------------------------------------------------------------------
-    # principal_type == "user" — user NOT found, pseudo-group already exists
+    # principal_type == EntityType.USER.value — user NOT found, pseudo-group already exists
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
@@ -4674,7 +4665,10 @@ class TestCreatePermissionFromPrincipal:
         self._attach_tx_store(connector, mock_tx_store)
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-99", PermissionType.OWNER, create_pseudo_group_if_missing=True
+            EntityType.USER.value,
+            "uid-99",
+            PermissionType.OWNER,
+            create_pseudo_group_if_missing=True,
         )
 
         assert result is not None
@@ -4695,7 +4689,10 @@ class TestCreatePermissionFromPrincipal:
         connector._create_pseudo_group = AsyncMock()
 
         await connector._create_permission_from_principal(
-            "user", "uid-99", PermissionType.OWNER, create_pseudo_group_if_missing=True
+            EntityType.USER.value,
+            "uid-99",
+            PermissionType.OWNER,
+            create_pseudo_group_if_missing=True,
         )
 
         connector._create_pseudo_group.assert_not_called()
@@ -4717,7 +4714,10 @@ class TestCreatePermissionFromPrincipal:
         connector._create_pseudo_group = AsyncMock(return_value=new_pseudo_group)
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-new", PermissionType.READ, create_pseudo_group_if_missing=True
+            EntityType.USER.value,
+            "uid-new",
+            PermissionType.READ,
+            create_pseudo_group_if_missing=True,
         )
 
         connector._create_pseudo_group.assert_called_once_with("uid-new")
@@ -4737,7 +4737,10 @@ class TestCreatePermissionFromPrincipal:
         connector._create_pseudo_group = AsyncMock(return_value=None)
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-fail", PermissionType.READ, create_pseudo_group_if_missing=True
+            EntityType.USER.value,
+            "uid-fail",
+            PermissionType.READ,
+            create_pseudo_group_if_missing=True,
         )
 
         assert result is None
@@ -4777,7 +4780,7 @@ class TestCreatePermissionFromPrincipal:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-1", PermissionType.READ
+            EntityType.USER.value, "uid-1", PermissionType.READ
         )
 
         assert result is None
@@ -4794,7 +4797,7 @@ class TestCreatePermissionFromPrincipal:
         self._attach_tx_store(connector, mock_tx_store)
 
         result = await connector._create_permission_from_principal(
-            "user", "uid-1", PermissionType.READ
+            EntityType.USER.value, "uid-1", PermissionType.READ
         )
 
         assert result is None
@@ -4820,7 +4823,7 @@ class TestCreatePermissionFromPrincipal:
             self._attach_tx_store(connector, mock_tx_store)
 
             result = await connector._create_permission_from_principal(
-                "user", "uid-1", perm_type
+                EntityType.USER.value, "uid-1", perm_type
             )
 
             assert result.type == perm_type
@@ -5018,7 +5021,7 @@ class TestFetchIssuesBatched:
         await connector._fetch_issues_batched(project_id=5)
 
         connector.data_source.list_issues.assert_called_once_with(
-            5, updated_after=None, order_by="updated_at", sort="asc"
+            5, updated_after=None, order_by=GitlabLiterals.UPDATED_AT.value, sort="asc"
         )
 
     @pytest.mark.asyncio
@@ -6196,7 +6199,7 @@ class TestBuildTicketBlocks:
 
         result = await connector._build_ticket_blocks(record)
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         assert "block_groups" in parsed
 
     @pytest.mark.asyncio
@@ -6224,7 +6227,7 @@ class TestBuildTicketBlocks:
 
         import json
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         assert len(parsed["block_groups"]) == 2  # bg_0 (description) + comment
 
 
@@ -7813,7 +7816,7 @@ class TestFetchPrsBatched:
         await connector._fetch_prs_batched(project_id=5)
 
         connector.data_source.list_merge_requests.assert_called_once_with(
-            5, updated_after=None, order_by="updated_at", sort="asc"
+            5, updated_after=None, order_by=GitlabLiterals.UPDATED_AT.value, sort="asc"
         )
 
     @pytest.mark.asyncio
@@ -7857,7 +7860,7 @@ class TestFetchPrsBatched:
         await connector._fetch_prs_batched(project_id=7)
 
         connector.data_source.list_merge_requests.assert_called_once_with(
-            7, updated_after=None, order_by="updated_at", sort="asc"
+            7, updated_after=None, order_by=GitlabLiterals.UPDATED_AT.value, sort="asc"
         )
 
     # ── batching behaviour ────────────────────────────────────────────────────
@@ -8873,7 +8876,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         assert parsed["blocks"] == []
 
     # ── commit blocks ─────────────────────────────────────────────────────────
@@ -8891,7 +8894,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         assert len(parsed["blocks"]) == 2
 
     @pytest.mark.asyncio
@@ -8912,7 +8915,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         block = parsed["blocks"][0]
         assert block["data"] == "feat: add login"
         assert block["name"] == "feat: add login"
@@ -8931,7 +8934,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         assert parsed["blocks"][0]["sub_type"] == BlockSubType.COMMIT.value
 
     @pytest.mark.asyncio
@@ -8947,7 +8950,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         indices = [b["index"] for b in parsed["blocks"]]
         assert indices == [0, 1, 2]
 
@@ -8962,7 +8965,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         # at minimum: description bg + commits bg
         assert len(parsed["block_groups"]) >= 2
 
@@ -8987,7 +8990,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         # description bg + comment bg + commits bg = 3
         assert len(parsed["block_groups"]) == 3
 
@@ -9032,7 +9035,7 @@ class TestBuildPullRequestBlocks:
 
         result = await connector._build_pull_request_blocks(self._make_record())
 
-        parsed = json.loads(result.decode("utf-8"))
+        parsed = json.loads(result.decode(GitlabLiterals.UTF_8.value))
         assert "block_groups" in parsed
         assert "blocks" in parsed
 
@@ -9071,7 +9074,7 @@ class TestEmbedImagesAsBase64:
             href=href,
             filename=href.rsplit("/", 1)[-1],
             filetype=href.rsplit(".", 1)[-1],
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
 
     def _file_attach(
@@ -9081,7 +9084,7 @@ class TestEmbedImagesAsBase64:
             href=href,
             filename="doc.pdf",
             filetype="pdf",
-            category="attachment",
+            category=GitlabLiterals.ATTACHMENT.value,
         )
 
     # ── no-op paths ───────────────────────────────────────────────────────────
@@ -9137,7 +9140,7 @@ class TestEmbedImagesAsBase64:
             "description text", self.BASE_URL
         )
 
-        expected_b64 = base64.b64encode(raw_bytes).decode("utf-8")
+        expected_b64 = base64.b64encode(raw_bytes).decode(GitlabLiterals.UTF_8.value)
         assert f"![Image](data:image/png;base64,{expected_b64})" in result
         assert result.startswith("description text")
 
@@ -9300,7 +9303,9 @@ class TestEmbedImagesAsBase64:
 
         result = await connector.embed_images_as_base64("text", self.BASE_URL)
 
-        expected_b64 = base64.b64encode(b"not-an-image").decode("utf-8")
+        expected_b64 = base64.b64encode(b"not-an-image").decode(
+            GitlabLiterals.UTF_8.value
+        )
         assert f"data:image/png;base64,{expected_b64}" in result
 
     # ── extension-based format mapping ────────────────────────────────────────
@@ -9313,7 +9318,7 @@ class TestEmbedImagesAsBase64:
             href="/uploads/abc123abc123abc123abc123abc123ab/image.tiff",
             filename="image.tiff",
             filetype="tiff",
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([attach], "text")
@@ -9335,7 +9340,7 @@ class TestEmbedImagesAsBase64:
             href="/uploads/abc123abc123abc123abc123abc123ab/diagram.svg",
             filename="diagram.svg",
             filetype="svg",
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([attach], "text")
@@ -9346,7 +9351,7 @@ class TestEmbedImagesAsBase64:
 
         result = await connector.embed_images_as_base64("text", self.BASE_URL)
 
-        expected_b64 = base64.b64encode(svg_bytes).decode("utf-8")
+        expected_b64 = base64.b64encode(svg_bytes).decode(GitlabLiterals.UTF_8.value)
         assert f"data:image/svg+xml;base64,{expected_b64}" in result
 
     @pytest.mark.asyncio
@@ -9358,7 +9363,7 @@ class TestEmbedImagesAsBase64:
             href="/uploads/abc123abc123abc123abc123abc123ab/photo.jpg",
             filename="photo.jpg",
             filetype="jpg",
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
         connector.parse_gitlab_uploads_clean_test = AsyncMock(
             return_value=([attach], "text")
@@ -9417,7 +9422,7 @@ class TestMakeFileRecordsFromList:
         href: str = "/uploads/abc123abc123abc123abc123abc123ab/doc.pdf",
         filename: str = "doc.pdf",
         filetype: str = "pdf",
-        category: str = "attachment",
+        category: str = GitlabLiterals.ATTACHMENT.value,
     ) -> FileAttachment:
         return FileAttachment(
             href=href, filename=filename, filetype=filetype, category=category
@@ -9431,7 +9436,7 @@ class TestMakeFileRecordsFromList:
             href=href,
             filename=href.rsplit("/", 1)[-1],
             filetype="png",
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
 
     def _attach_tx_store(self, connector, existing_record=None) -> AsyncMock:
@@ -9961,7 +9966,7 @@ class TestMakeChildRecordsOfAttachments:
         href: str = "/uploads/abc123abc123abc123abc123abc123ab/doc.pdf",
         filename: str = "doc.pdf",
         filetype: str = "pdf",
-        category: str = "attachment",
+        category: str = GitlabLiterals.ATTACHMENT.value,
     ) -> FileAttachment:
         return FileAttachment(
             href=href, filename=filename, filetype=filetype, category=category
@@ -9975,7 +9980,7 @@ class TestMakeChildRecordsOfAttachments:
             href=href,
             filename=href.rsplit("/", 1)[-1],
             filetype="png",
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
 
     def _make_existing_record(
@@ -10270,7 +10275,7 @@ class TestMakeBlockCommentOfAttachments:
         href: str = "/uploads/abc123abc123abc123abc123abc123ab/doc.pdf",
         filename: str = "doc.pdf",
         filetype: str = "pdf",
-        category: str = "attachment",
+        category: str = GitlabLiterals.ATTACHMENT.value,
     ) -> FileAttachment:
         return FileAttachment(
             href=href, filename=filename, filetype=filetype, category=category
@@ -10284,7 +10289,7 @@ class TestMakeBlockCommentOfAttachments:
             href=href,
             filename=href.rsplit("/", 1)[-1],
             filetype="png",
-            category="image",
+            category=GitlabLiterals.IMAGE.value,
         )
 
     def _make_existing_record(

@@ -137,7 +137,6 @@ class GitlabLiterals(str, Enum):
     LAST_SYNC_TIME = "last_sync_time"
     RECORD_GROUP = "record_group"
     GLOBAL = "global"
-    # TIMESTAMP = "timestamp"
     UPDATED_AT = "updated_at"
     UTF_8 = "utf-8"
     IMAGE = "image"
