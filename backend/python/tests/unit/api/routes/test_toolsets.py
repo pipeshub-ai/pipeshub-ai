@@ -3016,7 +3016,11 @@ class TestGetMyToolsets:
         config_service.get_config = AsyncMock(return_value=[])
 
         with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}):
-            result = await get_my_toolsets(request, search=None, page=1, limit=20, include_registry=False, auth_status=None, config_service=config_service)
+            result = await get_my_toolsets(
+                request, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status=None,
+                config_service=config_service,
+            )
             assert result["status"] == "success"
             assert result["toolsets"] == []
 
@@ -3034,16 +3038,15 @@ class TestGetMyToolsets:
         request.app.state.toolset_registry = registry
 
         config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira", "authType": "OAUTH"}]
 
-        async def mock_get_config(path, default=None, use_cache=True):
-            if "toolset-instances" in path:
-                return [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira", "authType": "OAUTH"}]
-            return default
-
-        config_service.get_config = mock_get_config
-
-        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}):
-            result = await get_my_toolsets(request, search=None, page=1, limit=20, include_registry=False, auth_status=None, config_service=config_service)
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                request, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status=None,
+                config_service=config_service,
+            )
             assert result["status"] == "success"
             assert len(result["toolsets"]) == 1
             assert result["filterCounts"]["all"] == 1
@@ -3064,19 +3067,23 @@ class TestGetMyToolsets:
         config_service = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
-            if "toolset-instances" in path:
-                return [
-                    {"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "Jira 1", "authType": "OAUTH"},
-                    {"_id": "i2", "orgId": "o1", "toolsetType": "slack", "instanceName": "Slack 1", "authType": "OAUTH"},
-                ]
-            if "i1" in str(path):
+            if "/services/toolsets/i1/" in str(path):
                 return {"isAuthenticated": True}
             return default
 
         config_service.get_config = mock_get_config
+        instances = [
+            {"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "Jira 1", "authType": "OAUTH"},
+            {"_id": "i2", "orgId": "o1", "toolsetType": "slack", "instanceName": "Slack 1", "authType": "OAUTH"},
+        ]
 
-        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}):
-            result = await get_my_toolsets(request, search=None, page=1, limit=20, include_registry=False, auth_status="authenticated", config_service=config_service)
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                request, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status="authenticated",
+                config_service=config_service,
+            )
             assert result["filterCounts"]["all"] == 2
             assert all(t["isAuthenticated"] for t in result["toolsets"])
 
@@ -3540,16 +3547,15 @@ class TestGetMyToolsetsWithRegistry:
         request.app.state.toolset_registry = registry
 
         config_service = AsyncMock()
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira", "authType": "OAUTH"}]
 
-        async def mock_get_config(path, default=None, use_cache=True):
-            if "toolset-instances" in path:
-                return [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira", "authType": "OAUTH"}]
-            return default
-
-        config_service.get_config = mock_get_config
-
-        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}):
-            result = await get_my_toolsets(request, search=None, page=1, limit=20, include_registry=True, auth_status=None, config_service=config_service)
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                request, search=None, page=1, limit=20,
+                include_registry=True, toolset_type=None, auth_status=None,
+                config_service=config_service,
+            )
             assert result["status"] == "success"
             # Should have jira from instances + slack from registry
             types = [t["toolsetType"] for t in result["toolsets"]]
@@ -6068,7 +6074,12 @@ class TestDeleteToolsetInstanceRoute:
 
 
 class TestGetMyToolsetsRoute:
-    """Cover get_my_toolsets handler."""
+    """Cover get_my_toolsets handler.
+
+    Pass ``toolset_type=None`` on direct calls: @inject + FastAPI ``Query`` defaults
+    are truthy objects, so omitting it makes ``_build_toolsets_list_response`` apply
+    a bogus type filter and return no rows.
+    """
 
     @pytest.mark.asyncio
     async def test_no_instances(self) -> None:
@@ -6077,8 +6088,12 @@ class TestGetMyToolsetsRoute:
         req = _make_request()
         req.app.state.toolset_registry = _make_registry("jira")
 
-        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]):
-            result = await get_my_toolsets(req, search=None, page=1, limit=20, include_registry=False, auth_status=None, config_service=cs)
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
+            result = await get_my_toolsets(
+                req, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status=None,
+                config_service=cs,
+            )
 
         assert result["status"] == "success"
         assert result["toolsets"] == []
@@ -6090,7 +6105,33 @@ class TestGetMyToolsetsRoute:
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=None)
         req = _make_request()
-        registry = _make_registry("jira")
+        registry = MagicMock()
+
+        def _meta(toolset_type: str, **kwargs):
+            meta_by_type = {
+                "jira": {
+                    "name": "jira",
+                    "display_name": "Jira",
+                    "description": "Issue tracking",
+                    "category": "app",
+                    "supported_auth_types": ["API_TOKEN"],
+                    "tools": [],
+                    "isInternal": False,
+                },
+                "slack": {
+                    "name": "slack",
+                    "display_name": "Slack",
+                    "description": "Team chat",
+                    "category": "app",
+                    "supported_auth_types": ["OAUTH"],
+                    "tools": [],
+                    "isInternal": False,
+                },
+            }
+            return meta_by_type.get(toolset_type)
+
+        registry.get_toolset_metadata.side_effect = _meta
+        registry.list_toolsets.return_value = ["jira", "slack"]
         req.app.state.toolset_registry = registry
 
         instances = [
@@ -6098,8 +6139,12 @@ class TestGetMyToolsetsRoute:
             {"_id": "i2", "orgId": "o1", "instanceName": "Slack Main", "toolsetType": "slack", "authType": "OAUTH"},
         ]
 
-        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
-            result = await get_my_toolsets(req, search="jira", page=1, limit=20, include_registry=False, auth_status=None, config_service=cs)
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                req, search="jira", page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status=None,
+                config_service=cs,
+            )
 
         assert len(result["toolsets"]) == 1
         assert result["toolsets"][0]["instanceName"] == "Jira Main"
@@ -6118,8 +6163,12 @@ class TestGetMyToolsetsRoute:
             {"_id": "i1", "orgId": "o1", "instanceName": "Jira", "toolsetType": "jira", "authType": "API_TOKEN"},
         ]
 
-        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
-            result = await get_my_toolsets(req, search=None, page=1, limit=20, include_registry=False, auth_status="not-authenticated", config_service=cs)
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                req, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status="not-authenticated",
+                config_service=cs,
+            )
 
         # All are authenticated, so filtering by not-authenticated should return empty
         assert result["filterCounts"]["authenticated"] == 1
@@ -6149,8 +6198,12 @@ class TestGetMyToolsetsRoute:
 
         instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Jira", "toolsetType": "jira", "authType": "API_TOKEN"}]
 
-        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
-            result = await get_my_toolsets(req, search=None, page=1, limit=20, include_registry=True, auth_status=None, config_service=cs)
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                req, search=None, page=1, limit=20,
+                include_registry=True, toolset_type=None, auth_status=None,
+                config_service=cs,
+            )
 
         # Should have both: jira from instances + slack from registry
         types = [t["toolsetType"] for t in result["toolsets"]]
@@ -6159,7 +6212,7 @@ class TestGetMyToolsetsRoute:
 
     @pytest.mark.asyncio
     async def test_include_registry_exception_skips(self) -> None:
-        """Cover lines 1945-1949 (registry metadata exception or internal)."""
+        """Internal toolsets and missing registry metadata are skipped (no rows)."""
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=None)
@@ -6170,13 +6223,19 @@ class TestGetMyToolsetsRoute:
         def side_effect(t, **kw):
             if t == "internal_tool":
                 return {"name": "internal_tool", "isInternal": True}
-            raise Exception("broken")
+            if t == "broken":
+                return None
+            raise AssertionError(f"unexpected toolset {t!r}")
 
         registry.get_toolset_metadata.side_effect = side_effect
         req.app.state.toolset_registry = registry
 
-        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=[]):
-            result = await get_my_toolsets(req, search=None, page=1, limit=20, include_registry=True, auth_status=None, config_service=cs)
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
+            result = await get_my_toolsets(
+                req, search=None, page=1, limit=20,
+                include_registry=True, toolset_type=None, auth_status=None,
+                config_service=cs,
+            )
 
         assert result["toolsets"] == []
 
@@ -6192,8 +6251,12 @@ class TestGetMyToolsetsRoute:
 
         instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Jira", "toolsetType": "jira", "authType": "API_TOKEN"}]
 
-        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
-            result = await get_my_toolsets(req, search=None, page=1, limit=20, include_registry=False, auth_status=None, config_service=cs)
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                req, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status=None,
+                config_service=cs,
+            )
 
         assert result["toolsets"][0]["auth"] == {"apiToken": "tok123"}
 
@@ -6746,13 +6809,8 @@ class TestMyToolsetsFetchAuthException:
         from app.api.routes.toolsets import get_my_toolsets
         cs = AsyncMock()
 
-        call_count = 0
         async def config_side_effect(path, default=None, use_cache=True):
-            nonlocal call_count
-            call_count += 1
-            if "toolset-instances" in path:
-                return [{"_id": "i1", "orgId": "o1", "instanceName": "Test", "toolsetType": "jira", "authType": "API_TOKEN"}]
-            elif "toolsets/" in path:
+            if "/services/toolsets/i1/" in str(path):
                 raise RuntimeError("etcd fail")
             return default
 
@@ -6761,12 +6819,14 @@ class TestMyToolsetsFetchAuthException:
         registry = _make_registry("jira")
         req = _make_request()
         req.app.state.toolset_registry = registry
+        instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Test", "toolsetType": "jira", "authType": "API_TOKEN"}]
 
-        result = await get_my_toolsets(
-            req, search=None, page=1, limit=20,
-            include_registry=False, auth_status=None,
-            config_service=cs
-        )
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await get_my_toolsets(
+                req, search=None, page=1, limit=20,
+                include_registry=False, toolset_type=None, auth_status=None,
+                config_service=cs,
+            )
         assert result["status"] == "success"
         # Auth fetch failed -> isAuthenticated should be False
         assert result["toolsets"][0]["isAuthenticated"] is False
