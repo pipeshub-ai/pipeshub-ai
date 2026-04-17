@@ -961,7 +961,7 @@ class GitLabConnector(BaseConnector):
             external_group_id = getattr(record, "external_record_group_id")
             project_id = external_group_id.split("-")[0]
             if not external_group_id:
-                raise Exception("❌❌ Project id not found.")
+                raise ValueError("❌❌ Project id not found.")
 
             file_res = await asyncio.to_thread(
                 self.data_source.get_file_content,
@@ -970,7 +970,7 @@ class GitLabConnector(BaseConnector):
             )
             if not file_res.success:
                 self.logger.error(f"error in fetching file content {file_res.error}")
-                raise
+                raise Exception(f"Error in fetching file content {file_res.error}")
             if not file_res.data:
                 self.logger.info(f"No file content found for file {file_path}")
             file_data = file_res.data
