@@ -60,3 +60,6 @@ export type { SettingsSectionProps } from './settings-section';
 
 export { SettingsRow } from './settings-row';
 export type { SettingsRowProps } from './settings-row';
+
+export { PaginatedMembersList } from './paginated-members-list';
+export type { PaginatedMembersListProps, PaginatedMembersListHandle } from './paginated-members-list';

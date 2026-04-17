@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -11,8 +11,9 @@ import {
   SearchableCheckboxDropdown,
   AvatarCell,
   SelectDropdown,
+  PaginatedMembersList,
 } from '../../components';
-import type { CheckboxOption } from '../../components';
+import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
 import type { TeamMember, TeamMemberRole } from '../types';
@@ -52,9 +53,18 @@ export function TeamDetailSidebar({
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [addMemberRole, setAddMemberRole] = useState<TeamMemberRole>('READER');
-  // Team members fetched via API (with profile pictures)
+  // Team members list (paginated via PaginatedMembersList component)
+  const membersListRef = useRef<PaginatedMembersListHandle>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+
+  const fetchTeamMembersFn = useCallback(
+    async (search: string | undefined, page: number, limit: number) => {
+      if (!detailTeam) return { items: [] as TeamMember[], totalCount: 0 };
+      const { members, totalCount } = await TeamsApi.getTeamUsers(detailTeam.id, { page, limit, search });
+      return { items: members, totalCount };
+    },
+    [detailTeam]
+  );
 
   // Track member UUIDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -68,28 +78,6 @@ export function TeamDetailSidebar({
       setAddMemberRole('READER');
     }
   }, [isEditMode, isDetailPanelOpen]);
-
-  // Fetch team members with profile pictures when panel opens
-  const fetchTeamMembers = useCallback(async () => {
-    if (!detailTeam) return;
-    setIsLoadingMembers(true);
-    try {
-      const { members } = await TeamsApi.getTeamUsers(detailTeam.id, { page: 1, limit: 25 });
-      setTeamMembers(members);
-    } catch {
-      // handled by global interceptor
-    } finally {
-      setIsLoadingMembers(false);
-    }
-  }, [detailTeam]);
-
-  useEffect(() => {
-    if (!isDetailPanelOpen || !detailTeam) {
-      setTeamMembers([]);
-      return;
-    }
-    fetchTeamMembers();
-  }, [isDetailPanelOpen, detailTeam?.id]);
 
   // ── Paginated user options for add-users dropdown ──
   const {
@@ -170,24 +158,26 @@ export function TeamDetailSidebar({
 
     setIsSavingEdit(true);
     try {
-      // Build updateUserRoles: new users with selected role
-      const updateUserRoles: { userId: string; role: TeamMemberRole }[] = [];
-
-      // Add newly selected users with chosen role
+      // Build addUserRoles: new users with selected role
+      const addUserRoles: { userId: string; role: TeamMemberRole }[] = [];
       for (const userId of editAddUserIds) {
-        updateUserRoles.push({ userId, role: addMemberRole });
+        addUserRoles.push({ userId, role: addMemberRole });
       }
+
+      // Build removeUserIds from pending removals
+      const removeUserIds = Array.from(pendingRemoveUserIds);
 
       await TeamsApi.updateTeam(detailTeam.id, {
         name: editTeamName.trim() || undefined,
         description: editTeamDescription.trim() || undefined,
-        updateUserRoles: updateUserRoles.length > 0 ? updateUserRoles : undefined,
+        addUserRoles: addUserRoles.length > 0 ? addUserRoles : undefined,
+        removeUserIds: removeUserIds.length > 0 ? removeUserIds : undefined,
       });
 
       // Refresh the team data, members, and re-open detail panel in view mode
       const updatedTeam = await TeamsApi.getTeam(detailTeam.id);
       openDetailPanel(updatedTeam);
-      await fetchTeamMembers();
+      membersListRef.current?.refresh();
 
       addToast({
         variant: 'success',
@@ -220,6 +210,7 @@ export function TeamDetailSidebar({
     editTeamDescription,
     editAddUserIds,
     addMemberRole,
+    pendingRemoveUserIds,
     setIsSavingEdit,
     openDetailPanel,
     onUpdateSuccess,
@@ -423,73 +414,68 @@ export function TeamDetailSidebar({
             gap: 16,
           }}
         >
-          <Flex align="center" justify="between">
-            <Text
-              size="2"
-              weight="medium"
-              style={{ color: 'var(--slate-12)' }}
-            >
-              {t('workspace.teams.detail.members', 'Members')}
-            </Text>
-            <Badge variant="soft" color="gray" size="1">
-              {teamMembers.length}
-            </Badge>
-          </Flex>
+          <Text
+            size="2"
+            weight="medium"
+            style={{ color: 'var(--slate-12)' }}
+          >
+            {t('workspace.teams.detail.members', 'Members')}
+          </Text>
 
-          {teamMembers.length === 0 && !isLoadingMembers ? (
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('workspace.teams.detail.noMembers', 'No members in this team')}
-            </Text>
-          ) : (
-            <Flex direction="column" gap="3">
-              {teamMembers.map((member) => {
-                const isPendingRemove = pendingRemoveUserIds.has(member.id);
-                return (
-                  <Flex
-                    key={member.id}
-                    align="center"
-                    justify="between"
-                    style={{
-                      opacity: isPendingRemove ? 0.5 : 1,
-                      transition: 'opacity 0.15s ease',
-                    }}
-                  >
-                    <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                      <AvatarCell
-                        name={member.userName || member.userEmail || 'Unknown'}
-                        email={member.userEmail}
-                        avatarSize={32}
-                        isSelf={currentUser?.id === member.id}
-                        profilePicture={member.profilePicture}
-                      />
-                      <Badge variant="soft" color="gray" size="1" style={{ flexShrink: 0 }}>
-                        {member.role}
-                      </Badge>
-                    </Flex>
-                    {isEditMode && !member.isOwner && (
-                      <Text
-                        size="1"
-                        onClick={() => handleRemoveUser(member.id)}
-                        style={{
-                          color: isPendingRemove
-                            ? 'var(--accent-11)'
-                            : 'var(--red-11)',
-                          cursor: 'pointer',
-                          flexShrink: 0,
-                          fontWeight: 500,
-                          marginLeft: 8,
-                        }}
-                      >
-                        {isPendingRemove
-                          ? t('workspace.teams.edit.undo', 'Undo')
-                          : t('workspace.teams.edit.remove', 'Remove')}
-                      </Text>
-                    )}
+          <PaginatedMembersList<TeamMember>
+            key={detailTeam?.id}
+            ref={membersListRef}
+            fetcher={fetchTeamMembersFn}
+            keyExtractor={(m) => m.id}
+            searchPlaceholder={t('workspace.teams.detail.searchMembers', 'Search members...')}
+            emptyText={t('workspace.teams.detail.noMembers', 'No members in this team')}
+            onFetched={(items) => setTeamMembers(items)}
+            renderItem={(member) => {
+              const isPendingRemove = pendingRemoveUserIds.has(member.id);
+              return (
+                <Flex
+                  align="center"
+                  justify="between"
+                  style={{
+                    opacity: isPendingRemove ? 0.5 : 1,
+                    transition: 'opacity 0.15s ease',
+                  }}
+                >
+                  <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                    <AvatarCell
+                      name={member.userName || member.userEmail || 'Unknown'}
+                      email={member.userEmail}
+                      avatarSize={32}
+                      isSelf={currentUser?.id === member.id}
+                      profilePicture={member.profilePicture}
+                    />
+                    <Badge variant="soft" color="gray" size="1" style={{ flexShrink: 0 }}>
+                      {member.role}
+                    </Badge>
                   </Flex>
-                );
-              })}
-            </Flex>
-          )}
+                  {isEditMode && !member.isOwner && (
+                    <Text
+                      size="1"
+                      onClick={() => handleRemoveUser(member.id)}
+                      style={{
+                        color: isPendingRemove
+                          ? 'var(--accent-11)'
+                          : 'var(--red-11)',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                        fontWeight: 500,
+                        marginLeft: 8,
+                      }}
+                    >
+                      {isPendingRemove
+                        ? t('workspace.teams.edit.undo', 'Undo')
+                        : t('workspace.teams.edit.remove', 'Remove')}
+                    </Text>
+                  )}
+                </Flex>
+              );
+            }}
+          />
         </Box>
 
         {/* Role section (edit mode only) */}

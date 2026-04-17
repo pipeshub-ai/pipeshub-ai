@@ -74,6 +74,8 @@ export interface CreateTeamPayload {
 export interface UpdateTeamPayload {
   name?: string;
   description?: string;
+  addUserRoles?: CreateTeamUserRole[];
+  removeUserIds?: string[];
   updateUserRoles?: CreateTeamUserRole[];
 }
 

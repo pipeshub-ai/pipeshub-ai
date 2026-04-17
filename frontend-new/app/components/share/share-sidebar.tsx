@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -49,6 +49,15 @@ export function ShareSidebar({
   const [allUsers, setAllUsers] = useState<ShareUser[]>([]);
   const [existingMembers, setExistingMembers] = useState<SharedMember[]>([]);
 
+  // Pagination state for users (when adapter supports it)
+  const USERS_PAGE_LIMIT = 25;
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersTotalCount, setUsersTotalCount] = useState(0);
+  const [isLoadingMoreUsers, setIsLoadingMoreUsers] = useState(false);
+  const hasMoreUsers = adapter.getSharingUsersPaginated ? usersPage * USERS_PAGE_LIMIT < usersTotalCount : false;
+  const usersSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const membersScrollRef = useRef<HTMLDivElement>(null);
+
   // Loading
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -60,6 +69,8 @@ export function ShareSidebar({
       setSearchQuery('');
       setSelectedItems([]);
       setSelectedRole('READER');
+      setUsersPage(1);
+      setUsersTotalCount(0);
     }
   }, [open]);
 
@@ -72,8 +83,22 @@ export function ShareSidebar({
       try {
         const promises: Promise<unknown>[] = [
           adapter.getSharedMembers(),
-          adapter.getSharingUsers ? adapter.getSharingUsers() : ShareCommonApi.getAllUsers(),
         ];
+
+        // Paginated or full user fetch
+        if (adapter.getSharingUsersPaginated) {
+          promises.push(
+            adapter.getSharingUsersPaginated({ page: 1, limit: USERS_PAGE_LIMIT }).then((result) => {
+              setUsersTotalCount(result.totalCount);
+              return result.users;
+            })
+          );
+        } else {
+          promises.push(
+            adapter.getSharingUsers ? adapter.getSharingUsers() : ShareCommonApi.getAllUsers()
+          );
+        }
+
         if (adapter.supportsTeams) {
           promises.push(ShareCommonApi.listUserTeams());
         }
@@ -93,6 +118,47 @@ export function ShareSidebar({
 
     fetchData();
   }, [open, adapter]);
+
+  // Server-side search for paginated mode
+  useEffect(() => {
+    if (!adapter.getSharingUsersPaginated || !open) return;
+    if (usersSearchTimerRef.current) clearTimeout(usersSearchTimerRef.current);
+    usersSearchTimerRef.current = setTimeout(async () => {
+      setUsersPage(1);
+      try {
+        const result = await adapter.getSharingUsersPaginated!({
+          page: 1,
+          limit: USERS_PAGE_LIMIT,
+          search: searchQuery || undefined,
+        });
+        setAllUsers(result.users);
+        setUsersTotalCount(result.totalCount);
+      } catch {
+        // handled by global interceptor
+      }
+    }, 300);
+    return () => {
+      if (usersSearchTimerRef.current) clearTimeout(usersSearchTimerRef.current);
+    };
+  }, [searchQuery, adapter, open]);
+
+  // Infinite scroll handler for paginated users
+  const handleUsersScroll = useCallback(() => {
+    if (!hasMoreUsers || isLoadingMoreUsers || !adapter.getSharingUsersPaginated) return;
+    const el = membersScrollRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+      const nextPage = usersPage + 1;
+      setUsersPage(nextPage);
+      setIsLoadingMoreUsers(true);
+      adapter.getSharingUsersPaginated({ page: nextPage, limit: USERS_PAGE_LIMIT, search: searchQuery || undefined })
+        .then((result) => {
+          setAllUsers((prev) => [...prev, ...result.users]);
+        })
+        .catch(() => { /* handled by global interceptor */ })
+        .finally(() => setIsLoadingMoreUsers(false));
+    }
+  }, [hasMoreUsers, isLoadingMoreUsers, usersPage, searchQuery, adapter]);
 
   // Existing member IDs (for filtering suggestions)
   const existingMemberIds = useMemo(() => {
@@ -331,6 +397,8 @@ export function ShareSidebar({
 
             {/* Scrollable body */}
             <Box
+              ref={membersScrollRef}
+              onScroll={handleUsersScroll}
               style={{
                 flex: 1,
                 overflow: 'auto',
@@ -478,6 +546,13 @@ export function ShareSidebar({
                         />
                       ))}
                     </>
+                  )}
+
+                  {/* Loading more indicator */}
+                  {isLoadingMoreUsers && (
+                    <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'center', padding: 8, display: 'block' }}>
+                      Loading more users...
+                    </Text>
                   )}
 
                   {/* Empty state */}

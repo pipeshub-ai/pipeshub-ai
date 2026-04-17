@@ -114,24 +114,29 @@ export function createChatShareAdapter(
     },
 
     /**
-     * Returns users with MongoDB ObjectIDs as id — required by the chat
-     * /share endpoint. Overrides ShareCommonApi.getAllUsers() in the sidebar.
+     * Returns paginated users with MongoDB ObjectIDs as id — required by the chat
+     * /share endpoint. Enables infinite scroll in the share sidebar.
      */
-    async getSharingUsers(): Promise<ShareUser[]> {
-      let allUsers: User[] = [];
-      try {
-        const result = await UsersApi.fetchMergedUsers({ page: 1, limit: 25 });
-        allUsers = result.users;
-      } catch {
-        // Fallback: empty list
-      }
-      return allUsers.map((u) => ({
-        id: u.userId,   // MongoDB ObjectID — what /share expects
-        name: u.name ?? u.email ?? '',
-        email: u.email,
-        avatarUrl: undefined,
-        isInOrg: true,
-      }));
+    async getSharingUsersPaginated(params: {
+      page: number;
+      limit: number;
+      search?: string;
+    }): Promise<{ users: ShareUser[]; totalCount: number }> {
+      const result = await UsersApi.fetchMergedUsers({
+        page: params.page,
+        limit: params.limit,
+        search: params.search,
+      });
+      return {
+        users: result.users.map((u) => ({
+          id: u.userId,   // MongoDB ObjectID — what /share expects
+          name: u.name ?? u.email ?? '',
+          email: u.email,
+          avatarUrl: undefined,
+          isInOrg: true,
+        })),
+        totalCount: result.totalCount,
+      };
     },
 
     // No updateRole — supportsRoles is false
