@@ -98,7 +98,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
               backdropFilter: 'blur(25px)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 2,
+              gap: 'var(--space-2)',
             }}
           >
             {visibleActions.map((action, i) => {
@@ -166,9 +166,9 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
 
               {/* Radio options */}
               {subMenuAction.subMenu.options.map((option, index) => {
-                const isSelected = option.value === subMenuAction.subMenu!.value;
-                const isLast =
-                  index === subMenuAction.subMenu!.options.length - 1;
+                const subMenu = subMenuAction.subMenu;
+                const isSelected = option.value === subMenu.value;
+                const isLast = index === subMenu.options.length - 1;
 
                 return (
                   <Flex
@@ -176,7 +176,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                     align="center"
                     justify="between"
                     onClick={() => {
-                      subMenuAction.subMenu!.onValueChange(option.value);
+                      subMenu.onValueChange(option.value);
                       handleOpenChange(false);
                     }}
                     onMouseEnter={(e) => {
