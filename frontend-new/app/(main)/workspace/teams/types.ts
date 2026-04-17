@@ -39,6 +39,8 @@ export interface TeamMember {
   role: TeamMemberRole | string;
   joinedAt: number;
   isOwner: boolean;
+  /** Data URI for profile picture, if available */
+  profilePicture?: string;
 }
 
 export interface TeamPermission {

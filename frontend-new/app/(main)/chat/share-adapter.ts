@@ -55,7 +55,7 @@ export function createChatShareAdapter(
       // Enrich with user details via fetchMergedUsers (keyed by MongoDB userId)
       let allUsers: User[] = [];
       try {
-        const result = await UsersApi.fetchMergedUsers();
+        const result = await UsersApi.fetchMergedUsers({ page: 1, limit: 25 });
         allUsers = result.users;
       } catch {
         // Fallback: show IDs only
@@ -120,7 +120,7 @@ export function createChatShareAdapter(
     async getSharingUsers(): Promise<ShareUser[]> {
       let allUsers: User[] = [];
       try {
-        const result = await UsersApi.fetchMergedUsers();
+        const result = await UsersApi.fetchMergedUsers({ page: 1, limit: 25 });
         allUsers = result.users;
       } catch {
         // Fallback: empty list

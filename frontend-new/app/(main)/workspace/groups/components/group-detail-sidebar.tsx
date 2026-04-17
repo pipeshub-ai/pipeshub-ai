@@ -14,8 +14,8 @@ import {
 import type { CheckboxOption } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
-import { UsersApi } from '../../users/api';
-import { useUsersStore } from '../../users/store';
+import type { GroupUser } from '../types';
+import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
 // ========================================
 // Component
@@ -48,13 +48,10 @@ export function GroupDetailSidebar({
     setDetailGroup,
   } = useGroupsStore();
 
-  // Shared users cache from the users store
-  const allUsers = useUsersStore((s) => s.allUsers);
-  const isLoadingAllUsers = useUsersStore((s) => s.isLoadingAllUsers);
-  const setAllUsers = useUsersStore((s) => s.setAllUsers);
-  const setIsLoadingAllUsers = useUsersStore((s) => s.setIsLoadingAllUsers);
-
   const [isDeleting, setIsDeleting] = useState(false);
+  // Group members fetched via paginated API
+  const [groupMembers, setGroupMembers] = useState<GroupUser[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
 
   // Track user IDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -68,51 +65,46 @@ export function GroupDetailSidebar({
     }
   }, [isEditMode, isDetailPanelOpen]);
 
-  // Load all users into the shared store when panel opens (skip if already loaded)
+  // Fetch group members when panel opens or group changes
+  const fetchGroupMembers = useCallback(async () => {
+    if (!detailGroup) return;
+    setIsLoadingMembers(true);
+    try {
+      const result = await GroupsApi.getGroupUsers(detailGroup._id, { page: 1, limit: 25 });
+      setGroupMembers(result.users);
+    } catch {
+      // handled by global interceptor
+    } finally {
+      setIsLoadingMembers(false);
+    }
+  }, [detailGroup]);
+
   useEffect(() => {
-    if (!isDetailPanelOpen) return;
-    if (allUsers.length > 0) return; // already cached
+    if (!isDetailPanelOpen || !detailGroup) {
+      setGroupMembers([]);
+      return;
+    }
+    fetchGroupMembers();
+  }, [isDetailPanelOpen, detailGroup?._id]);
 
-    let cancelled = false;
-    const load = async () => {
-      setIsLoadingAllUsers(true);
-      try {
-        const { users: mergedUsers } = await UsersApi.fetchMergedUsers({
-          limit: 100,
-        });
-        if (!cancelled) setAllUsers(mergedUsers);
-      } catch {
-        // handled by global interceptor
-      } finally {
-        if (!cancelled) setIsLoadingAllUsers(false);
-      }
-    };
+  // ── Paginated user options for add-users dropdown ──
+  const {
+    options: userOptions,
+    isLoading: userFilterLoading,
+    hasMore: userFilterHasMore,
+    onSearch: handleUserSearch,
+    onLoadMore: handleUserLoadMore,
+  } = usePaginatedUserOptions({
+    enabled: isDetailPanelOpen && isEditMode,
+    idField: 'userId',
+  });
 
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [isDetailPanelOpen, allUsers.length, setAllUsers, setIsLoadingAllUsers]);
-
-  // Resolve group member user IDs to user objects
-  const groupMembers = useMemo(() => {
-    if (!detailGroup) return [];
-    return allUsers.filter((u) => detailGroup.users.includes(u.userId));
-  }, [allUsers, detailGroup]);
-
-  // User options for add-users dropdown (exclude already-added users)
+  // Exclude already-added members from the options
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailGroup) return [];
-    const memberIds = new Set(detailGroup.users);
-
-    return allUsers
-      .filter((u) => !memberIds.has(u.userId))
-      .map((u) => ({
-        id: u.userId,
-        label: u.name || u.email || 'Unknown User',
-        subtitle: u.email,
-      }));
-  }, [allUsers, detailGroup]);
+    const memberIds = new Set(groupMembers.map((u) => u._id));
+    return userOptions.filter((o) => !memberIds.has(o.id));
+  }, [userOptions, groupMembers, detailGroup]);
 
   // Toggle a user for pending removal (deferred — applied on Save Edits)
   const handleRemoveUser = useCallback(
@@ -186,9 +178,10 @@ export function GroupDetailSidebar({
         await GroupsApi.addUsersToGroups(editAddUserIds, [detailGroup._id]);
       }
 
-      // Refresh the group data
+      // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
       setDetailGroup(updatedGroup);
+      await fetchGroupMembers();
 
       addToast({
         variant: 'success',
@@ -415,17 +408,17 @@ export function GroupDetailSidebar({
             {t('workspace.groups.detail.users', 'Users')}
           </Text>
 
-          {groupMembers.length === 0 ? (
+          {groupMembers.length === 0 && !isLoadingMembers ? (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.groups.detail.noUsers', 'No users in this group')}
             </Text>
           ) : (
             <Flex direction="column" gap="3">
               {groupMembers.map((user) => {
-                const isPendingRemove = pendingRemoveUserIds.has(user.userId);
+                const isPendingRemove = pendingRemoveUserIds.has(user._id);
                 return (
                   <Flex
-                    key={user.userId}
+                    key={user._id}
                     align="center"
                     justify="between"
                     style={{
@@ -434,15 +427,16 @@ export function GroupDetailSidebar({
                     }}
                   >
                     <AvatarCell
-                      name={user.name || user.email || 'Unknown'}
-                      email={user.email}
+                      name={user.fullName || user.email || 'Unknown'}
+                      email={user.email ?? undefined}
                       avatarSize={32}
-                      isSelf={user.userId === currentUser?.id}
+                      isSelf={user._id === currentUser?.id}
+                      profilePicture={user.profilePicture ?? undefined}
                     />
                     {isEditMode && (
                       <Text
                         size="1"
-                        onClick={() => handleRemoveUser(user.userId)}
+                        onClick={() => handleRemoveUser(user._id)}
                         style={{
                           color: isPendingRemove
                             ? 'var(--accent-11)'
@@ -524,12 +518,12 @@ export function GroupDetailSidebar({
                 'workspace.groups.edit.addUsersPlaceholder',
                 'Search or select user(s) to add to this group'
               )}
-              emptyText={
-                isLoadingAllUsers
-                  ? t('workspace.common.loadingUsers', 'Loading users...')
-                  : t('workspace.common.noUsersAvailable', 'No users available')
-              }
+              emptyText={t('workspace.common.noUsersAvailable', 'No users available')}
               showAvatar
+              onSearch={handleUserSearch}
+              onLoadMore={handleUserLoadMore}
+              isLoadingMore={userFilterLoading}
+              hasMore={userFilterHasMore}
             />
           </Box>
         )}

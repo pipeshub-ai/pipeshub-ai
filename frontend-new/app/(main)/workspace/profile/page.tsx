@@ -46,6 +46,7 @@ export default function ProfilePage() {
     handleDiscard,
     handleDiscardConfirm,
     handleAvatarChange,
+    handleAvatarDelete,
   } = useProfilePage();
 
   if (isLoading) {
@@ -87,6 +88,7 @@ export default function ProfilePage() {
             avatarInitial={avatarInitial}
             avatarUploading={avatarUploading}
             onEditAvatarClick={() => avatarInputRef.current?.click()}
+            onDeleteAvatarClick={handleAvatarDelete}
             fullName={form.fullName}
             fullNameError={errors.fullName}
             onFullNameChange={(value) => {

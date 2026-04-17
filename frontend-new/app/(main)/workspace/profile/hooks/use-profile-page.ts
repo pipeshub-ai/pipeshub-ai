@@ -68,7 +68,7 @@ export function useProfilePage() {
       try {
         const [userData, avatarObjectUrl] = await Promise.all([
           ProfileApi.getUser(uid),
-          ProfileApi.getAvatar(uid),
+          ProfileApi.getAvatar(),
         ]);
 
         setForm({
@@ -199,7 +199,7 @@ export function useProfilePage() {
       setAvatarUrl(previewUrl);
 
       try {
-        const processedUrl = await ProfileApi.uploadAvatar(userId, file);
+        const processedUrl = await ProfileApi.uploadAvatar(file);
         URL.revokeObjectURL(previewUrl);
         if (processedUrl) setAvatarUrl(processedUrl);
         addToast({
@@ -222,6 +222,31 @@ export function useProfilePage() {
     },
     [userId, addToast]
   );
+
+  // ── Avatar delete ──────────────────────────────────────────────
+
+  const handleAvatarDelete = useCallback(async () => {
+    if (!userId) return;
+    setAvatarUploading(true);
+    try {
+      await ProfileApi.deleteAvatar();
+      setAvatarUrl(null);
+      addToast({
+        variant: 'success',
+        title: 'Profile picture removed',
+        description: 'Your profile picture has been removed',
+      });
+    } catch (err: unknown) {
+      const errMessage = isProcessedError(err) ? err.message : undefined;
+      addToast({
+        variant: 'error',
+        title: 'Remove failed',
+        description: errMessage || 'Could not remove profile picture',
+      });
+    } finally {
+      setAvatarUploading(false);
+    }
+  }, [userId, addToast]);
 
   // ── Computed ──────────────────────────────────────────────────
 
@@ -263,5 +288,6 @@ export function useProfilePage() {
     handleDiscard,
     handleDiscardConfirm,
     handleAvatarChange,
+    handleAvatarDelete,
   };
 }
