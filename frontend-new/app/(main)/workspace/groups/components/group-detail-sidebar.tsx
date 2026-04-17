@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
@@ -10,8 +10,9 @@ import {
   FormField,
   SearchableCheckboxDropdown,
   AvatarCell,
+  PaginatedMembersList,
 } from '../../components';
-import type { CheckboxOption } from '../../components';
+import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
 import type { GroupUser } from '../types';
@@ -49,9 +50,18 @@ export function GroupDetailSidebar({
   } = useGroupsStore();
 
   const [isDeleting, setIsDeleting] = useState(false);
-  // Group members fetched via paginated API
+  // Group members list (paginated via PaginatedMembersList component)
+  const membersListRef = useRef<PaginatedMembersListHandle>(null);
   const [groupMembers, setGroupMembers] = useState<GroupUser[]>([]);
-  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+
+  const fetchGroupMembersFn = useCallback(
+    async (search: string | undefined, page: number, limit: number) => {
+      if (!detailGroup) return { items: [] as GroupUser[], totalCount: 0 };
+      const { users, totalCount } = await GroupsApi.getGroupUsers(detailGroup._id, { page, limit, search });
+      return { items: users, totalCount };
+    },
+    [detailGroup]
+  );
 
   // Track user IDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -64,28 +74,6 @@ export function GroupDetailSidebar({
       setPendingRemoveUserIds(new Set());
     }
   }, [isEditMode, isDetailPanelOpen]);
-
-  // Fetch group members when panel opens or group changes
-  const fetchGroupMembers = useCallback(async () => {
-    if (!detailGroup) return;
-    setIsLoadingMembers(true);
-    try {
-      const result = await GroupsApi.getGroupUsers(detailGroup._id, { page: 1, limit: 25 });
-      setGroupMembers(result.users);
-    } catch {
-      // handled by global interceptor
-    } finally {
-      setIsLoadingMembers(false);
-    }
-  }, [detailGroup]);
-
-  useEffect(() => {
-    if (!isDetailPanelOpen || !detailGroup) {
-      setGroupMembers([]);
-      return;
-    }
-    fetchGroupMembers();
-  }, [isDetailPanelOpen, detailGroup?._id]);
 
   // ── Paginated user options for add-users dropdown ──
   const {
@@ -181,7 +169,7 @@ export function GroupDetailSidebar({
       // Refresh the group data and members
       const updatedGroup = await GroupsApi.getGroup(detailGroup._id);
       setDetailGroup(updatedGroup);
-      await fetchGroupMembers();
+      membersListRef.current?.refresh();
 
       addToast({
         variant: 'success',
@@ -408,54 +396,54 @@ export function GroupDetailSidebar({
             {t('workspace.groups.detail.users', 'Users')}
           </Text>
 
-          {groupMembers.length === 0 && !isLoadingMembers ? (
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('workspace.groups.detail.noUsers', 'No users in this group')}
-            </Text>
-          ) : (
-            <Flex direction="column" gap="3">
-              {groupMembers.map((user) => {
-                const isPendingRemove = pendingRemoveUserIds.has(user._id);
-                return (
-                  <Flex
-                    key={user._id}
-                    align="center"
-                    justify="between"
-                    style={{
-                      opacity: isPendingRemove ? 0.5 : 1,
-                      transition: 'opacity 0.15s ease',
-                    }}
-                  >
-                    <AvatarCell
-                      name={user.fullName || user.email || 'Unknown'}
-                      email={user.email ?? undefined}
-                      avatarSize={32}
-                      isSelf={user._id === currentUser?.id}
-                      profilePicture={user.profilePicture ?? undefined}
-                    />
-                    {isEditMode && (
-                      <Text
-                        size="1"
-                        onClick={() => handleRemoveUser(user._id)}
-                        style={{
-                          color: isPendingRemove
-                            ? 'var(--accent-11)'
-                            : 'var(--red-11)',
-                          cursor: 'pointer',
-                          flexShrink: 0,
-                          fontWeight: 500,
-                        }}
-                      >
-                        {isPendingRemove
-                          ? t('workspace.groups.edit.undo', 'Undo')
-                          : t('workspace.groups.edit.remove', 'Remove')}
-                      </Text>
-                    )}
-                  </Flex>
-                );
-              })}
-            </Flex>
-          )}
+          <PaginatedMembersList<GroupUser>
+            key={detailGroup?._id}
+            ref={membersListRef}
+            fetcher={fetchGroupMembersFn}
+            keyExtractor={(u) => u._id}
+            searchPlaceholder={t('workspace.groups.detail.searchUsers', 'Search users...')}
+            emptyText={t('workspace.groups.detail.noUsers', 'No users in this group')}
+            onFetched={(items) => setGroupMembers(items)}
+            renderItem={(user) => {
+              const isPendingRemove = pendingRemoveUserIds.has(user._id);
+              return (
+                <Flex
+                  align="center"
+                  justify="between"
+                  style={{
+                    opacity: isPendingRemove ? 0.5 : 1,
+                    transition: 'opacity 0.15s ease',
+                  }}
+                >
+                  <AvatarCell
+                    name={user.fullName || user.email || 'Unknown'}
+                    email={user.email ?? undefined}
+                    avatarSize={32}
+                    isSelf={user._id === currentUser?.id}
+                    profilePicture={user.profilePicture ?? undefined}
+                  />
+                  {isEditMode && (
+                    <Text
+                      size="1"
+                      onClick={() => handleRemoveUser(user._id)}
+                      style={{
+                        color: isPendingRemove
+                          ? 'var(--accent-11)'
+                          : 'var(--red-11)',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {isPendingRemove
+                        ? t('workspace.groups.edit.undo', 'Undo')
+                        : t('workspace.groups.edit.remove', 'Remove')}
+                    </Text>
+                  )}
+                </Flex>
+              );
+            }}
+          />
         </Box>
 
         {/* Access Permissions section box */}

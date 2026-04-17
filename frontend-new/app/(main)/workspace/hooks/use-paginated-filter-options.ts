@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { FilterOption } from '@/app/components/ui/filter-dropdown';
 
 const DEFAULT_LIMIT = 25;
@@ -45,13 +45,21 @@ export function usePaginatedFilterOptions<T>({
   const [isLoading, setIsLoading] = useState(false);
   const [search, setSearch] = useState('');
 
+  // Store callbacks in refs so fetchOptions stays stable across renders
+  const fetcherRef = useRef(fetcher);
+  const mapOptionRef = useRef(mapOption);
+  const onFetchedRef = useRef(onFetched);
+  fetcherRef.current = fetcher;
+  mapOptionRef.current = mapOption;
+  onFetchedRef.current = onFetched;
+
   const fetchOptions = useCallback(
     async (query: string, pageNum: number, append: boolean) => {
       setIsLoading(true);
       try {
-        const { items, totalCount } = await fetcher(query || undefined, pageNum, limit);
-        onFetched?.(items, pageNum, query);
-        const newOpts = items.map(mapOption);
+        const { items, totalCount } = await fetcherRef.current(query || undefined, pageNum, limit);
+        onFetchedRef.current?.(items, pageNum, query);
+        const newOpts = items.map(mapOptionRef.current);
         setOptions((prev) => (append ? [...prev, ...newOpts] : newOpts));
         setHasMore(pageNum * limit < totalCount);
       } catch {
@@ -60,10 +68,10 @@ export function usePaginatedFilterOptions<T>({
         setIsLoading(false);
       }
     },
-    [fetcher, mapOption, onFetched, limit]
+    [limit]
   );
 
-  // Initial load
+  // Initial load — runs once (fetchOptions is stable)
   useEffect(() => {
     fetchOptions('', 1, false);
   }, [fetchOptions]);
