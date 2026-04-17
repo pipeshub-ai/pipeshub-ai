@@ -2695,10 +2695,7 @@ async def _build_toolsets_list_response(
             tt = (inst.get("toolsetType") or "").lower()
             if search_lower in name or search_lower in tt:
                 return True
-            try:
-                meta = registry.get_toolset_metadata(tt) if tt else None
-            except Exception:
-                meta = None
+            meta = registry.get_toolset_metadata(tt) if tt else None
             if not meta:
                 return False
             dn = (meta.get("display_name") or meta.get("displayName") or "").lower()
@@ -2785,11 +2782,7 @@ async def _build_toolsets_list_response(
         )
 
         for toolset_name in registry.list_toolsets():
-            try:
-                meta = registry.get_toolset_metadata(toolset_name)
-            except Exception as exc:
-                logger.warning(f"Failed to get metadata for toolset '{toolset_name}': {exc}")
-                meta = None
+            meta = registry.get_toolset_metadata(toolset_name)
             if not meta or meta.get("isInternal", False):
                 continue
 
