@@ -4,7 +4,11 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { usePaginatedList } from '@/app/(main)/workspace/hooks/use-paginated-list';
 import { ShareCommonApi } from './api';
+
+const USERS_PAGE_LIMIT = 25;
+const SCROLL_THRESHOLD_PX = 40;
 import { ShareSearchInput } from './share-search-input';
 import { ShareableRow } from './shareable-row';
 import { CreateTeamView } from './create-team-view';
@@ -46,17 +50,38 @@ export function ShareSidebar({
 
   // Fetched data
   const [suggestedTeams, setSuggestedTeams] = useState<ShareTeam[]>([]);
-  const [allUsers, setAllUsers] = useState<ShareUser[]>([]);
+  const [nonPaginatedUsers, setNonPaginatedUsers] = useState<ShareUser[]>([]);
   const [existingMembers, setExistingMembers] = useState<SharedMember[]>([]);
-
-  // Pagination state for users (when adapter supports it)
-  const USERS_PAGE_LIMIT = 25;
-  const [usersPage, setUsersPage] = useState(1);
-  const [usersTotalCount, setUsersTotalCount] = useState(0);
-  const [isLoadingMoreUsers, setIsLoadingMoreUsers] = useState(false);
-  const hasMoreUsers = adapter.getSharingUsersPaginated ? usersPage * USERS_PAGE_LIMIT < usersTotalCount : false;
-  const usersSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const membersScrollRef = useRef<HTMLDivElement>(null);
+
+  // Paginated mode: hook owns search, page, items. Idle when the sidebar is
+  // closed or the adapter doesn't support pagination.
+  const isPaginatedMode = !!adapter.getSharingUsersPaginated;
+  const paginatedUsersFetcher = useCallback(
+    async (search: string | undefined, page: number, limit: number) => {
+      if (!adapter.getSharingUsersPaginated) return { items: [] as ShareUser[], totalCount: 0 };
+      const result = await adapter.getSharingUsersPaginated({ page, limit, search });
+      return { items: result.users, totalCount: result.totalCount };
+    },
+    [adapter]
+  );
+  const paginated = usePaginatedList<ShareUser>({
+    fetcher: paginatedUsersFetcher,
+    limit: USERS_PAGE_LIMIT,
+    enabled: open && isPaginatedMode,
+  });
+
+  // Unified view: in paginated mode the hook is the source of truth; otherwise
+  // the state-loaded user list from the open-fetch effect below.
+  const allUsers = isPaginatedMode ? paginated.items : nonPaginatedUsers;
+  const searchQueryInput = isPaginatedMode ? paginated.search : searchQuery;
+  const updateSearchQuery = useCallback(
+    (value: string) => {
+      if (isPaginatedMode) paginated.setSearch(value);
+      else setSearchQuery(value);
+    },
+    [isPaginatedMode, paginated]
+  );
 
   // Loading
   const [isLoading, setIsLoading] = useState(false);
@@ -69,45 +94,36 @@ export function ShareSidebar({
       setSearchQuery('');
       setSelectedItems([]);
       setSelectedRole('READER');
-      setUsersPage(1);
-      setUsersTotalCount(0);
+      paginated.reset();
     }
+    // paginated.reset is stable; omit from deps to avoid reset loops on every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Fetch data when sidebar opens
+  // Fetch non-user data when sidebar opens (paginated users are handled by the hook)
   useEffect(() => {
     if (!open) return;
 
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        const promises: Promise<unknown>[] = [
-          adapter.getSharedMembers(),
-        ];
-
-        // Paginated or full user fetch
-        if (adapter.getSharingUsersPaginated) {
-          promises.push(
-            adapter.getSharingUsersPaginated({ page: 1, limit: USERS_PAGE_LIMIT }).then((result) => {
-              setUsersTotalCount(result.totalCount);
-              return result.users;
-            })
-          );
-        } else {
-          promises.push(
-            adapter.getSharingUsers ? adapter.getSharingUsers() : ShareCommonApi.getAllUsers()
-          );
+        const promises: Promise<unknown>[] = [adapter.getSharedMembers()];
+        if (!isPaginatedMode) {
+          promises.push(adapter.getSharingUsers ? adapter.getSharingUsers() : ShareCommonApi.getAllUsers());
         }
-
         if (adapter.supportsTeams) {
           promises.push(ShareCommonApi.listUserTeams());
         }
 
         const results = await Promise.all(promises);
         setExistingMembers(results[0] as SharedMember[]);
-        setAllUsers(results[1] as ShareUser[]);
-        if (adapter.supportsTeams && results[2]) {
-          setSuggestedTeams(results[2] as ShareTeam[]);
+        let idx = 1;
+        if (!isPaginatedMode) {
+          setNonPaginatedUsers(results[idx] as ShareUser[]);
+          idx += 1;
+        }
+        if (adapter.supportsTeams && results[idx]) {
+          setSuggestedTeams(results[idx] as ShareTeam[]);
         }
       } catch {
         // Error handling via global interceptor
@@ -117,48 +133,17 @@ export function ShareSidebar({
     };
 
     fetchData();
-  }, [open, adapter]);
+  }, [open, adapter, isPaginatedMode]);
 
-  // Server-side search for paginated mode
-  useEffect(() => {
-    if (!adapter.getSharingUsersPaginated || !open) return;
-    if (usersSearchTimerRef.current) clearTimeout(usersSearchTimerRef.current);
-    usersSearchTimerRef.current = setTimeout(async () => {
-      setUsersPage(1);
-      try {
-        const result = await adapter.getSharingUsersPaginated!({
-          page: 1,
-          limit: USERS_PAGE_LIMIT,
-          search: searchQuery || undefined,
-        });
-        setAllUsers(result.users);
-        setUsersTotalCount(result.totalCount);
-      } catch {
-        // handled by global interceptor
-      }
-    }, 300);
-    return () => {
-      if (usersSearchTimerRef.current) clearTimeout(usersSearchTimerRef.current);
-    };
-  }, [searchQuery, adapter, open]);
-
-  // Infinite scroll handler for paginated users
+  // Infinite scroll handler — hook's loadMore is a no-op when not paginated
   const handleUsersScroll = useCallback(() => {
-    if (!hasMoreUsers || isLoadingMoreUsers || !adapter.getSharingUsersPaginated) return;
+    if (!isPaginatedMode) return;
     const el = membersScrollRef.current;
     if (!el) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
-      const nextPage = usersPage + 1;
-      setUsersPage(nextPage);
-      setIsLoadingMoreUsers(true);
-      adapter.getSharingUsersPaginated({ page: nextPage, limit: USERS_PAGE_LIMIT, search: searchQuery || undefined })
-        .then((result) => {
-          setAllUsers((prev) => [...prev, ...result.users]);
-        })
-        .catch(() => { /* handled by global interceptor */ })
-        .finally(() => setIsLoadingMoreUsers(false));
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_THRESHOLD_PX) {
+      paginated.loadMore();
     }
-  }, [hasMoreUsers, isLoadingMoreUsers, usersPage, searchQuery, adapter]);
+  }, [isPaginatedMode, paginated]);
 
   // Existing member IDs (for filtering suggestions)
   const existingMemberIds = useMemo(() => {
@@ -173,29 +158,31 @@ export function ShareSidebar({
     [selectedItems]
   );
 
-  // Filtered suggested teams (exclude already-shared, filter by query)
+  // Filtered suggested teams — teams always come from a single, non-paginated
+  // endpoint, so filter client-side regardless of the user-list mode.
   const filteredTeams = useMemo(() => {
     if (!adapter.supportsTeams) return [];
     return suggestedTeams.filter((team) => {
       if (existingMemberIds.has(team.id)) return false;
       if (selectedIds.has(team.id)) return false;
-      if (!searchQuery) return true;
-      const q = searchQuery.toLowerCase();
+      if (!searchQueryInput) return true;
+      const q = searchQueryInput.toLowerCase();
       return team.name.toLowerCase().includes(q);
     });
-  }, [suggestedTeams, existingMemberIds, selectedIds, searchQuery, adapter.supportsTeams]);
+  }, [suggestedTeams, existingMemberIds, selectedIds, searchQueryInput, adapter.supportsTeams]);
 
-  // Filtered suggested members (exclude already-shared, current user, filter by query)
+  // Filtered suggested members — in paginated mode the server already filtered
+  // by query, so only apply the exclusion rules (existing, selected, self).
   const filteredMembers = useMemo(() => {
     return allUsers.filter((user) => {
       if (existingMemberIds.has(user.id)) return false;
       if (selectedIds.has(user.id)) return false;
       if (currentUser && user.id === currentUser.id) return false;
-      if (!searchQuery) return true;
-      const q = searchQuery.toLowerCase();
+      if (isPaginatedMode || !searchQueryInput) return true;
+      const q = searchQueryInput.toLowerCase();
       return user.name.toLowerCase().includes(q) || (user.email ?? '').toLowerCase().includes(q);
     });
-  }, [allUsers, existingMemberIds, selectedIds, currentUser, searchQuery]);
+  }, [allUsers, existingMemberIds, selectedIds, currentUser, searchQueryInput, isPaginatedMode]);
 
   // Handle raw email typed by user
   const handleEmailSubmit = useCallback(
@@ -225,9 +212,9 @@ export function ShareSidebar({
         if (exists) return prev.filter((s) => s.id !== item.id);
         return [...prev, item];
       });
-      setSearchQuery('');
+      updateSearchQuery('');
     },
-    []
+    [updateSearchQuery]
   );
 
   const handleRemoveSelection = useCallback((id: string) => {
@@ -255,7 +242,7 @@ export function ShareSidebar({
       toast.success('Access shared', { description: `Shared with ${names}` });
 
       setSelectedItems([]);
-      setSearchQuery('');
+      updateSearchQuery('');
 
       onShareSuccess?.();
     } catch {
@@ -263,7 +250,7 @@ export function ShareSidebar({
     } finally {
       setIsSubmitting(false);
     }
-  }, [selectedItems, selectedRole, adapter, onShareSuccess]);
+  }, [selectedItems, selectedRole, adapter, onShareSuccess, updateSearchQuery]);
 
   // Update role for existing member
   const handleRoleChange = useCallback(
@@ -382,10 +369,10 @@ export function ShareSidebar({
             <Box style={{ padding: '16px 16px 8px', background: 'var(--effects-translucent)', backdropFilter: 'blur(8px)' }}>
               <ShareSearchInput
                 selections={selectedItems}
-                searchQuery={searchQuery}
+                searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
-                onSearchChange={setSearchQuery}
+                onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
                 onRoleChange={setSelectedRole}
                 onRemoveLastSelection={() =>
@@ -549,7 +536,7 @@ export function ShareSidebar({
                   )}
 
                   {/* Loading more indicator */}
-                  {isLoadingMoreUsers && (
+                  {paginated.isLoadingMore && (
                     <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'center', padding: 8, display: 'block' }}>
                       Loading more users...
                     </Text>

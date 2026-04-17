@@ -52,15 +52,19 @@ export function createChatShareAdapter(
 
       if (sharedWithMongoIds.length === 0 && !ownerId) return [];
 
-      // Enrich with user details via fetchMergedUsers (keyed by MongoDB userId)
-      let allUsers: User[] = [];
+      // Enrich with user details via batch-by-ids lookup (keyed by MongoDB userId).
+      // This avoids the page-1-only cap from fetchMergedUsers when the conversation
+      // is shared with users who don't appear in the first page of the org.
+      const idsToLookup = Array.from(
+        new Set([...sharedWithMongoIds, ...(ownerId ? [ownerId] : [])])
+      );
+      let enrichedUsers: User[] = [];
       try {
-        const result = await UsersApi.fetchMergedUsers({ page: 1, limit: 25 });
-        allUsers = result.users;
+        enrichedUsers = await UsersApi.getUsersByIds(idsToLookup);
       } catch {
         // Fallback: show IDs only
       }
-      const userMap = new Map<string, User>(allUsers.map((u) => [u.userId, u]));
+      const userMap = new Map<string, User>(enrichedUsers.map((u) => [u.userId, u]));
 
       // Build accessLevel lookup from sharedWith entries
       const accessMap = new Map(sharedWithEntries.map((entry: SharedWithEntry) => [entry.userId, entry.accessLevel]));

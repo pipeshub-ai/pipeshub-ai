@@ -110,6 +110,21 @@ export const UsersApi = {
   },
 
   /**
+   * Batch lookup users by their MongoDB IDs.
+   * POST /api/v1/users/by-ids
+   * Use this to enrich known user IDs with name/email without scanning
+   * the whole user list.
+   */
+  async getUsersByIds(userIds: string[]): Promise<User[]> {
+    if (userIds.length === 0) return [];
+    const { data } = await apiClient.post<User[] | { users: User[] }>(
+      `${BASE_URL}/by-ids`,
+      { userIds }
+    );
+    return Array.isArray(data) ? data : data.users ?? [];
+  },
+
+  /**
    * Invite users by email, optionally adding them to groups.
    * POST /api/v1/users/bulk/invite
    */
