@@ -54,8 +54,19 @@ class IndexingPipeline:
                         block_ids_to_delete=block_ids_to_delete,
                     )
                 self.logger.info(
-                    f"📊 No previous metadata found for {record.virtual_record_id}, indexing all blocks"
+                    f"📊 No previous metadata found for {record.virtual_record_id}, "
+                    f"purging stale vectors and indexing all blocks (first reconciliation pass)"
                 )
+                try:
+                    # backwa
+                    await self.sink_orchestrator.vector_store.delete_embeddings(
+                        record.virtual_record_id
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"⚠️ Failed to purge stale vectors during first reconciliation pass "
+                        f"for {record.virtual_record_id}: {str(e)}"
+                    )
             elif prev_vrid and prev_vrid != record.virtual_record_id:
                 # N:1 case: new vrid generated, index all blocks (no diff needed)
                 self.logger.info(

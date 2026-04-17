@@ -128,7 +128,10 @@ class TestBuildReconciliationContextNoReconciliation:
 
 class TestBuildReconciliationContext1to1:
     @pytest.mark.asyncio
-    async def test_no_old_metadata_returns_new_metadata_only(self):
+    async def test_no_old_metadata_purges_stale_vectors_and_returns_new_metadata_only(self):
+        """First reconciliation pass (record indexed before recon was enabled):
+        there is no prior metadata, so stale vectors must be purged before full reindex
+        to avoid leaving orphans in the vector store."""
         pipeline = _pipeline(blob_meta=None)  # no prior metadata
         block = Block(index=0, type=BlockType.TEXT, data="hi")
         record = _record(blocks=[block])
@@ -140,7 +143,75 @@ class TestBuildReconciliationContext1to1:
 
         result = await pipeline._build_reconciliation_context(ctx)
         assert isinstance(result, ReconciliationContext)
+        # Fall-through context: no diff results
+        assert result.blocks_to_index_ids is None
+        assert result.block_ids_to_delete is None
         pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_awaited_once()
+        # Stale vectors must be purged on first reconciliation pass
+        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_awaited_once_with(
+            record.virtual_record_id
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_old_metadata_delete_failure_is_swallowed(self):
+        """If the stale-vector purge fails, the context must still be returned
+        (best-effort cleanup — worst case falls back to the old orphan behavior)."""
+        pipeline = _pipeline(blob_meta=None)
+        pipeline.sink_orchestrator.vector_store.delete_embeddings = AsyncMock(
+            side_effect=RuntimeError("qdrant down")
+        )
+        block = Block(index=0, type=BlockType.TEXT, data="hi")
+        record = _record(blocks=[block])
+        ctx = _ctx(
+            record,
+            event_type=EventTypes.UPDATE_RECORD.value,
+            prev_vrid="vr-1",
+        )
+
+        # Must not raise
+        result = await pipeline._build_reconciliation_context(ctx)
+        assert isinstance(result, ReconciliationContext)
+        assert result.blocks_to_index_ids is None
+        assert result.block_ids_to_delete is None
+        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_awaited_once_with(
+            record.virtual_record_id
+        )
+
+    @pytest.mark.asyncio
+    async def test_n_to_1_branch_does_not_purge_vectors(self):
+        """N:1 case must NOT call delete_embeddings — old vrid's vectors may still
+        serve other records that share it."""
+        pipeline = _pipeline()
+        block = Block(index=0, type=BlockType.TEXT, data="hi")
+        record = _record(blocks=[block], virtual_record_id="new-vr")
+        ctx = _ctx(
+            record,
+            event_type=EventTypes.UPDATE_RECORD.value,
+            prev_vrid="old-vr",
+        )
+
+        await pipeline._build_reconciliation_context(ctx)
+        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_diff_path_does_not_purge_vectors(self):
+        """When diff runs successfully, delete_embeddings must not be called —
+        the diff handles partial deletion via block_ids_to_delete instead."""
+        old_metadata = {
+            "hash_to_block_ids": {"old-hash": ["old-block-id"]},
+            "block_id_to_index": {"old-block-id": 0},
+        }
+        pipeline = _pipeline(blob_meta=old_metadata)
+        block = Block(index=0, type=BlockType.TEXT, data="fresh content")
+        record = _record(blocks=[block])
+        ctx = _ctx(
+            record,
+            event_type=EventTypes.UPDATE_RECORD.value,
+            prev_vrid="vr-1",
+        )
+
+        await pipeline._build_reconciliation_context(ctx)
+        pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_diff_with_changes_produces_index_and_delete_ids(self):
