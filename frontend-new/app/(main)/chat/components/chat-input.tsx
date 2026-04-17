@@ -651,7 +651,7 @@ export function ChatInput({
         backdropFilter: 'blur(25px)',
         background: (isInputFocused || message.trim() || isListening) ? 'var(--olive-2)' : 'var(--effects-translucent)',
         transition: 'background 0.15s ease',
-        border: (isInputFocused || message.trim() || isEditMode || isListening) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
+        border: (!isStreaming && (isInputFocused || message.trim() || isEditMode || isListening)) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
         // Flatten top corners whenever there is an element directly above (collections bar,
         // uploaded files preview, or the action pill bar) to avoid a double-radius gap.
         borderRadius: (selectedCollections.length > 0 && !isCollectionsPanelOpen && !isModePanelOpen) || uploadedFiles.length > 0 || isActionMode
