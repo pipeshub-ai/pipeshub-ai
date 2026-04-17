@@ -284,9 +284,17 @@ function KnowledgeBaseSidebarSlotContent() {
   // All Records mode: when no specific node is selected (root view), reset
   // sidebar selection back to "All" and clear currentFolderId so no tree item
   // remains highlighted from a previous navigation.
+  const prevAllRecordsNodeIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (!isAllRecordsMode) return;
     const nodeId = searchParams.get('nodeId');
+    // Only reset sidebar when nodeId actually changes (e.g. user navigated away
+    // from a node back to root), not on every searchParams update (e.g. page
+    // number or filter changes). Without this guard, paginating while in root
+    // view would reset the sidebar selection and, worse, reset the page to 1
+    // via setAllRecordsSidebarSelection's side-effect.
+    if (nodeId === prevAllRecordsNodeIdRef.current) return;
+    prevAllRecordsNodeIdRef.current = nodeId;
     if (!nodeId) {
       setCurrentFolderId(null);
       setAllRecordsSidebarSelection({ type: 'all' });

@@ -1,31 +1,44 @@
 'use client';
 
 import { useState } from 'react';
-import { DropdownMenu, Flex, Text } from '@radix-ui/themes';
+import { DropdownMenu, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
+import type { ViewAgentTooltipVariant } from './agent-sidebar-row-access';
 
 interface AgentSidebarItemMenuProps {
   isParentHovered: boolean;
   onOpenChange?: (open: boolean) => void;
   canEdit: boolean;
   canDelete: boolean;
+  showViewAgent: boolean;
+  /** Explains view-only behavior when {@link showViewAgent}. */
+  viewAgentTooltipVariant?: ViewAgentTooltipVariant;
   onEdit: () => void;
+  onView: () => void;
   onDelete: () => void;
 }
 
 /**
- * Meatball menu for an agent row in chat sidebars — Edit and Delete (same pattern as {@link ChatItemMenu}).
+ * Meatball menu for an agent row in chat sidebars — View (read-only / locked builder), Edit, Delete.
  */
 export function AgentSidebarItemMenu({
   isParentHovered,
   onOpenChange: onOpenChangeProp,
   canEdit,
   canDelete,
+  showViewAgent,
+  viewAgentTooltipVariant,
   onEdit,
+  onView,
   onDelete,
 }: AgentSidebarItemMenuProps) {
   const { t } = useTranslation();
+  const viewTooltip = showViewAgent
+    ? viewAgentTooltipVariant === 'service_account'
+      ? t('chat.viewAgentTooltipServiceAccount')
+      : t('chat.viewAgentTooltipIndividual')
+    : '';
   const [isOpen, setIsOpen] = useState(false);
   const [isMeatballHovered, setIsMeatballHovered] = useState(false);
   const visible = isParentHovered || isOpen;
@@ -35,7 +48,7 @@ export function AgentSidebarItemMenu({
     onOpenChangeProp?.(open);
   };
 
-  if (!canEdit && !canDelete) return null;
+  if (!canEdit && !canDelete && !showViewAgent) return null;
   if (!visible) return null;
 
   return (
@@ -66,6 +79,21 @@ export function AgentSidebarItemMenu({
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Content side="bottom" align="start" sideOffset={4} style={{ minWidth: 140 }}>
+        {showViewAgent && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onView();
+            }}
+          >
+            <Tooltip content={viewTooltip} delayDuration={400}>
+              <Flex align="center" gap="2" style={{ maxWidth: 280 }}>
+                <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
+                <Text size="2">{t('chat.viewAgent')}</Text>
+              </Flex>
+            </Tooltip>
+          </DropdownMenu.Item>
+        )}
         {canEdit && (
           <DropdownMenu.Item
             onClick={(e) => {

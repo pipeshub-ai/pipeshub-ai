@@ -17,6 +17,8 @@ export interface BulkAction {
   icon: string;
   /** Visual variant — 'danger' renders red/destructive styling */
   variant?: 'default' | 'danger';
+  /** Whether this action is disabled */
+  disabled?: boolean;
   /** Async handler called when button is clicked */
   onClick: () => void | Promise<void>;
 }
@@ -95,28 +97,31 @@ export function EntityBulkActionBar({
       {actions.map((action) => {
         const isDanger = action.variant === 'danger';
         const isLoading = loadingKey === action.key;
+        const isDisabled = action.disabled || isLoading || (loadingKey !== null && loadingKey !== action.key);
 
-        return (
+        const button = (
           <Button
             key={action.key}
             size="1"
             variant={isDanger ? 'solid' : 'soft'}
             color={isDanger ? 'red' : 'gray'}
-            disabled={isLoading || (loadingKey !== null && loadingKey !== action.key)}
+            disabled={isDisabled}
             onClick={() => handleClick(action)}
             style={{
-              cursor: isLoading ? 'wait' : 'pointer',
+              cursor: isDisabled ? 'not-allowed' : isLoading ? 'wait' : 'pointer',
               whiteSpace: 'nowrap',
             }}
           >
             <MaterialIcon
               name={action.icon}
               size={14}
-              color={isDanger ? 'white' : 'var(--slate-12)'}
+              color={isDanger && !isDisabled ? 'white' : 'var(--slate-12)'}
             />
             {action.label}
           </Button>
         );
+
+        return button;
       })}
     </Flex>
   );

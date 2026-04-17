@@ -10,6 +10,9 @@
 !.yarn/releases
 !.yarn/versions
 
+# override parent gitignore
+!lib/
+
 # testing
 /coverage
 

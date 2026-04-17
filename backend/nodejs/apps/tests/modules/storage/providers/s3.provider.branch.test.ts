@@ -365,13 +365,16 @@ describe('AmazonS3Adapter - branch coverage', () => {
       expect(result.statusCode).to.equal(200)
     })
 
-    it('should use current URL when version is 0', async () => {
+    it('should use versionHistory URL when version is 0', async () => {
       sinon.stub(adapter.s3, 'getObject').returns({
         promise: sinon.stub().resolves({ Body: Buffer.from('content') }),
       })
 
       const result = await adapter.getBufferFromStorageService({
-        s3: { url: 'https://test-bucket.s3.us-east-1.amazonaws.com/file.pdf' },
+        s3: { url: 'https://test-bucket.s3.us-east-1.amazonaws.com/current.pdf' },
+        versionHistory: [
+          { s3: { url: 'https://test-bucket.s3.us-east-1.amazonaws.com/v0.pdf' } },
+        ],
       } as any, 0)
       expect(result.statusCode).to.equal(200)
     })

@@ -41,7 +41,7 @@ export interface RowAction {
   /**
    * Optional sub-menu config. When present, clicking this action toggles
    * a role-picker panel (styled like the SelectDropdown in Invite User)
-   * below the action card — both remain visible simultaneously.
+   * which replaces the action card — the action card is hidden while the sub-menu is open.
    */
   subMenu?: SubMenuConfig;
 }
@@ -243,14 +243,15 @@ function ActionCard({
 // ────────────────────────────────────────────────────────────────
 // EntityRowActionMenu
 //
-// Single Popover containing two visual "cards" stacked vertically:
+// Single Popover that switches between two visual "cards":
 //   1. Action card   — compact list (View Profile, Change Role, …)
 //   2. Role picker   — radio options (Admin / Member / Guest)
 //
-// Both cards are visible simultaneously when "Change Role" is
-// clicked. The Popover.Content itself is transparent — each card
-// has its own background / border / shadow so they look like two
-// separate floating panels, right-aligned to the ⋯ trigger.
+// Only one card is visible at a time: the action card is hidden when
+// "Change Role" is clicked and the role picker takes its place.
+// The Popover.Content itself is transparent — each card has its own
+// background / border / shadow so they look like separate floating
+// panels, right-aligned to the ⋯ trigger.
 //
 // Collision-aware: Radix Popover flips top ↔ bottom automatically.
 // ────────────────────────────────────────────────────────────────
@@ -297,12 +298,14 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
         }}
       >
         <Flex direction="column" gap="1">
-          {/* ── Card 1: Action items ── */}
-          <ActionCard
-            actions={visibleActions}
-            onActionClick={() => setShowRolePicker((v) => !v)}
-            onClose={() => handleOpenChange(false)}
-          />
+          {/* ── Card 1: Action items (hidden when role picker is open) ── */}
+          {!showRolePicker && (
+            <ActionCard
+              actions={visibleActions}
+              onActionClick={() => setShowRolePicker((v) => !v)}
+              onClose={() => handleOpenChange(false)}
+            />
+          )}
 
           {/* ── Card 2: Role picker (visible when "Change Role" is clicked) ── */}
           {showRolePicker && subMenuAction?.subMenu && (

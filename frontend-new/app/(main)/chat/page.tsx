@@ -29,6 +29,11 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 
+// Space reserved below content views to clear the absolutely-positioned chat input.
+const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 160 };
+// Extra breathing room above the chat input for the search results list.
+const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
+
 // Background decorative pattern
 const BackgroundPattern = ({ showNewChatView }: { showNewChatView: boolean }) => (
   <Box
@@ -165,24 +170,6 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
 
-  // Agent tools + display name for header (sidebar also loads tools when listing convs).
-  useEffect(() => {
-    if (!agentId) {
-      useChatStore.getState().setAgentStreamTools([]);
-      useChatStore.getState().setAgentContextDisplayName(null);
-      return;
-    }
-    let cancelled = false;
-    AgentsApi.getAgent(agentId).then((res) => {
-      if (!cancelled) {
-        useChatStore.getState().setAgentStreamTools(res.toolFullNames);
-        useChatStore.getState().setAgentContextDisplayName(res.agent?.name?.trim() || null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId]);
   const threadRuntime = useThreadRuntime();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -354,22 +341,79 @@ function ChatContent() {
     }
   }, [conversationsVersion, loadConversations]);
 
-  // Fetch available LLMs on mount and store the default model
+  // Fetch agent details (tools, display name, default model) or org models (default model only)
   useEffect(() => {
-    ChatApi.fetchAvailableLlms().then((models) => {
-      const defaultModel = models.find((m) => m.isDefault);
-      if (defaultModel) {
-        useChatStore.getState().setDefaultModel({
-          modelKey: defaultModel.modelKey,
-          modelName: defaultModel.modelName,
-          modelFriendlyName: defaultModel.modelFriendlyName,
-          modelProvider: defaultModel.provider,
-        });
+    let cancelled = false;
+
+    const fetchAgentOrModels = async () => {
+      const store = useChatStore.getState();
+
+      if (agentId?.trim()) {
+        // Agent context: fetch agent once and use for tools, name, and models
+        try {
+          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
+          if (cancelled) return;
+
+          // Set tools and display name
+          store.setAgentStreamTools(toolFullNames);
+          store.setAgentContextDisplayName(agent?.name?.trim() || null);
+
+          // Set default model from agent's configured models
+          if (agent?.models && agent.models.length > 0) {
+            const defaultModel = agent.models.find((m) => m.isDefault);
+            if (defaultModel) {
+              store.setDefaultModel({
+                modelKey: defaultModel.modelKey,
+                modelName: defaultModel.modelName,
+                modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
+                modelProvider: defaultModel.provider,
+              });
+            }
+          } else {
+            console.error('Agent has no configured models:', agentId);
+          }
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to fetch agent details:', error);
+          }
+        }
+      } else {
+        // Regular chat: clear agent data and fetch org models for default
+        store.setAgentStreamTools([]);
+        store.setAgentContextDisplayName(null);
+
+        try {
+          const models = await ChatApi.fetchAvailableLlms();
+          if (cancelled) return;
+
+          if (models.length === 0) {
+            console.error('No org models available');
+            return;
+          }
+
+          const defaultModel = models.find((m) => m.isDefault);
+          if (defaultModel) {
+            store.setDefaultModel({
+              modelKey: defaultModel.modelKey,
+              modelName: defaultModel.modelName,
+              modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
+              modelProvider: defaultModel.provider,
+            });
+          }
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to fetch org models:', error);
+          }
+        }
       }
-    }).catch(() => {
-      // Non-fatal: streaming will surface an error if no model is available
-    });
-  }, []);
+    };
+
+    fetchAgentOrModels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
@@ -735,7 +779,14 @@ function ChatContent() {
       )}
       {showSearchView ? (
         /* Search Results View */
-        <SearchResultsView />
+        <Flex direction="column" style={{
+          flex: 1,
+          width: '100%',
+          overflow: 'hidden',
+          marginBottom: `${(isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop) + (isMobile ? SEARCH_RESULTS_EXTRA_OFFSET.mobile : SEARCH_RESULTS_EXTRA_OFFSET.desktop)}px`,
+        }}>
+          <SearchResultsView />
+        </Flex>
       ) : showNewChatView ? (
         /* New Chat View */
         <Flex
@@ -873,7 +924,7 @@ function ChatContent() {
             zIndex: 10,
             width: '100%',
             overflow: 'hidden',
-            marginBottom: isMobile ? '120px' : '160px',
+            marginBottom: `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`,
             paddingTop: isMobile ? (agentId ? '76px' : '60px') : agentId ? '72px' : '56px',
           }}
         >

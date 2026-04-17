@@ -86,6 +86,11 @@ export const OrgApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+
+  /** DELETE /api/v1/org/logo — remove org logo */
+  async deleteLogo(): Promise<void> {
+    await apiClient.delete(`${BASE_URL}/logo`);
+  },
 };
 
 export const MetricsApi = {

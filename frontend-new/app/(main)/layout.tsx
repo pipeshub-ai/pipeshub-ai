@@ -161,17 +161,23 @@ function AppLayout({
         {/* Sidebar slot — on desktop renders inline; on mobile the sidebar
             component itself renders as a fixed overlay (controlled via
             useMobileSidebarStore). Nothing is rendered here on mobile. */}
-        {sidebar}
+        <React.Fragment key="app-sidebar-slot">{sidebar}</React.Fragment>
 
         {/* Main content area — zIndex: 0 creates a stacking context so
             page-internal z-indexes don't compete with the sidebar's
             secondary panel (zIndex: 10 in root context). */}
-        <Flex direction="column" data-main-content style={{ flex: 1, overflow: 'hidden', zIndex: 0, position: 'relative' }}>
+        <Flex
+          key="app-main-column"
+          direction="column"
+          data-main-content
+          style={{ flex: 1, overflow: 'hidden', zIndex: 0, position: 'relative' }}
+        >
           {/* Mobile hamburger — fixed top-left, only visible on mobile.
               Uses position:fixed (not absolute) so it sits in the root stacking
               context above the chat page content elements that also use zIndex:10. */}
           {isMobile && (
             <Box
+              key="app-mobile-menu-anchor"
               style={{
                 position: 'fixed',
                 top: 'var(--space-3)',
@@ -192,6 +198,8 @@ function AppLayout({
             </Box>
           )}
           <Box
+            key="app-main-scroll"
+            data-app-main-scroll
             className="no-scrollbar"
             style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}
           >
@@ -199,17 +207,19 @@ function AppLayout({
           </Box>
         </Flex>
 
-        <UploadProgressTracker />
-        <ToastContainer />
+        <UploadProgressTracker key="upload-progress-tracker" />
+        <ToastContainer key="toast-container" />
         {/* User background survey — shown once after login/onboarding */}
-        <UserBackgroundSurvey />
+        <UserBackgroundSurvey key="user-background-survey" />
         {/* Onboarding tour card — bottom-left corner, guides new users through first steps.
              Currently gated by the NEXT_PUBLIC_ONBOARDING_TOUR_ACTIVE env var.
              TODO: replace the env-var flag with an API call (similar to the onboarding flow above):
                1. Call getTourStatus() on mount.
                2. Mount <OnboardingTour /> when the response status is 'active' or 'completed'.
                3. Omit it entirely when status is 'hidden' (user has dismissed). */}
-        {process.env.NEXT_PUBLIC_ONBOARDING_TOUR_ACTIVE === 'true' && <OnboardingTour />}
+        {process.env.NEXT_PUBLIC_ONBOARDING_TOUR_ACTIVE === 'true' ? (
+          <OnboardingTour key="onboarding-tour" />
+        ) : null}
       </Flex>
     </SWRConfig>
   )

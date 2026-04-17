@@ -8,6 +8,7 @@ import {
   ModelInfo,
   SharedWithEntry,
   StreamChatRequest,
+  AgentStrategyApiSegment,
   SSEEventType,
   SSEConnectedEvent,
   SSEStatusEvent,
@@ -18,6 +19,7 @@ import {
   SearchRequest,
   SearchResponse,
   buildStreamRequestModeFields,
+  streamChatModeToAgentApiChatMode,
 } from './types';
 
 export interface StreamMessageCallbacks {
@@ -25,6 +27,8 @@ export interface StreamMessageCallbacks {
   onStatus?: (data: SSEStatusEvent) => void;
   onChunk?: (data: SSEAnswerChunkEvent) => void;
   onComplete?: (data: SSECompleteEvent) => void;
+  /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
+  onRestreaming?: () => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
 }
@@ -47,20 +51,33 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
 
 const transformConversation = mapApiConversationToConversation;
 
+export interface FetchConversationsOptions {
+  /** Passed to GET /api/v1/conversations?search= — server matches title and message content */
+  search?: string;
+  signal?: AbortSignal;
+}
+
 // Chat API endpoints
 export const ChatApi = {
   // Fetch all conversations (user's own and shared with them)
   async fetchConversations(
     page: number = 1,
-    limit: number = 20
+    limit: number = 20,
+    options?: FetchConversationsOptions
   ): Promise<{
     conversations: Conversation[];
     sharedConversations: Conversation[];
     pagination: ConversationsListResponse['pagination'];
   }> {
+    const search = options?.search?.trim();
+    const params: Record<string, string | number> = { page, limit };
+    if (search) {
+      params.search = search;
+    }
+
     const { data } = await apiClient.get<ConversationsListResponse>(
       `/api/v1/conversations`,
-      { params: { page, limit } }
+      { params, signal: options?.signal }
     );
 
     return {
@@ -156,7 +173,7 @@ export const ChatApi = {
     let payload: Record<string, unknown>;
 
     if (request.agentId) {
-      const agentChatMode = request.conversationId ? 'verification' : 'auto';
+      const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
       const timezone =
         typeof Intl !== 'undefined'
           ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -173,8 +190,19 @@ export const ChatApi = {
         timezone,
         currentTime: new Date().toISOString(),
         tools: request.agentStreamTools ?? [],
-        filters: request.filters,
       };
+      // Omit filters when empty so the Python agent stream treats scope as
+      // "derive from agent knowledge" — `{ apps: [], kb: [] }` means explicit no scope.
+      const f = request.filters;
+      const apps = (f?.apps ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      const kb = (f?.kb ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0
+      );
+      if (apps.length > 0 || kb.length > 0) {
+        payload.filters = { apps, kb };
+      }
     } else {
       endpoint = request.conversationId
         ? `/api/v1/conversations/${request.conversationId}/messages/stream`
@@ -205,9 +233,18 @@ export const ChatApi = {
               receivedComplete = true;
               callbacks.onComplete?.(event.data as SSECompleteEvent);
               break;
+            case 'restreaming':
+              callbacks.onRestreaming?.();
+              break;
             case 'tool_call':
             case 'tool_success':
-              // Backend uses tools to fetch additional information - safe to ignore
+            case 'tool_error':
+            case 'tool_calls':
+            case 'tool_result':
+              // Tool / orchestration events — no separate UI; status + answer_chunk carry UX
+              break;
+            case 'metadata':
+              // Citations / enrichment hints — UI uses answer_chunk + complete; ignore payload
               break;
             case 'error':
               // SSE error events may be non-fatal — the backend might still
@@ -217,7 +254,8 @@ export const ChatApi = {
               console.warn('[Chat SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
               break;
             default:
-              console.warn('Unknown SSE event type:', event.event);
+              // Future / proxy-only event names — ignore silently (no user-facing noise)
+              break;
           }
         },
         onError: (error) => {
@@ -281,8 +319,16 @@ export const ChatApi = {
               receivedComplete = true;
               callbacks.onComplete?.(event.data as SSECompleteEvent);
               break;
+            case 'restreaming':
+              callbacks.onRestreaming?.();
+              break;
             case 'tool_call':
             case 'tool_success':
+            case 'tool_error':
+            case 'tool_calls':
+            case 'tool_result':
+              break;
+            case 'metadata':
               break;
             case 'error':
               lastSSEError = event.data as SSEErrorEvent;
@@ -318,7 +364,7 @@ export const ChatApi = {
       modelKey: string;
       modelName: string;
       modelProvider: string;
-      chatMode: 'auto' | 'verification';
+      chatMode: AgentStrategyApiSegment;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -350,8 +396,16 @@ export const ChatApi = {
               receivedComplete = true;
               callbacks.onComplete?.(event.data as SSECompleteEvent);
               break;
+            case 'restreaming':
+              callbacks.onRestreaming?.();
+              break;
             case 'tool_call':
             case 'tool_success':
+            case 'tool_error':
+            case 'tool_calls':
+            case 'tool_result':
+              break;
+            case 'metadata':
               break;
             case 'error':
               lastSSEError = event.data as SSEErrorEvent;

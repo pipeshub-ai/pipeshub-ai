@@ -1,18 +1,9 @@
 import type { BuilderSidebarToolset, BuilderToolsetTool } from '../toolsets-api';
+import { normalizePaletteLabel } from './display-utils';
 
+/** @deprecated Prefer {@link normalizePaletteLabel} from `./display-utils`; kept for call-site imports. */
 export function formatToolsetTypeLabel(toolsetTypeValue: string): string {
-  if (!toolsetTypeValue) return '';
-  const normalized = toolsetTypeValue
-    .trim()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .toLowerCase()
-    .replace(/\bshare\s+point\b/g, 'sharepoint');
-  return normalized
-    .split(' ')
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
+  return normalizePaletteLabel(toolsetTypeValue);
 }
 
 export function normalizeToolsetTypeKey(value: string): string {

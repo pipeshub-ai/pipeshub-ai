@@ -1468,7 +1468,7 @@ class TestGetTeamUsers:
         gp.get_user_by_user_id.return_value = {"_key": "uk"}
         gp.get_team_users.return_value = {"users": [{"name": "U1"}]}
 
-        resp = await get_team_users(req, "team-1")
+        resp = await get_team_users(req, "team-1", search=None, page=1, limit=100)
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert content["team"]["users"] == [{"name": "U1"}]
