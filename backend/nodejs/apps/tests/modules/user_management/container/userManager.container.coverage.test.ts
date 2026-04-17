@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Kafka } from 'kafkajs'
 import { UserManagerContainer } from '../../../../src/modules/user_management/container/userManager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
@@ -32,6 +33,14 @@ describe('UserManagerContainer - coverage', () => {
     sinon.stub(BaseKafkaProducerConnection.prototype, 'connect').resolves()
     sinon.stub(BaseKafkaProducerConnection.prototype, 'disconnect').resolves()
     sinon.stub(BaseKafkaConnection.prototype, 'isConnected').returns(true)
+    sinon.stub(Kafka.prototype, 'producer').returns({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      send: sinon.stub().resolves(),
+      sendBatch: sinon.stub().resolves(),
+      on: sinon.stub(),
+      events: {},
+    } as any)
   })
 
   afterEach(() => {
