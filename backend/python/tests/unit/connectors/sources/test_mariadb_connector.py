@@ -470,29 +470,86 @@ class TestGetAppUsers:
 class TestCreateAppUsers:
 
     @pytest.mark.asyncio
-    async def test_creates_app_users(self):
+    async def test_team_scope_creates_team_app_edge(self):
         connector = _make_connector()
+        connector.scope = "team"
+
+        tx_store = MagicMock()
+        tx_store.ensure_team_app_edge = AsyncMock()
+        tx_ctx = MagicMock()
+        tx_ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        tx_ctx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction = MagicMock(return_value=tx_ctx)
+
+        await connector._create_app_users()
+
+        tx_store.ensure_team_app_edge.assert_awaited_once_with(
+            "conn-mdb-1", "org-mdb-1"
+        )
+        connector.data_entities_processor.on_new_app_users.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_personal_scope_creates_user_app_edge_for_creator(self):
+        connector = _make_connector()
+        connector.scope = "personal"
+        connector.created_by = "user-42"
+
         mock_user = MagicMock()
-        mock_user.email = "test@example.com"
-        mock_user.full_name = "Test User"
-        mock_user.source_user_id = "u-1"
-        mock_user.id = "u-1"
+        mock_user.email = "creator@example.com"
+        mock_user.full_name = "Creator"
+        mock_user.source_user_id = "user-42"
+        mock_user.id = "user-42"
         mock_user.org_id = "org-mdb-1"
         mock_user.is_active = True
         mock_user.title = None
 
-        connector.data_entities_processor.get_all_active_users = AsyncMock(
-            return_value=[mock_user]
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=mock_user
         )
+
         await connector._create_app_users()
+
+        connector.data_entities_processor.get_user_by_user_id.assert_awaited_once_with("user-42")
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+        app_users_arg = connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert len(app_users_arg) == 1
+        assert app_users_arg[0].email == "creator@example.com"
+
+    @pytest.mark.asyncio
+    async def test_personal_scope_skips_when_creator_not_found(self):
+        connector = _make_connector()
+        connector.scope = "personal"
+        connector.created_by = "ghost"
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
+
+        await connector._create_app_users()
+
+        connector.data_entities_processor.on_new_app_users.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_personal_scope_skips_when_no_created_by(self):
+        connector = _make_connector()
+        connector.scope = "personal"
+        connector.created_by = None
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock()
+
+        await connector._create_app_users()
+
+        connector.data_entities_processor.get_user_by_user_id.assert_not_called()
+        connector.data_entities_processor.on_new_app_users.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_raises_on_error(self):
         connector = _make_connector()
-        connector.data_entities_processor.get_all_active_users = AsyncMock(
-            side_effect=Exception("DB error")
-        )
+        connector.scope = "team"
+
+        tx_store = MagicMock()
+        tx_store.ensure_team_app_edge = AsyncMock(side_effect=Exception("DB error"))
+        tx_ctx = MagicMock()
+        tx_ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        tx_ctx.__aexit__ = AsyncMock(return_value=None)
+        connector.data_store_provider.transaction = MagicMock(return_value=tx_ctx)
+
         with pytest.raises(Exception, match="DB error"):
             await connector._create_app_users()
 

@@ -332,16 +332,38 @@ class PostgreSQLConnector(BaseConnector):
         ]
 
     async def _create_app_users(self) -> None:
-        """Create AppUser entries for all active users in the organization.
-        
-        This establishes the userapp relation between users and this PostgreSQL app,
-        enabling proper access control and data visibility.
+        """Establish user/team relationships with this PostgreSQL connector app.
+
+        For TEAM scope: creates a single team-app edge so all org members get access.
+        For PERSONAL scope: creates a user-app edge only for the creator.
         """
         try:
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
-            self.logger.info(f"Created {len(app_users)} app users for PostgreSQL connector")
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                self.logger.info("Ensured team-app edge for PostgreSQL connector")
+            else:
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                        self.logger.info(
+                            "Created user-app edge for PostgreSQL connector creator %s",
+                            self.created_by,
+                        )
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                else:
+                    self.logger.warning(
+                        "Personal PostgreSQL connector has no created_by; skipping user-app edges."
+                    )
         except Exception as e:
             self.logger.error(f"Error creating app users: {e}", exc_info=True)
             raise
