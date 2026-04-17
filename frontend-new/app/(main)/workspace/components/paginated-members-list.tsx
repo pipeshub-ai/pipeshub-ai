@@ -5,6 +5,7 @@ import { Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 const DEFAULT_LIMIT = 25;
+const SCROLL_THRESHOLD_PX = 40;
 
 interface PaginatedMembersListProps<T> {
   /** Async fetcher: receives search query, page number, and limit; returns items + totalCount. */
@@ -121,7 +122,7 @@ export const PaginatedMembersList = React.forwardRef(function PaginatedMembersLi
     if (!hasMore || isLoadingMore) return;
     const el = listRef.current;
     if (!el) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_THRESHOLD_PX) {
       const nextPage = page + 1;
       setPage(nextPage);
       fetchItems(search, nextPage, true);
