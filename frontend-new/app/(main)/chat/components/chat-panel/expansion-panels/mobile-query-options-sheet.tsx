@@ -19,6 +19,8 @@ interface MobileQueryOptionsSheetProps {
   onOpenChange: (open: boolean) => void;
   /** Agent conversation — meatball menu only exposes model (no connectors row). */
   isAgentChat?: boolean;
+  /** Agent ID for filtering models to only those configured for the agent */
+  agentId?: string | null;
 }
 
 /**
@@ -33,6 +35,7 @@ export function MobileQueryOptionsSheet({
   open,
   onOpenChange,
   isAgentChat = false,
+  agentId,
 }: MobileQueryOptionsSheetProps) {
   const [activePanel, setActivePanel] = useState<ActivePanel>('root');
   const { t } = useTranslation();
@@ -76,8 +79,9 @@ export function MobileQueryOptionsSheet({
       {activePanel === 'models' && (
         <ModelSelectorPanel
           selectedModel={settings.selectedModel}
-          onModelSelect={(model) => setSelectedModel(model)}
+          onModelSelect={setSelectedModel}
           hideHeader
+          agentId={agentId}
         />
       )}
       {activePanel === 'connectors' && (

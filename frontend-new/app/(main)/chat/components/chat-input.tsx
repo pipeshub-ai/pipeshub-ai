@@ -42,6 +42,8 @@ interface ChatInputProps {
   expandable?: boolean;
   /** `?agentId=` agent conversation — query-mode + web search controls are hidden */
   isAgentChat?: boolean;
+  /** Agent ID for filtering models to only those configured for the agent */
+  agentId?: string | null;
 }
 
 const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'XLS', 'XLSX', 'PNG', 'JPEG', 'JPG'];
@@ -73,6 +75,7 @@ export function ChatInput({
   variant = 'full',
   expandable = false,
   isAgentChat = false,
+  agentId,
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [showUploadArea, setShowUploadArea] = useState(false);
@@ -772,9 +775,8 @@ export function ChatInput({
         >
           <ModelSelectorPanel
             selectedModel={settings.selectedModel}
-            onModelSelect={(model) => {
-              setSelectedModel(model);
-            }}
+            onModelSelect={setSelectedModel}
+            agentId={agentId}
           />
         </ChatInputExpansionPanel>
       ) : isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
@@ -1101,6 +1103,7 @@ export function ChatInput({
       open={isMobileOptionsOpen}
       onOpenChange={setIsMobileOptionsOpen}
       isAgentChat={isAgentChat}
+      agentId={agentId}
     />
 
     {/* Mobile query modes sheet — mode switcher → sheet flow */}

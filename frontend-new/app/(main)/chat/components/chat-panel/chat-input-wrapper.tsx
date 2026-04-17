@@ -23,7 +23,9 @@ export function ChatInputWrapper() {
     const sid = s.activeSlotId;
     return sid ? (s.slots[sid]?.threadAgentId?.trim() ?? '') : '';
   });
-  const isAgentChat = Boolean(rawAgentId?.trim() || slotAgentId);
+  // Determine effective agent ID (prefer slot's agent ID, fallback to URL)
+  const effectiveAgentId = slotAgentId || (rawAgentId?.trim() ? rawAgentId : null);
+  const isAgentChat = Boolean(effectiveAgentId);
 
   useEffect(() => {
     if (!isAgentChat) return;
@@ -151,5 +153,5 @@ export function ChatInputWrapper() {
     }
   };
 
-  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} />;
+  return <ChatInput onSend={handleSend} isAgentChat={isAgentChat} agentId={effectiveAgentId} />;
 }
