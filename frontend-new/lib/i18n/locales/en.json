@@ -270,6 +270,11 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
+    "agentNoModelsConfigured": "This agent has no models configured. Please configure models in the agent builder.",
+    "noModelsAvailable": "No models available. Please contact your administrator.",
+    "failedToLoadAgentConfig": "Failed to load agent configuration. Please try again.",
+    "failedToLoadModels": "Failed to load available models. Please try again.",
+    "configureModels": "Configure Models",
     "toasts": {
       "stopStreamTitle": "Coming Soon",
       "stopStreamDescription": "Stop Generation is not supported",

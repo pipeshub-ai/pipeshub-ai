@@ -15,6 +15,24 @@ import {
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { toIconPath } from '@/lib/utils/formatters';
 import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
+import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
+
+/**
+ * Convert agent-configured model to the chat available model format.
+ * This ensures type safety instead of using 'as' cast.
+ */
+function mapAgentModelToAvailable(model: AgentConfiguredModel): AvailableLlmModel {
+  return {
+    modelKey: model.modelKey,
+    modelName: model.modelName,
+    modelFriendlyName: model.modelFriendlyName,
+    provider: model.provider,
+    isDefault: model.isDefault,
+    isReasoning: model.isReasoning,
+    isMultimodal: model.isMultimodal,
+    modelType: model.modelType,
+  };
+}
 
 interface ModelSelectorPanelProps {
   /** Currently selected model override (null = use default from API) */
@@ -77,20 +95,18 @@ export function ModelSelectorPanel({
           if (cancelled) return;
 
           if (!agent?.models || agent.models.length === 0) {
-            setError(
-              'This agent has no models configured. Please configure models in the agent builder.'
-            );
+            setError(t('chat.agentNoModelsConfigured'));
             setModels([]);
             return;
           }
 
-          setModels(agent.models as AvailableLlmModel[]);
+          setModels(agent.models.map(mapAgentModelToAvailable));
         } else {
           const orgModels = await ChatApi.fetchAvailableLlms();
           if (cancelled) return;
 
           if (orgModels.length === 0) {
-            setError('No models available. Please contact your administrator.');
+            setError(t('chat.noModelsAvailable'));
             setModels([]);
             return;
           }
@@ -101,8 +117,8 @@ export function ModelSelectorPanel({
         if (cancelled) return;
         console.error('Failed to fetch models:', err);
         const errorMessage = agentId?.trim()
-          ? 'Failed to load agent configuration. Please try again.'
-          : 'Failed to load available models. Please try again.';
+          ? t('chat.failedToLoadAgentConfig')
+          : t('chat.failedToLoadModels');
         setError(errorMessage);
         setModels([]);
       } finally {
@@ -217,7 +233,7 @@ export function ModelSelectorPanel({
             >
               {error}
             </Text>
-            {error.includes('no models configured') && agentId && (
+            {error === t('chat.agentNoModelsConfigured') && agentId && (
               <Button 
                 variant="soft" 
                 size="2"
@@ -226,7 +242,7 @@ export function ModelSelectorPanel({
                 }}
               >
                 <MaterialIcon name="settings" size={16} />
-                Configure Models
+                {t('chat.configureModels')}
               </Button>
             )}
           </Flex>

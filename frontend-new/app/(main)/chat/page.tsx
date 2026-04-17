@@ -170,24 +170,6 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
 
-  // Agent tools + display name for header (sidebar also loads tools when listing convs).
-  useEffect(() => {
-    if (!agentId) {
-      useChatStore.getState().setAgentStreamTools([]);
-      useChatStore.getState().setAgentContextDisplayName(null);
-      return;
-    }
-    let cancelled = false;
-    AgentsApi.getAgent(agentId).then((res) => {
-      if (!cancelled) {
-        useChatStore.getState().setAgentStreamTools(res.toolFullNames);
-        useChatStore.getState().setAgentContextDisplayName(res.agent?.name?.trim() || null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId]);
   const threadRuntime = useThreadRuntime();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -359,54 +341,74 @@ function ChatContent() {
     }
   }, [conversationsVersion, loadConversations]);
 
-  // Fetch available LLMs and store the default model (agent-aware)
+  // Fetch agent details (tools, display name, default model) or org models (default model only)
   useEffect(() => {
     let cancelled = false;
 
-    const fetchDefaultModel = async () => {
-      try {
-        let models;
-        
-        if (agentId?.trim()) {
-          // Agent context: fetch agent details and use configured models
-          const { agent } = await AgentsApi.getAgent(agentId);
+    const fetchAgentOrModels = async () => {
+      const store = useChatStore.getState();
+
+      if (agentId?.trim()) {
+        // Agent context: fetch agent once and use for tools, name, and models
+        try {
+          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
           if (cancelled) return;
-          
-          if (!agent?.models || agent.models.length === 0) {
+
+          // Set tools and display name
+          store.setAgentStreamTools(toolFullNames);
+          store.setAgentContextDisplayName(agent?.name?.trim() || null);
+
+          // Set default model from agent's configured models
+          if (agent?.models && agent.models.length > 0) {
+            const defaultModel = agent.models.find((m) => m.isDefault);
+            if (defaultModel) {
+              store.setDefaultModel({
+                modelKey: defaultModel.modelKey,
+                modelName: defaultModel.modelName,
+                modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
+                modelProvider: defaultModel.provider,
+              });
+            }
+          } else {
             console.error('Agent has no configured models:', agentId);
-            return;
           }
-          
-          models = agent.models;
-        } else {
-          // Regular chat: use all org models
-          models = await ChatApi.fetchAvailableLlms();
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to fetch agent details:', error);
+          }
+        }
+      } else {
+        // Regular chat: clear agent data and fetch org models for default
+        store.setAgentStreamTools([]);
+        store.setAgentContextDisplayName(null);
+
+        try {
+          const models = await ChatApi.fetchAvailableLlms();
           if (cancelled) return;
-          
+
           if (models.length === 0) {
             console.error('No org models available');
             return;
           }
-        }
 
-        // Find and set default model
-        const defaultModel = models.find((m) => m.isDefault);
-        if (defaultModel && !cancelled) {
-          useChatStore.getState().setDefaultModel({
-            modelKey: defaultModel.modelKey,
-            modelName: defaultModel.modelName,
-            modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
-            modelProvider: defaultModel.provider,
-          });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.error('Failed to fetch default model:', error);
+          const defaultModel = models.find((m) => m.isDefault);
+          if (defaultModel) {
+            store.setDefaultModel({
+              modelKey: defaultModel.modelKey,
+              modelName: defaultModel.modelName,
+              modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
+              modelProvider: defaultModel.provider,
+            });
+          }
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to fetch org models:', error);
+          }
         }
       }
     };
 
-    fetchDefaultModel();
+    fetchAgentOrModels();
 
     return () => {
       cancelled = true;
