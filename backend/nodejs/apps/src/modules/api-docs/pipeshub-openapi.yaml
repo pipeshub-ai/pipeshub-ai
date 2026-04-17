@@ -2232,6 +2232,26 @@ components:
         - origin
         - orgId
 
+    UpdateRecordEnrichment:
+      type: object
+      description: |
+        Fields merged into successful record-update responses (Node gateway and Local KB connector).
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Epoch milliseconds when the response was generated
+        fileUpdated:
+          type: boolean
+        location:
+          type: string
+          enum: [kb_root, folder]
+        kb:
+          type: object
+          additionalProperties: true
+        userPermission:
+          type: string
+
     RecordsResponse:
       type: object
       description: Paginated response for records listing
@@ -11635,14 +11655,16 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  record:
-                    $ref: '#/components/schemas/Record'
+                allOf:
+                  - type: object
+                    properties:
+                      success:
+                        type: boolean
+                      message:
+                        type: string
+                      record:
+                        $ref: '#/components/schemas/Record'
+                  - $ref: '#/components/schemas/UpdateRecordEnrichment'
         '400':
           description: Invalid request
         '401':
@@ -12243,6 +12265,86 @@ paths:
                     description: Maximum file size in bytes (default 30MB)
         '401':
           description: Unauthorized
+
+  # Same contract as GET /knowledgeBase/limits (clients may use lowercase path under /api/v1)
+  /knowledgebase/limits:
+    get:
+      tags:
+        - Upload
+      summary: Get upload limits
+      description: Alias path for <code>GET /knowledgeBase/limits</code>.
+      operationId: getUploadLimitsKnowledgebaseAlias
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      responses:
+        '200':
+          description: Upload limits retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  maxFilesPerRequest:
+                    type: integer
+                    example: 1000
+                  maxFileSizeBytes:
+                    type: integer
+                    example: 31457280
+        '401':
+          description: Unauthorized
+
+  # Local KB connector — router prefix /api/v1/kb (PUT response includes UpdateRecordEnrichment)
+  /kb/record/{recordId}:
+    put:
+      tags:
+        - Records
+      summary: Update record (Local KB connector)
+      description: |
+        Python connector route <code>PUT /api/v1/kb/record/{record_id}</code>. Successful JSON body includes
+        <code>UpdateRecordEnrichment</code> (<code>timestamp</code>, <code>fileUpdated</code>, etc.).
+      operationId: updateRecordKbConnector
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                updates:
+                  type: object
+                  additionalProperties: true
+                fileMetadata:
+                  type: object
+                  nullable: true
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Record updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      success:
+                        type: boolean
+                  - $ref: '#/components/schemas/UpdateRecordEnrichment'
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Record not found
 
   # -------------------- Reindex/Sync Endpoints --------------------
   /knowledgeBase/reindex/record/{recordId}:
