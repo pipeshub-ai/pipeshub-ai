@@ -818,7 +818,7 @@ class GitLabDataSource:
     ) -> GitLabResponse:
         """List all group members including inherited ones."""
         try:
-            g = self._sdk.groups.get(group_id)
+            g = self._sdk.groups.get(group_id,lazy=True)
             items = g.members_all.list(get_all=get_all)
             return GitLabResponse(success=True, data=items)
         except Exception as e:

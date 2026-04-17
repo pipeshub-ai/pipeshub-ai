@@ -1929,7 +1929,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: list[str],
-        record_group_id: str,
+        external_record_group_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """Get record by path"""
@@ -1974,7 +1974,7 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.client.execute_query(
                 query,
                 parameters={"appId":connector_id,
-                            "recordGroupId":record_group_id,
+                            "recordGroupId":external_record_group_id,
                             "rawParts":path,
                             },
                 txn_id=transaction,

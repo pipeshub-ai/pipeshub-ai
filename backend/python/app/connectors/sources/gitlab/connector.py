@@ -4,8 +4,8 @@ import json
 import re
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from logging import Logger
 from typing import Any
 from urllib.parse import unquote
@@ -85,7 +85,11 @@ from app.sources.client.gitlab.gitlab import (
 )
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
 from app.utils.streaming import create_stream_record_response
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import (
+    get_epoch_timestamp_in_ms,
+    parse_timestamp,
+    string_to_datetime,
+)
 
 AUTHORIZE_URL = "https://gitlab.com/oauth/authorize"
 TOKEN_URL = "https://gitlab.com/oauth/token"
@@ -102,20 +106,42 @@ class FileAttachment(BaseModel):
     category: str = Field(description="Category of the attachment image or file")
 
 
-@dataclass
-class RecordUpdate:
+class RecordUpdate(BaseModel):
     """Tracks updates to a Record"""
 
-    record: Record | None
-    is_new: bool
-    is_updated: bool
-    is_deleted: bool
-    metadata_changed: bool
-    content_changed: bool
-    permissions_changed: bool
-    old_permissions: list[Permission] | None = None
-    new_permissions: list[Permission] | None = None
-    external_record_id: str | None = None
+    record: Record = Field(description="The record that was updated")
+    is_new: bool = Field(description="Whether the record is new")
+    is_updated: bool = Field(description="Whether the record is updated")
+    is_deleted: bool = Field(description="Whether the record is deleted")
+    metadata_changed: bool = Field(
+        description="Whether the record's metadata has changed"
+    )
+    content_changed: bool = Field(
+        description="Whether the record's content has changed"
+    )
+    permissions_changed: bool = Field(
+        description="Whether the record's permissions have changed"
+    )
+    old_permissions: list[Permission] | None = Field(
+        description="The old permissions of the record"
+    )
+    new_permissions: list[Permission] | None = Field(
+        description="The new permissions of the record"
+    )
+    external_record_id: str | None = Field(
+        description="The external record ID of the record"
+    )
+
+
+class GitlabLiterals(str, Enum):
+    LAST_SYNC_TIME = "last_sync_time"
+    RECORD_GROUP = "record_group"
+    GLOBAL = "global"
+    # TIMESTAMP = "timestamp"
+    UPDATED_AT = "updated_at"
+    UTF_8 = "utf-8"
+    IMAGE = "image"
+    ATTACHMENT = "attachment"
 
 
 @(
@@ -289,7 +315,7 @@ class GitLabConnector(BaseConnector):
         """
         try:
             if record.record_type == RecordType.TICKET:
-                self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
+                self.logger.info(" STREAM_TICKET_MARKER ")
                 blocks_container = await self._build_ticket_blocks(record)
 
                 # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
@@ -307,7 +333,7 @@ class GitLabConnector(BaseConnector):
                     },
                 )
             elif record.record_type == RecordType.PULL_REQUEST:
-                self.logger.info("🟣🟣🟣 STREAM_MERGE_REQUEST_MARKER 🟣🟣🟣")
+                self.logger.info(" STREAM_MERGE_REQUEST_MARKER ")
                 block_container = await self._build_pull_request_blocks(record)
 
                 # async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
@@ -325,7 +351,7 @@ class GitLabConnector(BaseConnector):
                     },
                 )
             elif record.record_type == RecordType.FILE:
-                self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
+                self.logger.info(" STREAM-FILE-MARKER ")
                 filename = record.record_name or f"{record.external_record_id}"
                 return create_stream_record_response(
                     self._fetch_attachment_content(record),
@@ -334,7 +360,7 @@ class GitLabConnector(BaseConnector):
                     fallback_filename=f"record_{record.id}",
                 )
             elif record.record_type == RecordType.CODE_FILE:
-                self.logger.info("🟣🟣🟣 STREAM-CODE-FILE-MARKER 🟣🟣🟣")
+                self.logger.info(" STREAM-CODE-FILE-MARKER ")
                 filename = record.record_name or f"{record.external_record_id}"
                 return create_stream_record_response(
                     self._fetch_code_file_content(record),
@@ -362,12 +388,16 @@ class GitLabConnector(BaseConnector):
         try:
             group_project_id = str(project_id) + "-work-items"
             sync_point_key = generate_record_sync_point_key(
-                "gitlab", group_project_id, ""
+                Connectors.GITLAB.value, group_project_id, ""
             )
             sync_point_data = await self.record_sync_point.read_sync_point(
                 sync_point_key
             )
-            return sync_point_data.get("last_sync_time") if sync_point_data else None
+            return (
+                sync_point_data.get(GitlabLiterals.LAST_SYNC_TIME.value)
+                if sync_point_data
+                else None
+            )
         except Exception:
             return None
 
@@ -377,8 +407,10 @@ class GitLabConnector(BaseConnector):
         """
         Update project issues sync checkpoint.
         """
-        sync_point_key = generate_record_sync_point_key("gitlab", project_id, "")
-        sync_point_data = {"last_sync_time": last_sync_time}
+        sync_point_key = generate_record_sync_point_key(
+            Connectors.GITLAB.value, project_id, ""
+        )
+        sync_point_data = {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time}
         await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def _get_mr_sync_checkpoint(self, project_id: int) -> int | None:
@@ -389,12 +421,16 @@ class GitLabConnector(BaseConnector):
         try:
             group_project_id = str(project_id) + "-merge-requests"
             sync_point_key = generate_record_sync_point_key(
-                "gitlab", group_project_id, ""
+                Connectors.GITLAB.value, group_project_id, ""
             )
             sync_point_data = await self.record_sync_point.read_sync_point(
                 sync_point_key
             )
-            return sync_point_data.get("last_sync_time") if sync_point_data else None
+            return (
+                sync_point_data.get(GitlabLiterals.LAST_SYNC_TIME.value)
+                if sync_point_data
+                else None
+            )
         except Exception:
             return None
 
@@ -404,8 +440,10 @@ class GitLabConnector(BaseConnector):
         """
         Update project merge requests sync checkpoint.
         """
-        sync_point_key = generate_record_sync_point_key("gitlab", project_id, "")
-        sync_point_data = {"last_sync_time": last_sync_time}
+        sync_point_key = generate_record_sync_point_key(
+            Connectors.GITLAB.value, project_id, ""
+        )
+        sync_point_data = {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time}
         await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def run_sync(self) -> None:
@@ -433,6 +471,7 @@ class GitLabConnector(BaseConnector):
         total_projects_synced = 0
         total_projects_skipped = 0
         dict_member: dict[int, GroupMember] = {}
+        # dict of member_id -> member
         if not groups_res.success:
             self.logger.error(
                 f"Error in fetching groups: {groups_res.error}, continuing with projects members"
@@ -564,11 +603,14 @@ class GitLabConnector(BaseConnector):
         # TODO: check api is since is supported modify code acc. as sync point depends
         current_timestamp = get_epoch_timestamp_in_ms()
         gitlab_record_group_sync_key = generate_record_sync_point_key(
-            "gitlab", "record_group", "global"
+            Connectors.GITLAB.value,
+            GitlabLiterals.RECORD_GROUP.value,
+            GitlabLiterals.GLOBAL.value,
         )
         await self._sync_projects()
         await self.record_sync_point.update_sync_point(
-            gitlab_record_group_sync_key, {"timestamp": current_timestamp}
+            gitlab_record_group_sync_key,
+            {GitlabLiterals.LAST_SYNC_TIME.value: current_timestamp},
         )
 
     async def _sync_repo_main(self, project_id: int, project_path: str) -> None:
@@ -662,7 +704,7 @@ class GitLabConnector(BaseConnector):
                                 parent_record = await tx_store.get_record_by_path(
                                     connector_id=f"{self.connector_id}",
                                     path=tmp_parent_path,
-                                    record_group_id=external_group_id,  # using group id as record group name is not unique
+                                    external_record_group_id=external_group_id,  # using group id as record group name is not unique
                                 )
                             if parent_record:
                                 self.logger.debug(
@@ -831,7 +873,7 @@ class GitLabConnector(BaseConnector):
                         parent_record = await tx_store.get_record_by_path(
                             connector_id=self.connector_id,
                             path=tmp_parent_path,
-                            record_group_id=external_group_id,
+                            external_record_group_id=external_group_id,
                         )
                     if parent_record:
                         self.logger.debug(
@@ -906,7 +948,7 @@ class GitLabConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 file_path = await tx_store.get_record_path(record.id)
 
-            self.logger.info(f"new record from stream : {file_path}")
+            self.logger.debug(f"new record from stream : {file_path}")
             external_group_id = getattr(record, "external_record_group_id")
             project_id = external_group_id.split("-")[0]
             if not external_group_id:
@@ -1050,7 +1092,7 @@ class GitLabConnector(BaseConnector):
         principal_id = str(member.id)
         permission_type = PermissionType.OWNER.value
         permission = await self._create_permission_from_principal(
-            "user",
+            EntityType.USER.value,
             principal_id,
             permission_type,
             create_pseudo_group_if_missing=True,  # Enable pseudo-group creation for record-level permissions
@@ -1083,7 +1125,7 @@ class GitLabConnector(BaseConnector):
             Permission object or None if principal not found in DB
         """
         try:
-            if principal_type == "user":
+            if principal_type == EntityType.USER.value:
                 entity_type = EntityType.USER
                 # Lookup user by source_user_id (accountId) using transaction store
                 async with self.data_store_provider.transaction() as tx_store:
@@ -1164,9 +1206,7 @@ class GitLabConnector(BaseConnector):
 
     # ---------------------------Issues Sync-----------------------------------#
 
-    async def _fetch_issues_batched(
-        self, project_id: int, last_sync_time: str | None = None
-    ) -> None:
+    async def _fetch_issues_batched(self, project_id: int) -> None:
         """
         Process: for each project read sync point, fetch work-items
         Args:
@@ -1179,7 +1219,10 @@ class GitLabConnector(BaseConnector):
         else:
             since_dt = None
         issues_res = self.data_source.list_issues(
-            project_id, updated_after=since_dt, order_by="updated_at", sort="asc"
+            project_id,
+            updated_after=since_dt,
+            order_by=GitlabLiterals.UPDATED_AT.value,
+            sort="asc",
         )
         if not issues_res.success:
             raise Exception(f"❌❌ Error in fetching issues for project {project_id}")
@@ -1315,9 +1358,9 @@ class GitLabConnector(BaseConnector):
                 is_updated = True
 
             issue_type = ItemType.ISSUE.value
-            if issue.issue_type == "incident":
+            if issue.issue_type == ItemType.INCIDENT.value.lower():
                 issue_type = ItemType.INCIDENT.value
-            elif issue.issue_type == "task":
+            elif issue.issue_type == ItemType.TASK.value.lower():
                 issue_type = ItemType.TASK.value
 
             label_names: list[str] = []
@@ -1332,8 +1375,8 @@ class GitLabConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 origin=OriginTypes.CONNECTOR.value,
-                source_updated_at=self.datetime_to_epoch_ms(issue.updated_at),
-                source_created_at=self.datetime_to_epoch_ms(issue.created_at),
+                source_updated_at=parse_timestamp(issue.updated_at),
+                source_created_at=parse_timestamp(issue.created_at),
                 version=0,  # not used further so 0
                 external_record_group_id=external_group_id,
                 org_id=self.data_entities_processor.org_id,
@@ -1341,7 +1384,7 @@ class GitLabConnector(BaseConnector):
                 mime_type=MimeTypes.BLOCKS.value,
                 weburl=issue.web_url,
                 status=issue.state,
-                external_revision_id=str(self.datetime_to_epoch_ms(issue.updated_at)),
+                external_revision_id=str(parse_timestamp(issue.updated_at)),
                 preview_renderable=False,
                 type=issue_type,
                 labels=label_names,
@@ -1425,7 +1468,7 @@ class GitLabConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT.value,
             source_group_id=record.weburl,
             data=markdown_content_with_images_base64,
-            source_modified_date=str(self.string_to_datetime(issue.updated_at)),
+            source_modified_date=string_to_datetime(issue.updated_at),
             requires_processing=True,
             children_records=child_records,
         )
@@ -1441,7 +1484,7 @@ class GitLabConnector(BaseConnector):
         await self._process_new_records(list_remaining_records)
 
         blocks_json = blocks_container.model_dump_json(indent=2)
-        return blocks_json.encode("utf-8")
+        return blocks_json.encode(GitlabLiterals.UTF_8.value)
 
     async def _handle_record_updates(self, issue_update: RecordUpdate) -> None:
         """_summary_
@@ -1583,10 +1626,12 @@ class GitLabConnector(BaseConnector):
                 list_remaining_attachments.extend(remaining_attachments)
                 position = getattr(comment, "position", {})
                 file_path = position.get("new_path")
-                comment_modified_date = getattr(comment, "updated_at", "")
+                comment_modified_date = getattr(
+                    comment, GitlabLiterals.UPDATED_AT.value, ""
+                )
                 comment_created_date = getattr(comment, "created_at", "")
-                source_modified_date = self.string_to_datetime(comment_modified_date)
-                source_created_date = self.string_to_datetime(comment_created_date)
+                source_modified_date = string_to_datetime(comment_modified_date)
+                source_created_date = string_to_datetime(comment_created_date)
                 block_comment = BlockComment(
                     text=markdown_content_with_images_base64,
                     format=DataFormat.MARKDOWN.value,
@@ -1631,8 +1676,10 @@ class GitLabConnector(BaseConnector):
                         )
                     else:
                         comment_name = f"Comment on merge request {mr_number}"
-                comment_modified_date = getattr(comment, "updated_at", "")
-                source_modified_date = self.string_to_datetime(comment_modified_date)
+                comment_modified_date = getattr(
+                    comment, GitlabLiterals.UPDATED_AT.value, ""
+                )
+                source_modified_date = string_to_datetime(comment_modified_date)
                 bg = BlockGroup(
                     index=block_group_number,
                     parent_index=parent_index,
@@ -1701,7 +1748,9 @@ class GitLabConnector(BaseConnector):
                 new_file_content = getattr(new_file, "content", "")
             try:
                 # Decode base64 content from Gitlab API else add encoded content
-                file_content = base64.b64decode(new_file_content).decode("utf-8")
+                file_content = base64.b64decode(new_file_content).decode(
+                    GitlabLiterals.UTF_8.value
+                )
             except Exception as e:
                 self.logger.error(
                     f"Failed to decode code file content for {file_path}: {e}"
@@ -1805,7 +1854,10 @@ class GitLabConnector(BaseConnector):
         else:
             since_dt = None
         prs_res = self.data_source.list_merge_requests(
-            project_id, updated_after=since_dt, order_by="updated_at", sort="asc"
+            project_id,
+            updated_after=since_dt,
+            order_by=GitlabLiterals.UPDATED_AT.value,
+            sort="asc",
         )
         if not prs_res.success:
             self.logger.error(f"Error in fetching issues for projectId {project_id}")
@@ -1913,8 +1965,8 @@ class GitLabConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 origin=OriginTypes.CONNECTOR.value,
-                source_updated_at=self.datetime_to_epoch_ms(pr.updated_at),
-                source_created_at=self.datetime_to_epoch_ms(pr.created_at),
+                source_updated_at=parse_timestamp(pr.updated_at),
+                source_created_at=parse_timestamp(pr.created_at),
                 version=0,  # not used further so 0
                 external_record_group_id=external_group_id,
                 org_id=self.data_entities_processor.org_id,
@@ -1922,7 +1974,7 @@ class GitLabConnector(BaseConnector):
                 mime_type=MimeTypes.BLOCKS.value,
                 weburl=pr.web_url,
                 status=pr.state,
-                external_revision_id=str(self.datetime_to_epoch_ms(pr.updated_at)),
+                external_revision_id=str(parse_timestamp(pr.updated_at)),
                 preview_renderable=False,
                 mergeable=pr.merge_status,
                 labels=label_names,
@@ -1999,7 +2051,7 @@ class GitLabConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT.value,
             source_group_id=record.weburl,
             data=markdown_content_with_title,
-            source_modified_date=str(self.string_to_datetime(mr.updated_at)),
+            source_modified_date=string_to_datetime(mr.updated_at),
             requires_processing=True,
             children_records=list_child_records,
         )
@@ -2044,9 +2096,7 @@ class GitLabConnector(BaseConnector):
                 data=commit_message,
                 source_id=commit_id,
                 name=commit_title,
-                source_creation_date=str(
-                    self.string_to_datetime(commit_committed_date)
-                ),
+                source_creation_date=string_to_datetime(commit_committed_date),
             )
             block_number += 1
             blocks.append(block)
@@ -2061,7 +2111,7 @@ class GitLabConnector(BaseConnector):
         self.logger.debug(f"block and groups created for merge request {mr_number}")
         await self._process_new_records(list_remaining_attachments)
         blocks_json = blocks_container.model_dump_json(indent=2)
-        return blocks_json.encode("utf-8")
+        return blocks_json.encode(GitlabLiterals.UTF_8.value)
 
     # ---------------------------Attachment functions-----------------------------------#
 
@@ -2091,7 +2141,7 @@ class GitLabConnector(BaseConnector):
         if not attachments:
             return markdown_content_clean
         for attach in attachments:
-            if attach.category != "image":
+            if attach.category != GitlabLiterals.IMAGE.value:
                 continue
             attachment_url = attach.href
             full_attachment_url = f"{base_project_url}{attachment_url}"
@@ -2099,7 +2149,9 @@ class GitLabConnector(BaseConnector):
                 response = await self.data_source.get_img_bytes(full_attachment_url)
                 if response.success and response.data:
                     fmt = self.EXTENSION_TO_MIME.get(attach.filetype, "png")
-                    base64_data = base64.b64encode(response.data).decode("utf-8")
+                    base64_data = base64.b64encode(response.data).decode(
+                        GitlabLiterals.UTF_8.value
+                    )
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
             except Exception as e:
@@ -2115,7 +2167,7 @@ class GitLabConnector(BaseConnector):
         base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         list_records_new: list[RecordUpdate] = []
         for attach in attachments:
-            if attach.category == "image":
+            if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             # creating file record for each attachment
             attachment_url = attach.href
@@ -2209,7 +2261,7 @@ class GitLabConnector(BaseConnector):
         project_id = record.external_record_group_id.split("-")[0]
         base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         for attach in attachments:
-            if attach.category == "image":
+            if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             attachment_url = attach.href
             full_attachment_url = f"{base_url_for_attachments}{attachment_url}"
@@ -2251,7 +2303,7 @@ class GitLabConnector(BaseConnector):
         project_id = record.external_record_group_id.split("-")[0]
         base_url_for_attachments = f"https://gitlab.com/api/v4/projects/{project_id}"
         for attach in attachments:
-            if attach.category == "image":
+            if attach.category == GitlabLiterals.IMAGE.value:
                 continue
             attachment_url = attach.href
             full_attachment_url = f"{base_url_for_attachments}{attachment_url}"
@@ -2280,25 +2332,6 @@ class GitLabConnector(BaseConnector):
         return comment_attachments, remaining_attachments
 
     # ---------------------------insitu functions-----------------------------------#
-
-    def datetime_to_epoch_ms(self, dt: str | None) -> int | None:
-        # convert string to datetime and then to epoch milliseconds
-        try:
-            if isinstance(dt, str):
-                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-            else:
-                return None
-            return int(dt.timestamp() * 1000)
-        except Exception as e:
-            self.logger.debug(f"Error in conversion of date time: {e}")
-            return None
-
-    def string_to_datetime(self, time_str: str) -> datetime | None:
-        try:
-            return datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-        except Exception:
-            self.logger.debug("issue in conversion of date time")
-            return None
 
     async def get_signed_url(self, record: Record) -> str | None:
         """Get signed URL for record access (optional - if API supports it)."""
@@ -2353,12 +2386,11 @@ class GitLabConnector(BaseConnector):
             else:
                 extension = filename.rsplit(".", 1)[-1].lower()
 
-            # Ignore SVG explicitly
-            # if extension == "svg":
-            #     cleaned_text = cleaned_text.replace(full_match, "")
-            #     continue
-
-            category = "image" if extension in IMAGE_EXTENSIONS else "attachment"
+            category = (
+                GitlabLiterals.IMAGE.value
+                if extension in IMAGE_EXTENSIONS
+                else GitlabLiterals.ATTACHMENT.value
+            )
 
             try:
                 files.append(

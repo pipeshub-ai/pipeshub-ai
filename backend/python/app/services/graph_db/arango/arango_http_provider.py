@@ -2511,7 +2511,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: list[str],
-        record_group_id: str,
+        external_record_group_id: str,
         transaction: str | None = None,
     ) -> dict | None:
         """
@@ -2519,11 +2519,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             connector_id (str): The ID of the connector.
-            path (str): The path of the file to look up.
-            transaction (Optional[str]): Optional transaction ID.
+            path (list[str]): The path of the file to look up.
+            external_record_group_id (str): The external ID of the record group.
+            transaction (str): Optional transaction ID.
 
         Returns:
-            Optional[Dict]: The file record if found, otherwise None.
+            dict | None: The file record if found, otherwise None.
         """
         try:
             # based on external id
@@ -2557,7 +2558,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET result_1  = depth == 0 ? rec0 :
                 (FOR v, e, p IN 1..100 OUTBOUND rec0
                     recordRelations
-                    //OPTIONS { uniqueVertices: "path" }
 
                     FILTER e.relationshipType == "PARENT_CHILD"
 
@@ -2575,7 +2575,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "rawParts":path,
                     "connectorId":connector_id,
-                    "recordGroupId":record_group_id,
+                    "recordGroupId":external_record_group_id,
                 },
                 txn_id=transaction
             )
