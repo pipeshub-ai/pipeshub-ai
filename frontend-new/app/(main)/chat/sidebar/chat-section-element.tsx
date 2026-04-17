@@ -181,7 +181,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={
-          conversation.isOwner !== false ? (
+          conversation.isOwner === true ? (
             <ChatItemMenu
               isParentHovered={isHovered}
               onOpenChange={setMenuOpen}
