@@ -9,14 +9,16 @@ type CoverageFixtures = {
 
 export const test = base.extend<CoverageFixtures>({
   autoCollectCoverage: [
-    async ({ page }, use, testInfo) => {
-      if (COVERAGE_ENABLED) {
+    async ({ page, browserName }, use, testInfo) => {
+      const canCollect = COVERAGE_ENABLED && browserName === 'chromium';
+
+      if (canCollect) {
         await page.coverage.startJSCoverage({ resetOnNavigation: false });
       }
 
       await use(undefined);
 
-      if (COVERAGE_ENABLED) {
+      if (canCollect) {
         const coverage = await page.coverage.stopJSCoverage();
         await addCoverageReport(coverage, testInfo);
       }

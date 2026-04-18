@@ -13,7 +13,11 @@ const coverageReporter: any[] = [
     coverage: {
       reports: ['v8', 'console-details', 'lcov'],
       outputDir: 'coverage/e2e',
-      entryFilter: (entry: { url: string }) => entry.url.includes('localhost'),
+      entryFilter: (entry: { url: string }) => {
+        const baseUrl = process.env.BASE_URL || 'http://localhost:5005';
+        const hostname = new URL(baseUrl).hostname;
+        return entry.url.includes(hostname);
+      },
       sourceFilter: (sourcePath: string) =>
         sourcePath.includes('app/') && !sourcePath.includes('node_modules'),
     },
@@ -26,7 +30,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: COVERAGE_ENABLED ? coverageReporter : defaultReporter,
+  reporter: COVERAGE_ENABLED ? [...defaultReporter, ...coverageReporter] : defaultReporter,
 
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:5005',

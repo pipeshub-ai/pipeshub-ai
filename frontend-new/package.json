@@ -18,7 +18,7 @@
     "test:e2e:report": "npx playwright show-report",
     "test:e2e:cleanup": "npx playwright test tests/e2e/seed/cleanup.spec.ts --project=seed",
     "test:e2e:coverage": "COVERAGE=true npx playwright test",
-    "test:e2e:coverage-report": "open coverage/e2e/report.html"
+    "test:e2e:coverage-report": "npx open-cli coverage/e2e/report.html"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
