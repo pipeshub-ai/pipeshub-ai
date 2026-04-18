@@ -17,6 +17,7 @@ class config_node_constants(Enum):
     SECRET_KEYS = "/services/secretKeys"
     STORAGE = "/services/storage"
     MIGRATIONS = "/services/migrations"
+    DEPLOYMENT = "/services/deployment"
 
     # Non-service paths
     # LOG_LEVEL = "/logLevel"

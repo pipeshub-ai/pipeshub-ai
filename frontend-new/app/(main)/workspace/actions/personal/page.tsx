@@ -161,10 +161,16 @@ function PersonalActionsPageContent() {
 
   const items = useMemo(() => myToolsetsGroupedToCatalogItems(myToolsets), [myToolsets]);
 
-  /** Header metadata from first instance row or URL when the list is empty. */
+  /**
+   * Type-detail header: toolset metadata from any row of this type (not only the first list row),
+   * with fallback to catalog my-toolsets so the title stays the integration name when filters empty.
+   */
   const typeRegistryRow = useMemo((): RegistryToolsetRow | null => {
     if (!toolsetTypeParam) return null;
-    const primary = typeListInstances[0];
+    const q = toolsetTypeParam.toLowerCase();
+    const primary =
+      typeListInstances.find((i) => (i.toolsetType || '').toLowerCase() === q) ??
+      myToolsets.find((i) => (i.toolsetType || '').toLowerCase() === q);
     if (primary) {
       const name =
         primary.toolsetType || primary.normalized_name || primary.name || toolsetTypeParam;
@@ -190,7 +196,7 @@ function PersonalActionsPageContent() {
       supportedAuthTypes: ['NONE'],
       toolCount: 0,
     };
-  }, [toolsetTypeParam, typeListInstances]);
+  }, [toolsetTypeParam, typeListInstances, myToolsets]);
 
   const handleInstanceTabChange = useCallback(
     (tab: ActionInstanceAuthTab) => {

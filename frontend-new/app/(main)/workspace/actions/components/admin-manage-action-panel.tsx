@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AlertDialog,
@@ -20,14 +20,16 @@ import {
   type ToolsetOauthConfigListRow,
 } from '@/app/(main)/toolsets/api';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
-import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
+import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
 import {
   apiErrorDetail,
   configureAuthFieldsForType,
   getToolsetAuthConfigFromSchema,
+  oauthConfigureSeedValuesFromListRow,
+  stableStringifyRecord,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
-import { isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
+import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';
 import {
@@ -53,6 +55,22 @@ function resolveLinkedOauthConfig(
   }
   if (list.length === 1) return list[0];
   return undefined;
+}
+
+function asAuthRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+/** Prefer full GET /instances/:id auth; else list-row `auth` when present. */
+function resolvedStoredAuth(
+  fromGet: Record<string, unknown> | null,
+  fromSidebar: unknown
+): Record<string, unknown> {
+  const g = fromGet && Object.keys(fromGet).length > 0 ? fromGet : null;
+  return g ?? asAuthRecord(fromSidebar) ?? {};
 }
 
 export interface AdminManageActionPanelProps {
@@ -81,19 +99,20 @@ export function AdminManageActionPanel({
   const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
 
   const [instanceName, setInstanceName] = useState(instance.instanceName || instance.displayName || '');
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  const [initialClientId, setInitialClientId] = useState('');
-  const [initialClientSecret, setInitialClientSecret] = useState('');
-  const [secretInitiallySet, setSecretInitiallySet] = useState(false);
-  const [showSecret, setShowSecret] = useState(false);
-  /** OAuth configure fields from schema except client id/secret (those stay explicit for admins). */
-  const [oauthExtraValues, setOauthExtraValues] = useState<Record<string, unknown>>({});
+  const [oauthFieldValues, setOauthFieldValues] = useState<Record<string, unknown>>({});
+  const [initialOauthSnapshot, setInitialOauthSnapshot] = useState('');
+  const [clientSecretWasSet, setClientSecretWasSet] = useState(false);
+
+  const [nonOauthValues, setNonOauthValues] = useState<Record<string, unknown>>({});
+  /** Instance document `auth` from GET /instances/:id (admin); my-toolsets rows often omit this. */
+  const [instanceAuthFromGet, setInstanceAuthFromGet] = useState<Record<string, unknown> | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const lastOauthHydrateKeyRef = useRef<string>('');
 
   const toolNames = useMemo(() => {
     const fromSchema = toolNamesFromSchema(schemaRaw);
@@ -101,33 +120,68 @@ export function AdminManageActionPanel({
     return (instance.tools || []).map((x) => x.name).filter(Boolean);
   }, [schemaRaw, instance.tools]);
 
-  const oauthConfigureExtras = useMemo(() => {
+  const authConfigSchema = useMemo(() => getToolsetAuthConfigFromSchema(schemaRaw), [schemaRaw]);
+
+  const oauthFields = useMemo(() => {
     if (!oauth) return [];
-    const ac = getToolsetAuthConfigFromSchema(schemaRaw);
-    return configureAuthFieldsForType(ac, 'OAUTH').filter(
-      (f) => !['clientid', 'clientsecret'].includes(f.name.toLowerCase())
+    return configureAuthFieldsForType(authConfigSchema, 'OAUTH').filter(
+      (f) => f.name.toLowerCase() !== 'redirecturi'
     );
-  }, [oauth, schemaRaw]);
+  }, [oauth, authConfigSchema]);
+
+  const nonOauthConfigureFields = useMemo(() => {
+    if (oauth || isNoneAuthType(authType)) return [];
+    return configureAuthFieldsForType(authConfigSchema, authType).filter(
+      (f) => f.name.toLowerCase() !== 'redirecturi'
+    );
+  }, [oauth, authType, authConfigSchema]);
 
   const redirectUri = useMemo(() => {
     if (typeof window === 'undefined') return '';
     return toolsetRedirectUri(window.location.origin, toolsetType);
   }, [toolsetType]);
 
+  const linkedOauthRow = useMemo(
+    () =>
+      resolveLinkedOauthConfig(oauthConfigs, {
+        oauthConfigId: instance.oauthConfigId,
+        instanceName: instance.instanceName,
+        displayName: instance.displayName,
+      }),
+    [oauthConfigs, instance.oauthConfigId, instance.instanceName, instance.displayName]
+  );
+
   const linkedOauthName = useMemo(() => {
-    const row = resolveLinkedOauthConfig(oauthConfigs, instance);
-    return (
-      row?.oauthInstanceName || instance.instanceName || instance.displayName || ''
-    );
-  }, [instance, oauthConfigs]);
+    return linkedOauthRow?.oauthInstanceName || instance.instanceName || instance.displayName || '';
+  }, [linkedOauthRow, instance.instanceName, instance.displayName]);
+
+  useEffect(() => {
+    lastOauthHydrateKeyRef.current = '';
+  }, [instance.instanceId]);
 
   useEffect(() => {
     setInstanceName(instance.instanceName || instance.displayName || '');
   }, [instance.instanceName, instance.displayName]);
 
   useEffect(() => {
-    setOauthExtraValues({});
-  }, [instance.instanceId]);
+    if (!instanceId) {
+      setInstanceAuthFromGet(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const doc = await ToolsetsApi.getToolsetInstance(instanceId);
+        if (cancelled) return;
+        setInstanceAuthFromGet(asAuthRecord(doc.auth));
+      } catch {
+        if (!cancelled) setInstanceAuthFromGet(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [instanceId]);
 
   useEffect(() => {
     if (!toolsetType) {
@@ -153,16 +207,7 @@ export function AdminManageActionPanel({
     (async () => {
       try {
         const list = await ToolsetsApi.listToolsetOAuthConfigs(toolsetType);
-        if (cancelled) return;
-        setOauthConfigs(list);
-        const row = resolveLinkedOauthConfig(list, instance);
-        const cid = row?.clientId?.trim() ?? '';
-        setClientId(cid);
-        setInitialClientId(cid);
-        const loadedSecret = row?.clientSecret?.trim() ?? '';
-        setClientSecret(loadedSecret);
-        setInitialClientSecret(loadedSecret);
-        setSecretInitiallySet(Boolean(row?.clientSecretSet) || loadedSecret.length > 0);
+        if (!cancelled) setOauthConfigs(list);
       } catch {
         if (!cancelled) setOauthConfigs([]);
       }
@@ -170,14 +215,37 @@ export function AdminManageActionPanel({
     return () => {
       cancelled = true;
     };
-  }, [
-    oauth,
-    toolsetType,
-    instance.instanceId,
-    instance.oauthConfigId,
-    instance.instanceName,
-    instance.displayName,
-  ]);
+  }, [oauth, toolsetType]);
+
+  useEffect(() => {
+    if (!oauth || !oauthFields.length) return;
+    const row = linkedOauthRow;
+    const hydrateKey = `${instance.instanceId}:${row?._id ?? 'none'}:${oauthFields.map((f) => f.name).join(',')}`;
+    if (hydrateKey === lastOauthHydrateKeyRef.current) return;
+    const seeded = oauthConfigureSeedValuesFromListRow(row, oauthFields);
+    setOauthFieldValues(seeded);
+    setInitialOauthSnapshot(stableStringifyRecord(seeded));
+    setClientSecretWasSet(
+      Boolean(row?.clientSecretSet) || Boolean(String(seeded.clientSecret ?? '').trim())
+    );
+    lastOauthHydrateKeyRef.current = hydrateKey;
+  }, [oauth, oauthFields, linkedOauthRow, instance.instanceId]);
+
+  useEffect(() => {
+    if (oauth || !nonOauthConfigureFields.length) {
+      setNonOauthValues({});
+      return;
+    }
+    const src = resolvedStoredAuth(instanceAuthFromGet, instance.auth);
+    const next: Record<string, unknown> = {};
+    for (const f of nonOauthConfigureFields) {
+      const v = src[f.name];
+      if (v !== undefined && v !== null) {
+        next[f.name] = Array.isArray(v) ? v.join(',') : v;
+      }
+    }
+    setNonOauthValues(next);
+  }, [oauth, nonOauthConfigureFields, instance.instanceId, instance.auth, instanceAuthFromGet]);
 
   const verifyOAuthComplete = useCallback(async (): Promise<boolean> => {
     try {
@@ -207,10 +275,25 @@ export function AdminManageActionPanel({
     [stopOAuthUi]
   );
 
+  const oauthFieldForDisplay = useCallback(
+    (f: AuthSchemaField): AuthSchemaField => {
+      if (!linkedOauthRow) return f;
+      const ln = f.name.toLowerCase();
+      if (ln === 'clientid' || ln === 'clientsecret') {
+        return {
+          ...f,
+          required: false,
+          placeholder:
+            ln === 'clientsecret' ? t('workspace.actions.manage.secretPlaceholder') : f.placeholder,
+        };
+      }
+      return f;
+    },
+    [linkedOauthRow, t]
+  );
+
   const showOauthImpactCallout =
-    oauth &&
-    (clientId.trim() !== initialClientId.trim() ||
-      clientSecret.trim() !== initialClientSecret.trim());
+    oauth && oauthFields.length > 0 && stableStringifyRecord(oauthFieldValues) !== initialOauthSnapshot;
 
   const copyRedirect = useCallback(async () => {
     if (!redirectUri) return;
@@ -234,14 +317,23 @@ export function AdminManageActionPanel({
     try {
       if (oauth) {
         const authConfig: Record<string, unknown> = { type: 'OAUTH' };
-        oauthConfigureExtras.forEach((f) => {
-          const v = oauthExtraValues[f.name];
-          if (v !== undefined && v !== null && String(v).trim() !== '') {
-            authConfig[f.name] = v;
+        for (const f of oauthFields) {
+          const ln = f.name.toLowerCase();
+          if (ln === 'redirecturi' || ln === 'baseurl') continue;
+          const raw = oauthFieldValues[f.name];
+          if (ln === 'clientsecret' && (!raw || !String(raw).trim())) {
+            if (clientSecretWasSet) continue;
           }
-        });
-        if (clientId.trim()) authConfig.clientId = clientId.trim();
-        if (clientSecret.trim()) authConfig.clientSecret = clientSecret.trim();
+          if (raw === undefined || raw === null || String(raw).trim() === '') continue;
+          if (ln === 'scopes' && typeof raw === 'string') {
+            authConfig[f.name] = raw
+              .split(',')
+              .map((s: string) => s.trim())
+              .filter(Boolean);
+          } else {
+            authConfig[f.name] = raw;
+          }
+        }
         const res = await ToolsetsApi.updateToolsetInstance(instanceId, {
           instanceName: name,
           authConfig,
@@ -256,7 +348,40 @@ export function AdminManageActionPanel({
         onClose();
         return;
       }
-      await ToolsetsApi.updateToolsetInstance(instanceId, { instanceName: name });
+
+      // Backend PUT replaces instance.auth like POST create assigns new_instance["auth"] (no merge).
+      // Build one object per configure field: form wins when set; otherwise keep prior instance auth.
+      const src = resolvedStoredAuth(instanceAuthFromGet, instance.auth);
+      const authCfg: Record<string, unknown> = {};
+      for (const f of nonOauthConfigureFields) {
+        const raw = nonOauthValues[f.name];
+        if (Object.prototype.hasOwnProperty.call(nonOauthValues, f.name)) {
+          if (raw === null || raw === undefined || String(raw).trim() === '') {
+            continue;
+          }
+          authCfg[f.name] = Array.isArray(raw) ? raw.join(',') : raw;
+          continue;
+        }
+        const prev = src[f.name];
+        if (prev !== undefined && prev !== null && String(prev).trim() !== '') {
+          authCfg[f.name] = Array.isArray(prev) ? (prev as unknown[]).join(',') : prev;
+        }
+      }
+      const putRes = await ToolsetsApi.updateToolsetInstance(instanceId, {
+        instanceName: name,
+        ...(nonOauthConfigureFields.length > 0 ? { authConfig: authCfg } : {}),
+      });
+      const updatedAuth = asAuthRecord(putRes.instance?.auth);
+      if (updatedAuth) {
+        setInstanceAuthFromGet(updatedAuth);
+      } else if (nonOauthConfigureFields.length > 0) {
+        try {
+          const doc = await ToolsetsApi.getToolsetInstance(instanceId);
+          setInstanceAuthFromGet(asAuthRecord(doc.auth));
+        } catch {
+          /* ignore */
+        }
+      }
       onNotify?.(t('workspace.actions.manage.saveSuccess'));
       onSaved();
       onClose();
@@ -266,13 +391,16 @@ export function AdminManageActionPanel({
       setSaving(false);
     }
   }, [
-    clientId,
-    clientSecret,
+    clientSecretWasSet,
+    instance.auth,
+    instanceAuthFromGet,
     instanceId,
     instanceName,
+    nonOauthConfigureFields,
+    nonOauthValues,
     oauth,
-    oauthConfigureExtras,
-    oauthExtraValues,
+    oauthFieldValues,
+    oauthFields,
     onClose,
     onNotify,
     onSaved,
@@ -377,66 +505,47 @@ export function AdminManageActionPanel({
 
       {oauth ? (
         <>
-          <Flex direction="column" gap="2">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {t('workspace.actions.oauthClientId')}
-            </Text>
-            <TextField.Root value={clientId} onChange={(e) => setClientId(e.target.value)} />
-            <Text size="1" color="gray">
-              {t('workspace.actions.manage.clientIdHint')}
-            </Text>
-          </Flex>
-          <Flex direction="column" gap="2">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {t('workspace.actions.oauthClientSecret')}
-            </Text>
-            <TextField.Root
-              type={showSecret ? 'text' : 'password'}
-              value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-              placeholder={
-                secretInitiallySet ? t('workspace.actions.manage.secretPlaceholder') : undefined
-              }
-            >
-              <TextField.Slot side="right">
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  color="gray"
-                  size="1"
-                  aria-label={showSecret ? t('workspace.actions.manage.hideSecret') : t('workspace.actions.manage.showSecret')}
-                  onClick={() => setShowSecret((s) => !s)}
-                >
-                  <MaterialIcon name={showSecret ? 'visibility_off' : 'visibility'} size={16} color="var(--gray-11)" />
-                </IconButton>
-              </TextField.Slot>
-            </TextField.Root>
-            <Text size="1" color="gray">
-              {t('workspace.actions.manage.clientSecretHint')}
-            </Text>
-          </Flex>
-          {oauthConfigureExtras.length > 0 ? (
+          {oauthFields.length > 0 ? (
             <Flex direction="column" gap="3" mt="1">
-              {oauthConfigureExtras.map((field) => (
+              {oauthFields.map((field) => (
                 <SchemaFormField
                   key={field.name}
-                  field={field as SchemaField}
-                  value={oauthExtraValues[field.name]}
-                  onChange={(name, val) => setOauthExtraValues((p) => ({ ...p, [name]: val }))}
+                  field={oauthFieldForDisplay(field) as SchemaField}
+                  value={oauthFieldValues[field.name]}
+                  onChange={(name, val) => setOauthFieldValues((p) => ({ ...p, [name]: val }))}
                   selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
                 />
               ))}
             </Flex>
-          ) : null}
+          ) : (
+            <Callout.Root color="amber" variant="surface" size="1">
+              <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
+            </Callout.Root>
+          )}
         </>
-      ) : (
+      ) : nonOauthConfigureFields.length > 0 ? (
+        <Flex direction="column" gap="3" mt="1">
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            {t('workspace.actions.configurationHeading')}
+          </Text>
+          {nonOauthConfigureFields.map((field) => (
+            <SchemaFormField
+              key={field.name}
+              field={field as SchemaField}
+              value={nonOauthValues[field.name]}
+              onChange={(name, val) => setNonOauthValues((p) => ({ ...p, [name]: val }))}
+              selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+            />
+          ))}
+        </Flex>
+      ) : !isNoneAuthType(authType) ? (
         <Callout.Root color="blue">
           <Callout.Icon>
             <MaterialIcon name="info" size={16} />
           </Callout.Icon>
           <Callout.Text>{t('workspace.actions.manage.nonOAuthHint')}</Callout.Text>
         </Callout.Root>
-      )}
+      ) : null}
 
       {oauth && showOauthImpactCallout ? (
         <Callout.Root color="amber">
@@ -499,9 +608,17 @@ export function AdminManageActionPanel({
         <Button type="button" variant="soft" color="gray" onClick={onClose}>
           {t('action.cancel')}
         </Button>
-        <Button type="button" variant="soft" color="gray" loading={authenticating} onClick={() => void handleAuthenticate()}>
-          {t('workspace.actions.cta.authenticate')}
-        </Button>
+        {oauth ? (
+          <Button
+            type="button"
+            variant="soft"
+            color="gray"
+            loading={authenticating}
+            onClick={() => void handleAuthenticate()}
+          >
+            {t('workspace.actions.cta.authenticate')}
+          </Button>
+        ) : null}
         <Button type="button" color="jade" loading={saving} onClick={() => void handleSave()}>
           {t('action.save')}
         </Button>

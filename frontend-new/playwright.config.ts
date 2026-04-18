@@ -33,7 +33,7 @@ export default defineConfig({
   reporter: COVERAGE_ENABLED ? [...defaultReporter, ...coverageReporter] : defaultReporter,
 
   use: {
-    baseURL: process.env.BASE_URL || 'http://localhost:5005',
+    baseURL: process.env.BASE_URL || 'http://localhost:3001',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -80,7 +80,7 @@ export default defineConfig({
 
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:5005',
+    url: 'http://localhost:3001',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

@@ -28,6 +28,7 @@ import { useAuthStore } from "@/lib/store/auth-store"
 import { useMobileSidebarStore } from "@/lib/store/mobile-sidebar-store"
 import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
+import { HealthGate } from '@/app/components/ui/health-gate'
 
 export default function RootLayout({
   children,
@@ -82,9 +83,11 @@ export default function RootLayout({
               </Text>
             </div>
             <AuthGuard>
-              <AppLayout sidebar={sidebar}>
-                {children}
-              </AppLayout>
+              <HealthGate>
+                <AppLayout sidebar={sidebar}>
+                  {children}
+                </AppLayout>
+              </HealthGate>
             </AuthGuard>
           </ThemeProvider>
         </I18nextProvider>
@@ -122,11 +125,9 @@ function AppLayout({
     }
 
     // 2. Call the API and decide
-    const forceActive = process.env.NEXT_PUBLIC_FORCE_ONBOARDING_ACTIVE === 'true'
-
     getOnboardingStatus()
       .then(({ status }) => {
-        if (status === 'notConfigured' || forceActive) {
+        if (status === 'notConfigured') {
           setOnboardingActive(true)
           router.replace('/onboarding')
         }

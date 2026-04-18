@@ -27,26 +27,13 @@ import {
   apiErrorDetail,
   configureAuthFieldsForType,
   getToolsetAuthConfigFromSchema,
+  oauthConfigureSeedValuesFromListRow,
   toolsetSchemaRoot,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
 
 const NEW_OAUTH_VALUE = '__new__';
-
-/** Map stored OAuth list row into form values for schema field names only (legacy toolset-config-dialog). */
-function oauthListRowToFieldSeeds(row: ToolsetOauthConfigListRow, fields: AuthSchemaField[]): Record<string, unknown> {
-  const names = new Set(fields.map((f) => f.name));
-  const merged: Record<string, unknown> = {};
-  if (row.clientId) merged.clientId = row.clientId;
-  if (row.clientSecret) merged.clientSecret = row.clientSecret;
-  if (row.extraConfig) Object.assign(merged, row.extraConfig);
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(merged)) {
-    if (names.has(k)) out[k] = merged[k];
-  }
-  return out;
-}
 
 function buildOAuthAuthConfigForCreate(
   fields: AuthSchemaField[],
@@ -222,7 +209,7 @@ export function ActionSetupPanel({
     if (lastHydratedOauthIdRef.current === oauthAppValue) return;
     const row = oauthConfigs.find((c) => c._id === oauthAppValue);
     if (!row) return;
-    setFieldValues(oauthListRowToFieldSeeds(row, schemaFieldsToRender));
+    setFieldValues(oauthConfigureSeedValuesFromListRow(row, schemaFieldsToRender));
     lastHydratedOauthIdRef.current = oauthAppValue;
   }, [open, authType, oauthAppValue, oauthConfigs, schemaFieldsToRender, showOAuthAppPicker]);
 

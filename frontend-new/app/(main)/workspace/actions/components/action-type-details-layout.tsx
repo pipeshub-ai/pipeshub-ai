@@ -308,6 +308,7 @@ export function ActionTypeDetailsLayout({
             {instances.map((inst) => (
               <ToolsetInstanceRowCard
                 key={inst.instanceId || inst.instanceName}
+                scope={scope}
                 instance={inst}
                 onAuthenticate={() => onAuthenticateInstance(inst)}
                 onConfigure={() => onConfigureInstance(inst)}

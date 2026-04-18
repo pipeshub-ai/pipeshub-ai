@@ -1563,6 +1563,8 @@ async def update_toolset_instance(
       - Renaming the instance (instanceName)
       - Updating OAuth credentials (authConfig with clientId/clientSecret)
       - Switching to a different existing OAuth config (oauthConfigId)
+      - For non-OAuth types (e.g. BASIC_AUTH), replacing instance auth with body authConfig
+        (same pattern as create_toolset_instance assigning validated authConfig to instance auth)
 
     When OAuth credentials are updated OR oauthConfigId changes, ALL authenticated
     users for this instance will be deauthenticated in parallel so they must
@@ -1655,6 +1657,14 @@ async def update_toolset_instance(
                 if new_oauth_id != instance.get("oauthConfigId"):
                     instance["oauthConfigId"] = new_oauth_id
                 oauth_credentials_changed = True
+
+    elif (auth_type or "").upper() not in ("", "NONE") and "authConfig" in body:
+        # Match create_toolset_instance: validated body authConfig is stored on instance["auth"]
+        # when not using oauthConfigId (see create branch `else: new_instance["auth"] = auth_config`).
+        auth_config = _validate_dict(
+            value=body.get("authConfig"), field_name="authConfig", allow_empty=True
+        )
+        instance["auth"] = auth_config
 
     instance["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
     instances[idx] = instance

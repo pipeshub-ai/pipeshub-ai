@@ -1,420 +1,260 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Flex, Box, Text, Button, TextField, Switch, Spinner } from '@radix-ui/themes';
-import { InfoBanner } from './info-banner';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Flex, Box, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { useOnboardingStore } from '../store';
-import { getEmbeddingConfig, saveEmbeddingConfig } from '../api';
-import type {
-  EmbeddingModelFormData,
-  EmbeddingProviderType,
-  OnboardingStepId,
-} from '../types';
-
-// Mirrors backend embeddingProvider enum
-const EMBEDDING_PROVIDERS: { value: EmbeddingProviderType; label: string }[] = [
-  { value: 'default', label: 'Default (System Provided)' },
-  { value: 'openAI', label: 'OpenAI' },
-  { value: 'azureOpenAI', label: 'Azure OpenAI' },
-  { value: 'cohere', label: 'Cohere' },
-  { value: 'gemini', label: 'Google Gemini' },
-  { value: 'mistral', label: 'Mistral AI' },
-  { value: 'voyage', label: 'Voyage AI' },
-  { value: 'jinaAI', label: 'Jina AI' },
-  { value: 'together', label: 'Together AI' },
-  { value: 'bedrock', label: 'AWS Bedrock' },
-  { value: 'vertexAI', label: 'Google Vertex AI' },
-  { value: 'ollama', label: 'Ollama (Local)' },
-  { value: 'openAICompatible', label: 'OpenAI-Compatible' },
-  { value: 'sentenceTransformers', label: 'Sentence Transformers' },
-  { value: 'fastembed', label: 'FastEmbed' },
-];
-
-const EMBEDDING_MODELS_BY_PROVIDER: Record<string, string[]> = {
-  openAI: ['text-embedding-3-large', 'text-embedding-3-small', 'text-embedding-ada-002'],
-  azureOpenAI: ['text-embedding-3-large', 'text-embedding-ada-002'],
-  cohere: ['embed-english-v3.0', 'embed-multilingual-v3.0'],
-  gemini: ['text-embedding-004', 'embedding-001'],
-  mistral: ['mistral-embed'],
-  voyage: ['voyage-3', 'voyage-3-lite', 'voyage-code-2'],
-  jinaAI: ['jina-embeddings-v3', 'jina-embeddings-v2-base-en'],
-  together: ['togethercomputer/m2-bert-80M-8k-retrieval'],
-  ollama: ['nomic-embed-text', 'mxbai-embed-large', 'all-minilm'],
-  sentenceTransformers: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
-  fastembed: ['BAAI/bge-small-en-v1.5', 'BAAI/bge-base-en-v1.5'],
-};
-
-// Providers that need an endpoint URL
-const NEEDS_ENDPOINT = new Set<EmbeddingProviderType>(['ollama', 'openAICompatible']);
-
-const selectStyle: React.CSSProperties = {
-  backgroundColor: 'var(--gray-2)',
-  color: 'var(--gray-12)',
-  border: '1px solid var(--gray-5)',
-  borderRadius: 'var(--radius-2)',
-  padding: '0 8px',
-  height: '36px',
-  fontSize: '14px',
-  width: '100%',
-  outline: 'none',
-  appearance: 'auto',
-};
+import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
+import { toast } from '@/lib/store/toast-store';
+import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
+import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/(main)/workspace/ai-models/types';
+import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
+import { ProviderGrid, ModelConfigDialog } from '@/app/(main)/workspace/ai-models/components';
 
 interface StepEmbeddingModelProps {
-  onSuccess: (nextStep: OnboardingStepId | null) => void;
   systemStepIndex: number;
   totalSystemSteps: number;
 }
 
 export function StepEmbeddingModel({
-  onSuccess,
   systemStepIndex,
   totalSystemSteps,
 }: StepEmbeddingModelProps) {
-  const { embeddingModel, setEmbeddingModel, markStepCompleted, unmarkStepCompleted, submitting, setSubmitting, setSubmitStatus } =
-    useOnboardingStore();
+  const { t } = useTranslation();
+  const { markStepCompleted, unmarkStepCompleted } = useOnboardingStore();
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  const [form, setForm] = useState<EmbeddingModelFormData>({
-    providerType: embeddingModel.providerType,
-    apiKey: embeddingModel.apiKey,
-    model: embeddingModel.model,
-    endpoint: embeddingModel.endpoint ?? '',
-    isMultimodal: embeddingModel.isMultimodal,
-  });
+  const [providers, setProviders] = useState<AIModelProvider[]>([]);
+  const [configuredModels, setConfiguredModels] = useState<Record<string, ConfiguredModel[]>>({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [mainSection, setMainSection] = useState<MainSection>('providers');
+  const [capabilitySection, setCapabilitySection] = useState<CapabilitySection>('embedding');
+  const [loadingProviders, setLoadingProviders] = useState(true);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
 
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [loadingConfig, setLoadingConfig] = useState(true);
-  const isDirtyRef = useRef(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogMode, setDialogMode] = useState<'add' | 'edit'>('add');
+  const [dialogProvider, setDialogProvider] = useState<AIModelProvider | null>(null);
+  const [dialogCapability, setDialogCapability] = useState<string | null>(null);
+  const [dialogEditModel, setDialogEditModel] = useState<ConfiguredModel | null>(null);
 
-  // Mark step as pre-completed when GET data is available (and user hasn't edited)
-  useEffect(() => {
-    if (!loadingConfig && !isDirtyRef.current) {
-      const isCustom = form.providerType !== 'default' && form.providerType !== '';
-      const preComplete =
-        !isCustom ||
-        (form.apiKey.trim() !== '' && form.model.trim() !== '');
-      if (preComplete) {
-        markStepCompleted('embedding-model');
-      }
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    modelType: string;
+    modelKey: string;
+    modelName: string;
+  } | null>(null);
+
+  const loadProviders = useCallback(async () => {
+    setLoadingProviders(true);
+    try {
+      const data = await AIModelsApi.getRegistry({ capability: 'embedding' });
+      setProviders(data.providers);
+    } catch {
+      toast.error('Failed to load embedding providers');
+    } finally {
+      setLoadingProviders(false);
     }
-  }, [form, loadingConfig]);
-
-  // Pre-populate with existing embedding config on mount
-  useEffect(() => {
-    getEmbeddingConfig()
-      .then(({ models }) => {
-        const defaultModel = models.find((m) => m.isDefault) ?? models[0];
-        if (defaultModel && defaultModel.provider !== 'default') {
-          setForm((prev) => ({
-            ...prev,
-            providerType: (defaultModel.provider as EmbeddingProviderType) || prev.providerType,
-            apiKey: defaultModel.configuration.apiKey ?? prev.apiKey,
-            model: defaultModel.configuration.model ?? prev.model,
-            endpoint: defaultModel.configuration.endpoint ?? prev.endpoint,
-            isMultimodal: defaultModel.isMultimodal,
-          }));
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoadingConfig(false));
   }, []);
 
-  const handleChange = <K extends keyof EmbeddingModelFormData>(
-    field: K,
-    value: EmbeddingModelFormData[K]
-  ) => {
-    isDirtyRef.current = true;
-    unmarkStepCompleted('embedding-model');
-    setForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const handleSubmit = async () => {
-    setSubmitting(true);
-    setSubmitStatus('loading');
-    setEmbeddingModel(form);
-
+  const loadModels = useCallback(async () => {
+    setLoadingModels(true);
     try {
-      await saveEmbeddingConfig(form);
-      setSubmitStatus('success');
-      onSuccess(null);
+      const data = await AIModelsApi.getAllModels();
+      setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
+      setModelsLoaded(true);
     } catch {
-      setSubmitStatus('error');
+      toast.error('Failed to load configured models');
+      setModelsLoaded(true);
     } finally {
-      setSubmitting(false);
+      setLoadingModels(false);
     }
-  };
+  }, []);
 
-  const needsCustomProvider = form.providerType !== 'default' && form.providerType !== '';
-  const needsEndpoint = NEEDS_ENDPOINT.has(form.providerType);
+  useEffect(() => {
+    loadProviders();
+    loadModels();
+  }, [loadProviders, loadModels]);
 
-  // Client-side validation: default provider always valid; custom requires key + model
-  const isFormValid =
-    !needsCustomProvider ||
-    (
-      form.apiKey.trim() !== '' &&
-      form.model.trim() !== '' &&
-      (!needsEndpoint || (form.endpoint?.trim() ?? '') !== '')
-    );
+  useEffect(() => {
+    if (!modelsLoaded) return;
+    const embeddings = configuredModels.embedding ?? [];
+    if (embeddings.length > 0) {
+      markStepCompleted('embedding-model');
+    } else {
+      unmarkStepCompleted('embedding-model');
+    }
+  }, [configuredModels, modelsLoaded, markStepCompleted, unmarkStepCompleted]);
 
-  const suggestions = form.providerType
-    ? EMBEDDING_MODELS_BY_PROVIDER[form.providerType] ?? []
-    : [];
-  const datalistId = 'embed-model-suggestions';
+  const closeDialog = useCallback(() => {
+    setDialogOpen(false);
+    setDialogProvider(null);
+    setDialogCapability(null);
+    setDialogEditModel(null);
+  }, []);
 
-  if (loadingConfig) {
-    return (
-      <Flex align="center" justify="center" style={{ height: '200px' }}>
-        <Spinner size="2" />
-      </Flex>
-    );
-  }
+  const handleAdd = useCallback((provider: AIModelProvider, capability: string) => {
+    setDialogMode('add');
+    setDialogProvider(provider);
+    setDialogCapability(capability);
+    setDialogEditModel(null);
+    setDialogOpen(true);
+  }, []);
+
+  const handleEdit = useCallback(
+    (provider: AIModelProvider, capability: string, model: ConfiguredModel) => {
+      setDialogMode('edit');
+      setDialogProvider(provider);
+      setDialogCapability(capability);
+      setDialogEditModel(model);
+      setDialogOpen(true);
+    },
+    []
+  );
+
+  const handleSetDefault = useCallback(
+    async (modelType: string, modelKey: string) => {
+      try {
+        await AIModelsApi.setDefault(modelType, modelKey);
+        toast.success('Default model updated');
+        loadModels();
+      } catch {
+        toast.error('Failed to set default model');
+      }
+    },
+    [loadModels]
+  );
+
+  const openDeleteDialog = useCallback((modelType: string, modelKey: string, modelName: string) => {
+    setDeleteTarget({ modelType, modelKey, modelName });
+    setDeleteDialogOpen(true);
+  }, []);
+
+  const closeDeleteDialog = useCallback(() => {
+    setDeleteDialogOpen(false);
+    setDeleteTarget(null);
+  }, []);
+
+  const handleDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    try {
+      await AIModelsApi.deleteProvider(deleteTarget.modelType, deleteTarget.modelKey);
+      toast.success(t('workspace.aiModels.toastDeleted', { name: deleteTarget.modelName }));
+      closeDeleteDialog();
+      loadModels();
+    } catch {
+      toast.error(t('workspace.aiModels.toastDeleteError'));
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [deleteTarget, closeDeleteDialog, loadModels, t]);
+
+  const handleRefresh = useCallback(() => {
+    void loadProviders();
+    void loadModels();
+  }, [loadProviders, loadModels]);
+
+  const isLoading = loadingProviders || loadingModels;
+  const embedCount = configuredModels.embedding?.length ?? 0;
+  const deleteKeyword = deleteTarget?.modelName ?? '';
 
   return (
-    <Box
-      style={{
-        backgroundColor: 'var(--gray-2)',
-        border: '1px solid var(--gray-4)',
-        borderRadius: 'var(--radius-3)',
-        width: '576px',
-        maxHeight: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Fixed Sub-header */}
+    <>
       <Box
         style={{
-          flexShrink: 0,
-          padding: '24px 24px 16px',
-          borderBottom: '1px solid var(--gray-4)',
+          backgroundColor: 'var(--gray-2)',
+          border: '1px solid var(--gray-4)',
+          borderRadius: 'var(--radius-3)',
+          width: 'min(1100px, 100%)',
+          maxHeight: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
         }}
       >
-        <Text
-          as="div"
-          size="1"
-          style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
-        >
-          System Configuration
-        </Text>
-        <Text
-          as="div"
-          size="4"
-          weight="bold"
-          style={{ color: 'var(--gray-12)' }}
-        >
-          Step {systemStepIndex}/{totalSystemSteps}: Configure Embedding Model*
-        </Text>
-      </Box>
-
-      {/* Scrollable fields */}
-      <Box className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
-        <Flex direction="column" gap="6">
-        <InfoBanner message="Select an embedding provider: default system embeddings or a specific one. You can change this later in Workspace settings." />
-        {/* Provider Type (full row when default, side-by-side with API Key when custom) */}
-        {!needsCustomProvider ? (
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Provider Type*
-            </Text>
-            <select
-              value={form.providerType}
-              onChange={(e) => {
-                handleChange('providerType', e.target.value as EmbeddingProviderType);
-                handleChange('model', '');
-              }}
-              disabled={submitting}
-              style={selectStyle}
-            >
-              {EMBEDDING_PROVIDERS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </Flex>
-        ) : (
-          <Flex gap="3">
-            <Flex direction="column" gap="1" style={{ flex: 1 }}>
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                Embeddings Provider*
-              </Text>
-              <select
-                value={form.providerType}
-                onChange={(e) => {
-                  handleChange('providerType', e.target.value as EmbeddingProviderType);
-                  handleChange('model', '');
-                }}
-                disabled={submitting}
-                style={selectStyle}
-              >
-                {EMBEDDING_PROVIDERS.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </Flex>
-            <Flex direction="column" gap="1" style={{ flex: 1 }}>
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                API Key*
-              </Text>
-              <TextField.Root
-                type={showApiKey ? 'text' : 'password'}
-                placeholder="Your API Key"
-                value={form.apiKey}
-                onChange={(e) => handleChange('apiKey', e.target.value)}
-                disabled={submitting}
-              >
-                <TextField.Slot side="left">
-                  <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-9)' }}>
-                    vpn_key
-                  </span>
-                </TextField.Slot>
-                <TextField.Slot side="right">
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      cursor: 'pointer',
-                      padding: '0',
-                      display: 'flex',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <span
-                      className="material-icons-outlined"
-                      style={{ fontSize: '14px', color: 'var(--gray-9)' }}
-                    >
-                      {showApiKey ? 'visibility_off' : 'visibility'}
-                    </span>
-                  </button>
-                </TextField.Slot>
-              </TextField.Root>
-            </Flex>
-          </Flex>
-        )}
-
-        {/* Custom provider fields */}
-        {needsCustomProvider && (
-          <>
-
-            {/* Model */}
-            <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                Model*
-              </Text>
-              <datalist id={datalistId}>
-                {suggestions.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-              <TextField.Root
-                list={datalistId}
-                placeholder="e.g. text-embedding-3-small"
-                value={form.model}
-                onChange={(e) => handleChange('model', e.target.value)}
-                disabled={submitting}
-              >
-                <TextField.Slot side="left">
-                  <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-9)' }}>
-                    smart_toy
-                  </span>
-                </TextField.Slot>
-              </TextField.Root>
-            </Flex>
-
-            {/* Endpoint (only for providers that need a custom URL) */}
-            {needsEndpoint && (
-              <Flex direction="column" gap="1">
-                <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                  Endpoint URL*
-                </Text>
-                <TextField.Root
-                  placeholder="https://your-endpoint/v1"
-                  value={form.endpoint ?? ''}
-                  onChange={(e) => handleChange('endpoint', e.target.value)}
-                  disabled={submitting}
-                >
-                  <TextField.Slot side="left">
-                    <span className="material-icons-outlined" style={{ fontSize: '14px', color: 'var(--gray-9)' }}>
-                      link
-                    </span>
-                  </TextField.Slot>
-                </TextField.Root>
-              </Flex>
-            )}
-
-            {/* Multimodal toggle */}
-            <Box>
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-12)', marginBottom: '8px', display: 'block' }}>
-                Model Compatibilities*
-              </Text>
-              <Flex
-                align="center"
-                justify="between"
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: 'var(--radius-2)',
-                  border: '1px solid var(--gray-4)',
-                }}
-              >
-                <Flex align="center" gap="2">
-                  <span
-                    className="material-icons-outlined"
-                    style={{ fontSize: '16px', color: 'var(--gray-9)' }}
-                  >
-                    image
-                  </span>
-                  <Flex direction="column" gap="0">
-                    <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                      Multimodal
-                    </Text>
-                    <Text size="1" style={{ color: 'var(--gray-9)' }}>
-                      Accepts and understands both text and images
-                    </Text>
-                  </Flex>
-                </Flex>
-                <Switch
-                  size="1"
-                  checked={form.isMultimodal}
-                  onCheckedChange={(checked) => handleChange('isMultimodal', checked)}
-                  disabled={submitting}
-                />
-              </Flex>
-            </Box>
-          </>
-        )}
-
-        </Flex>
-      </Box>
-
-      {/* Fixed footer: Save button */}
-      <Box style={{ flexShrink: 0, padding: '0 24px 24px' }}>
-        <Button
-          onClick={handleSubmit}
-          disabled={submitting || !isFormValid}
+        <Box
           style={{
-            width: '100%',
-            backgroundColor: submitting || !isFormValid ? 'var(--gray-4)' : 'var(--accent-9)',
-            color: submitting || !isFormValid ? 'var(--gray-9)' : 'white',
-            cursor: submitting || !isFormValid ? 'not-allowed' : 'pointer',
-            height: '40px',
-            opacity: 1,
+            flexShrink: 0,
+            padding: '24px 24px 16px',
+            borderBottom: '1px solid var(--gray-4)',
           }}
         >
-          {submitting ? (
-            <Flex align="center" gap="2">
-              <Spinner size="1" />
-              Saving…
-            </Flex>
-          ) : (
-            'Save'
-          )}
-        </Button>
+          <Text
+            as="div"
+            size="1"
+            style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
+          >
+            System Configuration
+          </Text>
+          <Text as="div" size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
+            Step {systemStepIndex}/{totalSystemSteps}: Configure Embedding Model*
+          </Text>
+        </Box>
+
+        <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
+          <Flex direction="column" gap="5">
+            {!isLoading && embedCount === 0 && (
+              <Text size="2" style={{ color: 'var(--gray-11)', display: 'block' }}>
+                Add an embedding provider below to enable semantic search across documents, or use
+                Next to continue and configure this later in workspace settings.
+              </Text>
+            )}
+            <ProviderGrid
+              layout="embedded"
+              providers={providers}
+              configuredModels={configuredModels}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              mainSection={mainSection}
+              onMainSectionChange={setMainSection}
+              capabilitySection={capabilitySection}
+              onCapabilitySectionChange={setCapabilitySection}
+              onAdd={handleAdd}
+              onEdit={handleEdit}
+              onSetDefault={handleSetDefault}
+              onDelete={openDeleteDialog}
+              isLoading={isLoading}
+              onRefresh={handleRefresh}
+            />
+          </Flex>
+        </Box>
       </Box>
-    </Box>
+
+      <ModelConfigDialog
+        open={dialogOpen}
+        mode={dialogMode}
+        provider={dialogProvider}
+        capability={dialogCapability}
+        editModel={dialogEditModel}
+        onClose={closeDialog}
+        onSaved={loadModels}
+      />
+
+      <DestructiveTypedConfirmationDialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) closeDeleteDialog();
+        }}
+        heading={t('workspace.aiModels.deleteDialogTitle')}
+        body={
+          <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+            {t('workspace.aiModels.deleteTypedConfirmBody', {
+              name: deleteTarget?.modelName ?? '',
+            })}
+          </Text>
+        }
+        confirmationKeyword={deleteKeyword}
+        confirmInputLabel={t('workspace.aiModels.typeModelNameToConfirm', {
+          keyword: deleteKeyword,
+        })}
+        primaryButtonText={t('workspace.aiModels.delete')}
+        cancelLabel={t('workspace.aiModels.cancel')}
+        isLoading={isDeleting}
+        confirmLoadingLabel={t('action.deleting')}
+        onConfirm={() => void handleDelete()}
+      />
+    </>
   );
 }

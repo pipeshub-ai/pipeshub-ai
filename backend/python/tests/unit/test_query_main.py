@@ -3,7 +3,6 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
-import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -639,148 +638,37 @@ class TestAuthenticateRequests:
 class TestHealthCheck:
     """Tests for the /health endpoint handler."""
 
-    def _set_app_container(self, query_app, mock_config):
-        """Helper: set app.container with mock config_service on the FastAPI instance."""
-        mock_container = MagicMock()
-        mock_container.config_service.return_value = mock_config
-        query_app.container = mock_container
-        return mock_container
+    async def test_health_check_success(self):
+        """Health check returns healthy status."""
+        from app.query_main import health_check
 
-    async def test_healthy_connector(self):
-        """Connector service returns 200 -> healthy response."""
-        from app.query_main import health_check, app as query_app
+        with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check()
 
-        mock_config = MagicMock()
-        mock_config.get_config = AsyncMock(return_value={
-            "connectors": {"endpoint": "http://connector:8088"}
-        })
+        assert result.status_code == 200
+        assert result.body is not None
 
-        mock_http_response = MagicMock()
-        mock_http_response.status_code = 200
-        mock_http_response.text = "OK"
+    async def test_health_check_includes_timestamp(self):
+        """Health check response includes timestamp."""
+        import json
+        from app.query_main import health_check
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_http_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check()
 
-        self._set_app_container(query_app, mock_config)
-        try:
-            with (
-                patch("app.query_main.httpx.AsyncClient", return_value=mock_client),
-                patch("app.query_main.get_epoch_timestamp_in_ms", return_value=123456),
-            ):
-                result = await health_check()
-            assert result.status_code == 200
-        finally:
-            if hasattr(query_app, "container"):
-                del query_app.container
+        body = json.loads(result.body)
+        assert body["status"] == "healthy"
+        assert body["timestamp"] == 1234567890
 
-    async def test_unhealthy_connector(self):
-        """Connector service returns non-200 -> fail response."""
-        from app.query_main import health_check, app as query_app
+    async def test_health_check_general_exception(self):
+        """Health check returns 500 when get_epoch_timestamp_in_ms raises on first call."""
+        from app.query_main import health_check
 
-        mock_config = MagicMock()
-        mock_config.get_config = AsyncMock(return_value={
-            "connectors": {"endpoint": "http://connector:8088"}
-        })
+        mock_ts = MagicMock(side_effect=[RuntimeError("timestamp error"), 9999999])
+        with patch("app.query_main.get_epoch_timestamp_in_ms", mock_ts):
+            result = await health_check()
 
-        mock_http_response = MagicMock()
-        mock_http_response.status_code = 503
-        mock_http_response.text = "Service Unavailable"
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_http_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        self._set_app_container(query_app, mock_config)
-        try:
-            with (
-                patch("app.query_main.httpx.AsyncClient", return_value=mock_client),
-                patch("app.query_main.get_epoch_timestamp_in_ms", return_value=123456),
-            ):
-                result = await health_check()
-            assert result.status_code == 500
-        finally:
-            if hasattr(query_app, "container"):
-                del query_app.container
-
-    async def test_request_error(self):
-        """httpx.RequestError -> fail response with connection error."""
-        from app.query_main import health_check, app as query_app
-
-        mock_config = MagicMock()
-        mock_config.get_config = AsyncMock(return_value={
-            "connectors": {"endpoint": "http://connector:8088"}
-        })
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(
-            side_effect=httpx.RequestError("connection refused", request=MagicMock())
-        )
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        self._set_app_container(query_app, mock_config)
-        try:
-            with (
-                patch("app.query_main.httpx.AsyncClient", return_value=mock_client),
-                patch("app.query_main.get_epoch_timestamp_in_ms", return_value=123456),
-            ):
-                result = await health_check()
-            assert result.status_code == 500
-        finally:
-            if hasattr(query_app, "container"):
-                del query_app.container
-
-    async def test_generic_exception(self):
-        """Generic exception -> fail response."""
-        from app.query_main import health_check, app as query_app
-
-        mock_config = MagicMock()
-        mock_config.get_config = AsyncMock(side_effect=RuntimeError("config error"))
-
-        self._set_app_container(query_app, mock_config)
-        try:
-            with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=123456):
-                result = await health_check()
-            assert result.status_code == 500
-        finally:
-            if hasattr(query_app, "container"):
-                del query_app.container
-
-    async def test_default_endpoint_used(self):
-        """When endpoint key is missing, DefaultEndpoints.CONNECTOR_ENDPOINT is used."""
-        from app.query_main import health_check, app as query_app
-
-        mock_config = MagicMock()
-        # connectors dict exists but no "endpoint" key -> .get returns default
-        connectors_dict = MagicMock()
-        connectors_dict.get.return_value = "http://localhost:8088"
-        endpoints_dict = {"connectors": connectors_dict}
-        mock_config.get_config = AsyncMock(return_value=endpoints_dict)
-
-        mock_http_response = MagicMock()
-        mock_http_response.status_code = 200
-        mock_http_response.text = "OK"
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_http_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        self._set_app_container(query_app, mock_config)
-        try:
-            with (
-                patch("app.query_main.httpx.AsyncClient", return_value=mock_client),
-                patch("app.query_main.get_epoch_timestamp_in_ms", return_value=123456),
-            ):
-                result = await health_check()
-            assert result.status_code == 200
-        finally:
-            if hasattr(query_app, "container"):
-                del query_app.container
+        assert result.status_code == 500
 
 
 # ===========================================================================

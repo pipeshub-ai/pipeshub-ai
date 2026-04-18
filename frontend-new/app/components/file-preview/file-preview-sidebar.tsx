@@ -133,15 +133,14 @@ export function FilePreviewSidebar({
           maxHeight: 'calc(100vh - 20px)',
           padding: 0,
           margin: 0,
-          backgroundColor: 'var(--slate-1)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
           transform: 'none',
           animation: 'slideInFromRight 0.2s ease-out',
           borderRadius: 'var(--Radius-2-max, 4px)',
-          border: '1px solid var(--Colors-Olive-3, #212220)',
-          background: 'var(--Variables-Effects-translucent, rgba(29, 29, 33, 0.70))',
+          border: '1px solid var(--olive-3)',
+          background: 'var(--effects-translucent)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           backdropFilter: 'blur(25px)',
         }}
@@ -155,7 +154,6 @@ export function FilePreviewSidebar({
           justify="between"
           style={{
             padding: '12px 12px 12px 16px',
-            backgroundColor: 'var(--slate-1)',
             flexShrink: 0,
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',

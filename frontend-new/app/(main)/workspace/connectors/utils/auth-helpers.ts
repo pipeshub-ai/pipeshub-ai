@@ -14,5 +14,15 @@ export function isOAuthType(authType: string): boolean {
 
 /** Check if auth type uses credential fields (show form fields) */
 export function isCredentialAuthType(authType: string): boolean {
-  return ['API_TOKEN', 'USERNAME_PASSWORD', 'BEARER_TOKEN', 'CUSTOM'].includes(authType);
+  const upper = (authType || '').toUpperCase();
+  return [
+    'API_TOKEN',
+    'USERNAME_PASSWORD',
+    'BEARER_TOKEN',
+    'BASIC_AUTH',
+    'ACCESS_KEY',
+    'ACCOUNT_KEY',
+    'CONNECTION_STRING',
+    'CUSTOM',
+  ].includes(upper);
 }

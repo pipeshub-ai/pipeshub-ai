@@ -162,10 +162,15 @@ function normalizeToolsetOauthConfigListRow(raw: Record<string, unknown>): Tools
 function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
   const toolsRaw = (inst.tools as Record<string, unknown>[]) || [];
   const toolsetType = (inst.toolsetType as string) || (inst.instanceName as string) || '';
+  /** Registry / toolset human name from API — never the per-instance label (use `instanceName` for that). */
+  const toolsetDisplayName =
+    (inst.displayName as string) || (inst.display_name as string) || toolsetType || '';
+  const instanceLabel = (inst.instanceName as string) || (inst.instance_name as string) || '';
   return {
-    name: toolsetType || (inst.instanceName as string) || '',
+    name: toolsetType || instanceLabel || '',
     normalized_name: toolsetType,
-    displayName: (inst.instanceName as string) || (inst.displayName as string) || toolsetType || '',
+    /** Integration title for catalog cards; omit instanceName so grouped cards stay type-named. */
+    displayName: toolsetDisplayName || toolsetType || '',
     description: (inst.description as string) || '',
     iconPath: (inst.iconPath as string) || '',
     category: (inst.category as string) || 'app',
@@ -183,14 +188,19 @@ function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
     instanceName: inst.instanceName as string | undefined,
     toolsetType,
     authType: (inst.authType as string) || 'NONE',
-    auth: (inst.auth && typeof inst.auth === 'object' ? inst.auth : {}) as Record<string, unknown>,
+    ...(inst.auth != null && typeof inst.auth === 'object'
+      ? { auth: inst.auth as Record<string, unknown> }
+      : {}),
     createdBy: inst.createdBy as string | undefined,
     createdAtTimestamp: inst.createdAtTimestamp as number | undefined,
     updatedAtTimestamp: inst.updatedAtTimestamp as number | undefined,
     oauthConfigId:
       (inst.oauthConfigId as string | undefined) ||
       (inst.oauth_config_id as string | undefined),
-    supportedAuthTypes: (inst.supportedAuthTypes as string[] | undefined)?.filter(Boolean),
+    supportedAuthTypes: (
+      (inst.supportedAuthTypes as string[] | undefined) ??
+      (inst.supported_auth_types as string[] | undefined)
+    )?.filter(Boolean),
   };
 }
 
@@ -202,7 +212,10 @@ function mapRegistryRow(row: Record<string, unknown>): RegistryToolsetRow {
     category: (row.category as string) || 'app',
     appGroup: (row.group as string) || (row.category as string) || '',
     iconPath: (row.iconPath as string) || '',
-    supportedAuthTypes: (row.supportedAuthTypes as string[]) || [],
+    supportedAuthTypes:
+      (row.supportedAuthTypes as string[] | undefined) ??
+      (row.supported_auth_types as string[] | undefined) ??
+      [],
     toolCount: (row.toolCount as number) ?? 0,
   };
 }
@@ -475,6 +488,27 @@ export const ToolsetsApi = {
     }>(`/api/v1/toolsets/oauth-configs/${encodeURIComponent(toolsetType)}`);
     const raw = data?.oauthConfigs ?? [];
     return raw.map(normalizeToolsetOauthConfigListRow);
+  },
+
+  /**
+   * GET /api/v1/toolsets/instances/:id — full org instance (includes `auth` / authConfig stored on instance).
+   * Use for admin hydrate; list rows from my-toolsets may omit or null `auth` for non-OAuth.
+   */
+  async getToolsetInstance(instanceId: string): Promise<Record<string, unknown>> {
+    const { data } = await apiClient.get<{
+      status?: string;
+      instance?: Record<string, unknown>;
+    }>(`/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`);
+    const body = data ?? {};
+    const inst = body.instance;
+    if (inst && typeof inst === 'object' && !Array.isArray(inst)) {
+      return inst;
+    }
+    /* Legacy / alternate: flat instance document */
+    if ('toolsetType' in body || '_id' in body) {
+      return body as Record<string, unknown>;
+    }
+    return {};
   },
 
   /** Admin: POST /api/v1/toolsets/instances */
