@@ -24,9 +24,13 @@ test.describe('Workspace Services', () => {
   test('shows core infrastructure service rows', async ({ page }) => {
     await expect(page.locator('text=Redis').first()).toBeVisible({ timeout: 5_000 });
     await expect(page.locator('text=MongoDB').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Message Broker').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Graph Database').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('text=Vector Database').first()).toBeVisible({ timeout: 5_000 });
+    // These show resolved names from the API (e.g. "Kafka" or "Redis Streams" instead of "Message Broker")
+    const broker = page.locator('text=/Kafka|Redis Streams|Message Broker/');
+    await expect(broker.first()).toBeVisible({ timeout: 5_000 });
+    const graphDb = page.locator('text=/ArangoDB|Neo4j|Graph Database/');
+    await expect(graphDb.first()).toBeVisible({ timeout: 5_000 });
+    const vectorDb = page.locator('text=/Qdrant|Vector Database/');
+    await expect(vectorDb.first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('shows dynamic service names from deployment config', async ({ page }) => {

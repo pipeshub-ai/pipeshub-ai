@@ -45,27 +45,29 @@ export function createHealthRouter(
   );
 
   const appConfig = container.get<AppConfig>('AppConfig');
-  let deployment = { ...appConfig.deployment };
-
+  const defaultDeployment = { ...appConfig.deployment };
   const configService = ConfigService.getInstance();
-  setInterval(async () => {
+
+  async function getDeploymentConfig() {
     try {
       const fresh = await configService.readDeploymentConfig();
       if (fresh && Object.keys(fresh).length > 0) {
-        deployment = {
-          dataStoreType: fresh.dataStoreType || deployment.dataStoreType,
-          messageBrokerType: fresh.messageBrokerType || deployment.messageBrokerType,
-          kvStoreType: fresh.kvStoreType || deployment.kvStoreType,
-          vectorDbType: fresh.vectorDbType || deployment.vectorDbType,
+        return {
+          dataStoreType: fresh.dataStoreType || defaultDeployment.dataStoreType,
+          messageBrokerType: fresh.messageBrokerType || defaultDeployment.messageBrokerType,
+          kvStoreType: fresh.kvStoreType || defaultDeployment.kvStoreType,
+          vectorDbType: fresh.vectorDbType || defaultDeployment.vectorDbType,
         };
       }
     } catch (error) {
       logger.error('Failed to refresh deployment config', error);
     }
-  }, 10_000);
+    return defaultDeployment;
+  }
 
   router.get('/', async (_req, res, next) => {
     try {
+      const deployment = await getDeploymentConfig();
       const services: Record<string, string> = {
         redis: 'unknown',
         messageBroker: 'unknown',
@@ -202,7 +204,9 @@ export function createHealthRouter(
       ]);
 
       const isServiceHealthy = (res: PromiseSettledResult<any>) =>
-        res.status === 'fulfilled' && res.value.status === 200 && res.value.data?.status === 'healthy';
+        res.status === 'fulfilled' &&
+        res.value.status === 200 &&
+        res.value.data?.status === 'healthy';
 
       const aiOk = isServiceHealthy(aiResp);
       const connectorOk = isServiceHealthy(connectorResp);

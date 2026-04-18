@@ -95,6 +95,10 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
               localStorage.setItem(CACHE_KEY, 'true');
             } catch {}
             get().stopPolling();
+          } else {
+            try {
+              localStorage.removeItem(CACHE_KEY);
+            } catch {}
           }
         } catch {
           set((state) => {

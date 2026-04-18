@@ -38,7 +38,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
       if (!cachedHealthy.current && toastIdRef.current === null) {
         toastIdRef.current = toast.loading('Checking services health. Please wait…');
       }
-    }, 100);
+    }, 1000);
 
     startPolling();
 
