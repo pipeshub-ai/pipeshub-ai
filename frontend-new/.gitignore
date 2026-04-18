@@ -14,11 +14,12 @@
 !lib/
 
 # testing
-/coverage
+/coverage/
 /test-results/
 /playwright-report/
 /blob-report/
 /.auth/
+/.nyc_output/
 
 # next.js
 /.next/

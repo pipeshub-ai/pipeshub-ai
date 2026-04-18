@@ -16,7 +16,9 @@
     "test:e2e:groups": "npx playwright test tests/e2e/groups/",
     "test:e2e:teams": "npx playwright test tests/e2e/teams/",
     "test:e2e:report": "npx playwright show-report",
-    "test:e2e:cleanup": "npx playwright test tests/e2e/seed/cleanup.spec.ts --project=seed"
+    "test:e2e:cleanup": "npx playwright test tests/e2e/seed/cleanup.spec.ts --project=seed",
+    "test:e2e:coverage": "COVERAGE=true npx playwright test",
+    "test:e2e:coverage-report": "npx open-cli coverage/e2e/report.html"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
@@ -63,6 +65,7 @@
     "dotenv": "^17.4.2",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
+    "monocart-reporter": "^2.10.1",
     "typescript": "^5.9.2"
   }
 }

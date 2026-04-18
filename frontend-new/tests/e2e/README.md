@@ -40,6 +40,22 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
 | `npm run test:e2e:groups` | Run only group-related tests |
 | `npm run test:e2e:teams` | Run only team-related tests |
 | `npm run test:e2e:report` | Open the HTML test report |
+| `npm run test:e2e:coverage` | Run all tests with V8 code coverage |
+| `npm run test:e2e:coverage-report` | Open the coverage HTML report |
+
+## Code Coverage
+
+Run `npm run test:e2e:coverage` to collect V8 code coverage during test execution. This uses [monocart-reporter](https://github.com/nicolo-ribaudo/monocart-reporter) to generate coverage reports.
+
+Reports are written to `coverage/e2e/` and include:
+- **V8 report** — native V8 coverage with source-mapped file breakdown
+- **LCOV** — for CI integration (Codecov, Coveralls, etc.)
+- **Console summary** — printed to terminal after the run
+
+Open the HTML report:
+```bash
+npm run test:e2e:coverage-report
+```
 
 ## Debugging & Verbose Output
 
