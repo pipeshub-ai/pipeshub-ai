@@ -69,4 +69,5 @@ export const configPaths = {
   platform: {
     settings: '/services/platform/settings',
   },
+  deployment: '/services/deployment',
 };

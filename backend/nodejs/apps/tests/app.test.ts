@@ -100,6 +100,12 @@ function createMockAppConfig(): appConfigModule.AppConfig {
     skipDomainCheck: false,
     maxRequestsPerMinute: 1000,
     maxOAuthClientRequestsPerMinute: 1000,
+    deployment: {
+      dataStoreType: 'arangodb',
+      messageBrokerType: 'kafka',
+      kvStoreType: 'etcd',
+      vectorDbType: 'qdrant',
+    },
   };
 }
 

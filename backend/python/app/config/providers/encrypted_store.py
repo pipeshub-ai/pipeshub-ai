@@ -194,19 +194,21 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 config_node_constants.ENDPOINTS.value,
                 config_node_constants.STORAGE.value,
                 config_node_constants.MIGRATIONS.value,
+                config_node_constants.DEPLOYMENT.value,
             ]
             encrypt_value = key not in EXCLUDED_KEYS
 
             if encrypt_value:
                 # Encrypt the value
-                encrypted_value = self.encryption_service.encrypt(value_json)
+                store_value = self.encryption_service.encrypt(value_json)
             else:
-                encrypted_value = value_json
+                # Pass raw value directly — the underlying store serializer handles encoding
+                store_value = value
 
             self.logger.debug("Encrypted value for key %s", key)
 
-            # Store the encrypted value
-            success = await self.store.create_key(key, encrypted_value, overwrite, ttl)
+            # Store the value
+            success = await self.store.create_key(key, store_value, overwrite, ttl)
             if success:
                 self.logger.debug("Successfully stored encrypted key: %s", key)
 
@@ -254,6 +256,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         config_node_constants.ENDPOINTS.value,
                         config_node_constants.STORAGE.value,
                         config_node_constants.MIGRATIONS.value,
+                        config_node_constants.DEPLOYMENT.value,
                     ]
                     needs_decryption = key not in UNENCRYPTED_KEYS
 
