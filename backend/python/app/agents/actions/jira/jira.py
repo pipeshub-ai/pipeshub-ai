@@ -665,9 +665,19 @@ class Jira:
 
                     resources = await JiraClient.get_accessible_resources(token)
                     if resources:
-                        picked = next((r for r in resources if r.id == cloud_id), None) if cloud_id else None
-                        resource = picked or resources[0]
-                        self._site_url = resource.url.rstrip('/')
+                        if cloud_id:
+                            picked = next((r for r in resources if r.id == cloud_id), None)
+                            if picked is None:
+                                logger.warning(
+                                    f"Jira _get_site_url: cloud_id {cloud_id} not found in accessible resources "
+                                    f"({[r.id for r in resources]}); refusing to fall back to a different site."
+                                )
+                                return None
+                            self._site_url = picked.url.rstrip('/')
+                            return self._site_url
+                        # Could not extract cloud_id from the gateway URL — only safe
+                        # when the token has exactly one accessible site.
+                        self._site_url = resources[0].url.rstrip('/')
                         return self._site_url
 
             # API token / basic: configured instance base_url is the site URL
