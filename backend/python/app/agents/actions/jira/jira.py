@@ -299,7 +299,17 @@ class GetCommentsInput(BaseModel):
             ),
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
-                CommonFields.client_secret("Atlassian Developer Console")
+                CommonFields.client_secret("Atlassian Developer Console"),
+                AuthField(
+                    name="baseUrl",
+                    display_name="Atlassian site URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    description="Atlassian site URL the Jira agent should work with.",
+                    field_type="URL",
+                    required=True,
+                    max_length=2000,
+                    is_secret=False,
+                ),
             ],
             icon_path="/assets/icons/connectors/jira.svg",
             app_group="Project Management",
@@ -640,16 +650,24 @@ class Jira:
         try:
             client_obj = self.client._client
 
-            # Browse URLs need the site host from accessible-resources (*.atlassian.net).
+            # OAuth: get_base_url() is the API gateway (api.atlassian.com/ex/jira/{cloud_id}).
+            # Browse URLs need the site host from accessible-resources (*.atlassian.net),
+            # and we must match the cloud_id to the correct site (the token can access many).
             if hasattr(client_obj, 'get_token'):
                 token = client_obj.get_token()
                 if token:
+                    cloud_id = None
+                    if hasattr(client_obj, 'get_base_url'):
+                        gateway = (client_obj.get_base_url() or "").rstrip('/')
+                        match = re.search(r"/ex/jira/([^/]+)", gateway)
+                        if match:
+                            cloud_id = match.group(1)
+
                     resources = await JiraClient.get_accessible_resources(token)
-                    if resources and len(resources) > 0:
-                        # Extract base URL from resource URL
-                        resource_url = resources[0].url
-                        # Resource URL is like 'https://example.atlassian.net'
-                        self._site_url = resource_url.rstrip('/')
+                    if resources:
+                        picked = next((r for r in resources if r.id == cloud_id), None) if cloud_id else None
+                        resource = picked or resources[0]
+                        self._site_url = resource.url.rstrip('/')
                         return self._site_url
 
             # API token / basic: configured instance base_url is the site URL

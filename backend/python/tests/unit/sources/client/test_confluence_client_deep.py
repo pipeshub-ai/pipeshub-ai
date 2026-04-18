@@ -86,7 +86,11 @@ class TestBuildFromServicesBearerTokenBaseUrlEmpty:
     async def test_bearer_token_empty_base_url(self, log, mock_config_service):
         """When get_confluence_base_url returns empty string, raise ValueError."""
         mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "BEARER_TOKEN", "bearerToken": "tok123"},
+            "auth": {
+                "authType": "BEARER_TOKEN",
+                "bearerToken": "tok123",
+                "baseUrl": "https://acme.atlassian.net",
+            },
         })
         with patch.object(
             ConfluenceClient, "get_confluence_base_url",
@@ -100,7 +104,11 @@ class TestBuildFromServicesBearerTokenBaseUrlEmpty:
     async def test_bearer_token_none_base_url(self, log, mock_config_service):
         """When get_confluence_base_url returns None, raise ValueError."""
         mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "BEARER_TOKEN", "bearerToken": "tok123"},
+            "auth": {
+                "authType": "BEARER_TOKEN",
+                "bearerToken": "tok123",
+                "baseUrl": "https://acme.atlassian.net",
+            },
         })
         with patch.object(
             ConfluenceClient, "get_confluence_base_url",
@@ -120,7 +128,7 @@ class TestBuildFromServicesOAuthBaseUrlEmpty:
     async def test_oauth_empty_base_url(self, log, mock_config_service):
         """When get_confluence_base_url returns empty string for OAuth, raise ValueError."""
         mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "at"},
         })
         with patch.object(
@@ -135,7 +143,7 @@ class TestBuildFromServicesOAuthBaseUrlEmpty:
     async def test_oauth_none_base_url(self, log, mock_config_service):
         """When get_confluence_base_url returns None for OAuth, raise ValueError."""
         mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
+            "auth": {"authType": "OAUTH", "baseUrl": "https://acme.atlassian.net"},
             "credentials": {"access_token": "at"},
         })
         with patch.object(
@@ -155,7 +163,11 @@ class TestBuildFromToolsetBearerTokenBaseUrlEmpty:
     @pytest.mark.asyncio
     async def test_bearer_base_url_empty(self, log):
         """When get_confluence_base_url returns empty for toolset BEARER_TOKEN."""
-        toolset_config = {"authType": "BEARER_TOKEN", "bearerToken": "tok123"}
+        toolset_config = {
+            "authType": "BEARER_TOKEN",
+            "bearerToken": "tok123",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
+        }
         with patch.object(
             ConfluenceClient, "get_confluence_base_url",
             new_callable=AsyncMock,
@@ -167,7 +179,11 @@ class TestBuildFromToolsetBearerTokenBaseUrlEmpty:
     @pytest.mark.asyncio
     async def test_bearer_base_url_none(self, log):
         """When get_confluence_base_url returns None for toolset BEARER_TOKEN."""
-        toolset_config = {"authType": "BEARER_TOKEN", "bearerToken": "tok123"}
+        toolset_config = {
+            "authType": "BEARER_TOKEN",
+            "bearerToken": "tok123",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
+        }
         with patch.object(
             ConfluenceClient, "get_confluence_base_url",
             new_callable=AsyncMock,
@@ -185,7 +201,11 @@ class TestBuildFromToolsetOAuthBaseUrlEmpty:
     @pytest.mark.asyncio
     async def test_oauth_base_url_empty(self, log):
         """When get_confluence_base_url returns empty for toolset OAUTH."""
-        toolset_config = {"authType": "OAUTH", "credentials": {"access_token": "at"}}
+        toolset_config = {
+            "authType": "OAUTH",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
+            "credentials": {"access_token": "at"},
+        }
         with patch.object(
             ConfluenceClient, "get_confluence_base_url",
             new_callable=AsyncMock,
@@ -197,7 +217,11 @@ class TestBuildFromToolsetOAuthBaseUrlEmpty:
     @pytest.mark.asyncio
     async def test_oauth_base_url_none(self, log):
         """When get_confluence_base_url returns None for toolset OAUTH."""
-        toolset_config = {"authType": "OAUTH", "credentials": {"access_token": "at"}}
+        toolset_config = {
+            "authType": "OAUTH",
+            "auth": {"baseUrl": "https://acme.atlassian.net"},
+            "credentials": {"access_token": "at"},
+        }
         with patch.object(
             ConfluenceClient, "get_confluence_base_url",
             new_callable=AsyncMock,
