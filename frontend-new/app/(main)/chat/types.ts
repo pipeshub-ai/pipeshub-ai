@@ -184,15 +184,24 @@ export interface ChatSettings {
     kb: string[];
   };
   /**
-   * Model explicitly chosen by the user in the model selector panel.
-   * null = fall back to defaultModel.
+   * Per-context map of the model explicitly chosen by the user in the model
+   * selector panel. The key is either ASSISTANT_CTX (for the non-agent chat) or
+   * an agentId string. A missing/null value means "use defaultModels[ctxKey]".
+   *
+   * Keeping selections scoped per context prevents leaks across assistant and
+   * agents that have different model configurations.
    */
-  selectedModel: ModelOverride | null;
+  selectedModels: Record<string, ModelOverride | null>;
   /**
-   * Default model fetched from the API (isDefault: true).
-   * Populated on chat page mount. null until the API responds.
+   * Per-context default model (API `isDefault: true`). Populated when models
+   * are loaded for that context.
    */
-  defaultModel: ModelOverride | null;
+  defaultModels: Record<string, ModelOverride | null>;
+  /**
+   * Per-context cache of the full model list, with a freshness timestamp.
+   * Used for deduping fetches and for invalidating stale selections.
+   */
+  availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
 }
 
 export interface UploadedFile {

@@ -22,7 +22,7 @@ import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-
 import { MobileQueryModesSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-modes-sheet';
 import { AgentStrategyDropdown } from '@/chat/components/agent-strategy-dropdown';
 import { getQueryModeConfig } from '@/chat/constants';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
@@ -87,6 +87,8 @@ export function ChatInput({
   const [isAgentStrategyPanelOpen, setIsAgentStrategyPanelOpen] = useState(false);
   const [isCollectionsPanelOpen, setIsCollectionsPanelOpen] = useState(false);
   const [isModelPanelOpen, setIsModelPanelOpen] = useState(false);
+  const [isModelButtonHovered, setIsModelButtonHovered] = useState(false);
+  const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
   const isMobile = useIsMobile();
@@ -136,8 +138,25 @@ export function ChatInput({
   const setQueryMode = useChatStore((s) => s.setQueryMode);
   const setAgentStrategy = useChatStore((s) => s.setAgentStrategy);
   const setFilters = useChatStore((s) => s.setFilters);
-  const setSelectedModel = useChatStore((s) => s.setSelectedModel);
+  const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
   const collectionNamesCache = useChatStore((s) => s.collectionNamesCache);
+
+  // Context key for the active (agent-scoped or assistant) chat. All
+  // model-related reads/writes below are keyed by this so assistant selections
+  // don't leak into agents and vice-versa.
+  const modelCtxKey = ctxKeyFromAgent(agentId);
+  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
+  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
+  const displayModel = contextSelectedModel ?? contextDefaultModel;
+  const displayModelLabel = displayModel
+    ? (displayModel.modelFriendlyName || displayModel.modelName)
+    : t('chat.aiModelsTooltip');
+  const handleModelSelect = useCallback(
+    (model: ModelOverride | null) => {
+      setSelectedModelForCtx(modelCtxKey, model);
+    },
+    [setSelectedModelForCtx, modelCtxKey],
+  );
 
   // Expansion panel view mode (inline vs overlay) from store
   const expansionViewMode = useChatStore((s) => s.expansionViewMode);
@@ -639,13 +658,10 @@ export function ChatInput({
                 justifyContent: 'center',
                 cursor: 'pointer',
                 transition: 'background-color 0.15s',
+                backgroundColor: isAddFileButtonHovered ? 'var(--accent-a2)' : 'transparent',
               }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent-a2)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent';
-              }}
+              onMouseEnter={() => setIsAddFileButtonHovered(true)}
+              onMouseLeave={() => setIsAddFileButtonHovered(false)}
             >
               <MaterialIcon name="add" size={24} color="var(--accent-9)" />
             </Box>
@@ -774,8 +790,8 @@ export function ChatInput({
           onClose={() => setIsModelPanelOpen(false)}
         >
           <ModelSelectorPanel
-            selectedModel={settings.selectedModel}
-            onModelSelect={setSelectedModel}
+            selectedModel={contextSelectedModel ?? contextDefaultModel}
+            onModelSelect={handleModelSelect}
             agentId={agentId}
           />
         </ChatInputExpansionPanel>
@@ -989,23 +1005,52 @@ export function ChatInput({
                     </IconButton>
                   </Tooltip>
                 ) : null}
-                {/* Model selector button */}
+                {/* Model selector button — icon + current model name so the active model is always visible */}
                 <Tooltip content={t('chat.aiModelsTooltip')} side="top">
-                  <IconButton
-                    variant={isModelPanelOpen ? 'soft' : 'ghost'}
-                    color="gray"
-                    size="2"
+                  <Flex
+                    align="center"
+                    gap="2"
                     onClick={() => {
-                      setIsModelPanelOpen((prev) => !prev);
-                      setIsModePanelOpen(false);
-                      setIsAgentStrategyPanelOpen(false);
-                      setIsCollectionsPanelOpen(false);
-                      setShowUploadArea(false);
+                      const next = !isModelPanelOpen;
+                      dismissExpansionPanels();
+                      setIsModelPanelOpen(next);
                     }}
-                    style={{ margin: 0, cursor: 'pointer' }}
+                    style={{
+                      height: '32px',
+                      paddingLeft: 'var(--space-2)',
+                      paddingRight: 'var(--space-2)',
+                      borderRadius: 'var(--radius-2)',
+                      cursor: 'pointer',
+                      backgroundColor: isModelPanelOpen
+                        ? 'var(--olive-4)'
+                        : isModelButtonHovered
+                          ? 'var(--olive-3)'
+                          : 'transparent',
+                      transition: 'background-color 0.12s ease',
+                      maxWidth: isMobile ? '32px' : '180px',
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={() => setIsModelButtonHovered(true)}
+                    onMouseLeave={() => setIsModelButtonHovered(false)}
                   >
                     <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
-                  </IconButton>
+                    {!isMobile && (
+                      <Text
+                        size="1"
+                        weight="medium"
+                        style={{
+                          color: activeIconColor,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          maxWidth: '140px',
+                          opacity: displayModel ? 1 : 0.7,
+                        }}
+                      >
+                        {displayModelLabel}
+                      </Text>
+                    )}
+                  </Flex>
                 </Tooltip>
                 <Tooltip content={t('chat.attachmentTooltip')} side="top">
                   <IconButton

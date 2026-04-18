@@ -31,6 +31,7 @@ import { normalizeDisplayName, formattedProvider } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
 import { connectionError } from './connection-rules';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { invalidateModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
 import { toast } from '@/lib/store/toast-store';
@@ -460,10 +461,14 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
       if (loadedAgent) {
         const updated = await AgentsApi.updateAgent(loadedAgent._key, payload);
+        // Agent's model list may have changed — drop the chat-side cache so
+        // the next chat view for this agent refetches fresh models.
+        invalidateModelsForContext(loadedAgent._key);
         await refreshAgent(loadedAgent._key, { knownAgent: updated });
         setSuccess(t('agentBuilder.agentUpdated'));
       } else {
         const created = await AgentsApi.createAgent(payload);
+        invalidateModelsForContext(created._key);
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
@@ -525,11 +530,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
       if (currentAgent) {
         const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig);
+        invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
         setSuccess(t('agentBuilder.serviceAccountConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
+        invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }

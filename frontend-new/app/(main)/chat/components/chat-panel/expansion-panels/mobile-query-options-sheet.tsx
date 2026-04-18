@@ -6,7 +6,8 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import type { ModelOverride } from '@/chat/types';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { AgentStrategyModePanel } from '@/chat/components/chat-panel/expansion-panels/agent-strategy-mode-panel';
@@ -43,7 +44,13 @@ export function MobileQueryOptionsSheet({
   const settings = useChatStore((s) => s.settings);
   const setAgentStrategy = useChatStore((s) => s.setAgentStrategy);
   const setFilters = useChatStore((s) => s.setFilters);
-  const setSelectedModel = useChatStore((s) => s.setSelectedModel);
+  const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
+
+  const modelCtxKey = ctxKeyFromAgent(agentId);
+  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
+  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
+  const handleModelSelect = (model: ModelOverride | null) =>
+    setSelectedModelForCtx(modelCtxKey, model);
 
   const handleClose = () => {
     onOpenChange(false);
@@ -78,8 +85,8 @@ export function MobileQueryOptionsSheet({
       )}
       {activePanel === 'models' && (
         <ModelSelectorPanel
-          selectedModel={settings.selectedModel}
-          onModelSelect={setSelectedModel}
+          selectedModel={contextSelectedModel ?? contextDefaultModel}
+          onModelSelect={handleModelSelect}
           hideHeader
           agentId={agentId}
         />

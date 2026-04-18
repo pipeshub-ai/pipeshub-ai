@@ -231,8 +231,9 @@ interface ChatState {
   setAgentStrategy: (agentStrategy: AgentStrategy) => void;
   setFilters: (filters: { apps: string[]; kb: string[] }) => void;
   setExpansionViewMode: (mode: 'inline' | 'overlay') => void;
-  setSelectedModel: (model: import('./types').ModelOverride | null) => void;
-  setDefaultModel: (model: import('./types').ModelOverride | null) => void;
+  setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
+  setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
+  setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
 
   // ── Search actions ──
   setSearchResults: (results: SearchResultItem[], searchId: string, query: string) => void;
@@ -284,8 +285,9 @@ const initialState = {
       apps: [] as string[],
       kb: [] as string[],
     },
-    selectedModel: null as import('./types').ModelOverride | null,
-    defaultModel: null as import('./types').ModelOverride | null,
+    selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
+    defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
+    availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
   },
 
   previewFile: null as ChatPreviewFile | null,
@@ -677,12 +679,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
     settings: { ...state.settings, filters },
   })),
 
-  setSelectedModel: (model) => set((state) => ({
-    settings: { ...state.settings, selectedModel: model },
+  setSelectedModelForCtx: (ctxKey, model) => set((state) => ({
+    settings: {
+      ...state.settings,
+      selectedModels: { ...state.settings.selectedModels, [ctxKey]: model },
+    },
   })),
 
-  setDefaultModel: (model) => set((state) => ({
-    settings: { ...state.settings, defaultModel: model },
+  setDefaultModelForCtx: (ctxKey, model) => set((state) => ({
+    settings: {
+      ...state.settings,
+      defaultModels: { ...state.settings.defaultModels, [ctxKey]: model },
+    },
+  })),
+
+  setAvailableModelsForCtx: (ctxKey, models) => set((state) => ({
+    settings: {
+      ...state.settings,
+      availableModels: {
+        ...state.settings.availableModels,
+        [ctxKey]: { models, fetchedAt: Date.now() },
+      },
+    },
   })),
 
   // ── Search actions ──────────────────────────────────────────────
@@ -715,6 +733,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(initialState);
   },
 }));
+
+/**
+ * Sentinel context key for the non-agent (Assistant) chat. Using a Unicode
+ * private-use sentinel avoids collision with any real agent id.
+ */
+export const ASSISTANT_CTX = '__assistant__';
+
+/** Build the context key from an (effective) agent id or null. */
+export const ctxKeyFromAgent = (agentId: string | null | undefined): string =>
+  agentId && agentId.trim() ? agentId : ASSISTANT_CTX;
+
+/**
+ * Resolve the model that should be used for `ctxKey`: the user's selection
+ * if present, else the context default. Reads the current store snapshot.
+ */
+export function getEffectiveModel(
+  ctxKey: string,
+): import('./types').ModelOverride | null {
+  const { selectedModels, defaultModels } = useChatStore.getState().settings;
+  return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
+}
 
 // ── Store-write diff subscriber (debug only) ────────────────────
 // Logs which top-level fields changed per set() call. This lets us

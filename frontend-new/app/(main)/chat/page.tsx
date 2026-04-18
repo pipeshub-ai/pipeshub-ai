@@ -5,11 +5,12 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { AgentChatHeader } from './components/agent-chat-header';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { ChatSuggestion } from '@/chat/types';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -341,74 +342,48 @@ function ChatContent() {
     }
   }, [conversationsVersion, loadConversations]);
 
-  // Fetch agent details (tools, display name, default model) or org models (default model only)
+  // Populate agent side-effects (tools, display name) and kick off the model
+  // fetch for the current context. The shared `fetchModelsForContext` handles
+  // caching, default resolution, and stale-selection invalidation per ctxKey.
   useEffect(() => {
     let cancelled = false;
 
-    const fetchAgentOrModels = async () => {
+    const load = async () => {
       const store = useChatStore.getState();
+      const ctxKey = ctxKeyFromAgent(agentId);
 
       if (agentId?.trim()) {
-        // Agent context: fetch agent once and use for tools, name, and models
         try {
           const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
           if (cancelled) return;
-
-          // Set tools and display name
           store.setAgentStreamTools(toolFullNames);
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
-
-          // Set default model from agent's configured models
-          if (agent?.models && agent.models.length > 0) {
-            const defaultModel = agent.models.find((m) => m.isDefault);
-            if (defaultModel) {
-              store.setDefaultModel({
-                modelKey: defaultModel.modelKey,
-                modelName: defaultModel.modelName,
-                modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
-                modelProvider: defaultModel.provider,
-              });
-            }
-          } else {
-            console.error('Agent has no configured models:', agentId);
-          }
         } catch (error) {
           if (!cancelled) {
             console.error('Failed to fetch agent details:', error);
           }
         }
       } else {
-        // Regular chat: clear agent data and fetch org models for default
         store.setAgentStreamTools([]);
         store.setAgentContextDisplayName(null);
+      }
 
-        try {
-          const models = await ChatApi.fetchAvailableLlms();
-          if (cancelled) return;
-
-          if (models.length === 0) {
-            console.error('No org models available');
-            return;
-          }
-
-          const defaultModel = models.find((m) => m.isDefault);
-          if (defaultModel) {
-            store.setDefaultModel({
-              modelKey: defaultModel.modelKey,
-              modelName: defaultModel.modelName,
-              modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
-              modelProvider: defaultModel.provider,
-            });
-          }
-        } catch (error) {
-          if (!cancelled) {
-            console.error('Failed to fetch org models:', error);
-          }
+      try {
+        // Force a refetch for agent contexts: the agent's configured models
+        // can change between visits (Agent Builder save, admin edits) and
+        // stale cached lists would surface wrong defaults in the pill and
+        // the model selector. Assistant (org-wide) models change far less
+        // often, so the normal freshness window is fine there.
+        const force = Boolean(agentId?.trim());
+        await fetchModelsForContext(ctxKey, { force });
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to fetch models for context', ctxKey, error);
         }
       }
     };
 
-    fetchAgentOrModels();
+    load();
 
     return () => {
       cancelled = true;
@@ -760,9 +735,9 @@ function ChatContent() {
     >
       <BackgroundPattern showNewChatView={showNewChatView} />
 
-      {agentId && (
+      {historyAndShareAgentId && (
         <AgentChatHeader
-          agentId={agentId}
+          agentId={historyAndShareAgentId}
           displayName={agentContextDisplayName}
           isMobile={isMobile}
         />
@@ -806,7 +781,7 @@ function ChatContent() {
             zIndex: 10,
             marginTop: isInputCentered
               ? (isMobile ? '0' : '-40px')
-              : isMobile ? (agentId ? '36px' : '0') : agentId ? '-44px' : '-80px',
+              : isMobile ? (historyAndShareAgentId ? '36px' : '0') : historyAndShareAgentId ? '-44px' : '-80px',
             paddingBottom: isInputCentered ? '0' : isMobile ? '140px' : '0',
             width: '100%',
           }}
@@ -885,7 +860,7 @@ function ChatContent() {
             width: '100%',
             overflow: 'hidden',
             marginBottom: `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`,
-            paddingTop: isMobile ? (agentId ? '76px' : '60px') : agentId ? '56px' : '40px',
+            paddingTop: isMobile ? (historyAndShareAgentId ? '76px' : '60px') : historyAndShareAgentId ? '56px' : '40px',
           }}
         >
           <MessageList />
