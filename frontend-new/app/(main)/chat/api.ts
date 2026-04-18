@@ -18,7 +18,6 @@ import {
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
-  buildStreamRequestModeFields,
   streamChatModeToAgentApiChatMode,
 } from './types';
 
@@ -277,28 +276,25 @@ export const ChatApi = {
    * Regenerate the last bot response SSE stream.
    * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/regenerate
    * Response: SSE stream with the same events as streamMessage.
+   *
+   * Pure transport: the caller is responsible for resolving the model and
+   * mode/filters (typically from the slot being regenerated, not global UI
+   * state) and passing them in, matching the pattern used by streamMessage
+   * and streamAgentRegenerate.
    */
   async streamRegenerate(
     conversationId: string,
     messageId: string,
     callbacks: StreamMessageCallbacks,
-    modelOverride?: { modelKey: string; modelName: string; modelFriendlyName: string }
+    request: {
+      modelKey: string;
+      modelName: string;
+      modelFriendlyName: string;
+      chatMode: StreamChatRequest['chatMode'];
+      filters: StreamChatRequest['filters'];
+    }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
-
-    const storeMod = await import('./store');
-    const store = storeMod.useChatStore.getState();
-    const { settings } = store;
-
-    // Defensive fallback if the caller didn't pass an explicit override.
-    // Resolve the context via the active slot's threadAgentId so the model
-    // matches the thread's agent (or Assistant if there is none).
-    const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
-    const regenCtxKey = storeMod.ctxKeyFromAgent(activeSlot?.threadAgentId ?? null);
-    const model =
-      modelOverride
-        ?? storeMod.getEffectiveModel(regenCtxKey)
-        ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
 
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;
@@ -306,11 +302,11 @@ export const ChatApi = {
     await streamSSERequest(
       endpoint,
       {
-        modelKey: model.modelKey,
-        modelName: model.modelName,
-        modelFriendlyName: model.modelFriendlyName,
-        ...buildStreamRequestModeFields(settings),
-        filters: settings.filters,
+        modelKey: request.modelKey,
+        modelName: request.modelName,
+        modelFriendlyName: request.modelFriendlyName,
+        chatMode: request.chatMode,
+        filters: request.filters,
       } as unknown as Record<string, unknown>,
       {
         onEvent: (event: SSEEvent) => {

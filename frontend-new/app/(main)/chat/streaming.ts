@@ -569,7 +569,14 @@ export async function streamRegenerateForSlot(
         }
       );
     } else {
-      await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, resolvedModel);
+      const { chatMode } = buildStreamRequestModeFields(store.settings);
+      await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
+        modelKey: resolvedModel.modelKey,
+        modelName: resolvedModel.modelName,
+        modelFriendlyName: resolvedModel.modelFriendlyName,
+        chatMode,
+        filters: store.settings.filters,
+      });
     }
   } catch (error) {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }

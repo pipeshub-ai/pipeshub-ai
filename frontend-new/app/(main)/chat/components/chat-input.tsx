@@ -87,6 +87,8 @@ export function ChatInput({
   const [isAgentStrategyPanelOpen, setIsAgentStrategyPanelOpen] = useState(false);
   const [isCollectionsPanelOpen, setIsCollectionsPanelOpen] = useState(false);
   const [isModelPanelOpen, setIsModelPanelOpen] = useState(false);
+  const [isModelButtonHovered, setIsModelButtonHovered] = useState(false);
+  const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
   const isMobile = useIsMobile();
@@ -145,6 +147,10 @@ export function ChatInput({
   const modelCtxKey = ctxKeyFromAgent(agentId);
   const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
   const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
+  const displayModel = contextSelectedModel ?? contextDefaultModel;
+  const displayModelLabel = displayModel
+    ? (displayModel.modelFriendlyName || displayModel.modelName)
+    : t('chat.aiModelsTooltip');
   const handleModelSelect = useCallback(
     (model: ModelOverride | null) => {
       setSelectedModelForCtx(modelCtxKey, model);
@@ -652,13 +658,10 @@ export function ChatInput({
                 justifyContent: 'center',
                 cursor: 'pointer',
                 transition: 'background-color 0.15s',
+                backgroundColor: isAddFileButtonHovered ? 'var(--accent-a2)' : 'transparent',
               }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent-a2)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent';
-              }}
+              onMouseEnter={() => setIsAddFileButtonHovered(true)}
+              onMouseLeave={() => setIsAddFileButtonHovered(false)}
             >
               <MaterialIcon name="add" size={24} color="var(--accent-9)" />
             </Box>
@@ -1008,57 +1011,45 @@ export function ChatInput({
                     align="center"
                     gap="2"
                     onClick={() => {
-                      setIsModelPanelOpen((prev) => !prev);
-                      setIsModePanelOpen(false);
-                      setIsAgentStrategyPanelOpen(false);
-                      setIsCollectionsPanelOpen(false);
-                      setShowUploadArea(false);
+                      const next = !isModelPanelOpen;
+                      dismissExpansionPanels();
+                      setIsModelPanelOpen(next);
                     }}
                     style={{
                       height: '32px',
                       paddingLeft: 'var(--space-2)',
-                      paddingRight: isMobile ? 'var(--space-2)' : 'var(--space-2)',
+                      paddingRight: 'var(--space-2)',
                       borderRadius: 'var(--radius-2)',
                       cursor: 'pointer',
-                      backgroundColor: isModelPanelOpen ? 'var(--olive-4)' : 'transparent',
+                      backgroundColor: isModelPanelOpen
+                        ? 'var(--olive-4)'
+                        : isModelButtonHovered
+                          ? 'var(--olive-3)'
+                          : 'transparent',
                       transition: 'background-color 0.12s ease',
                       maxWidth: isMobile ? '32px' : '180px',
                       flexShrink: 0,
                     }}
-                    onMouseEnter={(e) => {
-                      if (!isModelPanelOpen) {
-                        e.currentTarget.style.backgroundColor = 'var(--olive-3)';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isModelPanelOpen) {
-                        e.currentTarget.style.backgroundColor = 'transparent';
-                      }
-                    }}
+                    onMouseEnter={() => setIsModelButtonHovered(true)}
+                    onMouseLeave={() => setIsModelButtonHovered(false)}
                   >
                     <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
-                    {!isMobile && (() => {
-                      const displayModel = contextSelectedModel ?? contextDefaultModel;
-                      const label = displayModel
-                        ? (displayModel.modelFriendlyName || displayModel.modelName)
-                        : t('chat.aiModelsTooltip');
-                      return (
-                        <Text
-                          size="1"
-                          weight="medium"
-                          style={{
-                            color: activeIconColor,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            maxWidth: '140px',
-                            opacity: displayModel ? 1 : 0.7,
-                          }}
-                        >
-                          {label}
-                        </Text>
-                      );
-                    })()}
+                    {!isMobile && (
+                      <Text
+                        size="1"
+                        weight="medium"
+                        style={{
+                          color: activeIconColor,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          maxWidth: '140px',
+                          opacity: displayModel ? 1 : 0.7,
+                        }}
+                      >
+                        {displayModelLabel}
+                      </Text>
+                    )}
                   </Flex>
                 </Tooltip>
                 <Tooltip content={t('chat.attachmentTooltip')} side="top">
