@@ -1252,6 +1252,130 @@ describe('tokens_manager/services/cm.service', () => {
     })
 
     // =========================================================================
+    // getDeploymentConfig — deployment combination tests
+    // =========================================================================
+    describe('getDeploymentConfig — deployment combinations', () => {
+      const combinations = [
+        {
+          name: 'arangodb + kafka + etcd (classic)',
+          stored: { dataStoreType: 'arangodb', vectorDbType: 'qdrant' },
+          env: { MESSAGE_BROKER: 'kafka', KV_STORE_TYPE: 'etcd' },
+          expected: { dataStoreType: 'arangodb', vectorDbType: 'qdrant', messageBrokerType: 'kafka', kvStoreType: 'etcd' },
+        },
+        {
+          name: 'neo4j + redis + redis (minimal infra)',
+          stored: { dataStoreType: 'neo4j', vectorDbType: 'qdrant' },
+          env: { MESSAGE_BROKER: 'redis', KV_STORE_TYPE: 'redis' },
+          expected: { dataStoreType: 'neo4j', vectorDbType: 'qdrant', messageBrokerType: 'redis', kvStoreType: 'redis' },
+        },
+        {
+          name: 'arangodb + redis + redis',
+          stored: { dataStoreType: 'arangodb', vectorDbType: 'qdrant' },
+          env: { MESSAGE_BROKER: 'redis', KV_STORE_TYPE: 'redis' },
+          expected: { dataStoreType: 'arangodb', vectorDbType: 'qdrant', messageBrokerType: 'redis', kvStoreType: 'redis' },
+        },
+        {
+          name: 'neo4j + kafka + etcd',
+          stored: { dataStoreType: 'neo4j', vectorDbType: 'qdrant' },
+          env: { MESSAGE_BROKER: 'kafka', KV_STORE_TYPE: 'etcd' },
+          expected: { dataStoreType: 'neo4j', vectorDbType: 'qdrant', messageBrokerType: 'kafka', kvStoreType: 'etcd' },
+        },
+        {
+          name: 'arangodb + kafka + redis (mixed KV)',
+          stored: { dataStoreType: 'arangodb', vectorDbType: 'qdrant' },
+          env: { MESSAGE_BROKER: 'kafka', KV_STORE_TYPE: 'redis' },
+          expected: { dataStoreType: 'arangodb', vectorDbType: 'qdrant', messageBrokerType: 'kafka', kvStoreType: 'redis' },
+        },
+        {
+          name: 'neo4j + redis + etcd (mixed broker)',
+          stored: { dataStoreType: 'neo4j', vectorDbType: 'qdrant' },
+          env: { MESSAGE_BROKER: 'redis', KV_STORE_TYPE: 'etcd' },
+          expected: { dataStoreType: 'neo4j', vectorDbType: 'qdrant', messageBrokerType: 'redis', kvStoreType: 'etcd' },
+        },
+      ]
+
+      for (const combo of combinations) {
+        it(`should produce correct config for: ${combo.name}`, async () => {
+          mockKvStore.get.resolves(JSON.stringify(combo.stored))
+          process.env.MESSAGE_BROKER = combo.env.MESSAGE_BROKER
+          process.env.KV_STORE_TYPE = combo.env.KV_STORE_TYPE
+
+          const result = await configService.getDeploymentConfig()
+
+          expect(result.dataStoreType).to.equal(combo.expected.dataStoreType)
+          expect(result.vectorDbType).to.equal(combo.expected.vectorDbType)
+          expect(result.messageBrokerType).to.equal(combo.expected.messageBrokerType)
+          expect(result.kvStoreType).to.equal(combo.expected.kvStoreType)
+        })
+
+        it(`should persist correct config to KV store for: ${combo.name}`, async () => {
+          mockKvStore.get.resolves(JSON.stringify(combo.stored))
+          process.env.MESSAGE_BROKER = combo.env.MESSAGE_BROKER
+          process.env.KV_STORE_TYPE = combo.env.KV_STORE_TYPE
+
+          await configService.getDeploymentConfig()
+
+          expect(mockKvStore.set.calledOnce).to.be.true
+          const written = JSON.parse(mockKvStore.set.firstCall.args[1])
+          expect(written.dataStoreType).to.equal(combo.expected.dataStoreType)
+          expect(written.vectorDbType).to.equal(combo.expected.vectorDbType)
+          expect(written.messageBrokerType).to.equal(combo.expected.messageBrokerType)
+          expect(written.kvStoreType).to.equal(combo.expected.kvStoreType)
+        })
+      }
+
+      it('should write to the correct KV path (/services/deployment)', async () => {
+        mockKvStore.get.resolves(null)
+        process.env.MESSAGE_BROKER = 'kafka'
+        process.env.KV_STORE_TYPE = 'etcd'
+
+        await configService.getDeploymentConfig()
+
+        expect(mockKvStore.set.calledOnce).to.be.true
+        expect(mockKvStore.set.firstCall.args[0]).to.equal('/services/deployment')
+      })
+
+      it('should never set dataStoreType default from Node.js side', async () => {
+        mockKvStore.get.resolves(null)
+        process.env.MESSAGE_BROKER = 'kafka'
+        process.env.KV_STORE_TYPE = 'etcd'
+
+        const result = await configService.getDeploymentConfig()
+
+        expect(result.dataStoreType).to.be.undefined
+        expect(result.vectorDbType).to.be.undefined
+      })
+
+      it('should always overwrite messageBrokerType from env even if KV has a value', async () => {
+        mockKvStore.get.resolves(JSON.stringify({
+          dataStoreType: 'neo4j',
+          vectorDbType: 'qdrant',
+          messageBrokerType: 'kafka',
+          kvStoreType: 'etcd',
+        }))
+        process.env.MESSAGE_BROKER = 'redis'
+        process.env.KV_STORE_TYPE = 'redis'
+
+        const result = await configService.getDeploymentConfig()
+
+        expect(result.messageBrokerType).to.equal('redis')
+        expect(result.kvStoreType).to.equal('redis')
+        expect(result.dataStoreType).to.equal('neo4j')
+      })
+
+      it('should handle case-insensitive env vars', async () => {
+        mockKvStore.get.resolves(null)
+        process.env.MESSAGE_BROKER = 'REDIS'
+        process.env.KV_STORE_TYPE = 'REDIS'
+
+        const result = await configService.getDeploymentConfig()
+
+        expect(result.messageBrokerType).to.equal('redis')
+        expect(result.kvStoreType).to.equal('redis')
+      })
+    })
+
+    // =========================================================================
     // readDeploymentConfig
     // =========================================================================
     describe('readDeploymentConfig', () => {

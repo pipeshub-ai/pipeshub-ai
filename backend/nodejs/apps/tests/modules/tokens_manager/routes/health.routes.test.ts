@@ -397,6 +397,417 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.mongodb).to.equal('unhealthy')
       expect(jsonArg.services.KVStoreservice).to.equal('unhealthy')
     })
+
+    it('should mark graphDb as unhealthy when arango health check fails', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8529')) {
+          return Promise.reject(new Error('ArangoDB connection refused'))
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.graphDb).to.equal('unhealthy')
+    })
+
+    it('should mark graphDb as unhealthy when neo4j health check fails', async () => {
+      mockAppConfig.deployment.dataStoreType = 'neo4j'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('7474')) {
+          return Promise.reject(new Error('Neo4j connection refused'))
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.graphDb).to.equal('unhealthy')
+    })
+
+    it('should convert neo4j bolt:// URI to http:// with port 7474', async () => {
+      mockAppConfig.deployment.dataStoreType = 'neo4j'
+      process.env.NEO4J_URI = 'bolt://neo4j-host:7687'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const neo4jCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('neo4j-host'),
+      )
+      expect(neo4jCall).to.exist
+      expect(neo4jCall!.args[0]).to.equal('http://neo4j-host:7474')
+
+      delete process.env.NEO4J_URI
+    })
+
+    it('should convert neo4j neo4j:// URI to http:// with port 7474', async () => {
+      mockAppConfig.deployment.dataStoreType = 'neo4j'
+      process.env.NEO4J_URI = 'neo4j://neo4j-host:7687'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const neo4jCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('neo4j-host'),
+      )
+      expect(neo4jCall).to.exist
+      expect(neo4jCall!.args[0]).to.equal('http://neo4j-host:7474')
+
+      delete process.env.NEO4J_URI
+    })
+
+    it('should mark vectorDb as unhealthy when qdrant health check fails', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('healthz')) {
+          return Promise.reject(new Error('Qdrant connection refused'))
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.vectorDb).to.equal('unhealthy')
+    })
+
+    it('should mark vectorDb as unhealthy when qdrant returns non-200', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('healthz')) {
+          return Promise.resolve({ status: 503 })
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.vectorDb).to.equal('unhealthy')
+    })
+
+    it('should mark graphDb as unhealthy when arango returns non-200', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8529')) {
+          return Promise.resolve({ status: 503 })
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.graphDb).to.equal('unhealthy')
+    })
+
+    it('should always return HTTP 200 even when services are unhealthy', async () => {
+      mockRedis.get.rejects(new Error('Redis down'))
+      mockKafka.healthCheck.rejects(new Error('Kafka down'))
+      mockMongo.healthCheck.rejects(new Error('Mongo down'))
+      mockKV.healthCheck.rejects(new Error('KV down'))
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').rejects(new Error('Connection refused'))
+
+      await handler({}, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.status.neverCalledWith(503)).to.be.true
+    })
+
+    it('should return valid ISO timestamp', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      const parsed = new Date(jsonArg.timestamp)
+      expect(parsed.toISOString()).to.equal(jsonArg.timestamp)
+    })
+
+    it('should include all expected top-level keys in response', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg).to.have.property('status')
+      expect(jsonArg).to.have.property('timestamp')
+      expect(jsonArg).to.have.property('services')
+      expect(jsonArg).to.have.property('serviceNames')
+      expect(jsonArg).to.have.property('deployment')
+    })
+
+    it('should include all expected deployment keys', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.deployment).to.have.property('kvStoreType')
+      expect(jsonArg.deployment).to.have.property('messageBrokerType')
+      expect(jsonArg.deployment).to.have.property('graphDbType')
+    })
+
+    it('should call next() on unexpected top-level exception', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      res.json = sinon.stub().throws(new Error('unexpected serialization error'))
+      const next = sinon.stub()
+      await handler({}, res, next)
+      expect(next.calledOnce).to.be.true
+    })
+
+    it('should report healthy overall when only vectorDb is unhealthy', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('healthz')) {
+          return Promise.reject(new Error('Qdrant down'))
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.vectorDb).to.equal('unhealthy')
+      expect(jsonArg.services.redis).to.equal('healthy')
+      expect(jsonArg.services.messageBroker).to.equal('healthy')
+      expect(jsonArg.services.mongodb).to.equal('healthy')
+    })
+
+    it('should check qdrant at the correct URL from config', async () => {
+      mockAppConfig.qdrant = { host: 'qdrant.example.com', port: 6333, apiKey: '', grpcPort: 6334 }
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const qdrantCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('qdrant.example.com'),
+      )
+      expect(qdrantCall).to.exist
+      expect(qdrantCall!.args[0]).to.equal('http://qdrant.example.com:6333/healthz')
+    })
+
+    it('should check arango at the correct URL from config', async () => {
+      mockAppConfig.arango = { url: 'http://arango.example.com:8529', db: 'test', username: 'root', password: '' }
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const arangoCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('arango.example.com'),
+      )
+      expect(arangoCall).to.exist
+      expect(arangoCall!.args[0]).to.equal('http://arango.example.com:8529/_api/version')
+    })
+  })
+
+  // =========================================================================
+  // Deployment configuration combinations
+  // =========================================================================
+  describe('GET / - deployment configuration combinations', () => {
+    const deploymentCombinations = [
+      {
+        name: 'arangodb + kafka + etcd',
+        config: { dataStoreType: 'arangodb', messageBrokerType: 'kafka', kvStoreType: 'etcd', vectorDbType: 'qdrant' },
+        expectedGraphDbName: 'ArangoDB',
+        expectedBrokerName: 'Kafka',
+        hasKVStoreService: true,
+      },
+      {
+        name: 'neo4j + kafka + etcd',
+        config: { dataStoreType: 'neo4j', messageBrokerType: 'kafka', kvStoreType: 'etcd', vectorDbType: 'qdrant' },
+        expectedGraphDbName: 'Neo4j',
+        expectedBrokerName: 'Kafka',
+        hasKVStoreService: true,
+      },
+      {
+        name: 'arangodb + redis + redis',
+        config: { dataStoreType: 'arangodb', messageBrokerType: 'redis', kvStoreType: 'redis', vectorDbType: 'qdrant' },
+        expectedGraphDbName: 'ArangoDB',
+        expectedBrokerName: 'Redis Streams',
+        hasKVStoreService: false,
+      },
+      {
+        name: 'neo4j + redis + redis',
+        config: { dataStoreType: 'neo4j', messageBrokerType: 'redis', kvStoreType: 'redis', vectorDbType: 'qdrant' },
+        expectedGraphDbName: 'Neo4j',
+        expectedBrokerName: 'Redis Streams',
+        hasKVStoreService: false,
+      },
+      {
+        name: 'arangodb + kafka + redis',
+        config: { dataStoreType: 'arangodb', messageBrokerType: 'kafka', kvStoreType: 'redis', vectorDbType: 'qdrant' },
+        expectedGraphDbName: 'ArangoDB',
+        expectedBrokerName: 'Kafka',
+        hasKVStoreService: false,
+      },
+      {
+        name: 'neo4j + redis + etcd',
+        config: { dataStoreType: 'neo4j', messageBrokerType: 'redis', kvStoreType: 'etcd', vectorDbType: 'qdrant' },
+        expectedGraphDbName: 'Neo4j',
+        expectedBrokerName: 'Redis Streams',
+        hasKVStoreService: true,
+      },
+    ]
+
+    for (const combo of deploymentCombinations) {
+      describe(`deployment: ${combo.name}`, () => {
+        beforeEach(() => {
+          mockAppConfig.deployment = { ...combo.config }
+          router = createHealthRouter(container, cmContainer)
+        })
+
+        it(`should show graphDb as ${combo.expectedGraphDbName}`, async () => {
+          const handler = findHandler('/', 'get')
+          const res = mockRes()
+          const next = sinon.stub()
+
+          const axiosModule = require('axios')
+          sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+          await handler({}, res, next)
+
+          const jsonArg = res.json.firstCall.args[0]
+          expect(jsonArg.serviceNames.graphDb).to.equal(combo.expectedGraphDbName)
+          expect(jsonArg.deployment.graphDbType).to.equal(combo.config.dataStoreType)
+        })
+
+        it(`should show messageBroker as ${combo.expectedBrokerName}`, async () => {
+          const handler = findHandler('/', 'get')
+          const res = mockRes()
+          const next = sinon.stub()
+
+          const axiosModule = require('axios')
+          sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+          await handler({}, res, next)
+
+          const jsonArg = res.json.firstCall.args[0]
+          expect(jsonArg.serviceNames.messageBroker).to.equal(combo.expectedBrokerName)
+          expect(jsonArg.deployment.messageBrokerType).to.equal(combo.config.messageBrokerType)
+        })
+
+        it(`should ${combo.hasKVStoreService ? 'include' : 'exclude'} KVStoreservice`, async () => {
+          const handler = findHandler('/', 'get')
+          const res = mockRes()
+          const next = sinon.stub()
+
+          const axiosModule = require('axios')
+          sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+          await handler({}, res, next)
+
+          const jsonArg = res.json.firstCall.args[0]
+          if (combo.hasKVStoreService) {
+            expect(jsonArg.services.KVStoreservice).to.exist
+            expect(jsonArg.serviceNames.KVStoreservice).to.equal('etcd')
+          } else {
+            expect(jsonArg.services.KVStoreservice).to.be.undefined
+          }
+        })
+
+        it('should report correct kvStoreType in deployment', async () => {
+          const handler = findHandler('/', 'get')
+          const res = mockRes()
+          const next = sinon.stub()
+
+          const axiosModule = require('axios')
+          sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+          await handler({}, res, next)
+
+          const jsonArg = res.json.firstCall.args[0]
+          expect(jsonArg.deployment.kvStoreType).to.equal(combo.config.kvStoreType)
+        })
+      })
+    }
   })
 
   describe('GET /services - combined services health check', () => {
@@ -516,6 +927,265 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.query).to.equal('unknown')
       expect(jsonArg.services.connector).to.equal('unknown')
+    })
+
+    it('should still be healthy when only indexing is down (non-critical)', async () => {
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8091')) {
+          return Promise.reject(new Error('Indexing down'))
+        }
+        return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('healthy')
+      expect(jsonArg.services.query).to.equal('healthy')
+      expect(jsonArg.services.connector).to.equal('healthy')
+      expect(jsonArg.services.indexing).to.equal('unhealthy')
+    })
+
+    it('should still be healthy when only docling is down (non-critical)', async () => {
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8081')) {
+          return Promise.reject(new Error('Docling down'))
+        }
+        return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('healthy')
+      expect(jsonArg.services.docling).to.equal('unhealthy')
+    })
+
+    it('should still be healthy when both indexing and docling are down', async () => {
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8091') || url.includes('8081')) {
+          return Promise.reject(new Error('Service down'))
+        }
+        return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('healthy')
+      expect(jsonArg.services.indexing).to.equal('unhealthy')
+      expect(jsonArg.services.docling).to.equal('unhealthy')
+      expect(jsonArg.services.query).to.equal('healthy')
+      expect(jsonArg.services.connector).to.equal('healthy')
+    })
+
+    it('should use DOCLING_BACKEND env var for docling health check URL', async () => {
+      process.env.DOCLING_BACKEND = 'http://custom-docling:9090'
+
+      // Re-create router to pick up new env var
+      router = createHealthRouter(container, cmContainer)
+      const handler = router.stack.find(
+        (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
+      )?.route.stack[0].handle
+
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
+
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const doclingCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('custom-docling:9090'),
+      )
+      expect(doclingCall).to.exist
+      expect(doclingCall!.args[0]).to.equal('http://custom-docling:9090/health')
+
+      delete process.env.DOCLING_BACKEND
+    })
+
+    it('should default docling URL to http://localhost:8081 when env not set', async () => {
+      delete process.env.DOCLING_BACKEND
+      router = createHealthRouter(container, cmContainer)
+      const handler = router.stack.find(
+        (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
+      )?.route.stack[0].handle
+
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
+
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const doclingCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('8081'),
+      )
+      expect(doclingCall).to.exist
+      expect(doclingCall!.args[0]).to.equal('http://localhost:8081/health')
+    })
+
+    it('should mark service as unhealthy when it returns 200 but no data', async () => {
+      sinon.stub(axiosModule, 'get').resolves({ status: 200, data: null })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.query).to.equal('unhealthy')
+      expect(jsonArg.services.connector).to.equal('unhealthy')
+    })
+
+    it('should mark service as unhealthy when it returns non-200 status', async () => {
+      sinon.stub(axiosModule, 'get').resolves({
+        status: 503,
+        data: { status: 'healthy' },
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.query).to.equal('unhealthy')
+    })
+
+    it('should always return HTTP 200 for /services even when all are down', async () => {
+      sinon.stub(axiosModule, 'get').rejects(new Error('All services down'))
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.status.neverCalledWith(503)).to.be.true
+    })
+
+    it('should include valid timestamp in /services response', async () => {
+      sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.timestamp).to.be.a('string')
+      const parsed = new Date(jsonArg.timestamp)
+      expect(parsed.toISOString()).to.equal(jsonArg.timestamp)
+    })
+
+    it('should include all four service keys in response', async () => {
+      sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services).to.have.property('query')
+      expect(jsonArg.services).to.have.property('connector')
+      expect(jsonArg.services).to.have.property('indexing')
+      expect(jsonArg.services).to.have.property('docling')
+    })
+
+    it('should include all four service keys as unknown in error fallback', async () => {
+      sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.query).to.equal('unknown')
+      expect(jsonArg.services.connector).to.equal('unknown')
+      expect(jsonArg.services.indexing).to.equal('unknown')
+      expect(jsonArg.services.docling).to.equal('unknown')
+    })
+
+    it('should report per-service status independently', async () => {
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8000')) {
+          return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+        }
+        if (url.includes('8088')) {
+          return Promise.reject(new Error('Connector down'))
+        }
+        if (url.includes('8091')) {
+          return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+        }
+        // docling
+        return Promise.reject(new Error('Docling down'))
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.query).to.equal('healthy')
+      expect(jsonArg.services.connector).to.equal('unhealthy')
+      expect(jsonArg.services.indexing).to.equal('healthy')
+      expect(jsonArg.services.docling).to.equal('unhealthy')
+    })
+
+    it('should use correct backend URLs from appConfig', async () => {
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      const urls = axiosStub.getCalls().map((c: any) => c.args[0])
+      expect(urls).to.include('http://localhost:8000/health')
+      expect(urls).to.include('http://localhost:8088/health')
+      expect(urls).to.include('http://localhost:8091/health')
     })
   })
 })
