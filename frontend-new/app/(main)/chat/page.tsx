@@ -730,6 +730,13 @@ function ChatContent() {
     !activeSlotIsStreaming
   );
 
+  /** On the main new-chat landing, mount the input in the centered hero
+   * column (beside the greeting) rather than pinned at the bottom. It drops
+   * to its bottom position automatically once the first message is sent
+   * (i.e. when `showNewChatView` flips to false). Agent landings keep the
+   * input at the bottom. */
+  const isInputCentered = showNewChatView && !agentId;
+
   // Show loading state when slot exists but hasn't loaded history yet
   const showLoading = hasActiveSlot && !activeSlotIsInitialized;
 
@@ -797,8 +804,10 @@ function ChatContent() {
             flex: 1,
             position: 'relative',
             zIndex: 10,
-            marginTop: isMobile ? (agentId ? '36px' : '0') : agentId ? '-44px' : '-80px',
-            paddingBottom: isMobile ? '140px' : '0',
+            marginTop: isInputCentered
+              ? (isMobile ? '0' : '-40px')
+              : isMobile ? (agentId ? '36px' : '0') : agentId ? '-44px' : '-80px',
+            paddingBottom: isInputCentered ? '0' : isMobile ? '140px' : '0',
             width: '100%',
           }}
         >
@@ -811,7 +820,7 @@ function ChatContent() {
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isMobile ? '32px' : '48px',
+              marginBottom: isInputCentered ? (isMobile ? '20px' : '24px') : isMobile ? '32px' : '48px',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -832,73 +841,24 @@ function ChatContent() {
             </Text>
           </Box>
 
-          {/* Suggestion Chips */}
-          {isMobile ? (
-            /* Mobile: vertical single-column list, full-width */
-            <Flex
-              direction="column"
-              gap="2"
+          {/* Centered chat input — stays here on the new-chat landing until
+              the first message is sent, then it's rendered at the bottom. */}
+          {isInputCentered && (
+            <Box
               style={{
                 width: '100%',
-                padding: '0 var(--space-4)',
+                display: 'flex',
+                justifyContent: 'center',
+                padding: isMobile ? '0 var(--space-4)' : undefined,
               }}
             >
-              {defaultSuggestions.slice(0, 5).map((suggestion) => (
-                <SuggestionChip
-                  key={suggestion.id}
-                  text={suggestion.text}
-                  icons={[...suggestion.icons]}
-                  onClick={() => handleSuggestionClick(suggestion)}
-                  fullWidth
-                />
-              ))}
-            </Flex>
-          ) : (
-            /* Desktop: 2-column paired rows */
-            <Flex direction="column" align="center" gap="1" style={{ marginBottom: 'var(--space-6)' }}>
-              {/* Row 1 */}
-              <Flex align="center" gap="1">
-                <SuggestionChip
-                  text={defaultSuggestions[0].text}
-                  icons={[...defaultSuggestions[0].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[0])}
-                />
-                <SuggestionChip
-                  text={defaultSuggestions[1].text}
-                  icons={[...defaultSuggestions[1].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[1])}
-                />
-              </Flex>
-
-              {/* Row 2 */}
-              <Flex align="center" gap="1">
-                <SuggestionChip
-                  text={defaultSuggestions[2].text}
-                  icons={[...defaultSuggestions[2].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[2])}
-                />
-                <SuggestionChip
-                  text={defaultSuggestions[3].text}
-                  icons={[...defaultSuggestions[3].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[3])}
-                />
-              </Flex>
-
-              {/* Row 3 */}
-              <Flex align="center" gap="1">
-                <SuggestionChip
-                  text={defaultSuggestions[4].text}
-                  icons={[...defaultSuggestions[4].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[4])}
-                />
-                <SuggestionChip
-                  text={defaultSuggestions[5].text}
-                  icons={[...defaultSuggestions[5].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[5])}
-                />
-              </Flex>
-            </Flex>
+              <ChatInputWrapper />
+            </Box>
           )}
+
+          {/* Suggestion chips are intentionally hidden: the defaults are hardcoded
+              placeholders and not tied to the user's actual data yet. Re-enable
+              once suggestions are dynamically generated. */}
         </Flex>
       ) : showLoading ? (
         /* Loading View */
@@ -932,7 +892,10 @@ function ChatContent() {
         </Flex>
       )}
 
-      {/* Chat Input - Fixed at bottom, uses ChatInputWrapper to access runtime */}
+      {/* Chat Input - Fixed at bottom, uses ChatInputWrapper to access runtime.
+          On the new-chat landing the input is rendered inline in the hero
+          column (see `isInputCentered`); this bottom slot then only carries
+          the footer links until the first message is sent. */}
       <Box
         style={{
           position: 'absolute',
@@ -944,7 +907,7 @@ function ChatContent() {
           zIndex: 20,
         }}
       >
-        <ChatInputWrapper />
+        {!isInputCentered && <ChatInputWrapper />}
         <ChatFooterLinks />
       </Box>
 

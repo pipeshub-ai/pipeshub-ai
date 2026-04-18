@@ -9,7 +9,6 @@ from pydantic import BaseModel
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AccountType
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -78,15 +77,13 @@ async def _build_llm_user_context_string(
     if not send_user_info:
         return ""
     user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
-    if org_info is not None and (
-        org_info.get("accountType") == AccountType.ENTERPRISE.value
-        or org_info.get("accountType") == AccountType.BUSINESS.value
-    ):
+    org_name = (org_info or {}).get("name")
+    if org_name:
         return (
             "I am the user of the organization. "
             f"My name is {user_info.get('fullName', 'a user')} "
             f"({user_info.get('designation', '')}) "
-            f"from {org_info.get('name', 'the organization')}. "
+            f"from {org_name}. "
             "Please provide accurate and relevant information based on the available context."
         )
     return (
