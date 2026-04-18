@@ -58,6 +58,7 @@ import {
   archiveAgentConversation,
   unarchiveAgentConversation,
   listAllArchivesAgentConversation,
+  listAllAgentsArchivedConversationsGrouped,
 } from '../controller/es_controller';
 import {
   getSpeechCapabilities,
@@ -509,6 +510,19 @@ export function createAgentConversationalRouter(container: Container): Router {
   const keyValueStoreService = container.isBound('KeyValueStoreService')
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
+
+  /**
+   * @route GET /api/v1/agents/conversations/show/archives
+   * @desc List all archived agent conversations grouped by agent for the current user.
+   *       Must be registered before the /:agentKey wildcard routes.
+   */
+  router.get(
+    '/conversations/show/archives',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    metricsMiddleware(container),
+    listAllAgentsArchivedConversationsGrouped,
+  );
 
   router.post(
     '/:agentKey/conversations',

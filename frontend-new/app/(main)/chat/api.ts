@@ -476,15 +476,19 @@ export const ChatApi = {
    * extract them into a messagesMap keyed by conversation ID. This lets
    * the archived-chats page load message detail without a second API call.
    */
-  async fetchArchivedConversations(): Promise<{
+  async fetchArchivedConversations(params?: { page?: number; limit?: number }): Promise<{
     conversations: Conversation[];
     messagesMap: Record<string, ConversationMessage[]>;
     pagination: ConversationsListResponse['pagination'];
   }> {
+    const query: Record<string, string | number> = {};
+    if (params?.page != null) query.page = params.page;
+    if (params?.limit != null) query.limit = params.limit;
+
     const { data } = await apiClient.get<{
       conversations: (ConversationApiResponse & { messages?: ConversationMessage[] })[];
       pagination: ConversationsListResponse['pagination'];
-    }>('/api/v1/conversations/show/archives');
+    }>('/api/v1/conversations/show/archives', { params: query });
 
     const raw = data.conversations ?? [];
     const messagesMap: Record<string, ConversationMessage[]> = {};

@@ -152,10 +152,27 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const handleConfirmArchive = async () => {
     setIsArchiving(true);
     try {
-      await ChatApi.archiveConversation(conversation.id);
+      if (agentId) {
+        await AgentsApi.archiveAgentConversation(agentId, conversation.id);
+      } else {
+        await ChatApi.archiveConversation(conversation.id);
+      }
       removeConversation(conversation.id);
       bumpConversationsVersion();
       setArchiveDialogOpen(false);
+      const urlConvId = searchParams.get('conversationId');
+      if (urlConvId === conversation.id) {
+        const store = useChatStore.getState();
+        const found = agentId
+          ? store.getSlotByConvId(conversation.id, { forAgentId: agentId })
+          : store.getSlotByConvId(conversation.id, { forAgentId: null });
+        if (found) {
+          store.evictSlot(found.slotId);
+        } else {
+          store.clearActiveSlot();
+        }
+        router.replace(agentId ? buildChatHref({ agentId }) : '/chat/');
+      }
     } catch {
       // keep dialog open on error
     } finally {
@@ -223,7 +240,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}
-              showArchive={!agentId}
+              showArchive={true}
             />
           ) : undefined
         }
@@ -238,15 +255,13 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         isDeleting={isDeleting}
       />
 
-      {!agentId && (
-        <ArchiveChatDialog
-          open={archiveDialogOpen}
-          onOpenChange={setArchiveDialogOpen}
-          onConfirm={handleConfirmArchive}
-          chatTitle={conversation.title}
-          isArchiving={isArchiving}
-        />
-      )}
+      <ArchiveChatDialog
+        open={archiveDialogOpen}
+        onOpenChange={setArchiveDialogOpen}
+        onConfirm={handleConfirmArchive}
+        chatTitle={conversation.title}
+        isArchiving={isArchiving}
+      />
     </>
   );
 }

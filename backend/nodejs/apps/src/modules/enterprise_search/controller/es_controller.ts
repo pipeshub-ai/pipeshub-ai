@@ -6207,21 +6207,24 @@ export const getAllAgentConversations = async (
     });
 
     const { skip, limit, page } = getPaginationParams(req);
-    const filter = buildAgentConversationFilter(
-      req,
-      orgId,
-      userId,
-      agentKey as string,
-      conversationId as string,
-    );
+    const filter = {
+      ...buildAgentConversationFilter(
+        req,
+        orgId,
+        userId,
+        agentKey as string,
+        conversationId as string,
+      ),
+      // Sidebar / chat list: omit archived threads (archived view uses a dedicated route).
+      isArchived: { $ne: true },
+    };
     const sortOptions = buildSortOptions(req);
 
     // sharedWith Me Conversation
-    const sharedWithMeFilter = buildAgentSharedWithMeFilter(
-      req,
-      userId,
-      agentKey as string,
-    );
+    const sharedWithMeFilter = {
+      ...buildAgentSharedWithMeFilter(req, userId, agentKey as string),
+      isArchived: { $ne: true },
+    };
 
     // Execute query
     const [conversations, totalCount, sharedWithMeConversations] =
@@ -6872,4 +6875,138 @@ export const getAgentPermissions =
     const backendError = handleBackendError(error, 'Get Agent Permissions');
     next(backendError);
   }
-};  
+};
+
+const AGENT_ARCHIVES_INITIAL_CHAT_LIMIT = 5;
+const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
+
+/**
+ * GET /api/v1/agents/conversations/show/archives
+ * Returns archived agent conversations for the current user, grouped by agentKey.
+ *
+ * Supports agent-level pagination via `agentPage` and `agentLimit` query params
+ * (defaults: page 1, limit {@link AGENT_ARCHIVES_INITIAL_AGENT_LIMIT}).
+ *
+ * Each group contains the first {@link AGENT_ARCHIVES_INITIAL_CHAT_LIMIT} conversations plus
+ * a totalCount so the frontend can render a "More Chats" affordance without extra round-trips.
+ */
+export const listAllAgentsArchivedConversationsGrouped = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    // Agent-level pagination params
+    const agentPage = Math.max(1, parseInt(req.query.agentPage as string, 10) || 1);
+    const agentLimit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.agentLimit as string, 10) || AGENT_ARCHIVES_INITIAL_AGENT_LIMIT),
+    );
+    const agentSkip = (agentPage - 1) * agentLimit;
+
+    logger.debug('Fetching all agents archived conversations (grouped)', {
+      requestId,
+      userId,
+      agentPage,
+      agentLimit,
+    });
+
+    const filter = {
+      orgId: new mongoose.Types.ObjectId(`${orgId}`),
+      $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
+      isArchived: true,
+      archivedBy: { $exists: true },
+      isDeleted: false,
+    };
+
+    const aggregationResult = await AgentConversation.aggregate([
+      { $match: filter },
+      { $sort: { updatedAt: -1 as const } },
+      // Exclude heavy fields before grouping
+      { $project: { __v: 0, messages: 0 } },
+      {
+        $group: {
+          _id: '$agentKey',
+          conversations: { $push: '$$ROOT' },
+          totalCount: { $sum: 1 },
+          latestUpdatedAt: { $first: '$updatedAt' },
+        },
+      },
+      // Sort agent groups by most recent activity
+      { $sort: { latestUpdatedAt: -1 as const } },
+      {
+        $facet: {
+          metadata: [{ $count: 'totalAgentCount' }],
+          data: [
+            { $skip: agentSkip },
+            { $limit: agentLimit },
+            {
+              $project: {
+                agentKey: '$_id',
+                conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
+                totalCount: 1,
+                hasMore: { $gt: ['$totalCount', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const totalAgentCount = aggregationResult[0]?.metadata[0]?.totalAgentCount ?? 0;
+    const rawGroups = aggregationResult[0]?.data ?? [];
+
+    // Apply computed fields (isOwner, accessLevel) to sliced conversations
+    const groups = rawGroups.map((g: any) => ({
+      agentKey: g.agentKey,
+      conversations: g.conversations.map((c: any) => ({
+        ...addComputedFields(c as IAgentConversation, userId),
+        archivedAt: c.updatedAt,
+        archivedBy: c.archivedBy,
+      })),
+      totalCount: g.totalCount,
+      hasMore: g.hasMore,
+    }));
+
+    logger.debug('Successfully fetched grouped archived agent conversations', {
+      requestId,
+      agentGroupCount: groups.length,
+      totalAgentCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json({
+      groups,
+      agentPagination: {
+        page: agentPage,
+        limit: agentLimit,
+        totalCount: totalAgentCount,
+        totalPages: Math.ceil(totalAgentCount / agentLimit),
+        hasNextPage: agentPage * agentLimit < totalAgentCount,
+        hasPrevPage: agentPage > 1,
+      },
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error fetching grouped archived agent conversations', {
+      requestId,
+      error: error.message,
+      stack: error.stack,
+      duration: Date.now() - startTime,
+    });
+    next(error);
+  }
+};

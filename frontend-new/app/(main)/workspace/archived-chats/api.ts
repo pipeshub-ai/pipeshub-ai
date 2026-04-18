@@ -1,14 +1,24 @@
 /**
  * Archived Chats API
  *
- * Thin facade over ChatApi — conversations are chat domain objects, so we
- * delegate to the shared chat API rather than duplicating logic here.
+ * Facade over ChatApi and AgentsApi — Assistant conversations delegate to ChatApi,
+ * agent conversations delegate to AgentsApi.
  */
 import { ChatApi } from '@/chat/api';
+import { AgentsApi } from '@/app/(main)/agents/api';
 
 export const ArchivedChatsApi = {
+  // Assistant conversations
   fetchArchivedConversations: ChatApi.fetchArchivedConversations.bind(ChatApi),
   fetchConversation: ChatApi.fetchConversation.bind(ChatApi),
   restoreConversation: ChatApi.restoreConversation.bind(ChatApi),
   deleteConversation: ChatApi.deleteConversation.bind(ChatApi),
+
+  // Agent conversations
+  fetchAllAgentsArchivedConversations: AgentsApi.fetchAllAgentsArchivedConversations.bind(AgentsApi),
+  fetchAgentArchivedConversations: AgentsApi.fetchAgentArchivedConversations.bind(AgentsApi),
+  fetchAgentConversation: AgentsApi.fetchAgentConversation.bind(AgentsApi),
+  restoreAgentConversation: AgentsApi.restoreAgentConversation.bind(AgentsApi),
+  deleteAgentConversation: AgentsApi.deleteAgentConversation.bind(AgentsApi),
+  getAgents: AgentsApi.getAgents.bind(AgentsApi),
 };
