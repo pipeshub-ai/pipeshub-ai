@@ -403,12 +403,12 @@ class ConnectorAssertions:
                 connector_id, "webUrl", predicate=lambda v: v is not None
             )
         """
-        records = await self.graph.fetch_records_by_type(connector_id, "")  # Fetch all types
+        records = await self.graph.fetch_records_by_type(connector_id, "")
         
         if not records:
-            # If fetch_records_by_type doesn't work with empty type, fall back
-            logger.warning(
-                "fetch_records_by_type returned no records - this assertion may not work correctly"
+            logger.info(
+                "assert_all_records_have_property: no records for connector %s",
+                connector_id,
             )
             return 0
         
