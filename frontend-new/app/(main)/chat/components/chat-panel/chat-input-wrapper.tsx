@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { ChatApi } from '@/chat/api';
 import type { SearchRequest } from '@/chat/types';
 
@@ -17,14 +18,7 @@ let currentSearchAbort: AbortController | null = null;
  */
 export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
-  const searchParams = useSearchParams();
-  const rawAgentId = searchParams.get('agentId');
-  const slotAgentId = useChatStore((s) => {
-    const sid = s.activeSlotId;
-    return sid ? (s.slots[sid]?.threadAgentId?.trim() ?? '') : '';
-  });
-  // Determine effective agent ID (prefer slot's agent ID, fallback to URL)
-  const effectiveAgentId = slotAgentId || (rawAgentId?.trim() ? rawAgentId : null);
+  const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
 
   useEffect(() => {
@@ -36,6 +30,18 @@ export function ChatInputWrapper() {
       store.clearSearchResults();
     }
   }, [isAgentChat]);
+
+  // Make sure models for the EFFECTIVE context (URL or slot agent) are loaded
+  // and validated, regardless of which URL the page was opened on. This keeps
+  // the pill + submit in sync when the active slot carries an agent that the
+  // URL doesn't reflect (e.g. navigating into an existing agent conversation).
+  // The fetch util dedupes so this is cheap when page.tsx already ran.
+  useEffect(() => {
+    const ctxKey = ctxKeyFromAgent(effectiveAgentId);
+    fetchModelsForContext(ctxKey).catch((err) => {
+      console.error('Failed to fetch models for effective context', ctxKey, err);
+    });
+  }, [effectiveAgentId]);
 
   useEffect(() => {
     return () => {

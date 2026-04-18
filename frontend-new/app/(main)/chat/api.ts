@@ -286,10 +286,19 @@ export const ChatApi = {
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
 
-    const store = (await import('./store')).useChatStore.getState();
+    const storeMod = await import('./store');
+    const store = storeMod.useChatStore.getState();
     const { settings } = store;
 
-    const model = modelOverride ?? settings.selectedModel ?? settings.defaultModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
+    // Defensive fallback if the caller didn't pass an explicit override.
+    // Resolve the context via the active slot's threadAgentId so the model
+    // matches the thread's agent (or Assistant if there is none).
+    const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
+    const regenCtxKey = storeMod.ctxKeyFromAgent(activeSlot?.threadAgentId ?? null);
+    const model =
+      modelOverride
+        ?? storeMod.getEffectiveModel(regenCtxKey)
+        ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
 
     let receivedComplete = false;
     let lastSSEError: SSEErrorEvent | null = null;

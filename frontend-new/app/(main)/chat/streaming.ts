@@ -15,7 +15,7 @@
 
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages } from './runtime';
 import { i18n } from '@/lib/i18n';
@@ -374,9 +374,14 @@ export async function streamRegenerateForSlot(
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
 
-  // Resolve model: explicit override → store's selectedModel → defaultModel (from API)
+  // Resolve model: explicit override → context-scoped selection/default.
+  // Context is the slot's own agent (so regenerate for an agent thread
+  // always picks from that agent's models, never leaks assistant choices).
+  const regenCtxKey = ctxKeyFromAgent(slot.threadAgentId ?? null);
   const resolvedModel: ModelOverride =
-    modelOverride ?? store.settings.selectedModel ?? store.settings.defaultModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
+    modelOverride
+      ?? getEffectiveModel(regenCtxKey)
+      ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
 
   const abortController = new AbortController();
 

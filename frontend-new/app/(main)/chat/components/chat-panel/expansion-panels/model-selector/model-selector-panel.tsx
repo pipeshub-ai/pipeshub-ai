@@ -6,8 +6,8 @@ import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ChatApi } from '@/chat/api';
-import { AgentsApi } from '@/app/(main)/agents/api';
+import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
@@ -15,24 +15,6 @@ import {
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { toIconPath } from '@/lib/utils/formatters';
 import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
-import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
-
-/**
- * Convert agent-configured model to the chat available model format.
- * This ensures type safety instead of using 'as' cast.
- */
-function mapAgentModelToAvailable(model: AgentConfiguredModel): AvailableLlmModel {
-  return {
-    modelKey: model.modelKey,
-    modelName: model.modelName,
-    modelFriendlyName: model.modelFriendlyName,
-    provider: model.provider,
-    isDefault: model.isDefault,
-    isReasoning: model.isReasoning,
-    isMultimodal: model.isMultimodal,
-    modelType: model.modelType,
-  };
-}
 
 interface ModelSelectorPanelProps {
   /** Currently selected model override (null = use default from API) */
@@ -79,76 +61,58 @@ export function ModelSelectorPanel({
   const { t } = useTranslation();
   const router = useRouter();
 
-  const [models, setModels] = useState<AvailableLlmModel[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const ctxKey = ctxKeyFromAgent(agentId);
+  // Read the shared cache so the panel re-renders as soon as the fetcher
+  // writes results — no duplicate network calls.
+  const cached = useChatStore((s) => s.settings.availableModels[ctxKey]);
+  const models: AvailableLlmModel[] = cached?.models ?? [];
+
+  const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
     setError(null);
+    setIsLoading(!cached);
 
-    const fetchModels = async () => {
-      try {
-        if (agentId?.trim()) {
-          const { agent } = await AgentsApi.getAgent(agentId);
-          if (cancelled) return;
-
-          if (!agent?.models || agent.models.length === 0) {
-            setError(t('chat.agentNoModelsConfigured'));
-            setModels([]);
-            return;
-          }
-
-          setModels(agent.models.map(mapAgentModelToAvailable));
-        } else {
-          const orgModels = await ChatApi.fetchAvailableLlms();
-          if (cancelled) return;
-
-          if (orgModels.length === 0) {
-            setError(t('chat.noModelsAvailable'));
-            setModels([]);
-            return;
-          }
-
-          setModels(orgModels);
+    fetchModelsForContext(ctxKey)
+      .then((fresh) => {
+        if (cancelled) return;
+        if (fresh.length === 0) {
+          setError(
+            ctxKey === ASSISTANT_CTX
+              ? t('chat.noModelsAvailable')
+              : t('chat.agentNoModelsConfigured'),
+          );
         }
-      } catch (err) {
+      })
+      .catch((err) => {
         if (cancelled) return;
         console.error('Failed to fetch models:', err);
-        const errorMessage = agentId?.trim()
-          ? t('chat.failedToLoadAgentConfig')
-          : t('chat.failedToLoadModels');
-        setError(errorMessage);
-        setModels([]);
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    fetchModels();
+        setError(
+          ctxKey === ASSISTANT_CTX
+            ? t('chat.failedToLoadModels')
+            : t('chat.failedToLoadAgentConfig'),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+    // `cached` intentionally excluded — including it would force a refetch
+    // every time the cache writes back, defeating the dedupe in the util.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctxKey, t]);
 
-  // Auto-select default model when models are loaded and no model is selected
-  useEffect(() => {
-    if (!selectedModel && models.length > 0) {
-      const defaultModel = models.find((m) => m.isDefault);
-      if (defaultModel) {
-        onModelSelect({
-          modelKey: defaultModel.modelKey,
-          modelName: defaultModel.modelName,
-          modelFriendlyName: defaultModel.modelFriendlyName || defaultModel.modelName,
-          modelProvider: defaultModel.provider,
-        });
-      }
-    }
-  }, [models, selectedModel, onModelSelect]);
+  // NOTE: We intentionally do NOT auto-select the default model here.
+  // The chat-input pill already falls back to `defaultModels[ctxKey]` when
+  // `selectedModels[ctxKey]` is null, so there is no need to mutate the
+  // user's selection slot. Writing default into the selection on mount used
+  // to leak between contexts (e.g. picking default in assistant silently
+  // locked that model into every agent the user visited).
 
   const handleSelect = useCallback(
     (model: AvailableLlmModel) => {
