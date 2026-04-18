@@ -13,6 +13,7 @@ from app.connectors.core.registry.connector import (
     DocsConnector,
     FormsConnector,
     MeetConnector,
+    OdooConnector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
@@ -111,6 +112,7 @@ class ConnectorFactory:
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
         'airtable': AirtableConnector,
+        'odoo': OdooConnector,
     }
 
 

@@ -19,8 +19,9 @@ export enum ConnectorId {
     LINEAR = 'linear',
     UPLOAD = 'upload',
     RSS = 'rss',
+    ODOO = 'odoo',
   }
-  
+
   export enum ConnectorNames {
     GOOGLE_WORKSPACE = 'Google Workspace',
     ATLASSIAN = 'Atlassian',
@@ -42,8 +43,9 @@ export enum ConnectorId {
     LINEAR = 'Linear',
     UPLOAD = 'Uploaded Files',
     RSS = 'RSS',
+    ODOO = 'Odoo',
   }
-  
+
   export const ConnectorIdToNameMap: Record<ConnectorId, string> = {
     [ConnectorId.GOOGLE_WORKSPACE]: ConnectorNames.GOOGLE_WORKSPACE,
     [ConnectorId.ATLASSIAN]: ConnectorNames.ATLASSIAN,
@@ -65,4 +67,5 @@ export enum ConnectorId {
     [ConnectorId.LINEAR]: ConnectorNames.LINEAR,
     [ConnectorId.UPLOAD]: ConnectorNames.UPLOAD,
     [ConnectorId.RSS]: ConnectorNames.RSS,
+    [ConnectorId.ODOO]: ConnectorNames.ODOO,
   };

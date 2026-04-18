@@ -652,3 +652,69 @@ class ZendeskConnector:
         """Connect to Zendesk"""
         print(f"Connecting to {self.name}")
         return True
+
+@ConnectorBuilder("Odoo")\
+    .in_group("Odoo")\
+    .with_description("Sync CRM, contacts, and business data from Odoo")\
+    .with_categories(["CRM", "ERP"])\
+    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="url",
+                display_name="Odoo URL",
+                placeholder="https://mycompany.odoo.com",
+                description="The URL of your Odoo instance",
+                field_type="TEXT",
+                max_length=2000
+            ),
+            AuthField(
+                name="database",
+                display_name="Database",
+                placeholder="Enter your Odoo database name",
+                description="The Odoo database name",
+                field_type="TEXT",
+                max_length=500
+            ),
+            AuthField(
+                name="username",
+                display_name="Username",
+                placeholder="Enter your Odoo username or email",
+                description="The Odoo login username or email",
+                field_type="TEXT",
+                max_length=500
+            ),
+            AuthField(
+                name="apiKey",
+                display_name="API Key",
+                placeholder="Enter your Odoo API key",
+                description="The API key generated in Odoo user preferences",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            )
+        ])
+    ])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/odoo.svg")
+        .add_documentation_link(DocumentationLink(
+            "Odoo External API",
+            "https://www.odoo.com/documentation/19.0/developer/reference/external_api.html",
+            "setup"
+        ))
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
+        .with_scheduled_config(True, 60)
+        .with_sync_support(False)
+        .with_agent_support(True)
+    )\
+    .build_decorator()
+class OdooConnector:
+    """Odoo connector built with the builder pattern"""
+
+    def __init__(self) -> None:
+        self.name = "Odoo"
+
+    def connect(self) -> bool:
+        """Connect to Odoo"""
+        print(f"Connecting to {self.name}")
+        return True
