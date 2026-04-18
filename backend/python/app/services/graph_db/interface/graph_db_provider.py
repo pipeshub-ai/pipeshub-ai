@@ -709,7 +709,8 @@ class IGraphDBProvider(ABC):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
+        path: list[str],
+        external_record_group_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """
@@ -717,11 +718,12 @@ class IGraphDBProvider(ABC):
 
         Args:
             connector_id (str): Connector ID
-            path (str): File/record path
-            transaction (Optional[Any]): Optional transaction context
+            path (list[str]): File/record path in array format
+            external_record_group_id (str): External Record group ID
+            transaction (str | None): Optional transaction context
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            dict | None: Record data if found, None otherwise
         """
         pass
 

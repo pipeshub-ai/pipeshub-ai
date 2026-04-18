@@ -1051,16 +1051,15 @@ class TestGetRecordById:
 
 class TestGetRecordByPath:
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_record_by_path("c1", "/missing")
+        result = await connected_provider.get_record_by_path("c1", ["missing","path"], "record_group_id")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_by_path("c1", "/path")
+        result = await connected_provider.get_record_by_path("c1", ["path","file"], "record_group_id")
         assert result is None
 
 
@@ -1070,7 +1069,6 @@ class TestGetRecordByPath:
 
 
 class TestGetRecordPath:
-    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
@@ -5580,16 +5578,15 @@ class TestGetRecordKeyByExternalId:
 
 class TestGetRecordByPathProvider:
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_record_by_path("c1", "/missing")
+        result = await connected_provider.get_record_by_path("c1", ["missing","path"], "record_group_id")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_record_by_path("c1", "/some/path")
+        result = await connected_provider.get_record_by_path("c1", ["some","path"], "record_group_id")
         assert result is None
 
 
@@ -18595,19 +18592,19 @@ class TestGetRecordByPathFullCoverage:
     @pytest.mark.asyncio
     async def test_found(self, connected_provider_fullcov):
         connected_provider_fullcov.http_client.execute_aql = AsyncMock(return_value=[{"path": "/test/file.txt"}])
-        result = await connected_provider_fullcov.get_record_by_path("c1", "/test/file.txt")
+        result = await connected_provider_fullcov.get_record_by_path("c1", ["test","file"], "record_group_id")
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider_fullcov):
         connected_provider_fullcov.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider_fullcov.get_record_by_path("c1", "/missing.txt")
+        result = await connected_provider_fullcov.get_record_by_path("c1", ["missing","path"], "record_group_id")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider_fullcov):
         connected_provider_fullcov.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider_fullcov.get_record_by_path("c1", "/file.txt")
+        result = await connected_provider_fullcov.get_record_by_path("c1", ["some","file"], "record_group_id")
         assert result is None
 
 

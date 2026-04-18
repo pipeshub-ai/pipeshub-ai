@@ -164,3 +164,10 @@ def datetime_to_epoch_ms(
         return int(dt.timestamp() * 1000)
     except Exception:
         return None
+
+def string_to_datetime(time_str: str) -> datetime :
+    """Converts time stamp with 'Z' to datetime object"""
+    if time_str.endswith("Z") or time_str.endswith("z"):
+            time_str = time_str[:-1] + "+00:00"
+    return datetime.fromisoformat(time_str)
+
