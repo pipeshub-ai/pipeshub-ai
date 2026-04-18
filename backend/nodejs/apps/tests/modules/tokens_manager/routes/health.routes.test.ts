@@ -294,6 +294,87 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.KVStoreservice).to.equal('unhealthy')
     })
 
+    it('should use fresh deployment config from ConfigService when available', async () => {
+      mockConfigService.readDeploymentConfig.resolves({
+        dataStoreType: 'neo4j',
+        messageBrokerType: 'redis',
+        kvStoreType: 'redis',
+        vectorDbType: 'qdrant',
+      })
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.deployment.graphDbType).to.equal('neo4j')
+      expect(jsonArg.deployment.messageBrokerType).to.equal('redis')
+      expect(jsonArg.serviceNames.graphDb).to.equal('Neo4j')
+      expect(jsonArg.serviceNames.messageBroker).to.equal('Redis Streams')
+      expect(jsonArg.services.KVStoreservice).to.be.undefined
+    })
+
+    it('should fall back to default deployment config when readDeploymentConfig fails', async () => {
+      mockConfigService.readDeploymentConfig.rejects(new Error('etcd unavailable'))
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.deployment.kvStoreType).to.equal('etcd')
+      expect(jsonArg.deployment.messageBrokerType).to.equal('kafka')
+      expect(jsonArg.deployment.graphDbType).to.equal('arangodb')
+    })
+
+    it('should fall back to default when readDeploymentConfig returns empty object', async () => {
+      mockConfigService.readDeploymentConfig.resolves({})
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.deployment.kvStoreType).to.equal('etcd')
+      expect(jsonArg.deployment.messageBrokerType).to.equal('kafka')
+      expect(jsonArg.deployment.graphDbType).to.equal('arangodb')
+    })
+
+    it('should use default values for missing fields in fresh config', async () => {
+      mockConfigService.readDeploymentConfig.resolves({
+        dataStoreType: 'neo4j',
+      })
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.deployment.graphDbType).to.equal('neo4j')
+      expect(jsonArg.deployment.messageBrokerType).to.equal('kafka')
+      expect(jsonArg.deployment.kvStoreType).to.equal('etcd')
+    })
+
     it('should mark all services as unhealthy when all fail', async () => {
       mockRedis.get.rejects(new Error('Redis down'))
       mockKafka.healthCheck.rejects(new Error('Kafka down'))
