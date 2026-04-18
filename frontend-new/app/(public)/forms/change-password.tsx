@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { Box, Flex, Button } from '@radix-ui/themes';
+import { Box, Flex } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { validatePassword, PASSWORD_RULES } from '@/lib/utils/validators';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import AuthTitleSection from '../components/auth-title-section';
@@ -164,10 +165,12 @@ export default function ChangePassword({
 
           {serverError && <ErrorBanner message={serverError} />}
 
-          <Button
+          <LoadingButton
             type="submit"
             size="3"
-            disabled={disabled || loading || !newPassword || !confirmPassword}
+            disabled={disabled || !newPassword || !confirmPassword}
+            loading={loading}
+            loadingLabel="Saving…"
             style={{
               width: '100%',
               backgroundColor:
@@ -177,11 +180,10 @@ export default function ChangePassword({
               color:
                 !disabled && newPassword && confirmPassword ? 'white' : undefined,
               fontWeight: 500,
-              cursor: disabled || loading ? 'not-allowed' : 'pointer',
             }}
           >
-            {loading ? 'Saving…' : 'Save'}
-          </Button>
+            Save
+          </LoadingButton>
         </Flex>
       </form>
     </Box>

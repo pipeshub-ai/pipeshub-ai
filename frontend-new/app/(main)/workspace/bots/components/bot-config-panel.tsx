@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { toast } from '@/lib/store/toast-store';
@@ -388,16 +389,16 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
                   Are you sure? This action cannot be undone.
                 </Text>
                 <Flex gap="2">
-                  <Button
+                  <LoadingButton
                     variant="solid"
                     color="red"
                     size="2"
                     onClick={handleDelete}
-                    disabled={isDeleting}
-                    style={{ cursor: isDeleting ? 'not-allowed' : 'pointer' }}
+                    loading={isDeleting}
+                    loadingLabel="Deleting…"
                   >
-                    {isDeleting ? 'Deleting…' : 'Confirm Delete'}
-                  </Button>
+                    Confirm Delete
+                  </LoadingButton>
                   <Button
                     variant="outline"
                     color="gray"
@@ -447,18 +448,19 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved }: SlackBotF
         >
           Cancel
         </Button>
-        <Button
+        <LoadingButton
           variant="solid"
           size="2"
           onClick={handleSubmit}
-          disabled={!isValid || isSaving}
+          disabled={!isValid}
+          loading={isSaving}
+          loadingLabel="Saving…"
           style={{
-            cursor: !isValid || isSaving ? 'not-allowed' : 'pointer',
-            backgroundColor: !isValid || isSaving ? 'var(--slate-6)' : 'var(--emerald-9)',
+            backgroundColor: !isValid ? 'var(--slate-6)' : 'var(--emerald-9)',
           }}
         >
-          {isSaving ? 'Saving…' : isEditMode ? 'Save' : 'Create'}
-        </Button>
+          {isEditMode ? 'Save' : 'Create'}
+        </LoadingButton>
       </Flex>
     </Flex>
   );

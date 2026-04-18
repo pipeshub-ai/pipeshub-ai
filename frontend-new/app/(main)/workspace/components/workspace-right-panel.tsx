@@ -3,6 +3,7 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 // ========================================
@@ -272,30 +273,30 @@ export function WorkspaceRightPanel({
             </Button>
             {primaryTooltip && (primaryDisabled || primaryLoading) ? (
               <Tooltip content={primaryTooltip}>
-                <Button
+                <LoadingButton
                   variant="solid"
                   size="2"
                   onClick={onPrimaryClick}
-                  disabled={primaryDisabled || primaryLoading}
-                  style={{ cursor: primaryDisabled || primaryLoading ? 'not-allowed' : 'pointer' }}
+                  disabled={primaryDisabled}
+                  loading={primaryLoading}
                 >
-                  {primaryLoading ? 'Loading...' : primaryLabel}
-                </Button>
+                  {primaryLabel}
+                </LoadingButton>
               </Tooltip>
             ) : (
-              <Button
+              <LoadingButton
                 variant="solid"
                 size="2"
                 onClick={onPrimaryClick}
-                disabled={primaryDisabled || primaryLoading}
+                disabled={primaryDisabled}
+                loading={primaryLoading}
                 style={{
-                  cursor: primaryDisabled || primaryLoading ? 'not-allowed' : 'pointer',
                   backgroundColor:
                     primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
                 }}
               >
-                {primaryLoading ? 'Loading...' : primaryLabel}
-              </Button>
+                {primaryLabel}
+              </LoadingButton>
             )}
           </Flex>
         )}

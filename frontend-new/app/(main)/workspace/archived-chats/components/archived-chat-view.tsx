@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { ChatResponse, emptyCitationMaps } from '@/chat/components';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
+import { Spinner } from '@/app/components/ui/spinner';
 import type { ConversationMessage } from '../types';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
 import { ArchivedChatsApi } from '../api';
@@ -222,10 +223,17 @@ export function ArchivedChatView({
           >
             <DropdownMenu.Item
               disabled={isRestoring}
-              onClick={handleRestore}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleRestore();
+              }}
             >
               <Flex align="center" gap="2">
-                <MaterialIcon name="restore" size={16} color="var(--slate-11)" />
+                {isRestoring ? (
+                  <Spinner size={16} color="var(--slate-11)" />
+                ) : (
+                  <MaterialIcon name="restore" size={16} color="var(--slate-11)" />
+                )}
                 <Text size="2">
                   {isRestoring
                     ? t('action.loading')

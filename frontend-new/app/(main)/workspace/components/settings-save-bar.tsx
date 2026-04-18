@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Button } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ========================================
 // Types
@@ -93,15 +94,15 @@ export function SettingsSaveBar({
       >
         Discard changes
       </Button>
-      <Button
+      <LoadingButton
         size="2"
         variant="solid"
         onClick={handleSave}
-        disabled={isActuallySaving}
-        style={{ cursor: isActuallySaving ? 'wait' : 'pointer' }}
+        loading={isActuallySaving}
+        loadingLabel="Saving..."
       >
-        {isActuallySaving ? 'Saving...' : saveLabel}
-      </Button>
+        {saveLabel}
+      </LoadingButton>
     </Flex>
   );
 }

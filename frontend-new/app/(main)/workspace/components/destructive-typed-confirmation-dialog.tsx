@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 export interface DestructiveTypedConfirmationDialogProps {
   open: boolean;
@@ -130,16 +131,17 @@ export function DestructiveTypedConfirmationDialog({
             >
               {cancelLabel}
             </Button>
-            <Button
+            <LoadingButton
               variant="solid"
               color="red"
               size="2"
               onClick={onConfirm}
-              disabled={!matches || isLoading}
-              style={{ cursor: !matches || isLoading ? 'not-allowed' : 'pointer' }}
+              disabled={!matches}
+              loading={isLoading}
+              loadingLabel={confirmLoadingLabel}
             >
-              {isLoading ? confirmLoadingLabel : primaryButtonText}
-            </Button>
+              {primaryButtonText}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

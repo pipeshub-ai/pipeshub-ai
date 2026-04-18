@@ -11,6 +11,7 @@ import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
@@ -632,12 +633,13 @@ export function OAuthAuthorizeView() {
             >
               {t('oauthConsent.deny')}
             </Button>
-            <Button
+            <LoadingButton
               type="button"
               variant="solid"
               color="green"
               size="2"
-              disabled={submitting}
+              loading={submitting}
+              loadingLabel={t('oauthConsent.submitting')}
               style={{
                 flex: 1,
                 minHeight: 32,
@@ -645,8 +647,8 @@ export function OAuthAuthorizeView() {
               }}
               onClick={() => handleConsent('granted')}
             >
-              {submitting ? t('oauthConsent.submitting') : t('oauthConsent.allow')}
-            </Button>
+              {t('oauthConsent.allow')}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Box>

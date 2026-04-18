@@ -733,6 +733,13 @@ function ChatContent() {
   // Show loading state when slot exists but hasn't loaded history yet
   const showLoading = hasActiveSlot && !activeSlotIsInitialized;
 
+  // Initial-load gate: when the URL carries a conversationId on first render,
+  // the URL → store sync effect hasn't attached the slot yet, so we'd briefly
+  // flash the "new chat" view. Render a full-page loader until the slot
+  // attaches AND its history has finished loading.
+  const showInitialLoading =
+    conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
+
   // Search mode: show results view when in search mode with results/in-progress search
   const mode = useChatStore((s) => s.settings.mode);
   const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
@@ -777,7 +784,22 @@ function ChatContent() {
           />
         </Box>
       )}
-      {showSearchView ? (
+      {showInitialLoading ? (
+        /* Initial page load — conversationId in URL but slot/history not ready yet */
+        <Flex
+          direction="column"
+          align="center"
+          justify="center"
+          style={{
+            flex: 1,
+            position: 'relative',
+            zIndex: 10,
+            width: '100%',
+          }}
+        >
+          <LottieLoader variant="loader" size={48} showLabel />
+        </Flex>
+      ) : showSearchView ? (
         /* Search Results View */
         <Flex direction="column" style={{
           flex: 1,

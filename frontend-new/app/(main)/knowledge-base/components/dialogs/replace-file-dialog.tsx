@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { KnowledgeHubNode } from '../../types';
@@ -463,15 +464,17 @@ export function ReplaceFileDialog({
           >
             Cancel
           </Button>
-          <Button
+          <LoadingButton
             variant={isSaveDisabled ? 'soft' : 'solid'}
             size="2"
             onClick={handleSave}
-            disabled={isSaveDisabled}
+            disabled={!replacementFile}
+            loading={isReplacing}
+            loadingLabel="Saving..."
             style={{backgroundColor: isSaveDisabled ? 'var(--slate-a3)' : 'var(--emerald-10)'}}
           >
-            {isReplacing ? 'Saving...' : 'Save'}
-          </Button>
+            Save
+          </LoadingButton>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>

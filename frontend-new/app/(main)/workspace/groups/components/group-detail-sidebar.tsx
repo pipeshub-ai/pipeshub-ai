@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -543,21 +544,17 @@ export function GroupDetailSidebar({
                 )}
               </Text>
             </Flex>
-            <Button
+            <LoadingButton
               variant="outline"
               color="red"
               size="1"
               onClick={handleDeleteGroup}
-              disabled={isDeleting}
-              style={{
-                cursor: isDeleting ? 'not-allowed' : 'pointer',
-                flexShrink: 0,
-              }}
+              loading={isDeleting}
+              loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
+              style={{ flexShrink: 0 }}
             >
-              {isDeleting
-                ? t('workspace.groups.edit.deleting', 'Deleting...')
-                : t('workspace.groups.edit.deleteButton', 'Delete Group')}
-            </Button>
+              {t('workspace.groups.edit.deleteButton', 'Delete Group')}
+            </LoadingButton>
           </Flex>
         </Box>
       )}

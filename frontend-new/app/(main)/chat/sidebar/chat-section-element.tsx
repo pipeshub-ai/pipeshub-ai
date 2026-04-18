@@ -14,6 +14,7 @@ import { ICON_SIZE_DEFAULT, CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
 import { DeleteChatDialog, ArchiveChatDialog } from './dialogs';
+import { Spinner } from '@/app/components/ui/spinner';
 
 interface ChatSectionElementProps {
   conversation: Conversation;
@@ -166,6 +167,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
             font: 'inherit',
           }}
         />
+        {isSavingRename && <Spinner size={12} color="var(--slate-10)" />}
       </Flex>
     );
   }

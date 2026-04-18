@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Flex, Box, Text, Badge, Button, Popover, Checkbox, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 
 /**
  * Option item for the filter dropdown
@@ -362,9 +363,12 @@ export function FilterDropdown({
             </Flex>
           ))}
           {isLoadingMore && (
-            <Text size="1" style={{ color: 'var(--slate-9)', padding: '8px', textAlign: 'center' }}>
-              Loading...
-            </Text>
+            <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
+              <Spinner size={12} />
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                Loading...
+              </Text>
+            </Flex>
           )}
           {filteredOptions.length === 0 && !isLoadingMore && (
             <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>

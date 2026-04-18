@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Flex, Text, Button, Badge, IconButton } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { AuthCardState } from '../types';
 
@@ -97,15 +98,16 @@ export function AuthCard({
 
       {/* Action area — varies by state */}
       {state === 'empty' && (
-        <Button
+        <LoadingButton
           variant="solid"
           size="2"
           onClick={onAuthenticate}
-          disabled={loading}
-          style={{ width: '100%', cursor: loading ? 'not-allowed' : 'pointer' }}
+          loading={loading}
+          loadingLabel="Authenticating..."
+          style={{ width: '100%' }}
         >
-          {loading ? 'Authenticating...' : `Authenticate ${connectorName} to Proceed`}
-        </Button>
+          {`Authenticate ${connectorName} to Proceed`}
+        </LoadingButton>
       )}
 
       {state === 'success' && (

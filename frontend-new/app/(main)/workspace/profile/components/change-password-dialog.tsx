@@ -12,6 +12,7 @@ import {
   VisuallyHidden,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useChangePassword } from '../hooks/use-change-password';
 import { validatePassword } from '@/lib/utils/validators';
 
@@ -252,16 +253,18 @@ export function ChangePasswordDialog({
               >
                 Cancel
               </Button>
-              <Button
+              <LoadingButton
                 variant="solid"
                 size="2"
                 type="button"
                 onClick={handleSave}
-                disabled={isSaveDisabled}
-                style={{ cursor: isSaveDisabled ? 'not-allowed' : 'pointer', background: isSaveDisabled ? 'var(--gray-6)' : 'var(--emerald-9)' }}
+                disabled={!isFormValid}
+                loading={isLoading}
+                loadingLabel="Saving..."
+                style={{ background: isSaveDisabled ? 'var(--gray-6)' : 'var(--emerald-9)' }}
               >
-                {isLoading ? 'Saving...' : 'Save'}
-              </Button>
+                Save
+              </LoadingButton>
             </Flex>
           </Flex>
         ) : (

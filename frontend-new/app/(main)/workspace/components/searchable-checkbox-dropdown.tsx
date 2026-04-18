@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Flex, Box, Text, Avatar } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 
 // ========================================
 // Types
@@ -466,7 +467,8 @@ export function SearchableCheckboxDropdown({
             })
           )}
           {isLoadingMore && (
-            <Flex align="center" justify="center" style={{ padding: '8px' }}>
+            <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
+              <Spinner size={12} />
               <Text size="1" style={{ color: 'var(--slate-9)' }}>Loading...</Text>
             </Flex>
           )}
