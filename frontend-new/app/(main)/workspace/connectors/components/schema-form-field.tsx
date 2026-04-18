@@ -6,6 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import type { SchemaField } from '../types';
 
+/** Extra left padding when `startAdornment` is set (icon column) */
+const ADORNMENT_LEFT_GUTTER = 30;
+
 // ========================================
 // Types
 // ========================================
@@ -26,6 +29,8 @@ interface SchemaFormFieldProps {
    * `Select.Content` stacks above the backdrop. Omit in normal inline forms.
    */
   selectPortalZIndex?: number;
+  /** Optional icon or node inside the left side of text-like inputs */
+  startAdornment?: React.ReactNode;
 }
 
 // ========================================
@@ -76,6 +81,7 @@ export function SchemaFormField({
   visible = true,
   error,
   selectPortalZIndex,
+  startAdornment,
 }: SchemaFormFieldProps) {
   if (!visible) return null;
 
@@ -101,7 +107,15 @@ export function SchemaFormField({
         const renderInput = () => {
           switch (fieldType) {
             case 'PASSWORD':
-              return <PasswordInput field={field} value={value} onChange={onChange} disabled={disabled} />;
+              return (
+                <PasswordInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  startAdornment={startAdornment}
+                />
+              );
             case 'TEXTAREA':
               return <TextareaInput field={field} value={value} onChange={onChange} disabled={disabled} />;
             case 'JSON':
@@ -115,13 +129,25 @@ export function SchemaFormField({
                   disabled={disabled}
                   options={options}
                   portalZIndex={selectPortalZIndex}
+                  startAdornment={startAdornment}
                 />
               );
             case 'NUMBER':
-              return <NumberInput field={field} value={value} onChange={onChange} disabled={disabled} />;
+              return (
+                <NumberInput field={field} value={value} onChange={onChange} disabled={disabled} startAdornment={startAdornment} />
+              );
             default:
               // TEXT, EMAIL, URL, and fallback
-              return <TextInput field={field} value={value} onChange={onChange} disabled={disabled} fieldType={fieldType} />;
+              return (
+                <TextInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  fieldType={fieldType}
+                  startAdornment={startAdornment}
+                />
+              );
           }
         };
 
@@ -158,12 +184,14 @@ function TextInput({
   onChange,
   disabled,
   fieldType,
+  startAdornment,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   fieldType: string;
+  startAdornment?: React.ReactNode;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -172,22 +200,44 @@ function TextInput({
     fieldType === 'URL' ? 'url' :
     'text';
 
+  const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
+
   return (
     <>
-      <input
-        type={htmlType}
-        value={String(value ?? '')}
-        placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
-        disabled={disabled}
-        onChange={(e) => onChange(field.name, e.target.value)}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        style={{
-          ...inputStyle,
-          ...(isFocused ? focusStyle : {}),
-          opacity: disabled ? 0.6 : 1,
-        }}
-      />
+      <Box style={{ position: 'relative', width: '100%' }}>
+        {startAdornment ? (
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              position: 'absolute',
+              left: 8,
+              top: 0,
+              bottom: 0,
+              width: 22,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          >
+            {startAdornment}
+          </Flex>
+        ) : null}
+        <input
+          type={htmlType}
+          value={String(value ?? '')}
+          placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
+          disabled={disabled}
+          onChange={(e) => onChange(field.name, e.target.value)}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          style={{
+            ...inputStyle,
+            ...(isFocused ? focusStyle : {}),
+            paddingLeft: (isFocused ? 7 : 8) + leftGutter,
+            opacity: disabled ? 0.6 : 1,
+          }}
+        />
+      </Box>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}
@@ -202,18 +252,39 @@ function PasswordInput({
   value,
   onChange,
   disabled,
+  startAdornment,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  startAdornment?: React.ReactNode;
 }) {
   const [showPassword, setShowPassword] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
 
+  const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
+
   return (
     <>
       <Box style={{ position: 'relative', width: '100%' }}>
+        {startAdornment ? (
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              position: 'absolute',
+              left: 8,
+              top: 0,
+              bottom: 0,
+              width: 22,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          >
+            {startAdornment}
+          </Flex>
+        ) : null}
         <input
           type={showPassword ? 'text' : 'password'}
           value={String(value ?? '')}
@@ -225,6 +296,7 @@ function PasswordInput({
           style={{
             ...inputStyle,
             ...(isFocused ? focusStyle : {}),
+            paddingLeft: (isFocused ? 7 : 8) + leftGutter,
             paddingRight: 36,
             opacity: disabled ? 0.6 : 1,
           }}
@@ -343,38 +415,62 @@ function NumberInput({
   value,
   onChange,
   disabled,
+  startAdornment,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
+  startAdornment?: React.ReactNode;
 }) {
   const [isFocused, setIsFocused] = useState(false);
 
   const min = 'validation' in field ? field.validation?.minLength : undefined;
   const max = 'validation' in field ? field.validation?.maxLength : undefined;
 
+  const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
+
   return (
     <>
-      <input
-        type="number"
-        value={value !== undefined && value !== null ? String(value) : ''}
-        placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
-        disabled={disabled}
-        min={min}
-        max={max}
-        onChange={(e) => {
-          const num = e.target.value === '' ? '' : Number(e.target.value);
-          onChange(field.name, num);
-        }}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        style={{
-          ...inputStyle,
-          ...(isFocused ? focusStyle : {}),
-          opacity: disabled ? 0.6 : 1,
-        }}
-      />
+      <Box style={{ position: 'relative', width: '100%' }}>
+        {startAdornment ? (
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              position: 'absolute',
+              left: 8,
+              top: 0,
+              bottom: 0,
+              width: 22,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          >
+            {startAdornment}
+          </Flex>
+        ) : null}
+        <input
+          type="number"
+          value={value !== undefined && value !== null ? String(value) : ''}
+          placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
+          disabled={disabled}
+          min={min}
+          max={max}
+          onChange={(e) => {
+            const num = e.target.value === '' ? '' : Number(e.target.value);
+            onChange(field.name, num);
+          }}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          style={{
+            ...inputStyle,
+            ...(isFocused ? focusStyle : {}),
+            paddingLeft: (isFocused ? 7 : 8) + leftGutter,
+            opacity: disabled ? 0.6 : 1,
+          }}
+        />
+      </Box>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}
@@ -391,6 +487,7 @@ function SelectInput({
   disabled,
   options,
   portalZIndex,
+  startAdornment,
 }: {
   field: SchemaField;
   value: unknown;
@@ -398,6 +495,7 @@ function SelectInput({
   disabled: boolean;
   options?: { label: string; value: string }[];
   portalZIndex?: number;
+  startAdornment?: React.ReactNode;
 }) {
   // Build options list from field.options or external options prop
   const optionItems = options ||
@@ -408,6 +506,8 @@ function SelectInput({
             : { label: opt.label, value: opt.id }
         )
       : []);
+
+  const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
   return (
     <>
@@ -428,6 +528,46 @@ function SelectInput({
           ))}
         </Select.Content>
       </Select.Root>
+      <Box style={{ position: 'relative', width: '100%' }}>
+        {startAdornment ? (
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              position: 'absolute',
+              left: 8,
+              top: 0,
+              bottom: 0,
+              width: 22,
+              pointerEvents: 'none',
+              zIndex: 1,
+            }}
+          >
+            {startAdornment}
+          </Flex>
+        ) : null}
+        <Select.Root
+          value={String(value ?? '')}
+          onValueChange={(v) => onChange(field.name, v)}
+          disabled={disabled}
+        >
+          <Select.Trigger
+            style={{
+              width: '100%',
+              height: 32,
+              paddingLeft: 8 + leftGutter,
+            }}
+            placeholder={'placeholder' in field ? (field.placeholder ?? 'Select...') : 'Select...'}
+          />
+          <Select.Content>
+            {optionItems.map((opt) => (
+              <Select.Item key={opt.value} value={opt.value}>
+                {opt.label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      </Box>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}

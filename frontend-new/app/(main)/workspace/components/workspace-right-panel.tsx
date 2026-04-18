@@ -4,6 +4,7 @@ import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'reac
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import styles from './workspace-right-panel.module.css';
 
 // ========================================
 // Types
@@ -43,6 +44,9 @@ interface WorkspaceRightPanelProps {
 
   /** Tooltip shown on the primary button when it is disabled */
   primaryTooltip?: string;
+
+  /** Secondary (Cancel) button style — `ghost` for text-like actions */
+  secondaryVariant?: 'outline' | 'ghost';
 }
 
 const TOAST_REGION_SELECTOR = '[data-ph-toast-region]';
@@ -116,6 +120,7 @@ export function WorkspaceRightPanel({
   onSecondaryClick,
   hideFooter = false,
   primaryTooltip,
+  secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
   const handleClose = () => onOpenChange(false);
   const handleSecondaryClick = onSecondaryClick ?? handleClose;
@@ -207,21 +212,20 @@ export function WorkspaceRightPanel({
             flexShrink: 0,
           }}
         >
-          <Flex align="center" gap="2">
-            {icon &&
-              (typeof icon === 'string' ? (
-                <MaterialIcon name={icon} size={20} color="var(--slate-12)" />
-              ) : (
-                icon
-              ))}
+          <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+            {icon && (
+              typeof icon === 'string'
+                ? <MaterialIcon name={icon} size={20} color="var(--slate-12)" />
+                : icon
+            )}
             {titleNode ?? (
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }} truncate>
                 {title}
               </Text>
             )}
           </Flex>
 
-          <Flex align="center" gap="2">
+          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
             {headerActions}
             <IconButton
               variant="ghost"
@@ -248,20 +252,9 @@ export function WorkspaceRightPanel({
         </Box>
 
         {!hideFooter && (
-          <Flex
-            align="center"
-            justify="end"
-            gap="2"
-            style={{
-              padding: '8px 8px 8px 16px',
-              borderTop: '1px solid var(--olive-3)',
-              background: 'var(--effects-translucent)',
-              backdropFilter: 'blur(8px)',
-              flexShrink: 0,
-            }}
-          >
+          <Flex align="center" justify="end" className={styles.footer}>
             <Button
-              variant="outline"
+              variant={secondaryVariant}
               color="gray"
               size="2"
               onClick={handleSecondaryClick}

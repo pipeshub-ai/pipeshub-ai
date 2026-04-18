@@ -1,0 +1,13 @@
+/* Matches Radix Themes `sm` (768px) — lib/hooks/use-breakpoint.ts */
+.configureButton {
+  width: 100%;
+  box-sizing: border-box;
+  align-self: stretch;
+}
+
+@media (min-width: 768px) {
+  .configureButton {
+    width: auto;
+    align-self: center;
+  }
+}

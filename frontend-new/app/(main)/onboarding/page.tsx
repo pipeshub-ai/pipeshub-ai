@@ -9,13 +9,12 @@ import { updateOnboardingStatus } from './api';
 import {
   OnboardingHeader,
   OnboardingSteps,
-  StepOrgProfile,
   StepAiModel,
   StepEmbeddingModel,
   StepStorage,
   StepSmtp,
-  StepLoading,
 } from './components';
+import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import type { OnboardingStepId } from './types';
 
 // ===============================
@@ -47,7 +46,7 @@ function OnboardingPageInner() {
     : '';
 
   // Read step from URL
-  const stepFromUrl = (searchParams.get('step') as OnboardingStepId | null) ?? 'org-profile';
+  const stepFromUrl = (searchParams.get('step') as OnboardingStepId | null) ?? 'ai-model';
 
   // Sync URL → store with validation; redirect to safe default if step is missing or unrecognised
   useEffect(() => {
@@ -113,10 +112,8 @@ function OnboardingPageInner() {
 
   // ---- System config step numbering ----
 
-  // System config steps are all steps except 'org-profile' and 'loading'
-  const systemConfigSteps = steps.filter(
-    (s) => s.id !== 'org-profile' && s.id !== 'loading'
-  );
+  // System config steps are all steps except the terminal 'loading' step
+  const systemConfigSteps = steps.filter((s) => s.id !== 'loading');
   const systemStepIndex =
     systemConfigSteps.findIndex((s) => s.id === stepFromUrl) + 1;
   const totalSystemSteps = systemConfigSteps.length;
@@ -133,19 +130,23 @@ function OnboardingPageInner() {
   // Highlight Next button when the current step has been saved
   const isCurrentStepCompleted = completedStepIds.includes(stepFromUrl);
 
+  // Embedding step is optional: Next is allowed without a configured model
+  const isMiddleNextEnabled =
+    stepFromUrl === 'embedding-model' || isCurrentStepCompleted;
+
   const showPrev = !isFirstStep && !isLoadingStep;
   const showNext = !isLoadingStep;
 
   // ---- Org context for header ----
 
-  const showOrgBadge = stepFromUrl !== 'org-profile' && !!orgDisplayName;
+  const showOrgBadge = !!orgDisplayName;
 
   // ---- Render active form step ----
 
   function renderStep() {
     switch (stepFromUrl) {
-      case 'org-profile':
-        return <StepOrgProfile onSuccess={handleStepSuccess} />;
+      // case 'org-profile':
+      //   return <StepOrgProfile onSuccess={handleStepSuccess} />;
       case 'ai-model':
         return (
           <StepAiModel
@@ -179,9 +180,14 @@ function OnboardingPageInner() {
           />
         );
       case 'loading':
-        return <StepLoading />;
+        return <LoadingScreen />;
       default:
-        return <StepOrgProfile onSuccess={handleStepSuccess} />;
+        // return <StepOrgProfile onSuccess={handleStepSuccess} />;
+        return <StepAiModel
+          onSuccess={handleStepSuccess}
+          systemStepIndex={systemStepIndex}
+          totalSystemSteps={totalSystemSteps}
+        />;
     }
   }
 
@@ -313,12 +319,12 @@ function OnboardingPageInner() {
             ) : (
               <Button
                 variant="solid"
-                disabled={!isCurrentStepCompleted}
+                disabled={!isMiddleNextEnabled}
                 onClick={handleNext}
                 style={{
-                  cursor: isCurrentStepCompleted ? 'pointer' : 'not-allowed',
-                  backgroundColor: isCurrentStepCompleted ? 'var(--accent-9)' : 'var(--gray-4)',
-                  color: isCurrentStepCompleted ? 'white' : 'var(--gray-9)',
+                  cursor: isMiddleNextEnabled ? 'pointer' : 'not-allowed',
+                  backgroundColor: isMiddleNextEnabled ? 'var(--accent-9)' : 'var(--gray-4)',
+                  color: isMiddleNextEnabled ? 'white' : 'var(--gray-9)',
                   opacity: 1,
                 }}
               >
@@ -385,7 +391,7 @@ export default function OnboardingPage() {
           justify="center"
           style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)' }}
         >
-          <StepLoading />
+          <LoadingScreen />
         </Flex>
       }
     >

@@ -145,28 +145,42 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
 
     logger.info(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
+    raw_dims = configuration.get("dimensions")
+    dimensions: int | None = None
+    if raw_dims not in (None, "", 0):
+        try:
+            dimensions = int(raw_dims)
+        except (ValueError, TypeError):
+            logger.warning(f"Non-numeric dimensions value ignored: {raw_dims!r}")
+
     if provider == EmbeddingProvider.AZURE_AI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
-        if "cohere" or "embed-v" in model_name.lower():
+        if model_name and ("cohere" in model_name.lower() or "embed-v" in model_name.lower()):
             check_embedding_ctx_length = False
         else:
             check_embedding_ctx_length = True
-        return OpenAIEmbeddings(
+        kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
+        if dimensions is not None:
+            kwargs["dimensions"] = dimensions
+        return OpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
 
-        return AzureOpenAIEmbeddings(
+        kwargs = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             api_version=AZURE_EMBEDDING_API_VERSION,
             azure_endpoint=configuration['endpoint'],
         )
+        if dimensions is not None:
+            kwargs["dimensions"] = dimensions
+        return AzureOpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.COHERE.value:
         from langchain_cohere import CohereEmbeddings
@@ -191,13 +205,15 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.GEMINI.value:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-        # Add "models/" prefix if it's missing
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
-        return GoogleGenerativeAIEmbeddings(
-            model=model_name,  # Now properly formatted as models/text-embedding-004
+        gemini_kwargs: Dict[str, Any] = dict(
+            model=model_name,
             google_api_key=configuration['apiKey'],
         )
+        if dimensions is not None:
+            gemini_kwargs["output_dimensionality"] = dimensions
+        return GoogleGenerativeAIEmbeddings(**gemini_kwargs)
 
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
         from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -229,10 +245,13 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.MISTRAL.value:
         from langchain_mistralai import MistralAIEmbeddings
 
-        return MistralAIEmbeddings(
+        mistral_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
         )
+        if dimensions is not None:
+            mistral_kwargs["dimensions"] = dimensions
+        return MistralAIEmbeddings(**mistral_kwargs)
 
 
     elif provider == EmbeddingProvider.OLLAMA.value:
@@ -246,11 +265,14 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OPENAI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
-        return OpenAIEmbeddings(
+        openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration["apiKey"],
             organization=configuration.get("organizationId"),
         )
+        if dimensions is not None:
+            openai_kwargs["dimensions"] = dimensions
+        return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
         from langchain_aws import BedrockEmbeddings
@@ -276,26 +298,31 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
-        check_embedding_ctx_length = True
         base_url = configuration['endpoint']
         providers_to_skip_check = ("google", "cohere", "voyage")
         check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
 
-        return OpenAIEmbeddings(
+        compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=base_url,
-            check_embedding_ctx_length=check_embedding_ctx_length
+            check_embedding_ctx_length=check_embedding_ctx_length,
         )
+        if dimensions is not None:
+            compat_kwargs["dimensions"] = dimensions
+        return OpenAIEmbeddings(**compat_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
         from app.utils.custom_embeddings import TogetherEmbeddings
 
-        return TogetherEmbeddings(
+        together_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
         )
+        if dimensions is not None:
+            together_kwargs["dimensions"] = dimensions
+        return TogetherEmbeddings(**together_kwargs)
 
     elif provider == EmbeddingProvider.VOYAGE.value:
         from app.utils.custom_embeddings import VoyageEmbeddings
