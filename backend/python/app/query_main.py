@@ -12,6 +12,7 @@ from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.search import router as search_router
+from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
@@ -283,6 +284,7 @@ app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(ai_models_registry_router, prefix="/api/v1")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:

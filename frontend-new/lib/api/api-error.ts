@@ -143,7 +143,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     case 504:
       return {
         type: ErrorType.SERVER_ERROR,
-        message: 'Server error. Please try again later.',
+        message: message || 'Server error. Please try again later.',
         statusCode: status,
         details: data?.details,
         originalError: error,

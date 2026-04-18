@@ -57,6 +57,7 @@ export function showErrorToast(error: ProcessedError): void {
   const description =
     error.type === ErrorType.VALIDATION_ERROR ||
     error.type === ErrorType.NOT_FOUND ||
+    error.type === ErrorType.SERVER_ERROR ||
     error.type === ErrorType.UNKNOWN_ERROR
       ? error.message || config.description
       : config.description;

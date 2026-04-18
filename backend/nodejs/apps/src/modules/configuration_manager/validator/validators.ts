@@ -429,53 +429,9 @@ export const modelType = z.enum([
   'multiModal'
 ]);
 
-export const embeddingProvider = z.enum([
-  'anthropic',
-  'bedrock',
-  'azureAI',
-  'azureOpenAI',
-  'cohere',
-  'default',
-  'fireworks',
-  'gemini',
-  'huggingFace',
-  'jinaAI',
-  'mistral',
-  'ollama',
-  'openAI',
-  'openAICompatible',
-  'sentenceTransformers',
-  'together',
-  'vertexAI',
-  'voyage'
-]);
-
-export const llmProvider = z.enum([
-  'anthropic',
-  'bedrock',
-  'azureAI',
-  'azureOpenAI',
-  'cohere',
-  'fireworks',
-  'gemini',
-  'groq',
-  'minimax',
-  'mistral',
-  'ollama',
-  'openAI',
-  'openAICompatible',
-  'together',
-  'vertexAI',
-  'xai'
-]);
-
-export const ocrProvider = z.enum([
-  'azureDI',
-  'ocrmypdf'
-]);
-
-// Combined provider type that accepts embedding, LLM, and OCR providers
-export const providerType = z.union([embeddingProvider, llmProvider, ocrProvider]);
+// Provider validation is now dynamic — the Python backend registry is the
+// source of truth.  We only enforce that a non-empty string is provided.
+export const providerType = z.string().min(1, 'Provider is required');
 
 // Model Configuration schema
 export const configurationSchema = z.object({

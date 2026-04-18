@@ -358,10 +358,8 @@ async def askAIStream(
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
-                if config.get("provider").lower() == "ollama":
-                    query_info.mode = "no_tools"
-                else:
-                    query_info.mode = "simple"
+
+                query_info.mode = "simple"
 
                 all_queries: list[str] = []
                 async for kind, payload in _iter_prepare_chat_queries_for_retrieval(

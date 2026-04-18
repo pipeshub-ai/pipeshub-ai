@@ -3,6 +3,7 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 // ========================================
@@ -43,6 +44,9 @@ interface WorkspaceRightPanelProps {
 
   /** Tooltip shown on the primary button when it is disabled */
   primaryTooltip?: string;
+
+  /** Secondary (Cancel) button style — `ghost` for text-like actions */
+  secondaryVariant?: 'outline' | 'ghost';
 }
 
 const TOAST_REGION_SELECTOR = '[data-ph-toast-region]';
@@ -116,7 +120,9 @@ export function WorkspaceRightPanel({
   onSecondaryClick,
   hideFooter = false,
   primaryTooltip,
+  secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
+  const { t } = useTranslation();
   const handleClose = () => onOpenChange(false);
   const handleSecondaryClick = onSecondaryClick ?? handleClose;
   const titleId = useId();
@@ -141,6 +147,22 @@ export function WorkspaceRightPanel({
   }, [open]);
 
   if (!open || typeof document === 'undefined') return null;
+
+  const primaryBlocked = primaryDisabled || primaryLoading;
+  const primaryButton = (
+    <Button
+      variant="solid"
+      size="2"
+      onClick={onPrimaryClick}
+      disabled={primaryBlocked}
+      style={{
+        cursor: primaryBlocked ? 'not-allowed' : 'pointer',
+        backgroundColor: primaryBlocked ? 'var(--slate-6)' : 'var(--emerald-9)',
+      }}
+    >
+      {primaryLoading ? t('action.loading') : primaryLabel}
+    </Button>
+  );
 
   return createPortal(
     /**
@@ -207,21 +229,20 @@ export function WorkspaceRightPanel({
             flexShrink: 0,
           }}
         >
-          <Flex align="center" gap="2">
-            {icon &&
-              (typeof icon === 'string' ? (
-                <MaterialIcon name={icon} size={20} color="var(--slate-12)" />
-              ) : (
-                icon
-              ))}
+          <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+            {icon && (
+              typeof icon === 'string'
+                ? <MaterialIcon name={icon} size={20} color="var(--slate-12)" />
+                : icon
+            )}
             {titleNode ?? (
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }} truncate>
                 {title}
               </Text>
             )}
           </Flex>
 
-          <Flex align="center" gap="2">
+          <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
             {headerActions}
             <IconButton
               variant="ghost"
@@ -251,6 +272,7 @@ export function WorkspaceRightPanel({
           <Flex
             align="center"
             justify="end"
+            wrap="wrap"
             gap="2"
             style={{
               padding: '8px 8px 8px 16px',
@@ -261,7 +283,7 @@ export function WorkspaceRightPanel({
             }}
           >
             <Button
-              variant="outline"
+              variant={secondaryVariant}
               color="gray"
               size="2"
               onClick={handleSecondaryClick}
@@ -270,32 +292,10 @@ export function WorkspaceRightPanel({
             >
               {secondaryLabel}
             </Button>
-            {primaryTooltip && (primaryDisabled || primaryLoading) ? (
-              <Tooltip content={primaryTooltip}>
-                <Button
-                  variant="solid"
-                  size="2"
-                  onClick={onPrimaryClick}
-                  disabled={primaryDisabled || primaryLoading}
-                  style={{ cursor: primaryDisabled || primaryLoading ? 'not-allowed' : 'pointer' }}
-                >
-                  {primaryLoading ? 'Loading...' : primaryLabel}
-                </Button>
-              </Tooltip>
+            {primaryTooltip && primaryBlocked ? (
+              <Tooltip content={primaryTooltip}>{primaryButton}</Tooltip>
             ) : (
-              <Button
-                variant="solid"
-                size="2"
-                onClick={onPrimaryClick}
-                disabled={primaryDisabled || primaryLoading}
-                style={{
-                  cursor: primaryDisabled || primaryLoading ? 'not-allowed' : 'pointer',
-                  backgroundColor:
-                    primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
-                }}
-              >
-                {primaryLoading ? 'Loading...' : primaryLabel}
-              </Button>
+              primaryButton
             )}
           </Flex>
         )}

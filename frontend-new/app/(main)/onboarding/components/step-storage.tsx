@@ -10,7 +10,8 @@ import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../
 const STORAGE_PROVIDERS: { value: StorageProviderType; label: string }[] = [
   { value: 'local', label: 'Local (System Default)' },
   { value: 's3', label: 'Amazon S3' },
-  { value: 'azureBlob', label: 'Azure Blob Storage' },
+  // Azure Blob temporarily hidden from onboarding UI — restore when ready:
+  // { value: 'azureBlob', label: 'Azure Blob Storage' },
 ];
 
 const selectStyle: React.CSSProperties = {
@@ -192,7 +193,7 @@ export function StepStorage({
       </Box>
 
       {/* Scrollable fields */}
-      <Box className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
+      <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
         <Flex direction="column" gap="6">
         <InfoBanner message="Choose your preferred storage solution. Local storage is used by default if skipped." />
 

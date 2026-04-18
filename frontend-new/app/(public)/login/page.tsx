@@ -11,21 +11,22 @@ import AuthHero from '../components/auth-hero';
 import FormPanel from '../components/form-panel';
 import { SingleProvider, MultipleProviders } from '../forms';
 import { AuthApi, type AuthMethod } from '../api';
+import { getOrgExists } from '@/lib/api/org-exists-public';
 
 // --- Auth step state machine --------------------------------------------------
 
 type AuthStep =
   | { type: 'loading' }
   | {
-      type: 'single';
-      method: AuthMethod;
-      authProviders: Record<string, Record<string, string>>;
-    }
+    type: 'single';
+    method: AuthMethod;
+    authProviders: Record<string, Record<string, string>>;
+  }
   | {
-      type: 'multiple';
-      allowedMethods: AuthMethod[];
-      authProviders: Record<string, Record<string, string>>;
-    };
+    type: 'multiple';
+    allowedMethods: AuthMethod[];
+    authProviders: Record<string, Record<string, string>>;
+  };
 
 /** Backend SAML error codes → short user-facing descriptions. */
 const SAML_ERROR_DESCRIPTIONS: Record<string, string> = {
@@ -109,14 +110,24 @@ export default function LoginPage() {
     }
   }, [isHydrated, router]);
 
-  // Auto-call initAuth once on mount
   useEffect(() => {
     if (!isHydrated) return;
     if (initAuthCalledRef.current) return;
     initAuthCalledRef.current = true;
 
-    AuthApi.initAuth()
+    let cancelled = false;
+
+    void getOrgExists()
+      .then(({ exists }) => {
+        if (!exists) {
+          router.replace('/sign-up');
+          return;
+        }
+        // if (cancelled) return;
+        return AuthApi.initAuth();
+      })
       .then((response) => {
+        // if (cancelled || response === undefined) return;
         const methods = response.allowedMethods ?? [];
         const providers = response.authProviders ?? {};
         if (methods.length <= 1) {
@@ -134,13 +145,18 @@ export default function LoginPage() {
         }
       })
       .catch(() => {
+        if (cancelled) return;
         setStep({
           type: 'single',
           method: 'password',
           authProviders: {},
         });
       });
-  }, [isHydrated]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isHydrated, router]);
 
   function renderForm() {
     switch (step.type) {

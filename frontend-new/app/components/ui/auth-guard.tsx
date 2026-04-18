@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { LottieLoader } from './lottie-loader';
+import { getOrgExists } from '@/lib/api/org-exists-public';
 
 export function LoadingScreen() {
   return (
@@ -33,8 +34,19 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isHydrated) return;
     if (!isAuthenticated) {
-      const target = process.env.NEXT_PUBLIC_FORCE_SIGN_UP === 'true' ? '/sign-up' : '/login';
-      router.replace(target);
+      let cancelled = false;
+      void getOrgExists()
+        .then((response) => {
+          if (cancelled) return;
+          router.replace(response.exists === false ? '/sign-up' : '/login');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          router.replace('/login');
+        });
+      return () => {
+        cancelled = true;
+      };
     }
   }, [isHydrated, isAuthenticated, router]);
 

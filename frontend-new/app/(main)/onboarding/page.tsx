@@ -1,21 +1,20 @@
 'use client';
 
-import React, { useEffect, Suspense } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
 import { useOnboardingStore } from './store';
 import { useAuthStore } from '@/lib/store/auth-store';
-import { updateOnboardingStatus } from './api';
+import { getOnboardingStatus, updateOnboardingStatus } from './api';
 import {
   OnboardingHeader,
   OnboardingSteps,
-  StepOrgProfile,
   StepAiModel,
   StepEmbeddingModel,
   StepStorage,
   StepSmtp,
-  StepLoading,
 } from './components';
+import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import type { OnboardingStepId } from './types';
 
 // ===============================
@@ -25,6 +24,7 @@ import type { OnboardingStepId } from './types';
 function OnboardingPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [onboardingGate, setOnboardingGate] = useState<'checking' | 'allowed'>('checking');
 
   const {
     steps,
@@ -39,7 +39,7 @@ function OnboardingPageInner() {
   } = useOnboardingStore();
 
   // Auth store — real user data
-  const { user } = useAuthStore();
+  const { user, isHydrated, isAuthenticated } = useAuthStore();
   const userName = user?.name ?? '';
   const userEmail = user?.email ?? '';
   const userInitials = userName
@@ -47,10 +47,33 @@ function OnboardingPageInner() {
     : '';
 
   // Read step from URL
-  const stepFromUrl = (searchParams.get('step') as OnboardingStepId | null) ?? 'org-profile';
+  const stepFromUrl = (searchParams.get('step') as OnboardingStepId | null) ?? 'ai-model';
+
+  // Only allow this route when org onboarding is still required (matches layout gate semantics).
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated) {
+      return;
+    }
+
+    getOnboardingStatus()
+      .then(({ status }) => {
+        if (status === 'notConfigured') {
+          setOnboardingActive(true);
+          setOnboardingGate('allowed');
+        } else {
+          setOnboardingActive(false);
+          router.replace('/');
+        }
+      })
+      .catch(() => {
+        // Match main layout: do not block the app on a failed status check
+        setOnboardingGate('allowed');
+      });
+  }, [isHydrated, isAuthenticated, router, setOnboardingActive]);
 
   // Sync URL → store with validation; redirect to safe default if step is missing or unrecognised
   useEffect(() => {
+    if (onboardingGate !== 'allowed') return;
     if (steps.length === 0) return;
     const stepParam = searchParams.get('step');
     const isValidStep = stepParam ? steps.some((s) => s.id === stepParam) : false;
@@ -61,7 +84,15 @@ function OnboardingPageInner() {
     if (stepFromUrl !== currentStepId) {
       setCurrentStep(stepFromUrl);
     }
-  }, [searchParams, steps, router, stepFromUrl, currentStepId, setCurrentStep]);
+  }, [
+    onboardingGate,
+    searchParams,
+    steps,
+    router,
+    stepFromUrl,
+    currentStepId,
+    setCurrentStep,
+  ]);
 
   // ---- Navigation helpers ----
 
@@ -113,10 +144,8 @@ function OnboardingPageInner() {
 
   // ---- System config step numbering ----
 
-  // System config steps are all steps except 'org-profile' and 'loading'
-  const systemConfigSteps = steps.filter(
-    (s) => s.id !== 'org-profile' && s.id !== 'loading'
-  );
+  // System config steps are all steps except the terminal 'loading' step
+  const systemConfigSteps = steps.filter((s) => s.id !== 'loading');
   const systemStepIndex =
     systemConfigSteps.findIndex((s) => s.id === stepFromUrl) + 1;
   const totalSystemSteps = systemConfigSteps.length;
@@ -133,23 +162,26 @@ function OnboardingPageInner() {
   // Highlight Next button when the current step has been saved
   const isCurrentStepCompleted = completedStepIds.includes(stepFromUrl);
 
+  // Embedding step is optional: Next is allowed without a configured model
+  const isMiddleNextEnabled =
+    stepFromUrl === 'embedding-model' || isCurrentStepCompleted;
+
   const showPrev = !isFirstStep && !isLoadingStep;
   const showNext = !isLoadingStep;
 
   // ---- Org context for header ----
 
-  const showOrgBadge = stepFromUrl !== 'org-profile' && !!orgDisplayName;
+  const showOrgBadge = !!orgDisplayName;
 
   // ---- Render active form step ----
 
   function renderStep() {
     switch (stepFromUrl) {
-      case 'org-profile':
-        return <StepOrgProfile onSuccess={handleStepSuccess} />;
+      // case 'org-profile':
+      //   return <StepOrgProfile onSuccess={handleStepSuccess} />;
       case 'ai-model':
         return (
           <StepAiModel
-            onSuccess={handleStepSuccess}
             systemStepIndex={systemStepIndex}
             totalSystemSteps={totalSystemSteps}
           />
@@ -157,7 +189,6 @@ function OnboardingPageInner() {
       case 'embedding-model':
         return (
           <StepEmbeddingModel
-            onSuccess={handleStepSuccess}
             systemStepIndex={systemStepIndex}
             totalSystemSteps={totalSystemSteps}
           />
@@ -179,14 +210,32 @@ function OnboardingPageInner() {
           />
         );
       case 'loading':
-        return <StepLoading />;
+        return <LoadingScreen />;
       default:
-        return <StepOrgProfile onSuccess={handleStepSuccess} />;
+        // return <StepOrgProfile onSuccess={handleStepSuccess} />;
+        return (
+          <StepAiModel
+            systemStepIndex={systemStepIndex}
+            totalSystemSteps={totalSystemSteps}
+          />
+        );
     }
   }
 
   // Progress steps to show (exclude 'loading' from the visible progress bar)
   const visibleSteps = steps.filter((s) => s.id !== 'loading');
+
+  if (onboardingGate !== 'allowed') {
+    return (
+      <Flex
+        align="center"
+        justify="center"
+        style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)' }}
+      >
+        <LoadingScreen />
+      </Flex>
+    );
+  }
 
   return (
     <Flex
@@ -235,11 +284,7 @@ function OnboardingPageInner() {
           }}
         >
           {/* Tab strip — fixed, never scrolls */}
-          <OnboardingSteps
-            steps={visibleSteps}
-            currentStepId={stepFromUrl}
-            completedStepIds={completedStepIds}
-          />
+          <OnboardingSteps steps={visibleSteps} currentStepId={stepFromUrl} />
 
           {/* Form area — card scrolls internally; outer never scrolls */}
           <Flex
@@ -313,12 +358,12 @@ function OnboardingPageInner() {
             ) : (
               <Button
                 variant="solid"
-                disabled={!isCurrentStepCompleted}
+                disabled={!isMiddleNextEnabled}
                 onClick={handleNext}
                 style={{
-                  cursor: isCurrentStepCompleted ? 'pointer' : 'not-allowed',
-                  backgroundColor: isCurrentStepCompleted ? 'var(--accent-9)' : 'var(--gray-4)',
-                  color: isCurrentStepCompleted ? 'white' : 'var(--gray-9)',
+                  cursor: isMiddleNextEnabled ? 'pointer' : 'not-allowed',
+                  backgroundColor: isMiddleNextEnabled ? 'var(--accent-9)' : 'var(--gray-4)',
+                  color: isMiddleNextEnabled ? 'white' : 'var(--gray-9)',
                   opacity: 1,
                 }}
               >
@@ -385,7 +430,7 @@ export default function OnboardingPage() {
           justify="center"
           style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)' }}
         >
-          <StepLoading />
+          <LoadingScreen />
         </Flex>
       }
     >

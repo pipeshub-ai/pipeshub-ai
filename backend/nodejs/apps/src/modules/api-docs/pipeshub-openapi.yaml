@@ -4051,6 +4051,69 @@ components:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
 
+    # AI Model Registry Schemas (Python backend)
+    AIModelRegistryProvider:
+      type: object
+      properties:
+        providerId:
+          type: string
+          description: Unique identifier (e.g. openAI, anthropic)
+        name:
+          type: string
+          description: Human-readable provider name
+        description:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        icon:
+          type: string
+          description: Path to the provider icon asset
+        color:
+          type: string
+          description: Brand hex colour
+        isPopular:
+          type: boolean
+
+    AIModelFieldSchema:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Field key used in configuration payloads
+        displayName:
+          type: string
+          description: Human-readable label
+        fieldType:
+          type: string
+          description: Input type hint (TEXT, SECRET, URL, NUMBER, SELECT, TOGGLE)
+        required:
+          type: boolean
+        defaultValue:
+          type: string
+          nullable: true
+        placeholder:
+          type: string
+        description:
+          type: string
+        isSecret:
+          type: boolean
+        options:
+          type: array
+          description: Available options when fieldType is SELECT
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              value:
+                type: string
+        validation:
+          type: object
+          description: Validation constraints (e.g. min, max, pattern)
+          additionalProperties: true
+
     # Authentication Configuration Schemas
     AzureAdAuthConfig:
       type: object
@@ -19640,6 +19703,166 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  # -------------------- AI Model Registry (Python backend proxy) --------------------
+  /configurationManager/ai-models/registry:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List registered AI model providers
+      description: |
+        Returns all registered AI model providers from the Python backend registry.
+        Supports optional search and capability filtering.
+      operationId: getAIModelRegistry
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search providers by name or description
+        - name: capability
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - text_generation
+              - embedding
+              - image_generation
+              - tts
+              - stt
+              - video
+              - ocr
+              - reasoning
+          description: Filter providers by capability
+      responses:
+        '200':
+          description: Providers retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AIModelRegistryProvider'
+                  total:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '503':
+          description: AI model registry service is unavailable
+
+  /configurationManager/ai-models/registry/capabilities:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List available model capabilities
+      description: Returns the list of all model capabilities understood by the registry.
+      operationId: getAIModelRegistryCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Capabilities retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  capabilities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Machine-readable capability identifier
+                          example: text_generation
+                        name:
+                          type: string
+                          description: Human-readable capability name
+                          example: Text Generation
+                        modelType:
+                          type: string
+                          description: Corresponding model type key used in CRUD APIs
+                          example: llm
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '503':
+          description: AI model registry service is unavailable
+
+  /configurationManager/ai-models/registry/{providerId}/schema:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Get provider field schema
+      description: |
+        Returns the configuration field schema for a specific provider.
+        Optionally filtered by capability (e.g. only embedding fields).
+      operationId: getAIModelProviderSchema
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Provider identifier (e.g. openAI, anthropic, gemini)
+        - name: capability
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter fields by capability
+      responses:
+        '200':
+          description: Provider schema retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  provider:
+                    type: object
+                    properties:
+                      providerId:
+                        type: string
+                      name:
+                        type: string
+                  schema:
+                    type: object
+                    description: Map of capability to array of field descriptors
+                    additionalProperties:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/AIModelFieldSchema'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+        '404':
+          description: Provider not found
+        '503':
+          description: AI model registry service is unavailable
 
   /crawlingManager/{connector}/{connectorId}/schedule:
     post:
