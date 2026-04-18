@@ -30,7 +30,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
-const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 160 };
+const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
 // Extra breathing room above the chat input for the search results list.
 const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
@@ -92,7 +92,7 @@ function ChatFooterLinks() {
       align="center"
       justify="center"
       gap="3"
-      style={{ marginTop: 'var(--space-2)', paddingBottom: 'var(--space-1)' }}
+      style={{ marginTop: 'var(--space-1)', paddingBottom: 0 }}
     >
       <a
         href={EXTERNAL_LINKS.github}
@@ -925,7 +925,7 @@ function ChatContent() {
             width: '100%',
             overflow: 'hidden',
             marginBottom: `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`,
-            paddingTop: isMobile ? (agentId ? '76px' : '60px') : agentId ? '72px' : '56px',
+            paddingTop: isMobile ? (agentId ? '76px' : '60px') : agentId ? '56px' : '40px',
           }}
         >
           <MessageList />
@@ -936,7 +936,7 @@ function ChatContent() {
       <Box
         style={{
           position: 'absolute',
-          bottom: isMobile ? 0 : '48px',
+          bottom: isMobile ? 0 : '24px',
           left: isMobile ? 0 : '50%',
           right: isMobile ? 0 : undefined,
           transform: isMobile ? undefined : 'translateX(-50%)',

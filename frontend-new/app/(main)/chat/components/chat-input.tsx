@@ -677,7 +677,7 @@ export function ChatInput({
       {/* Main Chat Input */}
       <Flex
       direction="column"
-      gap="3"
+      gap="2"
       style={{
         backdropFilter: 'blur(25px)',
         background: 'var(--effects-translucent)',
@@ -689,7 +689,7 @@ export function ChatInput({
         borderRadius: (selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen) || uploadedFiles.length > 0 || isActionMode
           ? '0 0 var(--radius-2) var(--radius-2)'
           : 'var(--radius-2)',
-        padding: 'var(--space-3) var(--space-4)',
+        padding: isMobile ? 'var(--space-3) var(--space-4)' : 'var(--space-2) var(--space-4)',
       }}
     >
       {/* Hidden file input - always rendered so add button can access it */}
@@ -848,7 +848,7 @@ export function ChatInput({
             fontSize: 'var(--font-size-2)',
             color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--slate-12)',
             resize: 'none',
-            minHeight: isMobile ? '36px' : '64px',
+            minHeight: isMobile ? '36px' : '44px',
             maxHeight: '120px',
             fontFamily: 'Manrope, sans-serif',
             height: 'auto',
