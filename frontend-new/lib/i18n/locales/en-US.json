@@ -832,6 +832,8 @@
       "configure": "Configure",
       "deleteDialogTitle": "Delete Model",
       "deleteDialogDescription": "Are you sure you want to delete \"{{name}}\"? This action cannot be undone.",
+      "deleteTypedConfirmBody": "You are about to permanently delete the configured model \"{{name}}\". This cannot be undone.",
+      "typeModelNameToConfirm": "Type \"{{keyword}}\" to confirm",
       "cancel": "Cancel",
       "delete": "Delete",
       "toastLoadProvidersError": "Failed to load AI model providers",

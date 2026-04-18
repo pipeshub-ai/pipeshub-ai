@@ -10,6 +10,7 @@ import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
 import { LLM_SECTION_MODEL_TYPES, registryCapabilityForModelType } from '../types';
+import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
 const EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY = 'builtin-default' as const;
 
@@ -178,31 +179,10 @@ function ConfiguredModelRow({
       gap="4"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{
-        width: '100%',
-        minWidth: 0,
-        minHeight: 88,
-        padding: '16px 20px',
-        backgroundColor: hover ? 'var(--olive-3)' : 'var(--olive-2)',
-        border: '1px solid var(--olive-3)',
-        borderRadius: 'var(--radius-2)',
-        transition: 'background-color 150ms ease',
-        boxSizing: 'border-box',
-      }}
+      style={modelRowCardStyle(hover)}
     >
       <Flex align="center" gap="4" style={{ minWidth: 0, flex: 1, width: '100%' }}>
-        <Flex
-          align="center"
-          justify="center"
-          style={{
-            width: 44,
-            height: 44,
-            padding: 6,
-            backgroundColor: 'var(--gray-a2)',
-            borderRadius: 'var(--radius-2)',
-            flexShrink: 0,
-          }}
-        >
+        <Flex align="center" justify="center" style={MODEL_ROW_ICON_CONTAINER_STYLE}>
           {provider?.iconPath ? (
             <ThemeableAssetIcon
               src={provider.iconPath}

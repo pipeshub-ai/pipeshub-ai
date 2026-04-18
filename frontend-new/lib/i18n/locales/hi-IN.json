@@ -870,6 +870,8 @@
       "configure": "कॉन्फ़िगर करें",
       "deleteDialogTitle": "मॉडल हटाएँ",
       "deleteDialogDescription": "क्या आप वाकई \"{{name}}\" को हटाना चाहते हैं? इस क्रिया को पूर्ववत नहीं किया जा सकता।",
+      "deleteTypedConfirmBody": "आप कॉन्फ़िगर किए गए मॉडल \"{{name}}\" को स्थायी रूप से हटाने वाले हैं। इसे पूर्ववत नहीं किया जा सकता।",
+      "typeModelNameToConfirm": "पुष्टि के लिए \"{{keyword}}\" टाइप करें",
       "cancel": "रद्द करें",
       "delete": "हटाएँ",
       "toastLoadProvidersError": "एआई मॉडल प्रदाता लोड नहीं हो सके",

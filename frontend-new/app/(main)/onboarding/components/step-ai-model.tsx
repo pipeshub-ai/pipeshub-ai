@@ -1,24 +1,24 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Box, Button, Dialog, Flex, Text } from '@radix-ui/themes';
-import { useToastStore } from '@/lib/store/toast-store';
+import { Box, Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { toast } from '@/lib/store/toast-store';
+import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
 import { useOnboardingStore } from '../store';
 import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
 import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/(main)/workspace/ai-models/types';
 import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
 import { ProviderGrid, ModelConfigDialog } from '@/app/(main)/workspace/ai-models/components';
-import type { OnboardingStepId } from '../types';
-
 interface StepAiModelProps {
-  onSuccess: (nextStep: OnboardingStepId | null) => void;
   systemStepIndex: number;
   totalSystemSteps: number;
 }
 
 export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelProps) {
+  const { t } = useTranslation();
   const { markStepCompleted, unmarkStepCompleted } = useOnboardingStore();
-  const { addToast } = useToastStore();
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [providers, setProviders] = useState<AIModelProvider[]>([]);
   const [configuredModels, setConfiguredModels] = useState<Record<string, ConfiguredModel[]>>({});
@@ -49,11 +49,11 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
       const data = await AIModelsApi.getRegistry({ capability: 'text_generation' });
       setProviders(data.providers);
     } catch {
-      addToast({ title: 'Failed to load AI model providers', variant: 'error' });
+      toast.error('Failed to load AI model providers');
     } finally {
       setLoadingProviders(false);
     }
-  }, [addToast]);
+  }, []);
 
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
@@ -62,12 +62,12 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
       setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
       setModelsLoaded(true);
     } catch {
-      addToast({ title: 'Failed to load configured models', variant: 'error' });
+      toast.error('Failed to load configured models');
       setModelsLoaded(true);
     } finally {
       setLoadingModels(false);
     }
-  }, [addToast]);
+  }, []);
 
   useEffect(() => {
     loadProviders();
@@ -114,13 +114,13 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
     async (modelType: string, modelKey: string) => {
       try {
         await AIModelsApi.setDefault(modelType, modelKey);
-        addToast({ title: 'Default model updated', variant: 'success' });
+        toast.success('Default model updated');
         loadModels();
       } catch {
-        addToast({ title: 'Failed to set default model', variant: 'error' });
+        toast.error('Failed to set default model');
       }
     },
-    [addToast, loadModels]
+    [loadModels]
   );
 
   const openDeleteDialog = useCallback((modelType: string, modelKey: string, modelName: string) => {
@@ -135,15 +135,18 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
+    setIsDeleting(true);
     try {
       await AIModelsApi.deleteProvider(deleteTarget.modelType, deleteTarget.modelKey);
-      addToast({ title: `Deleted ${deleteTarget.modelName}`, variant: 'success' });
+      toast.success(t('workspace.aiModels.toastDeleted', { name: deleteTarget.modelName }));
       closeDeleteDialog();
       loadModels();
     } catch {
-      addToast({ title: 'Failed to delete model', variant: 'error' });
+      toast.error(t('workspace.aiModels.toastDeleteError'));
+    } finally {
+      setIsDeleting(false);
     }
-  }, [deleteTarget, addToast, closeDeleteDialog, loadModels]);
+  }, [deleteTarget, closeDeleteDialog, loadModels, t]);
 
   const handleRefresh = useCallback(() => {
     void loadProviders();
@@ -152,6 +155,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
 
   const isLoading = loadingProviders || loadingModels;
   const llmCount = configuredModels.llm?.length ?? 0;
+  const deleteKeyword = deleteTarget?.modelName ?? '';
 
   return (
     <>
@@ -224,30 +228,29 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
         onSaved={loadModels}
       />
 
-      <Dialog.Root
+      <DestructiveTypedConfirmationDialog
         open={deleteDialogOpen}
-        onOpenChange={(o) => {
-          if (!o) closeDeleteDialog();
+        onOpenChange={(open) => {
+          if (!open) closeDeleteDialog();
         }}
-      >
-        <Dialog.Content style={{ maxWidth: 400 }}>
-          <Dialog.Title>Delete Model</Dialog.Title>
-          <Dialog.Description size="2" style={{ color: 'var(--gray-11)' }}>
-            Are you sure you want to delete &ldquo;{deleteTarget?.modelName}&rdquo;? This action
-            cannot be undone.
-          </Dialog.Description>
-          <Flex gap="3" justify="end" style={{ marginTop: 16 }}>
-            <Dialog.Close>
-              <Button variant="soft" color="gray" style={{ cursor: 'pointer' }}>
-                Cancel
-              </Button>
-            </Dialog.Close>
-            <Button color="red" onClick={handleDelete} style={{ cursor: 'pointer' }}>
-              Delete
-            </Button>
-          </Flex>
-        </Dialog.Content>
-      </Dialog.Root>
+        heading={t('workspace.aiModels.deleteDialogTitle')}
+        body={
+          <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+            {t('workspace.aiModels.deleteTypedConfirmBody', {
+              name: deleteTarget?.modelName ?? '',
+            })}
+          </Text>
+        }
+        confirmationKeyword={deleteKeyword}
+        confirmInputLabel={t('workspace.aiModels.typeModelNameToConfirm', {
+          keyword: deleteKeyword,
+        })}
+        primaryButtonText={t('workspace.aiModels.delete')}
+        cancelLabel={t('workspace.aiModels.cancel')}
+        isLoading={isDeleting}
+        confirmLoadingLabel={t('action.deleting')}
+        onConfirm={() => void handleDelete()}
+      />
     </>
   );
 }

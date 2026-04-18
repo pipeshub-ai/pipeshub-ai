@@ -3,8 +3,8 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import styles from './workspace-right-panel.module.css';
 
 // ========================================
 // Types
@@ -122,6 +122,7 @@ export function WorkspaceRightPanel({
   primaryTooltip,
   secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
+  const { t } = useTranslation();
   const handleClose = () => onOpenChange(false);
   const handleSecondaryClick = onSecondaryClick ?? handleClose;
   const titleId = useId();
@@ -146,6 +147,22 @@ export function WorkspaceRightPanel({
   }, [open]);
 
   if (!open || typeof document === 'undefined') return null;
+
+  const primaryBlocked = primaryDisabled || primaryLoading;
+  const primaryButton = (
+    <Button
+      variant="solid"
+      size="2"
+      onClick={onPrimaryClick}
+      disabled={primaryBlocked}
+      style={{
+        cursor: primaryBlocked ? 'not-allowed' : 'pointer',
+        backgroundColor: primaryBlocked ? 'var(--slate-6)' : 'var(--emerald-9)',
+      }}
+    >
+      {primaryLoading ? t('action.loading') : primaryLabel}
+    </Button>
+  );
 
   return createPortal(
     /**
@@ -252,7 +269,19 @@ export function WorkspaceRightPanel({
         </Box>
 
         {!hideFooter && (
-          <Flex align="center" justify="end" className={styles.footer}>
+          <Flex
+            align="center"
+            justify="end"
+            wrap="wrap"
+            gap="2"
+            style={{
+              padding: '8px 8px 8px 16px',
+              borderTop: '1px solid var(--olive-3)',
+              background: 'var(--effects-translucent)',
+              backdropFilter: 'blur(8px)',
+              flexShrink: 0,
+            }}
+          >
             <Button
               variant={secondaryVariant}
               color="gray"
@@ -263,32 +292,10 @@ export function WorkspaceRightPanel({
             >
               {secondaryLabel}
             </Button>
-            {primaryTooltip && (primaryDisabled || primaryLoading) ? (
-              <Tooltip content={primaryTooltip}>
-                <Button
-                  variant="solid"
-                  size="2"
-                  onClick={onPrimaryClick}
-                  disabled={primaryDisabled || primaryLoading}
-                  style={{ cursor: primaryDisabled || primaryLoading ? 'not-allowed' : 'pointer' }}
-                >
-                  {primaryLoading ? 'Loading...' : primaryLabel}
-                </Button>
-              </Tooltip>
+            {primaryTooltip && primaryBlocked ? (
+              <Tooltip content={primaryTooltip}>{primaryButton}</Tooltip>
             ) : (
-              <Button
-                variant="solid"
-                size="2"
-                onClick={onPrimaryClick}
-                disabled={primaryDisabled || primaryLoading}
-                style={{
-                  cursor: primaryDisabled || primaryLoading ? 'not-allowed' : 'pointer',
-                  backgroundColor:
-                    primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
-                }}
-              >
-                {primaryLoading ? 'Loading...' : primaryLabel}
-              </Button>
+              primaryButton
             )}
           </Flex>
         )}

@@ -17,19 +17,14 @@ async def get_registry(
     capability: str | None = Query(None, description="Filter by capability"),
 ) -> JSONResponse:
     """List all registered AI model providers with metadata."""
-    if search and capability:
-        providers = [
-            p
-            for p in ai_model_registry.search(search)
-            if capability in p.get("capabilities", [])
-        ]
-    elif search:
+    if search:
         providers = ai_model_registry.search(search)
+        if capability:
+            providers = [p for p in providers if capability in p.get("capabilities", [])]
     elif capability:
         providers = ai_model_registry.filter_by_capability(capability)
     else:
         providers = ai_model_registry.list_providers()
-
     return JSONResponse(
         content={
             "success": True,

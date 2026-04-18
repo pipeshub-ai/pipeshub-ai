@@ -34,7 +34,6 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isHydrated) return;
     if (!isAuthenticated) {
-      console.log('AuthGuard: Not authenticated, checking org exists');
       let cancelled = false;
       void getOrgExists()
         .then((response) => {
@@ -50,11 +49,6 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
       };
     }
   }, [isHydrated, isAuthenticated, router]);
-
-  //     const target = process.env.NEXT_PUBLIC_FORCE_SIGN_UP === 'true' ? '/sign-up' : '/login';
-  //     router.replace(target);
-  //   }
-  // }, [isHydrated, isAuthenticated, router]);
 
   if (!isHydrated || !isAuthenticated) {
     return <LoadingScreen />;

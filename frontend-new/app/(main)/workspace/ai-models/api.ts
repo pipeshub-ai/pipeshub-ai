@@ -55,10 +55,11 @@ export const AIModelsApi = {
     isDefault?: boolean;
     contextLength?: number | null;
   }) => {
-    if (payload.provider === 'default') {
-      payload.configuration = { model: 'default' };
-    }
-    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, payload);
+    const body =
+      payload.provider === 'default'
+        ? { ...payload, configuration: { model: 'default' as const } }
+        : payload;
+    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body);
     return data;
   },
 

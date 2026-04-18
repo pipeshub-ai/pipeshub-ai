@@ -122,11 +122,9 @@ function AppLayout({
     }
 
     // 2. Call the API and decide
-    const forceActive = process.env.NEXT_PUBLIC_FORCE_ONBOARDING_ACTIVE === 'true'
-
     getOnboardingStatus()
       .then(({ status }) => {
-        if (status === 'notConfigured' || forceActive) {
+        if (status === 'notConfigured') {
           setOnboardingActive(true)
           router.replace('/onboarding')
         }

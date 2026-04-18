@@ -870,6 +870,8 @@
       "configure": "Configurar",
       "deleteDialogTitle": "Eliminar modelo",
       "deleteDialogDescription": "¿Seguro que desea eliminar \"{{name}}\"? Esta acción no se puede deshacer.",
+      "deleteTypedConfirmBody": "Va a eliminar de forma permanente el modelo configurado \"{{name}}\". Esto no se puede deshacer.",
+      "typeModelNameToConfirm": "Escriba \"{{keyword}}\" para confirmar",
       "cancel": "Cancelar",
       "delete": "Eliminar",
       "toastLoadProvidersError": "No se pudieron cargar los proveedores de modelos de IA",

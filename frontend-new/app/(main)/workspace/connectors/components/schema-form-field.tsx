@@ -178,6 +178,37 @@ export function SchemaFormField({
 // Sub-components for each field type
 // ========================================
 
+function StartAdornmentOverlay({
+  startAdornment,
+  children,
+}: {
+  startAdornment?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box style={{ position: 'relative', width: '100%' }}>
+      {startAdornment ? (
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            position: 'absolute',
+            left: 8,
+            top: 0,
+            bottom: 0,
+            width: 22,
+            pointerEvents: 'none',
+            zIndex: 1,
+          }}
+        >
+          {startAdornment}
+        </Flex>
+      ) : null}
+      {children}
+    </Box>
+  );
+}
+
 function TextInput({
   field,
   value,
@@ -204,24 +235,7 @@ function TextInput({
 
   return (
     <>
-      <Box style={{ position: 'relative', width: '100%' }}>
-        {startAdornment ? (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              position: 'absolute',
-              left: 8,
-              top: 0,
-              bottom: 0,
-              width: 22,
-              pointerEvents: 'none',
-              zIndex: 1,
-            }}
-          >
-            {startAdornment}
-          </Flex>
-        ) : null}
+      <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           type={htmlType}
           value={String(value ?? '')}
@@ -237,7 +251,7 @@ function TextInput({
             opacity: disabled ? 0.6 : 1,
           }}
         />
-      </Box>
+      </StartAdornmentOverlay>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}
@@ -267,24 +281,7 @@ function PasswordInput({
 
   return (
     <>
-      <Box style={{ position: 'relative', width: '100%' }}>
-        {startAdornment ? (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              position: 'absolute',
-              left: 8,
-              top: 0,
-              bottom: 0,
-              width: 22,
-              pointerEvents: 'none',
-              zIndex: 1,
-            }}
-          >
-            {startAdornment}
-          </Flex>
-        ) : null}
+      <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           type={showPassword ? 'text' : 'password'}
           value={String(value ?? '')}
@@ -320,7 +317,7 @@ function PasswordInput({
             color="var(--gray-11)"
           />
         </IconButton>
-      </Box>
+      </StartAdornmentOverlay>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}
@@ -432,24 +429,7 @@ function NumberInput({
 
   return (
     <>
-      <Box style={{ position: 'relative', width: '100%' }}>
-        {startAdornment ? (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              position: 'absolute',
-              left: 8,
-              top: 0,
-              bottom: 0,
-              width: 22,
-              pointerEvents: 'none',
-              zIndex: 1,
-            }}
-          >
-            {startAdornment}
-          </Flex>
-        ) : null}
+      <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           type="number"
           value={value !== undefined && value !== null ? String(value) : ''}
@@ -470,7 +450,7 @@ function NumberInput({
             opacity: disabled ? 0.6 : 1,
           }}
         />
-      </Box>
+      </StartAdornmentOverlay>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}
@@ -511,41 +491,7 @@ function SelectInput({
 
   return (
     <>
-      <Select.Root
-        value={String(value ?? '')}
-        onValueChange={(v) => onChange(field.name, v)}
-        disabled={disabled}
-      >
-        <Select.Trigger
-          style={{ width: '100%', height: 32 }}
-          placeholder={'placeholder' in field ? (field.placeholder ?? 'Select...') : 'Select...'}
-        />
-        <Select.Content style={portalZIndex != null ? { zIndex: portalZIndex } : undefined}>
-          {optionItems.map((opt) => (
-            <Select.Item key={opt.value} value={opt.value}>
-              {opt.label}
-            </Select.Item>
-          ))}
-        </Select.Content>
-      </Select.Root>
-      <Box style={{ position: 'relative', width: '100%' }}>
-        {startAdornment ? (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              position: 'absolute',
-              left: 8,
-              top: 0,
-              bottom: 0,
-              width: 22,
-              pointerEvents: 'none',
-              zIndex: 1,
-            }}
-          >
-            {startAdornment}
-          </Flex>
-        ) : null}
+      <StartAdornmentOverlay startAdornment={startAdornment}>
         <Select.Root
           value={String(value ?? '')}
           onValueChange={(v) => onChange(field.name, v)}
@@ -559,7 +505,7 @@ function SelectInput({
             }}
             placeholder={'placeholder' in field ? (field.placeholder ?? 'Select...') : 'Select...'}
           />
-          <Select.Content>
+          <Select.Content style={portalZIndex != null ? { zIndex: portalZIndex } : undefined}>
             {optionItems.map((opt) => (
               <Select.Item key={opt.value} value={opt.value}>
                 {opt.label}
@@ -567,7 +513,7 @@ function SelectInput({
             ))}
           </Select.Content>
         </Select.Root>
-      </Box>
+      </StartAdornmentOverlay>
       {field.description && (
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
           {field.description}

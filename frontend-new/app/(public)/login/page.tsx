@@ -110,39 +110,6 @@ export default function LoginPage() {
     }
   }, [isHydrated, router]);
 
-  // Auto-call initAuth once on mount
-  // useEffect(() => {
-  //   if (!isHydrated) return;
-
-  //   if (initAuthCalledRef.current) return;
-  //   initAuthCalledRef.current = true;
-
-  //   AuthApi.initAuth()
-  //     .then((response) => {
-  //       const methods = response.allowedMethods ?? [];
-  //       const providers = response.authProviders ?? {};
-  //       if (methods.length <= 1) {
-  //         setStep({
-  //           type: 'single',
-  //           method: methods[0] ?? 'password',
-  //           authProviders: providers,
-  //         });
-  //       } else {
-  //         setStep({
-  //           type: 'multiple',
-  //           allowedMethods: methods,
-  //           authProviders: providers,
-  //         });
-  //       }
-  //     })
-  //     .catch(() => {
-  //       setStep({
-  //         type: 'single',
-  //         method: 'password',
-  //         authProviders: {},
-  //       });
-  //     });
-  // }, [isHydrated]);
   useEffect(() => {
     if (!isHydrated) return;
     if (initAuthCalledRef.current) return;

@@ -7,14 +7,9 @@ import type { OnboardingStep, OnboardingStepId } from '../types';
 interface OnboardingStepsProps {
   steps: OnboardingStep[];
   currentStepId: OnboardingStepId;
-  completedStepIds: OnboardingStepId[];
 }
 
-export function OnboardingSteps({
-  steps,
-  currentStepId,
-  completedStepIds: _completedStepIds,
-}: OnboardingStepsProps) {
+export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) {
   const activeIndex = steps.findIndex((s) => s.id === currentStepId);
 
   return (

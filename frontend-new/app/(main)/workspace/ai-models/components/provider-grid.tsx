@@ -96,8 +96,6 @@ export function ProviderGrid({
     [capabilityFilteredProviders, searchQuery, matchSearch]
   );
 
-  const isLoadingData = isLoading;
-
   const pageSearchFieldStyle: React.CSSProperties = {
     width: '100%',
     minWidth: 0,
@@ -278,7 +276,7 @@ export function ProviderGrid({
                     color: active ? 'var(--gray-12)' : 'var(--gray-10)',
                     fontWeight: active ? 600 : 500,
                     fontSize: 14,
-                    borderBottom: active ? '2px solid var(--emerald-9)' : '2px solid transparent',
+                    borderBottom: active ? '2px solid var(--accent-9)' : '2px solid transparent',
                     marginBottom: -1,
                     whiteSpace: 'nowrap',
                     flexShrink: 0,
@@ -294,7 +292,7 @@ export function ProviderGrid({
 
       {/* Body */}
       {mainSection === 'providers' ? (
-        isLoadingData ? (
+        isLoading ? (
           <Flex align="center" justify="center" style={{ width: '100%', paddingTop: 80 }}>
             <Text size="2" style={{ color: 'var(--gray-9)' }}>
               {t('workspace.aiModels.loadingProviders')}
@@ -333,7 +331,7 @@ export function ProviderGrid({
           onEdit={onEdit}
           onSetDefault={onSetDefault}
           onDelete={onDelete}
-          isLoading={isLoadingData}
+          isLoading={isLoading}
         />
       )}
     </Flex>

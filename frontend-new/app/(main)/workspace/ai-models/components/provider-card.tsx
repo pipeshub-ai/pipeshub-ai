@@ -5,10 +5,11 @@ import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { AIModelProvider } from '../types';
 import { isRegistryBadgeCapability } from '../types';
 import { aiModelsCapabilityBadge } from '../capability-i18n';
-import styles from './provider-card.module.css';
+import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
 const BADGE_STYLE: Record<
   string,
@@ -57,6 +58,7 @@ interface ProviderRowProps {
  */
 export function ProviderRow({ provider, onConfigure }: ProviderRowProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [hover, setHover] = useState(false);
 
   const badgeCaps = provider.capabilities.filter((c) => isRegistryBadgeCapability(c));
@@ -69,31 +71,10 @@ export function ProviderRow({ provider, onConfigure }: ProviderRowProps) {
       gap="4"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{
-        width: '100%',
-        minWidth: 0,
-        minHeight: 88,
-        padding: '16px 20px',
-        backgroundColor: hover ? 'var(--olive-3)' : 'var(--olive-2)',
-        border: '1px solid var(--olive-3)',
-        borderRadius: 'var(--radius-2)',
-        transition: 'background-color 150ms ease',
-        boxSizing: 'border-box',
-      }}
+      style={modelRowCardStyle(hover)}
     >
       <Flex align="center" gap="4" style={{ minWidth: 0, flex: 1, width: '100%' }}>
-        <Flex
-          align="center"
-          justify="center"
-          style={{
-            width: 44,
-            height: 44,
-            padding: 6,
-            backgroundColor: 'var(--gray-a2)',
-            borderRadius: 'var(--radius-2)',
-            flexShrink: 0,
-          }}
-        >
+        <Flex align="center" justify="center" style={MODEL_ROW_ICON_CONTAINER_STYLE}>
           <ThemeableAssetIcon
             src={provider.iconPath}
             size={28}
@@ -142,7 +123,6 @@ export function ProviderRow({ provider, onConfigure }: ProviderRowProps) {
 
       <button
         type="button"
-        className={styles.configureButton}
         onClick={(e) => {
           e.stopPropagation();
           onConfigure();
@@ -164,6 +144,9 @@ export function ProviderRow({ provider, onConfigure }: ProviderRowProps) {
           cursor: 'pointer',
           fontSize: 13,
           fontWeight: 500,
+          width: isMobile ? '100%' : 'auto',
+          boxSizing: 'border-box',
+          alignSelf: isMobile ? 'stretch' : 'center',
         }}
       >
         <MaterialIcon name="add" size={16} color="var(--gray-11)" />

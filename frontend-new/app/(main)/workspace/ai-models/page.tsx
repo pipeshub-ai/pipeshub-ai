@@ -1,19 +1,19 @@
 'use client';
 
-import React, { useCallback, useEffect } from 'react';
-import { Box, Button, Dialog, Flex } from '@radix-ui/themes';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useToastStore } from '@/lib/store/toast-store';
+import { toast } from '@/lib/store/toast-store';
 import { useAIModelsStore } from './store';
 import { AIModelsApi } from './api';
 import type { AIModelProvider, ConfiguredModel } from './types';
+import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
 import { ProviderGrid, ModelConfigDialog } from './components';
-import deleteFooterStyles from './delete-dialog-footer.module.css';
 
 export default function AIModelsPage() {
   const { t } = useTranslation();
   const store = useAIModelsStore();
-  const { addToast } = useToastStore();
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const loadProviders = useCallback(async () => {
     const s = useAIModelsStore.getState();
@@ -22,11 +22,11 @@ export default function AIModelsPage() {
       const data = await AIModelsApi.getRegistry();
       s.setProviders(data.providers);
     } catch {
-      addToast({ title: t('workspace.aiModels.toastLoadProvidersError'), variant: 'error' });
+      toast.error(t('workspace.aiModels.toastLoadProvidersError'));
     } finally {
       s.setLoadingProviders(false);
     }
-  }, [addToast, t]);
+  }, [t]);
 
   const loadModels = useCallback(async () => {
     const s = useAIModelsStore.getState();
@@ -35,11 +35,11 @@ export default function AIModelsPage() {
       const data = await AIModelsApi.getAllModels();
       s.setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
     } catch {
-      addToast({ title: t('workspace.aiModels.toastLoadModelsError'), variant: 'error' });
+      toast.error(t('workspace.aiModels.toastLoadModelsError'));
     } finally {
       s.setLoadingModels(false);
     }
-  }, [addToast, t]);
+  }, [t]);
 
   useEffect(() => {
     void loadProviders();
@@ -64,29 +64,33 @@ export default function AIModelsPage() {
     async (modelType: string, modelKey: string) => {
       try {
         await AIModelsApi.setDefault(modelType, modelKey);
-        addToast({ title: t('workspace.aiModels.toastDefaultUpdated'), variant: 'success' });
+        toast.success(t('workspace.aiModels.toastDefaultUpdated'));
         await loadModels();
       } catch {
-        addToast({ title: t('workspace.aiModels.toastDefaultError'), variant: 'error' });
+        toast.error(t('workspace.aiModels.toastDefaultError'));
       }
     },
-    [addToast, loadModels, t]
+    [loadModels, t]
   );
 
   const handleDelete = useCallback(async () => {
     const target = useAIModelsStore.getState().deleteTarget;
     if (!target) return;
+    setIsDeleting(true);
     try {
       await AIModelsApi.deleteProvider(target.modelType, target.modelKey);
-      addToast({ title: t('workspace.aiModels.toastDeleted', { name: target.modelName }), variant: 'success' });
+      toast.success(t('workspace.aiModels.toastDeleted', { name: target.modelName }));
       useAIModelsStore.getState().closeDeleteDialog();
       await loadModels();
     } catch {
-      addToast({ title: t('workspace.aiModels.toastDeleteError'), variant: 'error' });
+      toast.error(t('workspace.aiModels.toastDeleteError'));
+    } finally {
+      setIsDeleting(false);
     }
-  }, [addToast, loadModels, t]);
+  }, [loadModels, t]);
 
   const isLoading = store.isLoadingProviders || store.isLoadingModels;
+  const deleteKeyword = store.deleteTarget?.modelName ?? '';
 
   return (
     <>
@@ -117,52 +121,29 @@ export default function AIModelsPage() {
         onSaved={loadModels}
       />
 
-      <Dialog.Root
+      <DestructiveTypedConfirmationDialog
         open={store.deleteDialogOpen}
-        onOpenChange={(o) => {
-          if (!o) store.closeDeleteDialog();
+        onOpenChange={(open) => {
+          if (!open) store.closeDeleteDialog();
         }}
-      >
-        <Dialog.Content style={{ maxWidth: 400 }}>
-          <Dialog.Title>{t('workspace.aiModels.deleteDialogTitle')}</Dialog.Title>
-          <Dialog.Description size="2" style={{ color: 'var(--gray-11)' }}>
-            {t('workspace.aiModels.deleteDialogDescription', {
+        heading={t('workspace.aiModels.deleteDialogTitle')}
+        body={
+          <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+            {t('workspace.aiModels.deleteTypedConfirmBody', {
               name: store.deleteTarget?.modelName ?? '',
             })}
-          </Dialog.Description>
-          <Flex
-            direction={{ initial: 'column', sm: 'row' }}
-            align={{ initial: 'stretch', sm: 'center' }}
-            gap="3"
-            wrap="wrap"
-            justify={{ initial: 'start', sm: 'end' }}
-            style={{ marginTop: 16, width: '100%' }}
-          >
-            <Box width={{ initial: '100%', sm: 'auto' }} style={{ minWidth: 0 }}>
-              <Dialog.Close>
-                <Button
-                  variant="soft"
-                  color="gray"
-                  className={deleteFooterStyles.footerButton}
-                  style={{ cursor: 'pointer' }}
-                >
-                  {t('workspace.aiModels.cancel')}
-                </Button>
-              </Dialog.Close>
-            </Box>
-            <Box width={{ initial: '100%', sm: 'auto' }} style={{ minWidth: 0 }}>
-              <Button
-                color="red"
-                className={deleteFooterStyles.footerButton}
-                onClick={handleDelete}
-                style={{ cursor: 'pointer' }}
-              >
-                {t('workspace.aiModels.delete')}
-              </Button>
-            </Box>
-          </Flex>
-        </Dialog.Content>
-      </Dialog.Root>
+          </Text>
+        }
+        confirmationKeyword={deleteKeyword}
+        confirmInputLabel={t('workspace.aiModels.typeModelNameToConfirm', {
+          keyword: deleteKeyword,
+        })}
+        primaryButtonText={t('workspace.aiModels.delete')}
+        cancelLabel={t('workspace.aiModels.cancel')}
+        isLoading={isDeleting}
+        confirmLoadingLabel={t('action.deleting')}
+        onConfirm={() => void handleDelete()}
+      />
     </>
   );
 }

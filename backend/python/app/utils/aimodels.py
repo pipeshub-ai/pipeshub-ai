@@ -129,6 +129,17 @@ def is_multimodal_llm(config: Dict[str, Any]) -> bool:
         config.get("configuration", {}).get("isMultimodal", False)
     )
 
+
+def _set_embedding_dimensions_kwarg(
+    kwargs: Dict[str, Any],
+    dimensions: int | None,
+    *,
+    key: str = "dimensions",
+) -> None:
+    if dimensions is not None:
+        kwargs[key] = dimensions
+
+
 def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -165,8 +176,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             base_url=configuration['endpoint'],
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
-        if dimensions is not None:
-            kwargs["dimensions"] = dimensions
+        _set_embedding_dimensions_kwarg(kwargs, dimensions)
         return OpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
@@ -178,8 +188,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             api_version=AZURE_EMBEDDING_API_VERSION,
             azure_endpoint=configuration['endpoint'],
         )
-        if dimensions is not None:
-            kwargs["dimensions"] = dimensions
+        _set_embedding_dimensions_kwarg(kwargs, dimensions)
         return AzureOpenAIEmbeddings(**kwargs)
 
     elif provider == EmbeddingProvider.COHERE.value:
@@ -211,8 +220,9 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             model=model_name,
             google_api_key=configuration['apiKey'],
         )
-        if dimensions is not None:
-            gemini_kwargs["output_dimensionality"] = dimensions
+        _set_embedding_dimensions_kwarg(
+            gemini_kwargs, dimensions, key="output_dimensionality"
+        )
         return GoogleGenerativeAIEmbeddings(**gemini_kwargs)
 
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
@@ -249,8 +259,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             model=model_name,
             api_key=configuration['apiKey'],
         )
-        if dimensions is not None:
-            mistral_kwargs["dimensions"] = dimensions
+        _set_embedding_dimensions_kwarg(mistral_kwargs, dimensions)
         return MistralAIEmbeddings(**mistral_kwargs)
 
 
@@ -270,8 +279,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             api_key=configuration["apiKey"],
             organization=configuration.get("organizationId"),
         )
-        if dimensions is not None:
-            openai_kwargs["dimensions"] = dimensions
+        _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
         return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
@@ -308,8 +316,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             base_url=base_url,
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
-        if dimensions is not None:
-            compat_kwargs["dimensions"] = dimensions
+        _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
         return OpenAIEmbeddings(**compat_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
@@ -320,8 +327,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
         )
-        if dimensions is not None:
-            together_kwargs["dimensions"] = dimensions
+        _set_embedding_dimensions_kwarg(together_kwargs, dimensions)
         return TogetherEmbeddings(**together_kwargs)
 
     elif provider == EmbeddingProvider.VOYAGE.value:
