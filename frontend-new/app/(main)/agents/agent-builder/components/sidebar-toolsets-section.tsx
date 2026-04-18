@@ -2,10 +2,10 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Text, TextField, Button } from '@radix-ui/themes';
+import { Box, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
-import type { BuilderSidebarToolset } from '../../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
@@ -150,9 +150,6 @@ export function AgentBuilderToolsetsSection(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
-  loadMoreToolsets: () => void | Promise<void>;
-  toolsetsHasMore: boolean;
-  toolsetsLoadingMore: boolean;
   activeToolsetTypes: string[];
   isServiceAccount: boolean;
   agentKey: string | null;
@@ -160,7 +157,7 @@ export function AgentBuilderToolsetsSection(props: {
   onNotify: (message: string) => void;
   /** Viewer without edit: block tool/toolset drags onto the canvas. */
   structureLocked?: boolean;
-  /** SA viewer without edit: block search, load-more, and org credential controls only. */
+  /** SA viewer without edit: block search and org credential controls only. */
   orgCredentialUiLocked?: boolean;
   /** Same toast as main palette when structure-only drag is blocked (from sidebar). */
   onPaletteStructureDragBlocked?: () => void;
@@ -169,9 +166,6 @@ export function AgentBuilderToolsetsSection(props: {
     toolsets,
     loading,
     refreshToolsets,
-    loadMoreToolsets,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
     activeToolsetTypes,
     isServiceAccount,
     agentKey,
@@ -188,12 +182,6 @@ export function AgentBuilderToolsetsSection(props: {
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const loadMoreRef = useRef(loadMoreToolsets);
-  useEffect(() => {
-    loadMoreRef.current = loadMoreToolsets;
-  }, [loadMoreToolsets]);
-
   const normalizedActive = useMemo(() => activeToolsetTypes.map(normalizeToolsetTypeKey), [activeToolsetTypes]);
 
   const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
@@ -235,26 +223,6 @@ export function AgentBuilderToolsetsSection(props: {
     window.addEventListener('message', onOAuthMessage);
     return () => window.removeEventListener('message', onOAuthMessage);
   }, [agentKey, isServiceAccount, onNotify, refreshToolsets, searchInput, t]);
-
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (
-          entries[0]?.isIntersecting &&
-          !toolsetsLoadingMore &&
-          toolsetsHasMore &&
-          !orgCredentialUiLocked
-        ) {
-          void loadMoreRef.current();
-        }
-      },
-      { threshold: 0.1 }
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [orgCredentialUiLocked, toolsetsHasMore, toolsetsLoadingMore]);
 
   const buildUiState = useCallback(
     (ts: BuilderSidebarToolset) => {
@@ -469,31 +437,12 @@ export function AgentBuilderToolsetsSection(props: {
           })
         : null}
 
-      {!loading ? <Box ref={sentinelRef} style={{ height: 1 }} aria-hidden /> : null}
-
-      {!loading && toolsetsHasMore ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="1"
-          color="gray"
-          disabled={toolsetsLoadingMore || orgCredentialUiLocked}
-          onClick={() => void loadMoreToolsets()}
-          style={{ marginTop: 8 }}
-        >
-          {toolsetsLoadingMore ? t('agentBuilder.loadingMore') : t('agentBuilder.loadMore')}
-        </Button>
-      ) : null}
-
       {userConfigToolset?.instanceId ? (
         <UserToolsetConfigDialog
           key={userConfigToolset.instanceId}
           toolset={userConfigToolset}
           instanceId={userConfigToolset.instanceId}
-          onClose={() => {
-            setUserConfigToolset(null);
-            void refreshToolsets(agentKey, isServiceAccount, searchInput);
-          }}
+          onClose={() => setUserConfigToolset(null)}
           onSuccess={async () => {
             await refreshToolsets(agentKey, isServiceAccount, searchInput);
           }}

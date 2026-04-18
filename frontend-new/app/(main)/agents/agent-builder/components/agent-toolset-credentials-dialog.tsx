@@ -19,11 +19,12 @@ import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/sc
 import type { AuthSchemaField } from '@/app/(main)/workspace/connectors/types';
 import { isNoneAuthType, isOAuthType, isCredentialAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { formatAuthTypeName } from '@/app/(main)/workspace/connectors/components/authenticate-tab/helpers';
-import { ToolsetsApi, type BuilderSidebarToolset } from '../../toolsets-api';
+import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   apiErrorDetail,
   authFieldsForType,
   getToolsetAuthConfigFromSchema,
+  isOrgOAuthAppCredentialFieldName,
 } from './toolset-agent-auth-helpers';
 import {
   toolsetDialogBackdropStyle,
@@ -90,6 +91,12 @@ export function AgentToolsetCredentialsDialog({
     [authConfig, authType]
   );
 
+  /** Never collect org OAuth app id/secret in agent (or user) credential flows. */
+  const userCredentialFields = useMemo(
+    () => manageFields.filter((f) => !isOrgOAuthAppCredentialFieldName(f.name)),
+    [manageFields]
+  );
+
   useEffect(() => {
     const toolsetType = toolset.toolsetType?.trim();
     if (!toolsetType) {
@@ -116,7 +123,7 @@ export function AgentToolsetCredentialsDialog({
   useEffect(() => {
     if (!toolset.auth || authType === 'OAUTH' || isNoneAuthType(authType)) return;
     const hydrated: Record<string, unknown> = {};
-    manageFields.forEach((field) => {
+    userCredentialFields.forEach((field) => {
       const v = toolset.auth?.[field.name];
       if (v !== undefined && v !== null) {
         hydrated[field.name] = Array.isArray(v) ? v.join(',') : v;
@@ -125,7 +132,7 @@ export function AgentToolsetCredentialsDialog({
     if (Object.keys(hydrated).length > 0) {
       setFormData((prev) => ({ ...hydrated, ...prev }));
     }
-  }, [toolset.auth, authType, manageFields]);
+  }, [toolset.auth, authType, userCredentialFields]);
 
   const setField = useCallback((name: string, value: unknown) => {
     setFormData((p) => ({ ...p, [name]: value }));
@@ -138,7 +145,7 @@ export function AgentToolsetCredentialsDialog({
 
   const validateForm = useCallback(() => {
     const errors: Record<string, string> = {};
-    manageFields.forEach((field) => {
+    userCredentialFields.forEach((field) => {
       const value = formData[field.name];
       if (field.required && (value === undefined || value === null || String(value).trim() === '')) {
         errors[field.name] = t('agentBuilder.fieldRequired', { field: field.displayName });
@@ -146,7 +153,7 @@ export function AgentToolsetCredentialsDialog({
     });
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
-  }, [manageFields, formData, t]);
+  }, [userCredentialFields, formData, t]);
 
   const verifyOAuthComplete = useCallback(async (): Promise<boolean> => {
     try {
@@ -199,10 +206,13 @@ export function AgentToolsetCredentialsDialog({
     try {
       setSaving(true);
       setError(null);
+      const safeAuthPayload = Object.fromEntries(
+        Object.entries(formData).filter(([k]) => !isOrgOAuthAppCredentialFieldName(k))
+      );
       if (isAuthenticated) {
-        await ToolsetsApi.updateAgentToolsetCredentials(agentKey, instanceId, formData);
+        await ToolsetsApi.updateAgentToolsetCredentials(agentKey, instanceId, safeAuthPayload);
       } else {
-        await ToolsetsApi.authenticateAgentToolset(agentKey, instanceId, formData);
+        await ToolsetsApi.authenticateAgentToolset(agentKey, instanceId, safeAuthPayload);
       }
       setIsAuthenticated(true);
       onNotify?.(t('agentBuilder.toolsetAuthUpdated'));
@@ -263,7 +273,7 @@ export function AgentToolsetCredentialsDialog({
 
   const showFooterPrimaryCluster =
     !schemaLoading &&
-    (isOAuthType(authType) || (isCredentialAuthType(authType) && manageFields.length > 0));
+    (isOAuthType(authType) || (isCredentialAuthType(authType) && userCredentialFields.length > 0));
 
   const handleMainOpenChange = (open: boolean) => {
     if (!open && !dismissLocked) requestDismiss();
@@ -375,6 +385,9 @@ export function AgentToolsetCredentialsDialog({
           {!schemaLoading && isOAuthType(authType) ? (
             <Flex direction="column" gap="3" width="100%">
               <Callout.Root color="blue" variant="surface" size="1">
+                <Callout.Icon>
+                  <MaterialIcon name={isAuthenticated ? 'verified_user' : 'link'} size={18} />
+                </Callout.Icon>
                 <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {isAuthenticated ? t('agentBuilder.oauthConnectedDesc') : t('agentBuilder.oauthPendingDesc')}
                 </Callout.Text>
@@ -382,13 +395,13 @@ export function AgentToolsetCredentialsDialog({
             </Flex>
           ) : null}
 
-          {!schemaLoading && isCredentialAuthType(authType) && manageFields.length > 0 ? (
+          {!schemaLoading && isCredentialAuthType(authType) && userCredentialFields.length > 0 ? (
             <Flex direction="column" gap="4">
               <Separator size="4" />
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                 {t('agentBuilder.agentCredentialsFieldsHeading')}
               </Text>
-              {manageFields.map((field) => (
+              {userCredentialFields.map((field) => (
                 <SchemaFormField
                   key={field.name}
                   field={field}
@@ -406,7 +419,7 @@ export function AgentToolsetCredentialsDialog({
             </Flex>
           ) : null}
 
-          {!schemaLoading && isCredentialAuthType(authType) && manageFields.length === 0 ? (
+          {!schemaLoading && isCredentialAuthType(authType) && userCredentialFields.length === 0 ? (
             <Callout.Root color="amber" variant="surface" size="1" mt="2">
               <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
             </Callout.Root>
@@ -445,7 +458,7 @@ export function AgentToolsetCredentialsDialog({
                     ...toolsetDialogFooterPrimaryClusterStyle,
                   }}
                 >
-                  <Button size="2" onClick={() => void handleOAuthAuthenticate()} disabled={busy}>
+                  <Button size="2" variant="soft" color="green" onClick={() => void handleOAuthAuthenticate()} disabled={busy}>
                     {authenticating
                       ? t('agentBuilder.waitingOAuth')
                       : isAuthenticated
@@ -459,7 +472,7 @@ export function AgentToolsetCredentialsDialog({
                   ) : null}
                 </Flex>
               ) : null}
-              {isCredentialAuthType(authType) && manageFields.length > 0 ? (
+              {isCredentialAuthType(authType) && userCredentialFields.length > 0 ? (
                 <Flex
                   wrap="wrap"
                   gap="2"
@@ -468,7 +481,7 @@ export function AgentToolsetCredentialsDialog({
                     ...toolsetDialogFooterPrimaryClusterStyle,
                   }}
                 >
-                  <Button size="2" onClick={() => void handleSaveCredentials()} disabled={busy}>
+                  <Button size="2" variant="soft" color="green" onClick={() => void handleSaveCredentials()} disabled={busy}>
                     {saving
                       ? t('agentBuilder.savingCredentials')
                       : isAuthenticated

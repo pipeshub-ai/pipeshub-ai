@@ -21,6 +21,11 @@ interface SchemaFormFieldProps {
   visible?: boolean;
   /** Error message */
   error?: string;
+  /**
+   * When this field renders inside a portaled overlay (e.g. workspace drawer), set so
+   * `Select.Content` stacks above the backdrop. Omit in normal inline forms.
+   */
+  selectPortalZIndex?: number;
 }
 
 // ========================================
@@ -70,6 +75,7 @@ export function SchemaFormField({
   options,
   visible = true,
   error,
+  selectPortalZIndex,
 }: SchemaFormFieldProps) {
   if (!visible) return null;
 
@@ -101,7 +107,16 @@ export function SchemaFormField({
             case 'JSON':
               return <JsonInput field={field} value={value} onChange={onChange} disabled={disabled} />;
             case 'SELECT':
-              return <SelectInput field={field} value={value} onChange={onChange} disabled={disabled} options={options} />;
+              return (
+                <SelectInput
+                  field={field}
+                  value={value}
+                  onChange={onChange}
+                  disabled={disabled}
+                  options={options}
+                  portalZIndex={selectPortalZIndex}
+                />
+              );
             case 'NUMBER':
               return <NumberInput field={field} value={value} onChange={onChange} disabled={disabled} />;
             default:
@@ -375,12 +390,14 @@ function SelectInput({
   onChange,
   disabled,
   options,
+  portalZIndex,
 }: {
   field: SchemaField;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
   disabled: boolean;
   options?: { label: string; value: string }[];
+  portalZIndex?: number;
 }) {
   // Build options list from field.options or external options prop
   const optionItems = options ||
@@ -403,7 +420,7 @@ function SelectInput({
           style={{ width: '100%', height: 32 }}
           placeholder={'placeholder' in field ? (field.placeholder ?? 'Select...') : 'Select...'}
         />
-        <Select.Content>
+        <Select.Content style={portalZIndex != null ? { zIndex: portalZIndex } : undefined}>
           {optionItems.map((opt) => (
             <Select.Item key={opt.value} value={opt.value}>
               {opt.label}

@@ -16848,16 +16848,46 @@ paths:
       security:
         - bearerAuth: []
       parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
         - name: includeRegistry
           in: query
           required: false
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+        - name: toolsetType
+          in: query
+          required: false
+          description: When set, only instances for this toolset type (case-insensitive). Registry merge is limited to this type when includeRegistry is true.
+          schema:
+            type: string
+        - name: authStatus
+          in: query
+          required: false
+          description: Filter by user auth state — authenticated or not-authenticated. Omit for all. filterCounts reflect counts before this filter.
+          schema:
+            type: string
+            enum: [authenticated, not-authenticated]
         - name: search
           in: query
           required: false
-          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          description: Optional search filter applied to instance name, toolset type, and registry display name/description.
           schema:
             type: string
       responses:
@@ -16871,6 +16901,30 @@ paths:
                   status:
                     type: string
                     example: success
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
+                  filterCounts:
+                    type: object
+                    properties:
+                      all:
+                        type: integer
+                      authenticated:
+                        type: integer
+                      notAuthenticated:
+                        type: integer
                   toolsets:
                     type: array
                     items:
@@ -16932,7 +16986,9 @@ paths:
       tags:
         - Toolset Instances
       summary: List toolsets for an agent with auth status
-      description: Returns organization toolset instances merged with the specified agent's authentication status.
+      description: |
+        Returns organization toolset instances merged with the specified agent's authentication status.
+        Same response shape as GET /toolsets/my-toolsets (pagination, filterCounts, toolsets), except there is no `authStatus` query filter.
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
@@ -16948,10 +17004,33 @@ paths:
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+        - name: toolsetType
+          in: query
+          required: false
+          description: When set, only instances for this toolset type (case-insensitive). Registry merge is limited to this type when includeRegistry is true.
+          schema:
+            type: string
         - name: search
           in: query
           required: false
-          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          description: Optional search filter applied to instance name, toolset type, and registry display name/description.
           schema:
             type: string
       responses:
@@ -16961,7 +17040,87 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
+                  filterCounts:
+                    type: object
+                    properties:
+                      all:
+                        type: integer
+                      authenticated:
+                        type: integer
+                      notAuthenticated:
+                        type: integer
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        instanceId:
+                          type: string
+                          description: Empty string for registry-only (synthetic) entries.
+                        instanceName:
+                          type: string
+                        toolsetType:
+                          type: string
+                        authType:
+                          type: string
+                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                        oauthConfigId:
+                          type: string
+                          nullable: true
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        iconPath:
+                          type: string
+                        category:
+                          type: string
+                          example: app
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              name:
+                                type: string
+                              fullName:
+                                type: string
+                              description:
+                                type: string
+                        isConfigured:
+                          type: boolean
+                        isAuthenticated:
+                          type: boolean
+                        isFromRegistry:
+                          type: boolean
+                          description: true for registry-only (synthetic) entries.
         '401':
           description: Unauthorized
         '403':
