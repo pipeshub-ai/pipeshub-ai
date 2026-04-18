@@ -369,7 +369,13 @@ function ChatContent() {
       }
 
       try {
-        await fetchModelsForContext(ctxKey);
+        // Force a refetch for agent contexts: the agent's configured models
+        // can change between visits (Agent Builder save, admin edits) and
+        // stale cached lists would surface wrong defaults in the pill and
+        // the model selector. Assistant (org-wide) models change far less
+        // often, so the normal freshness window is fine there.
+        const force = Boolean(agentId?.trim());
+        await fetchModelsForContext(ctxKey, { force });
       } catch (error) {
         if (!cancelled) {
           console.error('Failed to fetch models for context', ctxKey, error);

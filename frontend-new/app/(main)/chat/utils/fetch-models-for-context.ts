@@ -71,7 +71,10 @@ export async function fetchModelsForContext(
     return cached.models;
   }
 
-  if (!opts.force && inflight.has(ctxKey)) {
+  // In-flight dedupe always applies — even `force: true` should share an
+  // already-running fetch rather than starting a second identical request.
+  // `force` only bypasses the freshness window, not concurrency control.
+  if (inflight.has(ctxKey)) {
     return inflight.get(ctxKey)!;
   }
 
@@ -117,3 +120,26 @@ export async function fetchModelsForContext(
     inflight.delete(ctxKey);
   }
 }
+
+/**
+ * Drop the cached model list for `ctxKey` so the next `fetchModelsForContext`
+ * call refetches from the network. Also cancels any in-flight dedupe entry
+ * so a concurrent request won't return stale results.
+ *
+ * Call this whenever the source of truth for a context's models changes —
+ * e.g. after the Agent Builder saves an agent (its `models[]` may have
+ * changed, and chat UI opened for that agent must see the fresh list).
+ */
+export function invalidateModelsForContext(ctxKey: string): void {
+  const store = useChatStore.getState();
+  const { availableModels } = store.settings;
+  if (ctxKey in availableModels) {
+    const next = { ...availableModels };
+    delete next[ctxKey];
+    useChatStore.setState({
+      settings: { ...store.settings, availableModels: next },
+    });
+  }
+  inflight.delete(ctxKey);
+}
+

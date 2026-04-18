@@ -75,7 +75,12 @@ export function ModelSelectorPanel({
     setError(null);
     setIsLoading(!cached);
 
-    fetchModelsForContext(ctxKey)
+    // Force a refetch whenever the panel is (re)opened: the set of available
+    // models can change between visits (admin adds/removes an LLM, an agent's
+    // configuration is edited elsewhere), and clicking the AI Models button
+    // is an explicit user signal that they want to see the current list.
+    // The util still dedupes concurrent in-flight calls, so this is safe.
+    fetchModelsForContext(ctxKey, { force: true })
       .then((fresh) => {
         if (cancelled) return;
         if (fresh.length === 0) {
@@ -235,8 +240,18 @@ interface ModelItemProps {
 
 function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const providerName = PROVIDER_FRIENDLY_NAMES[model.provider] ?? 'Missing Provider Friendly Name';
-  const description = MODEL_DESCRIPTIONS[model.modelName] ?? 'Missing model one liner';
+  // Provider always comes through from the API. If we don't have a curated
+  // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to the raw
+  // provider string (case-insensitive lookup first) rather than a placeholder.
+  const providerKey = Object.keys(PROVIDER_FRIENDLY_NAMES).find(
+    (k) => k.toLowerCase() === model.provider?.toLowerCase(),
+  );
+  const providerName = providerKey
+    ? PROVIDER_FRIENDLY_NAMES[providerKey]
+    : (model.provider?.trim() || '');
+  // Description is optional — only render when we actually have one so we
+  // don't show placeholder text for models that aren't in the curated map.
+  const description = MODEL_DESCRIPTIONS[model.modelName];
 
   return (
     <Flex
@@ -262,22 +277,28 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {model.modelFriendlyName || model.modelName}
           </Text>
-          <Image
-            src="/icons/common/ellipse-1.svg"
-            alt=""
-            width={4}
-            height={4}
-            style={{ flexShrink: 0 }}
-          />
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
-            by {providerName}
-          </Text>
+          {providerName && (
+            <>
+              <Image
+                src="/icons/common/ellipse-1.svg"
+                alt=""
+                width={4}
+                height={4}
+                style={{ flexShrink: 0 }}
+              />
+              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                by {providerName}
+              </Text>
+            </>
+          )}
         </Flex>
 
-        {/* Description */}
-        <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
-          {description}
-        </Text>
+        {/* Description — only rendered when we have a curated one-liner. */}
+        {description && (
+          <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
+            {description}
+          </Text>
+        )}
 
         {/* Tags */}
         <Flex align="center" gap="1" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>

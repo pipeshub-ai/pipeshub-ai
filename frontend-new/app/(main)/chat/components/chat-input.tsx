@@ -787,7 +787,7 @@ export function ChatInput({
           onClose={() => setIsModelPanelOpen(false)}
         >
           <ModelSelectorPanel
-            selectedModel={contextSelectedModel}
+            selectedModel={contextSelectedModel ?? contextDefaultModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
           />

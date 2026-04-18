@@ -48,6 +48,7 @@ export function MobileQueryOptionsSheet({
 
   const modelCtxKey = ctxKeyFromAgent(agentId);
   const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
+  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
   const handleModelSelect = (model: ModelOverride | null) =>
     setSelectedModelForCtx(modelCtxKey, model);
 
@@ -84,7 +85,7 @@ export function MobileQueryOptionsSheet({
       )}
       {activePanel === 'models' && (
         <ModelSelectorPanel
-          selectedModel={contextSelectedModel}
+          selectedModel={contextSelectedModel ?? contextDefaultModel}
           onModelSelect={handleModelSelect}
           hideHeader
           agentId={agentId}
