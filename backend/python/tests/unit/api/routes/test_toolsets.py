@@ -5788,6 +5788,67 @@ class TestUpdateToolsetInstanceRoute:
         assert result["instance"]["instanceName"] == "New Name"
 
     @pytest.mark.asyncio
+    async def test_update_non_oauth_replaces_auth_config(self) -> None:
+        """PUT authConfig for BASIC_AUTH replaces instance.auth (same as create_toolset_instance assignment)."""
+        from app.api.routes.toolsets import update_toolset_instance
+        cs = AsyncMock()
+        cs.set_config = AsyncMock()
+
+        instances = [
+            {
+                "_id": "i1",
+                "orgId": "o1",
+                "instanceName": "MariaDB",
+                "toolsetType": "mariadb",
+                "authType": "BASIC_AUTH",
+                "auth": {"host": "localhost", "port": "3306", "database": "mydb"},
+            }
+        ]
+        req = _make_request(
+            body_dict={
+                "instanceName": "MariaDB2",
+                "authConfig": {"host": "localhost", "port": "3306", "database": "mydb updated new"},
+            }
+        )
+        req.app.state.toolset_registry = _make_registry("mariadb", ["BASIC_AUTH"])
+
+        with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
+             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+            result = await update_toolset_instance("i1", req, cs)
+
+        assert result["status"] == "success"
+        assert result["instance"]["instanceName"] == "MariaDB2"
+        assert result["instance"]["auth"]["database"] == "mydb updated new"
+        assert result["instance"]["auth"]["host"] == "localhost"
+
+    @pytest.mark.asyncio
+    async def test_update_non_oauth_auth_config_full_replace(self) -> None:
+        """Omitted keys in authConfig are removed (not merged with previous instance.auth)."""
+        from app.api.routes.toolsets import update_toolset_instance
+        cs = AsyncMock()
+        cs.set_config = AsyncMock()
+
+        instances = [
+            {
+                "_id": "i1",
+                "orgId": "o1",
+                "instanceName": "MariaDB",
+                "toolsetType": "mariadb",
+                "authType": "BASIC_AUTH",
+                "auth": {"host": "localhost", "port": "3306", "database": "keep"},
+            }
+        ]
+        req = _make_request(body_dict={"authConfig": {"host": "other", "port": "3307"}})
+        req.app.state.toolset_registry = _make_registry("mariadb", ["BASIC_AUTH"])
+
+        with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True), \
+             patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+            result = await update_toolset_instance("i1", req, cs)
+
+        assert result["instance"]["auth"] == {"host": "other", "port": "3307"}
+        assert "database" not in result["instance"]["auth"]
+
+    @pytest.mark.asyncio
     async def test_rename_conflict(self) -> None:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
