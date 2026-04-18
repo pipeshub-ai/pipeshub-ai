@@ -42,6 +42,7 @@ const PEOPLE_SUB_ITEMS = [
 const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
   { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors', adminOnly: true },
+  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true },
   { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
   { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },
   { icon: 'smart_toy', labelKey: 'workspace.sidebar.nav.aiModels', route: '/workspace/ai-models', adminOnly: true },
@@ -53,6 +54,7 @@ const WORKSPACE_ITEMS: NavItem[] = [
 const PERSONAL_ITEMS: NavItem[] = [
   { icon: 'person', labelKey: 'workspace.sidebar.nav.profile', route: '/workspace/profile' },
   { icon: '', labelKey: 'workspace.sidebar.nav.yourConnectors', route: '/workspace/connectors/personal', customIcon: <YourConnectorsIcon size={ICON_SIZE_DEFAULT} color="var(--slate-11)" /> },
+  { icon: 'bolt', labelKey: 'workspace.sidebar.nav.yourActions', route: '/workspace/actions/personal' },
   { icon: 'archive', labelKey: 'workspace.sidebar.nav.archivedChats', route: '/workspace/archived-chats' },
 ];
 
@@ -84,12 +86,13 @@ export default function WorkspaceSidebar() {
   );
 
   const allRoutes = [
-    ...OVERVIEW_ITEMS,
-    ...(isAdmin ? WORKSPACE_ITEMS : []),
-    ...(isAdmin ? DEVELOPER_SETTINGS_ITEMS : []),
-    ...PERSONAL_ITEMS,
-    ...PEOPLE_SUB_ITEMS,
-  ].map((item) => item.route);
+    ...OVERVIEW_ITEMS.map((item) => item.route),
+    ...(isAdmin ? WORKSPACE_ITEMS.map((item) => item.route) : []),
+    ...(isAdmin ? DEVELOPER_SETTINGS_ITEMS.map((item) => item.route) : []),
+    ...PERSONAL_ITEMS.map((item) => item.route),
+    ...PEOPLE_SUB_ITEMS.map((item) => item.route),
+    '/workspace/actions',
+  ];
 
   const isActive = (route: string) => {
     if (pathname === route) return true;

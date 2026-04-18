@@ -99,4 +99,15 @@ export interface ShareAdapter {
    * (e.g. chat uses MongoDB ObjectIDs, collections use UUIDs).
    */
   getSharingUsers?: () => Promise<ShareUser[]>;
+
+  /**
+   * Paginated user fetcher for the share sidebar search/suggestions.
+   * When provided, enables infinite scroll instead of loading all users at once.
+   * Takes priority over getSharingUsers.
+   */
+  getSharingUsersPaginated?: (params: {
+    page: number;
+    limit: number;
+    search?: string;
+  }) => Promise<{ users: ShareUser[]; totalCount: number }>;
 }

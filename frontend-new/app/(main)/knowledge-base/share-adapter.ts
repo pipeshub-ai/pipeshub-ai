@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/api';
-import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole } from '@/app/components/share/types';
+import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole, ShareUser } from '@/app/components/share/types';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
 
 const BASE = '/api/v1/knowledgeBase';
 
@@ -63,6 +64,28 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
           ? { userIds: [memberId], teamIds: [] }
           : { userIds: [], teamIds: [memberId] };
       await apiClient.delete(`${BASE}/${kbId}/permissions`, { data: payload, suppressErrorToast: true });
+    },
+
+    async getSharingUsersPaginated(params: {
+      page: number;
+      limit: number;
+      search?: string;
+    }): Promise<{ users: ShareUser[]; totalCount: number }> {
+      const result = await UsersApi.listGraphUsers({
+        page: params.page,
+        limit: params.limit,
+        search: params.search,
+      });
+      return {
+        users: result.users.map((u) => ({
+          id: u.id,
+          name: u.name ?? u.email ?? '',
+          email: u.email,
+          avatarUrl: undefined,
+          isInOrg: true,
+        })),
+        totalCount: result.totalCount,
+      };
     },
   };
 }

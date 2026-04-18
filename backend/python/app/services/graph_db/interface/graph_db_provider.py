@@ -709,7 +709,8 @@ class IGraphDBProvider(ABC):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
+        path: list[str],
+        external_record_group_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """
@@ -717,11 +718,12 @@ class IGraphDBProvider(ABC):
 
         Args:
             connector_id (str): Connector ID
-            path (str): File/record path
-            transaction (Optional[Any]): Optional transaction context
+            path (list[str]): File/record path in array format
+            external_record_group_id (str): External Record group ID
+            transaction (str | None): Optional transaction context
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            dict | None: Record data if found, None otherwise
         """
         pass
 
@@ -3624,6 +3626,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
         transaction: str | None = None
     ) -> tuple[list[dict], int]:
         """
@@ -3634,6 +3639,9 @@ class IGraphDBProvider(ABC):
             search (Optional[str]): Search query for team name or description
             page (int): Page number (1-indexed)
             limit (int): Number of items per page
+            created_by (Optional[str]): Filter by creator user key
+            created_after (Optional[int]): Filter teams created after this timestamp (ms)
+            created_before (Optional[int]): Filter teams created before this timestamp (ms)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -3673,6 +3681,9 @@ class IGraphDBProvider(ABC):
         team_id: str,
         org_id: str,
         user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
         transaction: str | None = None
     ) -> dict | None:
         """
@@ -3682,10 +3693,13 @@ class IGraphDBProvider(ABC):
             team_id (str): Team ID
             org_id (str): Organization ID
             user_key (str): Current user's key (for permission checking)
+            search (Optional[str]): Search query for member name or email
+            page (int): Page number (1-indexed)
+            limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            Optional[Dict]: Team data with all members, None if not found
+            Optional[Dict]: Team data with paginated members, None if not found
         """
         pass
 

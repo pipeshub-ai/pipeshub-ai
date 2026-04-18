@@ -42,6 +42,8 @@ interface ChatInputProps {
   expandable?: boolean;
   /** `?agentId=` agent conversation — query-mode + web search controls are hidden */
   isAgentChat?: boolean;
+  /** Agent ID for filtering models to only those configured for the agent */
+  agentId?: string | null;
 }
 
 const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'XLS', 'XLSX', 'PNG', 'JPEG', 'JPG'];
@@ -73,6 +75,7 @@ export function ChatInput({
   variant = 'full',
   expandable = false,
   isAgentChat = false,
+  agentId,
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [showUploadArea, setShowUploadArea] = useState(false);
@@ -674,7 +677,7 @@ export function ChatInput({
       {/* Main Chat Input */}
       <Flex
       direction="column"
-      gap="3"
+      gap="2"
       style={{
         backdropFilter: 'blur(25px)',
         background: 'var(--effects-translucent)',
@@ -686,7 +689,7 @@ export function ChatInput({
         borderRadius: (selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen) || uploadedFiles.length > 0 || isActionMode
           ? '0 0 var(--radius-2) var(--radius-2)'
           : 'var(--radius-2)',
-        padding: 'var(--space-3) var(--space-4)',
+        padding: isMobile ? 'var(--space-3) var(--space-4)' : 'var(--space-2) var(--space-4)',
       }}
     >
       {/* Hidden file input - always rendered so add button can access it */}
@@ -772,9 +775,8 @@ export function ChatInput({
         >
           <ModelSelectorPanel
             selectedModel={settings.selectedModel}
-            onModelSelect={(model) => {
-              setSelectedModel(model);
-            }}
+            onModelSelect={setSelectedModel}
+            agentId={agentId}
           />
         </ChatInputExpansionPanel>
       ) : isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
@@ -846,7 +848,7 @@ export function ChatInput({
             fontSize: 'var(--font-size-2)',
             color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--slate-12)',
             resize: 'none',
-            minHeight: isMobile ? '36px' : '64px',
+            minHeight: isMobile ? '36px' : '44px',
             maxHeight: '120px',
             fontFamily: 'Manrope, sans-serif',
             height: 'auto',
@@ -862,17 +864,15 @@ export function ChatInput({
 
       {/* Bottom controls */}
       <Flex align="center" justify="between">
-        {/* Left side - Mode switcher (disabled in regenerate mode; edit mode leaves it active) */}
-        <Box style={isRegenerateMode ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
+        {/* Left side — query ModeSwitcher disabled in regenerate (avoid mode churn); agent strategy stays active so regen can use quick/verify/deep. */}
+        <Box style={isRegenerateMode && !isAgentChat ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
           {isAgentChat ? (
             <AgentStrategyModeSwitcher
               activeStrategy={settings.agentStrategy}
               modeColors={agentStrategyToolbarColors}
               isPanelOpen={isMobile ? isMobileModesOpen : isAgentStrategyPanelOpen}
               showFullUI={showFullUI}
-              disabled={isRegenerateMode}
               onClick={() => {
-                if (isRegenerateMode) return;
                 if (isMobile) {
                   setIsMobileModesOpen(true);
                   return;
@@ -927,11 +927,10 @@ export function ChatInput({
                 variant="ghost"
                 color="gray"
                 size="2"
-                disabled={isRegenerateMode}
                 onClick={() => setIsMobileOptionsOpen(true)}
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ margin: 0, cursor: 'pointer' }}
               >
-                <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
               <IconButton
                 variant={showUploadArea ? 'soft' : 'ghost'}
@@ -960,7 +959,6 @@ export function ChatInput({
                 <AgentStrategyDropdown
                   value={settings.agentStrategy}
                   onChange={setAgentStrategy}
-                  disabled={isRegenerateMode}
                   accentColor={activeToggleColor}
                 />
               ) : null}
@@ -1105,6 +1103,7 @@ export function ChatInput({
       open={isMobileOptionsOpen}
       onOpenChange={setIsMobileOptionsOpen}
       isAgentChat={isAgentChat}
+      agentId={agentId}
     />
 
     {/* Mobile query modes sheet — mode switcher → sheet flow */}

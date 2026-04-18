@@ -4,7 +4,7 @@ import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useAuthStore } from '@/lib/store/auth-store';
-import { useProfileStore } from '../store';
+import { useProfileStore, isProfileFormDirty } from '../store';
 import { ProfileApi } from '../api';
 import { getUserIdFromToken, getUserEmailFromToken } from '@/lib/utils/jwt';
 import { isProcessedError } from '@/lib/api';
@@ -45,7 +45,10 @@ export function useProfilePage() {
   const discardChanges = useProfileStore((s) => s.discardChanges);
   const setDiscardDialogOpen = useProfileStore((s) => s.setDiscardDialogOpen);
   const setLoading = useProfileStore((s) => s.setLoading);
-  const isDirty = useProfileStore((s) => s.isDirty);
+  /** Subscribe to form + savedForm so Zustand re-renders after markSaved (savedForm-only updates). */
+  const isFormDirty = useProfileStore((s) =>
+    isProfileFormDirty(s.form, s.savedForm),
+  );
 
   // ── Load profile on mount ─────────────────────────────────────
   useEffect(() => {
@@ -65,7 +68,7 @@ export function useProfilePage() {
       try {
         const [userData, avatarObjectUrl] = await Promise.all([
           ProfileApi.getUser(uid),
-          ProfileApi.getAvatar(uid),
+          ProfileApi.getAvatar(),
         ]);
 
         setForm({
@@ -163,8 +166,7 @@ export function useProfilePage() {
     addToast({
       variant: 'success',
       title: 'Email Verification Link Sent',
-    //   description: 'You will be logged out when you verify the email', // Uncomment once implemented
-      description: 'Coming Soon - This feature doesn\'t exist yet',
+      description: 'You will be logged out when you verify the email', 
       duration: 5000,
     });
   }, [addToast]);
@@ -197,7 +199,7 @@ export function useProfilePage() {
       setAvatarUrl(previewUrl);
 
       try {
-        const processedUrl = await ProfileApi.uploadAvatar(userId, file);
+        const processedUrl = await ProfileApi.uploadAvatar(file);
         URL.revokeObjectURL(previewUrl);
         if (processedUrl) setAvatarUrl(processedUrl);
         addToast({
@@ -220,6 +222,31 @@ export function useProfilePage() {
     },
     [userId, addToast]
   );
+
+  // ── Avatar delete ──────────────────────────────────────────────
+
+  const handleAvatarDelete = useCallback(async () => {
+    if (!userId) return;
+    setAvatarUploading(true);
+    try {
+      await ProfileApi.deleteAvatar();
+      setAvatarUrl(null);
+      addToast({
+        variant: 'success',
+        title: 'Profile picture removed',
+        description: 'Your profile picture has been removed',
+      });
+    } catch (err: unknown) {
+      const errMessage = isProcessedError(err) ? err.message : undefined;
+      addToast({
+        variant: 'error',
+        title: 'Remove failed',
+        description: errMessage || 'Could not remove profile picture',
+      });
+    } finally {
+      setAvatarUploading(false);
+    }
+  }, [userId, addToast]);
 
   // ── Computed ──────────────────────────────────────────────────
 
@@ -253,7 +280,7 @@ export function useProfilePage() {
     setField,
     setErrors,
     setDiscardDialogOpen,
-    isDirty,
+    isFormDirty,
     // Handlers
     handleSave,
     handlePasswordChangeSuccess,
@@ -261,5 +288,6 @@ export function useProfilePage() {
     handleDiscard,
     handleDiscardConfirm,
     handleAvatarChange,
+    handleAvatarDelete,
   };
 }

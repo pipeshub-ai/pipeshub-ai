@@ -135,6 +135,7 @@ export function CreateFolderDialog({
             </Button>
             <Button
               variant={isCreateDisabled ? 'soft' : 'solid'}
+              // @ts-expect-error - Radix color prop doesn't accept CSS variable strings
               color="--accent-9"
               size="2"
               onClick={handleSubmit}

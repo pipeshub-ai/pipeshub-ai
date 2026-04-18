@@ -20,7 +20,7 @@ import type {
   UpdateAgentApiResponse,
 } from './types';
 import type { AgentFormPayload } from './agent-builder/types';
-import type { BuilderSidebarToolset } from './toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 
 const AGENTS_BASE_URL = '/api/v1/agents';
 

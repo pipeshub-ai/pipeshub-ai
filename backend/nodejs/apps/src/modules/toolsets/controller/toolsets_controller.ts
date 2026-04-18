@@ -845,18 +845,22 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search, includeRegistry, page, limit, authStatus } = req.query as {
+      const { search, includeRegistry, page, limit, authStatus, toolsetType } = req.query as {
         search?: string;
         includeRegistry?: boolean | string;
         page?: number | string;
         limit?: number | string;
         authStatus?: string;
+        toolsetType?: string;
       };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
       if (page !== undefined && page !== null) queryParams.append('page', String(page));
       if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
       if (authStatus) queryParams.append('authStatus', String(authStatus));
+      if (toolsetType && String(toolsetType).trim()) {
+        queryParams.append('toolsetType', String(toolsetType).trim());
+      }
       // includeRegistry is boolean true after Zod coercion; also accept legacy string 'true'
       if (includeRegistry === true || includeRegistry === 'true') {
         queryParams.append('includeRegistry', 'true');
@@ -1211,7 +1215,13 @@ export const getAgentToolsets =
   ): Promise<void> => {
     try {
       const { agentKey } = req.params;
-      const { search, page, limit, includeRegistry } = req.query;
+      const { search, page, limit, includeRegistry, toolsetType } = req.query as {
+        search?: string;
+        page?: number | string;
+        limit?: number | string;
+        includeRegistry?: boolean | string;
+        toolsetType?: string;
+      };
 
       if (!agentKey) throw new BadRequestError('agentKey is required');
 
@@ -1223,9 +1233,14 @@ export const getAgentToolsets =
 
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
-      if (page) queryParams.append('page', String(page));
-      if (limit) queryParams.append('limit', String(limit));
-      if (includeRegistry) queryParams.append('includeRegistry', String(includeRegistry));
+      if (page !== undefined && page !== null) queryParams.append('page', String(page));
+      if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
+      if (toolsetType && String(toolsetType).trim()) {
+        queryParams.append('toolsetType', String(toolsetType).trim());
+      }
+      if (includeRegistry === true || includeRegistry === 'true') {
+        queryParams.append('includeRegistry', 'true');
+      }
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/toolsets/agents/${agentKey}?${queryParams.toString()}`,

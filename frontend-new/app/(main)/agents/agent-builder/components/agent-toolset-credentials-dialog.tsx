@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Badge,
@@ -19,11 +19,12 @@ import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/sc
 import type { AuthSchemaField } from '@/app/(main)/workspace/connectors/types';
 import { isNoneAuthType, isOAuthType, isCredentialAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { formatAuthTypeName } from '@/app/(main)/workspace/connectors/components/authenticate-tab/helpers';
-import { ToolsetsApi, type BuilderSidebarToolset } from '../../toolsets-api';
+import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   apiErrorDetail,
   authFieldsForType,
   getToolsetAuthConfigFromSchema,
+  isOrgOAuthAppCredentialFieldName,
 } from './toolset-agent-auth-helpers';
 import {
   toolsetDialogBackdropStyle,
@@ -39,7 +40,8 @@ export interface AgentToolsetCredentialsDialogProps {
   instanceId: string;
   agentKey: string;
   onClose: () => void;
-  onSuccess: () => void;
+  /** Refresh toolsets / follow-up work; must not block closing the dialog. */
+  onSuccess: () => void | Promise<void>;
   /** Optional banner / toast line (e.g. OAuth success or cancelled). */
   onNotify?: (message: string) => void;
 }
@@ -73,21 +75,10 @@ export function AgentToolsetCredentialsDialog({
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(toolset.isAuthenticated ?? false);
-  const [oauthJustVerified, setOauthJustVerified] = useState(false);
 
   useEffect(() => {
     setIsAuthenticated(toolset.isAuthenticated ?? false);
   }, [toolset.isAuthenticated]);
-
-  useEffect(() => {
-    setOauthJustVerified(false);
-  }, [instanceId]);
-
-  useEffect(() => {
-    if (!oauthJustVerified) return;
-    const id = window.setTimeout(() => setOauthJustVerified(false), 6000);
-    return () => window.clearTimeout(id);
-  }, [oauthJustVerified]);
 
   useEffect(() => {
     setIconBroken(false);
@@ -98,6 +89,12 @@ export function AgentToolsetCredentialsDialog({
   const manageFields: AuthSchemaField[] = useMemo(
     () => authFieldsForType(authConfig, authType),
     [authConfig, authType]
+  );
+
+  /** Never collect org OAuth app id/secret in agent (or user) credential flows. */
+  const userCredentialFields = useMemo(
+    () => manageFields.filter((f) => !isOrgOAuthAppCredentialFieldName(f.name)),
+    [manageFields]
   );
 
   useEffect(() => {
@@ -126,7 +123,7 @@ export function AgentToolsetCredentialsDialog({
   useEffect(() => {
     if (!toolset.auth || authType === 'OAUTH' || isNoneAuthType(authType)) return;
     const hydrated: Record<string, unknown> = {};
-    manageFields.forEach((field) => {
+    userCredentialFields.forEach((field) => {
       const v = toolset.auth?.[field.name];
       if (v !== undefined && v !== null) {
         hydrated[field.name] = Array.isArray(v) ? v.join(',') : v;
@@ -135,7 +132,7 @@ export function AgentToolsetCredentialsDialog({
     if (Object.keys(hydrated).length > 0) {
       setFormData((prev) => ({ ...hydrated, ...prev }));
     }
-  }, [toolset.auth, authType, manageFields]);
+  }, [toolset.auth, authType, userCredentialFields]);
 
   const setField = useCallback((name: string, value: unknown) => {
     setFormData((p) => ({ ...p, [name]: value }));
@@ -148,7 +145,7 @@ export function AgentToolsetCredentialsDialog({
 
   const validateForm = useCallback(() => {
     const errors: Record<string, string> = {};
-    manageFields.forEach((field) => {
+    userCredentialFields.forEach((field) => {
       const value = formData[field.name];
       if (field.required && (value === undefined || value === null || String(value).trim() === '')) {
         errors[field.name] = t('agentBuilder.fieldRequired', { field: field.displayName });
@@ -156,7 +153,7 @@ export function AgentToolsetCredentialsDialog({
     });
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
-  }, [manageFields, formData, t]);
+  }, [userCredentialFields, formData, t]);
 
   const verifyOAuthComplete = useCallback(async (): Promise<boolean> => {
     try {
@@ -169,9 +166,13 @@ export function AgentToolsetCredentialsDialog({
 
   const onOAuthVerified = useCallback(() => {
     setIsAuthenticated(true);
-    setOauthJustVerified(true);
-    onSuccess();
-  }, [onSuccess]);
+    startTransition(() => {
+      onClose();
+    });
+    void Promise.resolve(onSuccess()).catch(() => {
+      /* extra refresh failed; parent onClose already triggers a refresh */
+    });
+  }, [onClose, onSuccess]);
 
   const onOAuthIncomplete = useCallback(() => {
     setError(t('agentBuilder.oauthSignInIncomplete'));
@@ -205,10 +206,13 @@ export function AgentToolsetCredentialsDialog({
     try {
       setSaving(true);
       setError(null);
+      const safeAuthPayload = Object.fromEntries(
+        Object.entries(formData).filter(([k]) => !isOrgOAuthAppCredentialFieldName(k))
+      );
       if (isAuthenticated) {
-        await ToolsetsApi.updateAgentToolsetCredentials(agentKey, instanceId, formData);
+        await ToolsetsApi.updateAgentToolsetCredentials(agentKey, instanceId, safeAuthPayload);
       } else {
-        await ToolsetsApi.authenticateAgentToolset(agentKey, instanceId, formData);
+        await ToolsetsApi.authenticateAgentToolset(agentKey, instanceId, safeAuthPayload);
       }
       setIsAuthenticated(true);
       onNotify?.(t('agentBuilder.toolsetAuthUpdated'));
@@ -222,7 +226,6 @@ export function AgentToolsetCredentialsDialog({
 
   const handleOAuthAuthenticate = async () => {
     setError(null);
-    setOauthJustVerified(false);
     await beginOAuth(
       async () => {
         const result = await ToolsetsApi.getAgentToolsetOAuthUrl(
@@ -270,7 +273,7 @@ export function AgentToolsetCredentialsDialog({
 
   const showFooterPrimaryCluster =
     !schemaLoading &&
-    (isOAuthType(authType) || (isCredentialAuthType(authType) && manageFields.length > 0));
+    (isOAuthType(authType) || (isCredentialAuthType(authType) && userCredentialFields.length > 0));
 
   const handleMainOpenChange = (open: boolean) => {
     if (!open && !dismissLocked) requestDismiss();
@@ -375,17 +378,6 @@ export function AgentToolsetCredentialsDialog({
             </Callout.Root>
           ) : null}
 
-          {!schemaLoading && oauthJustVerified ? (
-            <Callout.Root color="green" variant="surface" size="1" mb="3">
-              <Callout.Icon>
-                <MaterialIcon name="check_circle" size={18} />
-              </Callout.Icon>
-              <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
-                {t('agentBuilder.oauthSignInSuccess')}
-              </Callout.Text>
-            </Callout.Root>
-          ) : null}
-
           {!schemaLoading && isNoneAuthType(authType) ? (
             <Text size="2">{t('agentBuilder.noCredentialsRequired')}</Text>
           ) : null}
@@ -393,6 +385,9 @@ export function AgentToolsetCredentialsDialog({
           {!schemaLoading && isOAuthType(authType) ? (
             <Flex direction="column" gap="3" width="100%">
               <Callout.Root color="blue" variant="surface" size="1">
+                <Callout.Icon>
+                  <MaterialIcon name={isAuthenticated ? 'verified_user' : 'link'} size={18} />
+                </Callout.Icon>
                 <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {isAuthenticated ? t('agentBuilder.oauthConnectedDesc') : t('agentBuilder.oauthPendingDesc')}
                 </Callout.Text>
@@ -400,13 +395,13 @@ export function AgentToolsetCredentialsDialog({
             </Flex>
           ) : null}
 
-          {!schemaLoading && isCredentialAuthType(authType) && manageFields.length > 0 ? (
+          {!schemaLoading && isCredentialAuthType(authType) && userCredentialFields.length > 0 ? (
             <Flex direction="column" gap="4">
               <Separator size="4" />
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                 {t('agentBuilder.agentCredentialsFieldsHeading')}
               </Text>
-              {manageFields.map((field) => (
+              {userCredentialFields.map((field) => (
                 <SchemaFormField
                   key={field.name}
                   field={field}
@@ -424,7 +419,7 @@ export function AgentToolsetCredentialsDialog({
             </Flex>
           ) : null}
 
-          {!schemaLoading && isCredentialAuthType(authType) && manageFields.length === 0 ? (
+          {!schemaLoading && isCredentialAuthType(authType) && userCredentialFields.length === 0 ? (
             <Callout.Root color="amber" variant="surface" size="1" mt="2">
               <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
             </Callout.Root>
@@ -463,7 +458,7 @@ export function AgentToolsetCredentialsDialog({
                     ...toolsetDialogFooterPrimaryClusterStyle,
                   }}
                 >
-                  <Button size="2" onClick={() => void handleOAuthAuthenticate()} disabled={busy}>
+                  <Button size="2" variant="soft" color="green" onClick={() => void handleOAuthAuthenticate()} disabled={busy}>
                     {authenticating
                       ? t('agentBuilder.waitingOAuth')
                       : isAuthenticated
@@ -477,7 +472,7 @@ export function AgentToolsetCredentialsDialog({
                   ) : null}
                 </Flex>
               ) : null}
-              {isCredentialAuthType(authType) && manageFields.length > 0 ? (
+              {isCredentialAuthType(authType) && userCredentialFields.length > 0 ? (
                 <Flex
                   wrap="wrap"
                   gap="2"
@@ -486,7 +481,7 @@ export function AgentToolsetCredentialsDialog({
                     ...toolsetDialogFooterPrimaryClusterStyle,
                   }}
                 >
-                  <Button size="2" onClick={() => void handleSaveCredentials()} disabled={busy}>
+                  <Button size="2" variant="soft" color="green" onClick={() => void handleSaveCredentials()} disabled={busy}>
                     {saving
                       ? t('agentBuilder.savingCredentials')
                       : isAuthenticated

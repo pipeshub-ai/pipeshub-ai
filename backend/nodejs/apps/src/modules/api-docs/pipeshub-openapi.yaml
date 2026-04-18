@@ -1581,6 +1581,10 @@ components:
         deletedBy:
           type: string
           description: ID of user who deleted this user
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture. Present in list responses when the user has uploaded a picture.
         __v:
           type: integer
           description: Document version (MongoDB)
@@ -1711,6 +1715,10 @@ components:
           type: string
           enum: [OWNER, READER]
           description: User's role in the team
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture, or null if not set
       required:
         - userId
         - role
@@ -1746,9 +1754,18 @@ components:
         users:
           type: array
           items:
-            type: string
-            format: ObjectId
-          description: Array of user IDs in this group
+            type: object
+            properties:
+              _id:
+                type: string
+                format: ObjectId
+                description: MongoDB user ID
+              profilePicture:
+                type: string
+                nullable: true
+                description: Base64-encoded data URI of the user's display picture, or null if not set
+                example: "data:image/jpeg;base64,/9j/4AAQ..."
+          description: Array of user objects with profile pictures
         isDeleted:
           type: boolean
           description: Soft delete flag
@@ -8581,7 +8598,31 @@ paths:
             type: integer
             minimum: 1
             maximum: 100
-            default: 20
+            default: 100
+        - name: search
+          in: query
+          required: false
+          description: Search teams by name
+          schema:
+            type: string
+        - name: created_by
+          in: query
+          required: false
+          description: Filter by creator user key
+          schema:
+            type: string
+        - name: created_after
+          in: query
+          required: false
+          description: Filter teams created after this timestamp (ms)
+          schema:
+            type: integer
+        - name: created_before
+          in: query
+          required: false
+          description: Filter teams created before this timestamp (ms)
+          schema:
+            type: integer
       responses:
         '200':
           description: User's teams retrieved successfully
@@ -8627,7 +8668,8 @@ paths:
         - Teams
       summary: Get users in team
       description: |
-        Retrieve all users that belong to a specific team.
+        Retrieve all members of a specific team with their profile pictures.<br><br>
+        Members include profile picture data URIs when available.
       operationId: getTeamUsers
       security:
         - bearerAuth: []
@@ -8638,20 +8680,61 @@ paths:
           required: true
           schema:
             type: string
+        - name: search
+          in: query
+          required: false
+          description: Search members by name or email
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of members per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
       responses:
         '200':
-          description: Team users retrieved successfully
+          description: Team members with profile pictures retrieved successfully
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                  data:
+                  members:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                          description: User UUID
+                        userId:
+                          type: string
+                          description: MongoDB user ID
+                        userName:
+                          type: string
+                        userEmail:
+                          type: string
+                        role:
+                          type: string
+                          enum: [OWNER, READER, WRITER]
+                        isOwner:
+                          type: boolean
+                        profilePicture:
+                          type: string
+                          nullable: true
+                          description: Base64 data URI or absent if no picture
         '401':
           description: Unauthorized
         '404':
@@ -8791,6 +8874,30 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [team:read]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          description: Search teams by name
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of teams per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
       responses:
         '200':
           description: User created teams retrieved successfully
@@ -8799,12 +8906,25 @@ paths:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                  data:
+                  teams:
                     type: array
                     items:
                       $ref: '#/components/schemas/Team'
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      pages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
         '401':
           description: Unauthorized
 
@@ -9498,31 +9618,91 @@ paths:
         <li>Returns all groups including admin, standard, everyone, and custom types</li>
         <li>Groups are returned with their member counts</li>
         <li>Soft-deleted groups are excluded by default</li>
+        <li>Each user in the <code>users</code> array is returned as an object with <code>_id</code> and <code>profilePicture</code> (base64 data URI or null)</li>
         </ul>
         <b>Use Cases:</b><br>
         <ul>
         <li>Populating group selection dropdowns</li>
         <li>Managing group memberships</li>
         <li>Access control configuration</li>
+        <li>Rendering user avatars in group member lists</li>
         </ul>
       operationId: getAllUserGroups
       security:
         - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of groups per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: search
+          in: query
+          required: false
+          description: Search groups by name (case-insensitive)
+          schema:
+            type: string
       responses:
         '200':
-          description: List of user groups retrieved successfully
+          description: Paginated list of user groups with user counts
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
+                  groups:
                     type: array
                     items:
-                      $ref: '#/components/schemas/UserGroup'
+                      type: object
+                      properties:
+                        _id:
+                          type: string
+                          format: ObjectId
+                        name:
+                          type: string
+                        type:
+                          type: string
+                          enum: [admin, standard, everyone, custom]
+                        orgId:
+                          type: string
+                        userCount:
+                          type: integer
+                          description: Number of users in this group
+                        slug:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                        updatedAt:
+                          type: string
+                          format: date-time
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
         '401':
           description: Unauthorized - Valid authentication required
         '403':
@@ -9895,7 +10075,12 @@ paths:
         - User Groups
       summary: Get users in group
       description: |
-        Retrieve all users that belong to a specific user group.
+        Retrieve paginated users that belong to a specific user group, with profile pictures.<br><br>
+        <b>Response Details:</b><br>
+        <ul>
+        <li>Returns user details (fullName, email) with profile picture data URIs</li>
+        <li>Supports pagination and search by name or email</li>
+        </ul>
       operationId: getUsersInGroup
       security:
         - bearerAuth: []
@@ -9907,20 +10092,68 @@ paths:
           description: Unique identifier of the user group
           schema:
             type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: search
+          in: query
+          required: false
+          description: Search users by name or email
+          schema:
+            type: string
       responses:
         '200':
-          description: Users in group retrieved successfully
+          description: Paginated users in group with profile pictures
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                  data:
+                  users:
                     type: array
                     items:
                       type: object
+                      properties:
+                        _id:
+                          type: string
+                          format: ObjectId
+                        fullName:
+                          type: string
+                          nullable: true
+                        email:
+                          type: string
+                          nullable: true
+                        profilePicture:
+                          type: string
+                          nullable: true
+                          description: Base64 data URI or null
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      totalCount:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNextPage:
+                        type: boolean
+                      hasPrevPage:
+                        type: boolean
         '401':
           description: Unauthorized
         '404':
@@ -16615,16 +16848,46 @@ paths:
       security:
         - bearerAuth: []
       parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
         - name: includeRegistry
           in: query
           required: false
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+        - name: toolsetType
+          in: query
+          required: false
+          description: When set, only instances for this toolset type (case-insensitive). Registry merge is limited to this type when includeRegistry is true.
+          schema:
+            type: string
+        - name: authStatus
+          in: query
+          required: false
+          description: Filter by user auth state — authenticated or not-authenticated. Omit for all. filterCounts reflect counts before this filter.
+          schema:
+            type: string
+            enum: [authenticated, not-authenticated]
         - name: search
           in: query
           required: false
-          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          description: Optional search filter applied to instance name, toolset type, and registry display name/description.
           schema:
             type: string
       responses:
@@ -16638,6 +16901,30 @@ paths:
                   status:
                     type: string
                     example: success
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
+                  filterCounts:
+                    type: object
+                    properties:
+                      all:
+                        type: integer
+                      authenticated:
+                        type: integer
+                      notAuthenticated:
+                        type: integer
                   toolsets:
                     type: array
                     items:
@@ -16699,7 +16986,9 @@ paths:
       tags:
         - Toolset Instances
       summary: List toolsets for an agent with auth status
-      description: Returns organization toolset instances merged with the specified agent's authentication status.
+      description: |
+        Returns organization toolset instances merged with the specified agent's authentication status.
+        Same response shape as GET /toolsets/my-toolsets (pagination, filterCounts, toolsets), except there is no `authStatus` query filter.
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
@@ -16715,10 +17004,33 @@ paths:
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+        - name: toolsetType
+          in: query
+          required: false
+          description: When set, only instances for this toolset type (case-insensitive). Registry merge is limited to this type when includeRegistry is true.
+          schema:
+            type: string
         - name: search
           in: query
           required: false
-          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          description: Optional search filter applied to instance name, toolset type, and registry display name/description.
           schema:
             type: string
       responses:
@@ -16728,7 +17040,87 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      totalPages:
+                        type: integer
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
+                  filterCounts:
+                    type: object
+                    properties:
+                      all:
+                        type: integer
+                      authenticated:
+                        type: integer
+                      notAuthenticated:
+                        type: integer
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        instanceId:
+                          type: string
+                          description: Empty string for registry-only (synthetic) entries.
+                        instanceName:
+                          type: string
+                        toolsetType:
+                          type: string
+                        authType:
+                          type: string
+                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                        oauthConfigId:
+                          type: string
+                          nullable: true
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        iconPath:
+                          type: string
+                        category:
+                          type: string
+                          example: app
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              name:
+                                type: string
+                              fullName:
+                                type: string
+                              description:
+                                type: string
+                        isConfigured:
+                          type: boolean
+                        isAuthenticated:
+                          type: boolean
+                        isFromRegistry:
+                          type: boolean
+                          description: true for registry-only (synthetic) entries.
         '401':
           description: Unauthorized
         '403':

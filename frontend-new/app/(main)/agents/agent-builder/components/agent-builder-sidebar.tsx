@@ -6,7 +6,7 @@ import { Box, Flex, Text, TextField, IconButton, ScrollArea } from '@radix-ui/th
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { CONTENT_PADDING, HEADER_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
-import type { BuilderSidebarToolset } from '../../toolsets-api';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
@@ -24,13 +24,14 @@ const DEFAULT_KNOWLEDGE_NEST_EXPANDED = true;
 
 const paletteRowLabelStyle: React.CSSProperties = {
   flex: 1,
+  minWidth: 0,
   fontSize: 15,
   fontWeight: 500,
   lineHeight: '22px',
   color: 'var(--olive-12)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
   textAlign: 'left',
 };
 
@@ -70,6 +71,7 @@ function DraggableRow({
         display: 'flex',
         alignItems: 'center',
         width: '100%',
+        minWidth: 0,
         minHeight: comfortable ? PALETTE_ROW_MIN_HEIGHT : 36,
         padding: comfortable ? '0 14px' : '0 12px',
         boxSizing: 'border-box',
@@ -99,9 +101,6 @@ export function AgentBuilderSidebar(props: {
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypes: string[];
-  toolsetsHasMore: boolean;
-  toolsetsLoadingMore: boolean;
-  onLoadMoreToolsets: () => void;
   refreshToolsets: (
     agentKey?: string | null,
     isServiceAccount?: boolean,
@@ -126,9 +125,6 @@ export function AgentBuilderSidebar(props: {
     configuredConnectors,
     toolsets,
     activeToolsetTypes,
-    toolsetsHasMore,
-    toolsetsLoadingMore,
-    onLoadMoreToolsets,
     refreshToolsets,
     onNotify,
     agentKey = null,
@@ -154,6 +150,7 @@ export function AgentBuilderSidebar(props: {
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
   const groupedConnectors = useMemo(() => groupConnectorInstances(configuredConnectors), [configuredConnectors]);
+  const connectorTypeEntries = useMemo(() => Object.entries(groupedConnectors), [groupedConnectors]);
 
   const llmTemplates = filtered.filter((t) => t.category === 'llm');
   // kbGroup/appGroup are looked up from the unfiltered templates so that group section
@@ -250,13 +247,16 @@ export function AgentBuilderSidebar(props: {
         </Box>
       </Box>
 
-      <ScrollArea style={{ flex: 1, minHeight: 0 }} type="hover">
+      <ScrollArea style={{ flex: 1, minHeight: 0, minWidth: 0 }} type="hover">
         <Box
           style={{
             padding: CONTENT_PADDING,
             display: 'flex',
             flexDirection: 'column',
             gap: 10,
+            overflowX: 'hidden',
+            minWidth: 0,
+            maxWidth: '100%',
           }}
         >
           <SectionHeader
@@ -326,7 +326,7 @@ export function AgentBuilderSidebar(props: {
                       {t('agentBuilder.noConnectors')}
                     </Text>
                   ) : (
-                    Object.entries(groupedConnectors).map(([connectorTypeLabel, { instances, icon }]) => {
+                    connectorTypeEntries.map(([connectorTypeLabel, { instances, icon }]) => {
                       const expandKey = `knowledge-connector-${connectorTypeLabel}`;
                       return (
                         <SidebarCategoryRow
@@ -356,14 +356,21 @@ export function AgentBuilderSidebar(props: {
                                 onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
                               >
                                 {icon ? (
-                                  <ThemeableAssetIcon
-                                    {...themeableAssetIconPresets.agentBuilderSidebar}
-                                    src={icon}
-                                    size={PALETTE_ICON_SIZE}
-                                    fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
-                                  />
+                                  <Box style={{ flexShrink: 0, lineHeight: 0 }}>
+                                    <ThemeableAssetIcon
+                                      {...themeableAssetIconPresets.agentBuilderSidebar}
+                                      src={icon}
+                                      size={PALETTE_ICON_SIZE}
+                                      fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
+                                    />
+                                  </Box>
                                 ) : (
-                                  <MaterialIcon name="cloud" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />
+                                  <MaterialIcon
+                                    name="cloud"
+                                    size={PALETTE_ICON_SIZE}
+                                    color="var(--olive-11)"
+                                    style={{ flexShrink: 0 }}
+                                  />
                                 )}
                                 <span style={paletteRowLabelStyle}>
                                   {inst.name?.trim() || connectorTypeLabel}
@@ -401,7 +408,12 @@ export function AgentBuilderSidebar(props: {
                         disabled={paletteStructureLocked}
                         onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
                       >
-                        <MaterialIcon name="folder_open" size={PALETTE_ICON_SIZE} color="var(--olive-11)" />
+                        <MaterialIcon
+                          name="folder_open"
+                          size={PALETTE_ICON_SIZE}
+                          color="var(--olive-11)"
+                          style={{ flexShrink: 0 }}
+                        />
                         <span style={paletteRowLabelStyle}>{t.label}</span>
                       </DraggableRow>
                     ))
@@ -424,9 +436,6 @@ export function AgentBuilderSidebar(props: {
                 toolsets={toolsets}
                 loading={loading}
                 refreshToolsets={refreshToolsets}
-                loadMoreToolsets={onLoadMoreToolsets}
-                toolsetsHasMore={toolsetsHasMore}
-                toolsetsLoadingMore={toolsetsLoadingMore}
                 activeToolsetTypes={activeToolsetTypes}
                 isServiceAccount={isServiceAccount}
                 agentKey={agentKey}
@@ -458,12 +467,12 @@ function SectionHeader({
   const { t } = useTranslation();
   return (
     <Flex
-      align="center"
+      align="start"
       justify="between"
       gap="2"
       mt="1"
       className="agent-builder-section-header"
-      style={{ width: '100%' }}
+      style={{ width: '100%', minWidth: 0 }}
       onClick={onToggle}
       role="button"
       tabIndex={0}
@@ -474,7 +483,7 @@ function SectionHeader({
         }
       }}
     >
-      <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
+      <Flex align="start" gap="2" style={{ minWidth: 0, flex: 1 }}>
         {icon ? (
           <Box
             style={{
@@ -499,9 +508,10 @@ function SectionHeader({
             lineHeight: '20px',
             letterSpacing: '-0.01em',
             color: 'var(--olive-12)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
+            minWidth: 0,
+            whiteSpace: 'normal',
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
           }}
         >
           {title}
