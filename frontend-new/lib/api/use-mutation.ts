@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { toast, type ToastOptions } from '@/lib/store/toast-store';
 
 export interface UseMutationToastOptions {
@@ -70,8 +70,6 @@ export interface UseMutationResult {
  */
 export function useMutation(): UseMutationResult {
   const [isPending, setIsPending] = useState(false);
-  // Guard against setState after unmount without adding a useEffect; safe in CSR.
-  const mountedRef = useRef(true);
 
   const run = useCallback(
     async <T,>(
@@ -110,9 +108,7 @@ export function useMutation(): UseMutationResult {
         }
         return undefined;
       } finally {
-        if (mountedRef.current) {
-          setIsPending(false);
-        }
+        setIsPending(false);
       }
     },
     []

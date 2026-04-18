@@ -39,7 +39,7 @@ export function LoadingButton({
       {...rest}
       disabled={isDisabled}
       style={{
-        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        cursor: loading ? 'wait' : isDisabled ? 'not-allowed' : 'pointer',
         gap: 6,
         ...style,
       }}
