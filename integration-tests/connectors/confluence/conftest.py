@@ -10,15 +10,20 @@ from typing import Any, AsyncGenerator, Dict
 
 import pytest
 import pytest_asyncio
-
 from app.sources.client.confluence.confluence import (  # type: ignore[import-not-found]
     ConfluenceClient,
     ConfluenceApiKeyConfig,
 )
-from app.sources.external.confluence.confluence import ConfluenceDataSource  # type: ignore[import-not-found]
+from app.sources.external.confluence.confluence import ConfluenceDataSource
+
+from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
+from helper.graph_provider import (
+    GraphProviderProtocol,  # type: ignore[import-not-found]
+)
+from helper.graph_provider_utils import (  # type: ignore[import-not-found]
+    wait_for_sync_completion,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
-from helper.graph_provider_utils import wait_until_graph_condition, async_wait_for_stable_record_count  # type: ignore[import-not-found]
 
 logger = logging.getLogger("confluence-conftest")
 
@@ -36,6 +41,12 @@ async def confluence_datasource():
     config = ConfluenceApiKeyConfig(base_url=base_url, email=email, api_key=api_token)
     client = ConfluenceClient.build_with_config(config)
     return ConfluenceDataSource(client)
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def connector_assertions(graph_provider: GraphProviderProtocol):
+    """Generic assertions helper - works for any connector."""
+    return ConnectorAssertions(graph_provider)
 
 
 def _normalize_space_key(space_key: str) -> str:
@@ -179,23 +190,13 @@ async def confluence_connector(
     
     pipeshub_client.toggle_sync(connector_id, enable=True)
     
-    async def _check_initial_sync() -> bool:
-        return await graph_provider.count_records(connector_id) >= page_count
-    
-    await wait_until_graph_condition(
-        connector_id,
-        check=_check_initial_sync,
-        timeout=180,
-        poll_interval=10,
-        description="initial sync",
-    )
-    
-    full_count = await async_wait_for_stable_record_count(
+    # Wait for sync completion
+    full_count = await wait_for_sync_completion(
+        pipeshub_client,
         graph_provider,
         connector_id,
-        stability_checks=3,
-        interval=5,
-        max_rounds=20,
+        min_records=page_count,
+        timeout=180,
     )
 
     # One verification sync: lets the connector finish background work and leaves it
@@ -204,12 +205,13 @@ async def confluence_connector(
     pipeshub_client.toggle_sync(connector_id, enable=False)
     pipeshub_client.wait(5)
     pipeshub_client.toggle_sync(connector_id, enable=True)
-    verified_count = await async_wait_for_stable_record_count(
+    
+    # Wait for verification sync completion
+    verified_count = await wait_for_sync_completion(
+        pipeshub_client,
         graph_provider,
         connector_id,
-        stability_checks=3,
-        interval=5,
-        max_rounds=20,
+        timeout=180,
     )
     if verified_count != full_count:
         logger.info(

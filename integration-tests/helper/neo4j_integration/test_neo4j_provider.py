@@ -512,3 +512,54 @@ class TestNeo4jProvider(Neo4jProvider):
 
     async def graph_org_exists(self, org_id: str) -> bool:
         return await self.graph_find_org(org_id) is not None
+    
+    # =========================================================================
+    # Entity Lookup Methods (for assertions framework)
+    # =========================================================================
+
+    async def record_inherits_permissions(
+        self, connector_id: str, external_record_id: str
+    ) -> bool:
+        """Check if record has INHERIT_PERMISSIONS edge."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
+            RETURN exists((r)-[:INHERIT_PERMISSIONS]->()) AS inherits
+            """,
+            {"cid": connector_id, "eid": external_record_id}
+        )
+        return bool(result[0]["inherits"]) if result else False
+    
+    async def count_group_members(
+        self, connector_id: str, external_group_id: str
+    ) -> int:
+        """Count users in a group."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (g:Group {connectorId: $cid, externalGroupId: $gid})
+            MATCH (u:User)-[:PERMISSION]->(g)
+            RETURN count(u) AS count
+            """,
+            {"cid": connector_id, "gid": external_group_id}
+        )
+        return int(result[0]["count"]) if result else 0
+    
+    async def fetch_records_by_type(
+        self, connector_id: str, record_type: str
+    ) -> List[Dict[str, Any]]:
+        """Fetch all records of a specific type."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, recordType: $rtype})
+            RETURN r
+            LIMIT 10000
+            """,
+            {"cid": connector_id, "rtype": record_type}
+        )
+        return [dict(r["r"]) for r in result] if result else []
