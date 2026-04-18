@@ -327,7 +327,7 @@ The frontend (`frontend-new/`) uses [Playwright](https://playwright.dev/) for en
    |----------|-------------|
    | `TEST_USER_EMAIL` | Email of an existing admin user |
    | `TEST_USER_PASSWORD` | Password for that user |
-   | `BASE_URL` | Dev server URL (default `http://localhost:5005`) |
+   | `BASE_URL` | Dev server URL (default `http://localhost:3001`) |
 
 #### Running E2E Tests
 

@@ -25,7 +25,7 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
    |----------|-------------|
    | `TEST_USER_EMAIL` | Email of an existing admin user |
    | `TEST_USER_PASSWORD` | Password for that user |
-   | `BASE_URL` | Dev server URL (default `http://localhost:5005`) |
+   | `BASE_URL` | Dev server URL (default `http://localhost:3001`) |
 
 ## Running Tests
 

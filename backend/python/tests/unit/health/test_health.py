@@ -387,7 +387,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer):
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+        ):
             await Health.health_check_kafka(container)
 
         mock_consumer.start.assert_awaited_once()
@@ -411,7 +414,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls:
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
+        ):
             await Health.health_check_kafka(container)
 
         call_kwargs = mock_cls.call_args.kwargs
@@ -438,7 +444,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls:
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
+        ):
             await Health.health_check_kafka(container)
 
         call_kwargs = mock_cls.call_args.kwargs
@@ -459,7 +468,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls:
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer) as mock_cls,
+        ):
             await Health.health_check_kafka(container)
 
         call_kwargs = mock_cls.call_args.kwargs
@@ -477,7 +489,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock(side_effect=Exception("no broker"))
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer):
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+        ):
             with pytest.raises(Exception, match="no broker"):
                 await Health.health_check_kafka(container)
 
@@ -496,7 +511,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer):
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+        ):
             await Health.health_check_kafka(container)
 
     @pytest.mark.asyncio
@@ -514,7 +532,10 @@ class TestHealthCheckKafka:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer):
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+        ):
             await Health.health_check_kafka(container)
 
         mock_consumer.stop.assert_awaited_once()
@@ -855,7 +876,10 @@ class TestHealthCheckKafkaAdditional:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer):
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+        ):
             # Should not raise despite stop failure
             await Health.health_check_kafka(container)
 
@@ -873,7 +897,10 @@ class TestHealthCheckKafkaAdditional:
         mock_consumer.start = AsyncMock(side_effect=Exception("start fail"))
         mock_consumer.stop = AsyncMock()
 
-        with patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer):
+        with (
+            patch.dict(os.environ, {"MESSAGE_BROKER": "kafka"}),
+            patch("app.health.health.AIOKafkaConsumer", return_value=mock_consumer),
+        ):
             with pytest.raises(Exception, match="start fail"):
                 await Health.health_check_kafka(container)
         # Consumer.stop should have been called in finally
