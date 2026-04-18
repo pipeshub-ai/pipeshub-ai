@@ -7,8 +7,11 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { apiClient } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils/formatters';
+import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 
 export interface ToolsetInstanceRowCardProps {
+  /** Team = admin catalog (org instances); personal = per-user credentials. */
+  scope: 'team' | 'personal';
   instance: BuilderSidebarToolset;
   onAuthenticate: () => void;
   onConfigure: () => void;
@@ -17,14 +20,28 @@ export interface ToolsetInstanceRowCardProps {
 }
 
 export function ToolsetInstanceRowCard({
+  scope,
   instance,
   onAuthenticate,
   onConfigure,
   onManage,
 }: ToolsetInstanceRowCardProps) {
   const { t } = useTranslation();
-  const name = instance.displayName || instance.instanceName || instance.toolsetType || '';
+  /** Org instance label — primary in per-instance lists (type detail / admin instances). */
+  const primaryTitle =
+    (instance.instanceName || '').trim() || instance.displayName || instance.toolsetType || '';
+  /** Integration / toolset name for subtitle when it differs from the instance name. */
+  const integrationSubtitle = (instance.displayName || instance.toolsetType || '').trim();
   const ok = instance.isAuthenticated;
+  const authTypeUpper = (instance.authType || 'NONE').toUpperCase();
+  /**
+   * End-user sign-in (personal) or org OAuth on the team list. Team + non-OAuth is configured in Manage only
+   * (same predicate drives the amber badge and the Authenticate button).
+   */
+  const showUserAuthFlow =
+    !ok &&
+    !isNoneAuthType(authTypeUpper) &&
+    (isOAuthType(authTypeUpper) || scope === 'personal');
   const [iconBroken, setIconBroken] = useState(false);
 
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
@@ -107,8 +124,13 @@ export function ToolsetInstanceRowCard({
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }} truncate>
-            {name}
+            {primaryTitle}
           </Text>
+          {integrationSubtitle && integrationSubtitle.toLowerCase() !== primaryTitle.toLowerCase() ? (
+            <Text size="1" color="gray" truncate>
+              {integrationSubtitle}
+            </Text>
+          ) : null}
         </Flex>
         <Flex
           align="center"
@@ -117,22 +139,22 @@ export function ToolsetInstanceRowCard({
           justify="end"
           style={{ flexShrink: 0, rowGap: 'var(--space-2)' }}
         >
-          {!ok ? (
+          {showUserAuthFlow ? (
             <Badge size="3" color="amber" variant="soft">
               <MaterialIcon name="vpn_key" size={14} color="var(--amber-11)" />
               <Text as="span" size="2" weight="medium" style={{ color: 'var(--amber-11)' }}>
                 {t('workspace.actions.instanceCard.badgeAuthNeeded')}
               </Text>
             </Badge>
-          ) : (
+          ) : ok ? (
             <Badge size="3" color="green" variant="soft">
               <MaterialIcon name="check" size={14} color="var(--green-11)" />
               <Text as="span" size="2" weight="medium" style={{ color: 'var(--green-11)' }}>
                 {t('workspace.actions.instanceCard.badgeAuthenticated')}
               </Text>
             </Badge>
-          )}
-          {!ok ? (
+          ) : null}
+          {showUserAuthFlow ? (
             <Button size="2" variant="soft" color="gray" onClick={onAuthenticate}>
               {t('workspace.actions.instanceCard.authenticateCta')}
             </Button>

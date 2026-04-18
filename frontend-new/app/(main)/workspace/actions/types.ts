@@ -60,7 +60,10 @@ export function mergedMyToolsetsCatalogFromIncludeRegistry(rows: BuilderSidebarT
   const out: ActionCatalogItem[] = [];
 
   for (const instances of Array.from(byType.values())) {
-    const primary = instances[0];
+    const sorted = [...instances].sort((a, b) =>
+      (a.instanceName || '').localeCompare(b.instanceName || '', undefined, { sensitivity: 'base' })
+    );
+    const primary = sorted[0] ?? instances[0];
     const canonical =
       primary.toolsetType || primary.normalized_name || primary.name || instances[0].normalized_name;
     if (!canonical) continue;
@@ -80,7 +83,7 @@ export function mergedMyToolsetsCatalogFromIncludeRegistry(rows: BuilderSidebarT
       toolCount,
       hasOrgInstance: true,
       isUserAuthenticated,
-      instances,
+      instances: sorted,
       primaryInstance: primary,
       supportedAuthTypes: supported,
       rowKind: 'byToolsetType',
@@ -149,7 +152,10 @@ export function mergeRegistryWithMyToolsets(
 
   return registry.map((r) => {
     const t = r.name.toLowerCase();
-    const instances = byType.get(t) ?? [];
+    const rawList = byType.get(t) ?? [];
+    const instances = [...rawList].sort((a, b) =>
+      (a.instanceName || '').localeCompare(b.instanceName || '', undefined, { sensitivity: 'base' })
+    );
     const primaryInstance = instances[0];
     const hasOrgInstance = instances.length > 0;
     const isUserAuthenticated = instances.some((i) => i.isAuthenticated);
@@ -192,7 +198,10 @@ export function myToolsetsGroupedToCatalogItems(rows: BuilderSidebarToolset[]): 
       instances[0].normalized_name ||
       instances[0].name;
     if (!canonical) continue;
-    const primary = instances[0];
+    const sorted = [...instances].sort((a, b) =>
+      (a.instanceName || '').localeCompare(b.instanceName || '', undefined, { sensitivity: 'base' })
+    );
+    const primary = sorted[0] ?? instances[0];
     const isUserAuthenticated = instances.some((i) => i.isAuthenticated);
     const toolCount = instances.reduce((m, i) => Math.max(m, i.toolCount || 0), 0);
     out.push({
@@ -205,7 +214,7 @@ export function myToolsetsGroupedToCatalogItems(rows: BuilderSidebarToolset[]): 
       toolCount,
       hasOrgInstance: true,
       isUserAuthenticated,
-      instances,
+      instances: sorted,
       primaryInstance: primary,
       supportedAuthTypes: primary.supportedAuthTypes,
       rowKind: 'byToolsetType',
