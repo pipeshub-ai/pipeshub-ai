@@ -551,15 +551,16 @@ class TestNeo4jProvider(Neo4jProvider):
     async def fetch_records_by_type(
         self, connector_id: str, record_type: str
     ) -> List[Dict[str, Any]]:
-        """Fetch all records of a specific type."""
+        """Fetch records for a connector; ``record_type`` empty string means all types."""
         if not self.client:
             raise RuntimeError("Provider not connected")
         result = await self.client.execute_query(
             """
-            MATCH (r:Record {connectorId: $cid, recordType: $rtype})
+            MATCH (r:Record {connectorId: $cid})
+            WHERE $rtype = '' OR r.recordType = $rtype
             RETURN r
             LIMIT 10000
             """,
-            {"cid": connector_id, "rtype": record_type}
+            {"cid": connector_id, "rtype": record_type},
         )
         return [dict(r["r"]) for r in result] if result else []

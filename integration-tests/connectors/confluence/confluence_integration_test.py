@@ -437,11 +437,8 @@ class TestConfluenceIncrementalSync:
             }
         )
         
-        # pipeshub_client.wait(5)
-        
         # Trigger sync
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        # pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         
         await wait_for_sync_completion(
@@ -549,9 +546,6 @@ class TestConfluenceReindex:
             f"Reindex failed: {result}"
         )
         
-        # Small wait for reindex to process
-        # pipeshub_client.wait(5)
-        
         # Verify version unchanged (no DB update for unchanged content)
         record_after = await graph_provider.get_record_by_external_id(
             connector_id, page_id
@@ -610,7 +604,6 @@ class TestConfluenceReindex:
             }
         )
         
-        # pipeshub_client.wait(5)
         
         # Trigger reindex
         result = pipeshub_client.reindex_record(record_key)
@@ -756,11 +749,7 @@ class TestConfluenceConnector:
             }
         )
 
-        # Brief wait for Confluence to register page timestamps
-        # pipeshub_client.wait(5)
-        
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        # pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
         # Wait for sync using reliable status polling
@@ -814,7 +803,6 @@ class TestConfluenceConnector:
         )
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        # pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
         # Wait for sync using reliable status polling
@@ -852,10 +840,7 @@ class TestConfluenceConnector:
             }
         )
         
-        # pipeshub_client.wait(5)
-        
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        # pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
         # Wait for sync using reliable status polling
@@ -903,10 +888,7 @@ class TestConfluenceConnector:
         )
         parent_page = parent_resp.json()
 
-        # pipeshub_client.wait(5)
-        
         pipeshub_client.toggle_sync(connector_id, enable=False)
-        # pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
         # Wait for parent page sync
