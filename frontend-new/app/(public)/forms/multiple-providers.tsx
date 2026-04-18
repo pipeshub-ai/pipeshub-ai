@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Box, Flex, Button, Text } from '@radix-ui/themes';
 import { useSearchParams } from 'next/navigation';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import AuthTitleSection from '../components/auth-title-section';
 import {
   EmailField,
@@ -210,20 +211,21 @@ export default function MultipleProviders({
                   <span className="material-icons-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
                 </Button>
               )}
-              <Button
+              <LoadingButton
                 type="submit"
                 size="3"
-                disabled={auth.loading || !password}
+                disabled={!password}
+                loading={auth.loading}
+                loadingLabel="Signing in…"
                 style={{
                   flex: 1,
                   backgroundColor: 'var(--accent-9)',
                   color: 'white',
                   fontWeight: 500,
-                  cursor: auth.loading ? 'not-allowed' : 'pointer',
                 }}
               >
-                {auth.loading ? 'Signing in…' : 'Sign In'}
-              </Button>
+                Sign In
+              </LoadingButton>
             </Flex>
 
             {hasOtp && (

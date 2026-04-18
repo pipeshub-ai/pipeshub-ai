@@ -3,6 +3,7 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Box, Text, Button, IconButton, VisuallyHidden, Tooltip } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -292,10 +293,32 @@ export function WorkspaceRightPanel({
             >
               {secondaryLabel}
             </Button>
-            {primaryTooltip && primaryBlocked ? (
-              <Tooltip content={primaryTooltip}>{primaryButton}</Tooltip>
+            {primaryTooltip && (primaryDisabled || primaryLoading) ? (
+              <Tooltip content={primaryTooltip}>
+                <LoadingButton
+                  variant="solid"
+                  size="2"
+                  onClick={onPrimaryClick}
+                  disabled={primaryDisabled}
+                  loading={primaryLoading}
+                >
+                  {primaryLabel}
+                </LoadingButton>
+              </Tooltip>
             ) : (
-              primaryButton
+              <LoadingButton
+                variant="solid"
+                size="2"
+                onClick={onPrimaryClick}
+                disabled={primaryDisabled}
+                loading={primaryLoading}
+                style={{
+                  backgroundColor:
+                    primaryDisabled || primaryLoading ? 'var(--slate-6)' : 'var(--emerald-9)',
+                }}
+              >
+                {primaryLabel}
+              </LoadingButton>
             )}
           </Flex>
         )}

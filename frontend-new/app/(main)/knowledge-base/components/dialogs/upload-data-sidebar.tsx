@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useCallback } from 'react';
 import { Flex, Box, Text, Button, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 
@@ -620,18 +621,19 @@ export function UploadDataSidebar({
           >
             Cancel
           </Button>
-          <Button
-            variant="solid" 
+          <LoadingButton
+            variant="solid"
             size="2"
             style={{
-              cursor: 'pointer', 
               backgroundColor: (!hasItems || isSaving) ? 'var(--slate-a3)' : 'var(--emerald-10)'
-            }} 
-            disabled={!hasItems || isSaving}
+            }}
+            disabled={!hasItems}
+            loading={isSaving}
+            loadingLabel="Saving..."
             onClick={handleSave}
           >
-            {isSaving ? 'Saving...' : 'Save'}
-          </Button>
+            Save
+          </LoadingButton>
         </Flex>
       </Dialog.Content>
     </Dialog.Root>

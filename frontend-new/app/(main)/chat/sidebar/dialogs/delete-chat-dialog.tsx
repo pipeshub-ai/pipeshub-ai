@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 interface DeleteChatDialogProps {
   open: boolean;
@@ -104,13 +105,15 @@ export function DeleteChatDialog({
             >
               {t('action.cancel')}
             </Button>
-            <Button
+            <LoadingButton
               color="red"
               onClick={handleConfirm}
-              disabled={!isConfirmed || isDeleting}
+              disabled={!isConfirmed}
+              loading={isDeleting}
+              loadingLabel={t('action.deleting')}
             >
-              {isDeleting ? t('action.deleting') : t('action.delete')}
-            </Button>
+              {t('action.delete')}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

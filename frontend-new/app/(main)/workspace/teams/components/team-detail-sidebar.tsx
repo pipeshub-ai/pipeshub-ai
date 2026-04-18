@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -572,21 +573,17 @@ export function TeamDetailSidebar({
                 )}
               </Text>
             </Flex>
-            <Button
+            <LoadingButton
               variant="outline"
               color="red"
               size="1"
               onClick={handleDeleteTeam}
-              disabled={isDeleting}
-              style={{
-                cursor: isDeleting ? 'not-allowed' : 'pointer',
-                flexShrink: 0,
-              }}
+              loading={isDeleting}
+              loadingLabel={t('workspace.teams.edit.deleting', 'Deleting...')}
+              style={{ flexShrink: 0 }}
             >
-              {isDeleting
-                ? t('workspace.teams.edit.deleting', 'Deleting...')
-                : t('workspace.teams.edit.deleteButton', 'Delete Team')}
-            </Button>
+              {t('workspace.teams.edit.deleteButton', 'Delete Team')}
+            </LoadingButton>
           </Flex>
         </Box>
       )}

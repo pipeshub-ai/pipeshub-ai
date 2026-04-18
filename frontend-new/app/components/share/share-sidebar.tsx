@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { usePaginatedList } from '@/app/(main)/workspace/hooks/use-paginated-list';
 import { ShareCommonApi } from './api';
@@ -593,15 +594,17 @@ export function ShareSidebar({
                 </Button>
               )}
 
-              <Button
+              <LoadingButton
                 variant="solid"
                 size="2"
                 onClick={handleShare}
-                disabled={selectedItems.length === 0 || isSubmitting || selectedItems.some((s) => s.isInvalid)}
+                disabled={selectedItems.length === 0 || selectedItems.some((s) => s.isInvalid)}
+                loading={isSubmitting}
+                loadingLabel="Sharing..."
                 style={selectedItems.length > 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) ? { backgroundColor: 'var(--emerald-10)' } : undefined}
               >
-                {isSubmitting ? 'Sharing...' : 'Share'}
-              </Button>
+                Share
+              </LoadingButton>
             </Flex>
           </Flex>
         )}

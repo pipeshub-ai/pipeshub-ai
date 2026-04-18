@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 
 // ========================================
 // Types
@@ -99,6 +100,7 @@ export function EntityBulkActionBar({
         const isLoading = loadingKey === action.key;
         const isDisabled = action.disabled || isLoading || (loadingKey !== null && loadingKey !== action.key);
 
+        const iconColor = isDanger && !isDisabled ? 'white' : 'var(--slate-12)';
         const button = (
           <Button
             key={action.key}
@@ -110,13 +112,14 @@ export function EntityBulkActionBar({
             style={{
               cursor: isDisabled ? 'not-allowed' : isLoading ? 'wait' : 'pointer',
               whiteSpace: 'nowrap',
+              gap: 4,
             }}
           >
-            <MaterialIcon
-              name={action.icon}
-              size={14}
-              color={isDanger && !isDisabled ? 'white' : 'var(--slate-12)'}
-            />
+            {isLoading ? (
+              <Spinner size={12} color={iconColor} />
+            ) : (
+              <MaterialIcon name={action.icon} size={14} color={iconColor} />
+            )}
             {action.label}
           </Button>
         );

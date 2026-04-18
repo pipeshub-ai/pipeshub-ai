@@ -13,6 +13,7 @@ import {
   Text,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 const LIST: React.CSSProperties = {
   margin: 0,
@@ -382,12 +383,17 @@ export function ServiceAccountConfirmDialog({
             <Button type="button" variant="soft" color="gray" size="2" onClick={onClose} disabled={creating}>
               {t('action.cancel')}
             </Button>
-            <Button type="button" size="2" color="jade" onClick={() => void onConfirm()} disabled={confirmDisabled}>
-              <Flex align="center" gap="2">
-                {creating ? <MaterialIcon name="hourglass_empty" size={18} /> : null}
-                {creating ? busyLabel : confirmLabel}
-              </Flex>
-            </Button>
+            <LoadingButton
+              type="button"
+              size="2"
+              color="jade"
+              onClick={() => void onConfirm()}
+              disabled={confirmDisabled && !creating}
+              loading={creating}
+              loadingLabel={busyLabel}
+            >
+              {confirmLabel}
+            </LoadingButton>
           </Flex>
         </Box>
       </Dialog.Content>

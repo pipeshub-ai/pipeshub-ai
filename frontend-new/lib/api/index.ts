@@ -11,3 +11,13 @@ export type { StreamingOptions, SSEEvent, SSEStreamingOptions } from './streamin
 // Error handling
 export { processError, ErrorType, isProcessedError } from './api-error';
 export type { ProcessedError } from './api-error';
+
+// Mutation helpers (loading state + toast integration)
+export { useMutation } from './use-mutation';
+export type {
+  UseMutationResult,
+  UseMutationRunOptions,
+  UseMutationToastOptions,
+} from './use-mutation';
+export { withToast } from './with-toast';
+export type { WithToastOptions } from './with-toast';

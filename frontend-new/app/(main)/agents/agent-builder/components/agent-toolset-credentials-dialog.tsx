@@ -15,6 +15,7 @@ import {
   Text,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { AuthSchemaField } from '@/app/(main)/workspace/connectors/types';
 import { isNoneAuthType, isOAuthType, isCredentialAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
@@ -481,13 +482,19 @@ export function AgentToolsetCredentialsDialog({
                     ...toolsetDialogFooterPrimaryClusterStyle,
                   }}
                 >
-                  <Button size="2" variant="soft" color="green" onClick={() => void handleSaveCredentials()} disabled={busy}>
-                    {saving
-                      ? t('agentBuilder.savingCredentials')
-                      : isAuthenticated
-                        ? t('agentBuilder.updateCredentials')
-                        : t('agentBuilder.saveCredentials')}
-                  </Button>
+                  <LoadingButton
+                    size="2"
+                    variant="soft"
+                    color="green"
+                    onClick={() => void handleSaveCredentials()}
+                    disabled={busy && !saving}
+                    loading={saving}
+                    loadingLabel={t('agentBuilder.savingCredentials')}
+                  >
+                    {isAuthenticated
+                      ? t('agentBuilder.updateCredentials')
+                      : t('agentBuilder.saveCredentials')}
+                  </LoadingButton>
                   {isAuthenticated ? (
                     <Button size="2" variant="soft" color="red" onClick={() => setRemoveConfirmOpen(true)} disabled={busy}>
                       {t('agentBuilder.removeCredentials')}

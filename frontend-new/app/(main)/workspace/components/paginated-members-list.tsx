@@ -3,6 +3,7 @@
 import React, { useCallback, useRef } from 'react';
 import { Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { usePaginatedList, type PaginatedFetchResult } from '../hooks/use-paginated-list';
 
 const DEFAULT_LIMIT = 25;
@@ -103,9 +104,12 @@ export const PaginatedMembersList = React.forwardRef(function PaginatedMembersLi
             </React.Fragment>
           ))}
           {isLoadingMore && (
-            <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'center', padding: 4 }}>
-              Loading...
-            </Text>
+            <Flex align="center" justify="center" gap="2" style={{ padding: 4 }}>
+              <Spinner size={12} />
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                Loading...
+              </Text>
+            </Flex>
           )}
         </Flex>
       )}
