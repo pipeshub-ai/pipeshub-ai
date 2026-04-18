@@ -77,6 +77,7 @@ async def _build_llm_user_context_string(
     if not send_user_info:
         return ""
     user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
+    user_info = user_info or {}
     org_name = (org_info or {}).get("name")
     if org_name:
         return (
