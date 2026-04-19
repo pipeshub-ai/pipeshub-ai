@@ -1,5 +1,22 @@
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 
+/**
+ * Minimal fields the access helpers read — satisfied by both
+ * `AgentListRecord` (list payload) and `AgentDetail` (single-agent payload),
+ * so callers don't need to cast between the two.
+ */
+export type AgentAccessInput = Pick<
+  AgentListRecord,
+  | 'id'
+  | '_key'
+  | 'can_edit'
+  | 'can_delete'
+  | 'can_view'
+  | 'isServiceAccount'
+  | 'shareWithOrg'
+  | 'user_role'
+>;
+
 function isNonOwnerRole(userRole: string | undefined): boolean {
   const normalized = String(userRole ?? '').trim().toUpperCase();
   return normalized.length > 0 && normalized !== 'OWNER';
@@ -9,7 +26,7 @@ function isNonOwnerRole(userRole: string | undefined): boolean {
  * Non–service-account agent that is org-visible or assigned to the user as a non-owner
  * (shared / collaborator access).
  */
-export function isSharedIndividualAgent(agent: AgentListRecord): boolean {
+export function isSharedIndividualAgent(agent: AgentAccessInput): boolean {
   if (agent.isServiceAccount === true) return false;
   if (agent.shareWithOrg === true) return true;
   return isNonOwnerRole(agent.user_role);
@@ -34,7 +51,7 @@ export type AgentSidebarRowMenuAccess = {
 /**
  * Derives meatball-menu visibility for a list row. Callers should still handle a missing key.
  */
-export function getAgentSidebarRowMenuAccess(agent: AgentListRecord): AgentSidebarRowMenuAccess | null {
+export function getAgentSidebarRowMenuAccess(agent: AgentAccessInput): AgentSidebarRowMenuAccess | null {
   const agentKey = agent.id || agent._key;
   if (!agentKey) return null;
 

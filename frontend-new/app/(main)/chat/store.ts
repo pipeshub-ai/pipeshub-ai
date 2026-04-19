@@ -13,6 +13,7 @@ import {
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
+import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 
 /**
  * File preview state for citation preview in chat.
@@ -135,6 +136,8 @@ interface ChatState {
   agentStreamTools: string[];
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
+  /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
+  agentContextAccess: AgentSidebarRowMenuAccess | null;
 
   // ── Global settings (apply to all chats) ──
   settings: ChatSettings;
@@ -208,6 +211,7 @@ interface ChatState {
   appendAgentConversations: (convs: Conversation[]) => void;
   setAgentStreamTools: (tools: string[]) => void;
   setAgentContextDisplayName: (name: string | null) => void;
+  setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
   addPendingConversation: (slotId: string) => void;
   resolvePendingConversation: (
@@ -276,6 +280,7 @@ const initialState = {
   agentMoreChatsPagination: null as { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null,
   agentStreamTools: [] as string[],
   agentContextDisplayName: null as string | null,
+  agentContextAccess: null as AgentSidebarRowMenuAccess | null,
 
   settings: {
     mode: 'chat' as ChatMode,
@@ -486,6 +491,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentMoreChatsPagination: null,
           agentStreamTools: [],
           agentContextDisplayName: null,
+          agentContextAccess: null,
           isAgentsSidebarOpen: false,
         };
       }
@@ -501,6 +507,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentMoreChatsPagination: null,
         agentStreamTools: [],
         agentContextDisplayName: null,
+        agentContextAccess: null,
         isAgentsSidebarOpen: false,
       };
     }),
@@ -559,6 +566,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setAgentStreamTools: (tools) => set({ agentStreamTools: tools }),
 
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
+
+  setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 
   moveConversationToTop: (conversationId) =>
     set((state) => {
@@ -766,7 +775,7 @@ if (typeof window !== 'undefined') {
     'pendingConversations', 'isMoreChatsPanelOpen', 'moreChatsSectionType', 'isAgentsSidebarOpen', 'moreChatsPagination',
     'agentSidebarAgentId', 'agentConversations', 'agentConversationsPagination',
     'isAgentConversationsLoading', 'agentConversationsError', 'isAgentMoreChatsPanelOpen', 'agentMoreChatsPagination',
-    'agentStreamTools', 'agentContextDisplayName',
+    'agentStreamTools', 'agentContextDisplayName', 'agentContextAccess',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
     'collectionNamesCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',
