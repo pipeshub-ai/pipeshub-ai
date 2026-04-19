@@ -268,6 +268,15 @@ jobs:
         if: always()
         id: test-results
         working-directory: integration-tests
+        env:
+          # Route untrusted PR metadata through env vars so the shell script
+          # below never evaluates `${{ ... }}` directly (workflow-injection).
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER_IN: ${{ github.event.pull_request.number }}
+          PR_TITLE_IN: ${{ github.event.pull_request.title }}
+          PR_URL_IN: ${{ github.event.pull_request.html_url }}
+          PR_LOGIN_IN: ${{ github.event.pull_request.user.login }}
+          ACTOR_IN: ${{ github.actor }}
         run: |
           TOTAL_PASSED=0
           TOTAL_FAILED=0
@@ -298,17 +307,18 @@ jobs:
             PASS_RATE=0
           fi
 
-          # Determine trigger context
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
-            TRIGGER_LABEL="PR #${{ github.event.pull_request.number }}"
-            PR_TITLE="${{ github.event.pull_request.title }}"
-            PR_URL="${{ github.event.pull_request.html_url }}"
-            AUTHOR="${{ github.event.pull_request.user.login }}"
+          # Determine trigger context from env vars only (no ${{ }} inlined).
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            TRIGGER_LABEL="PR #${PR_NUMBER_IN}"
+            AUTHOR="$PR_LOGIN_IN"
+            # Slack mrkdwn escape for link labels (& < >). Build a clickable
+            # `<url|#NUM — Title>` text for a dedicated *PR:* field.
+            TITLE_SLACK=$(printf '%s' "$PR_TITLE_IN" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+            PR_FIELD_TEXT="*PR:*"$'\n'"<${PR_URL_IN}|#${PR_NUMBER_IN} — ${TITLE_SLACK}>"
           else
             TRIGGER_LABEL="Manual Dispatch"
-            PR_TITLE=""
-            PR_URL=""
-            AUTHOR="${{ github.actor }}"
+            AUTHOR="$ACTOR_IN"
+            PR_FIELD_TEXT=""
           fi
 
           echo "TOTAL_TESTS=$TOTAL_TESTS" >> "$GITHUB_OUTPUT"
@@ -318,10 +328,16 @@ jobs:
           echo "TOTAL_SKIPPED=$TOTAL_SKIPPED" >> "$GITHUB_OUTPUT"
           echo "PASS_RATE=$PASS_RATE" >> "$GITHUB_OUTPUT"
           echo "TRIGGER_LABEL=$TRIGGER_LABEL" >> "$GITHUB_OUTPUT"
-          echo "PR_TITLE=$PR_TITLE" >> "$GITHUB_OUTPUT"
-          echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "AUTHOR=$AUTHOR" >> "$GITHUB_OUTPUT"
           echo "BACKENDS_RUN=$BACKENDS_RUN" >> "$GITHUB_OUTPUT"
+          echo "IS_PR=$([ "$EVENT_NAME" = "pull_request_target" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Use a heredoc so a title containing quotes or other special chars
+          # can't break the output file format.
+          {
+            echo "PR_FIELD_TEXT<<PR_FIELD_EOF"
+            printf '%s\n' "$PR_FIELD_TEXT"
+            echo "PR_FIELD_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Zip reports folder
         if: always()
@@ -349,6 +365,7 @@ jobs:
                 {
                   "type": "section",
                   "fields": [
+                    ${{ steps.test-results.outputs.IS_PR == 'true' && format('{{ "type": "mrkdwn", "text": {0} }},', toJSON(steps.test-results.outputs.PR_FIELD_TEXT)) || '' }}
                     { "type": "mrkdwn", "text": "*Author:*\n<https://github.com/${{ steps.test-results.outputs.AUTHOR }}|@${{ steps.test-results.outputs.AUTHOR }}>" },
                     { "type": "mrkdwn", "text": "*Branch:*\n`${{ github.head_ref || github.ref_name }}`" },
                     { "type": "mrkdwn", "text": "*Graph DB:*\n${{ steps.test-results.outputs.BACKENDS_RUN || 'N/A' }}" },
