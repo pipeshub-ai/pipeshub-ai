@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 import boto3
+from botocore.exceptions import ClientError
 
 
 def _iter_files(root: Path):
@@ -90,7 +91,7 @@ class S3StorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
-    def clear_objects(self, bucket: str) -> None:
+    def _clear_objects_versioned(self, bucket: str) -> None:
         paginator = self._client.get_paginator("list_object_versions")
         for page in paginator.paginate(Bucket=bucket):
             to_delete = []
@@ -110,6 +111,29 @@ class S3StorageHelper:
                 Bucket=bucket,
                 Delete={"Objects": [{"Key": k} for k in remaining]},
             )
+
+    def _clear_objects_current_only(self, bucket: str) -> None:
+        """Delete current object versions only (no ListObjectVersions / version deletes)."""
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket):
+            contents = page.get("Contents") or []
+            if not contents:
+                continue
+            self._client.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": [{"Key": obj["Key"]} for obj in contents]},
+            )
+
+    def clear_objects(self, bucket: str) -> None:
+        try:
+            self._clear_objects_versioned(bucket)
+        except ClientError as e:
+            err = e.response.get("Error", {}) or {}
+            if err.get("Code") != "AccessDenied":
+                raise
+            # IAM often grants ListBucket/DeleteObject but not ListBucketVersions; that
+            # is enough when the bucket is non-versioned (typical for integration tests).
+            self._clear_objects_current_only(bucket)
 
     def delete_bucket(self, bucket: str) -> None:
         self.clear_objects(bucket)
