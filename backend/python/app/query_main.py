@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -154,7 +155,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Found organizations in the system")
         retrieval_service = await container.retrieval_service()
-        await retrieval_service.get_embedding_model_instance()
+
+        # Warm up the embedding model in the background. The default
+        # HuggingFace model (BAAI/bge-large-en-v1.5) can take minutes to
+        # download and load on a cold cache, which would otherwise block the
+        # FastAPI lifespan and prevent the service from accepting traffic
+        # (including health checks) until it finishes. Kick it off as a
+        # background task; callers of `get_embedding_model_instance()` will
+        # await/coordinate via the internal lock and lazy-load on first use
+        # if the warmup hasn't completed yet.
+        async def _warmup_embedding_model() -> None:
+            try:
+                logger.info("🔥 Warming up embedding model in background")
+                await retrieval_service.get_embedding_model_instance()
+                logger.info("✅ Embedding model warmup complete")
+            except Exception as warmup_error:
+                logger.error(
+                    f"❌ Embedding model warmup failed (will retry on first use): {warmup_error}"
+                )
+
+        app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
 
     # Initialize toolset registry for agent tool execution
     # This imports toolset modules which register tools in the global registry
@@ -174,6 +194,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
+
+    # Cancel embedding warmup task if it is still running.
+    warmup_task: asyncio.Task | None = getattr(app.state, "embedding_warmup_task", None)
+    if warmup_task is not None and not warmup_task.done():
+        warmup_task.cancel()
+        try:
+            await warmup_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     # Stop all message consumers
     try:
         await stop_kafka_consumers(app_container)

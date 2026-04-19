@@ -29,6 +29,7 @@ import { useMobileSidebarStore } from "@/lib/store/mobile-sidebar-store"
 import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
+import { AuthHydrator } from '@/lib/store/auth-hydrator'
 
 export default function RootLayout({
   children,
@@ -75,6 +76,7 @@ export default function RootLayout({
       <body>
         <I18nextProvider i18n={i18n}>
           <ThemeProvider>
+            <AuthHydrator />
             {/* Landscape block — pure CSS visibility, no JS */}
             <div className="landscape-block-overlay">
               <MaterialIcon name="screen_rotation" size={48} color="var(--gray-11)" />

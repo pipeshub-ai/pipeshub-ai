@@ -51,12 +51,14 @@ const DEFAULT_BADGE_STYLE = {
 interface ProviderRowProps {
   provider: AIModelProvider;
   onConfigure: () => void;
+  /** When true, hide the capability chips under the provider name. */
+  hideCapabilityBadges?: boolean;
 }
 
 /**
  * Horizontal provider row for the Model Providers grid (+ Configure uses active capability tab).
  */
-export function ProviderRow({ provider, onConfigure }: ProviderRowProps) {
+export function ProviderRow({ provider, onConfigure, hideCapabilityBadges = false }: ProviderRowProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [hover, setHover] = useState(false);
@@ -93,31 +95,33 @@ export function ProviderRow({ provider, onConfigure }: ProviderRowProps) {
             </Text>
           </Flex>
 
-          <Flex gap="2" wrap="wrap" style={{ marginTop: 2 }}>
-            {badgeCaps.map((cap) => {
-              const label = aiModelsCapabilityBadge(t, cap);
-              if (!label) return null;
-              const st = BADGE_STYLE[cap] ?? DEFAULT_BADGE_STYLE;
-              return (
-                <span
-                  key={cap}
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    lineHeight: '18px',
-                    padding: '2px 10px',
-                    borderRadius: "2px",
-                    border: st.border,
-                    color: st.color,
-                    backgroundColor: st.bg,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {label}
-                </span>
-              );
-            })}
-          </Flex>
+          {hideCapabilityBadges ? null : (
+            <Flex gap="2" wrap="wrap" style={{ marginTop: 2 }}>
+              {badgeCaps.map((cap) => {
+                const label = aiModelsCapabilityBadge(t, cap);
+                if (!label) return null;
+                const st = BADGE_STYLE[cap] ?? DEFAULT_BADGE_STYLE;
+                return (
+                  <span
+                    key={cap}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      lineHeight: '18px',
+                      padding: '2px 10px',
+                      borderRadius: "2px",
+                      border: st.border,
+                      color: st.color,
+                      backgroundColor: st.bg,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {label}
+                  </span>
+                );
+              })}
+            </Flex>
+          )}
         </Flex>
       </Flex>
 

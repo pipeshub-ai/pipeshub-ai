@@ -8,7 +8,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { CAPABILITY_SECTION_ORDER } from '../types';
+import { CAPABILITY_SECTION_ORDER, LLM_SECTION_MODEL_TYPES } from '../types';
 import type { MainSection } from '../store';
 import { aiModelsCapabilityBadge, aiModelsCapabilityLabel, aiModelsCapabilitySectionTab } from '../capability-i18n';
 import { ProviderRow } from './provider-card';
@@ -37,6 +37,14 @@ interface ProviderGridProps {
   showPageHeader?: boolean;
   /** When unset, `all` for page layout and `hidden` for embedded. */
   capabilityTabs?: 'all' | 'hidden';
+  /** When true, hide capability chips on each provider row. */
+  hideCapabilityBadges?: boolean;
+}
+
+function modelTypesForSection(section: CapabilitySection): readonly string[] {
+  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
+  if (section === 'embedding') return ['embedding'];
+  return ['imageGeneration'];
 }
 
 function providerMatchesSearch(
@@ -75,6 +83,7 @@ export function ProviderGrid({
   layout = 'page',
   showPageHeader: showPageHeaderProp,
   capabilityTabs: capabilityTabsProp,
+  hideCapabilityBadges = false,
 }: ProviderGridProps) {
   const { t } = useTranslation();
   const isEmbedded = layout === 'embedded';
@@ -95,6 +104,15 @@ export function ProviderGrid({
     () => capabilityFilteredProviders.filter((p) => matchSearch(p, searchQuery)),
     [capabilityFilteredProviders, searchQuery, matchSearch]
   );
+
+  const configuredCount = useMemo(() => {
+    const types = modelTypesForSection(capabilitySection);
+    let total = 0;
+    for (const mt of types) {
+      total += (configuredModels[mt] ?? []).length;
+    }
+    return total;
+  }, [configuredModels, capabilitySection]);
 
   const pageSearchFieldStyle: React.CSSProperties = {
     width: '100%',
@@ -218,6 +236,23 @@ export function ProviderGrid({
             </SegmentedControl.Item>
             <SegmentedControl.Item value="configured">
               {t('workspace.aiModels.mainSectionConfigured')}
+              {configuredCount > 0 ? (
+                <Text
+                  as="span"
+                  size="1"
+                  weight="medium"
+                  style={{
+                    marginLeft: 6,
+                    padding: '1px 6px',
+                    borderRadius: 999,
+                    backgroundColor: 'var(--gray-a4)',
+                    color: 'var(--gray-12)',
+                    lineHeight: '16px',
+                  }}
+                >
+                  {configuredCount}
+                </Text>
+              ) : null}
             </SegmentedControl.Item>
           </SegmentedControl.Root>
         </Box>
@@ -318,6 +353,7 @@ export function ProviderGrid({
                 key={provider.providerId}
                 provider={provider}
                 onConfigure={() => onAdd(provider, capabilitySection)}
+                hideCapabilityBadges={hideCapabilityBadges}
               />
             ))}
           </Grid>
