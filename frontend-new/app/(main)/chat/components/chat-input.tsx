@@ -937,7 +937,10 @@ export function ChatInput({
         {/* Right side - Controls */}
         <Flex align="center" gap="2">
           {isMobile ? (
-            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline */
+            /* Mobile: meatball opens bottom sheet; attach_file and mic stay inline.
+               NOTE: Attach button is temporarily hidden until the upload flow is
+               wired up end-to-end. Keep the JSX commented so it can be restored
+               alongside the rest of the upload UI. */
             <Flex align="center" gap="1">
               <IconButton
                 variant="ghost"
@@ -948,6 +951,7 @@ export function ChatInput({
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
+              {/*
               <IconButton
                 variant={showUploadArea ? 'soft' : 'ghost'}
                 color="gray"
@@ -958,6 +962,7 @@ export function ChatInput({
               >
                 <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
               </IconButton>
+              */}
               <IconButton
                 variant="ghost"
                 color="gray"
@@ -1052,6 +1057,10 @@ export function ChatInput({
                     )}
                   </Flex>
                 </Tooltip>
+                {/* Attach button — temporarily hidden until the upload flow is
+                    wired up end-to-end. Keep the JSX commented so it can be
+                    restored alongside the rest of the upload UI. */}
+                {/*
                 <Tooltip content={t('chat.attachmentTooltip')} side="top">
                   <IconButton
                     variant={showUploadArea ? 'soft' : 'ghost'}
@@ -1064,6 +1073,7 @@ export function ChatInput({
                     <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
                   </IconButton>
                 </Tooltip>
+                */}
                 <Tooltip
                   content={
                     !isSpeechSupported

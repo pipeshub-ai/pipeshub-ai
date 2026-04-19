@@ -316,7 +316,7 @@
     },
     "queryModes": {
       "chat": {
-        "label": "Chat",
+        "label": "Búsqueda interna",
         "toolbarLabel": "Chat",
         "description": "Piensa, pregunta y razona sobre tu conocimiento en un flujo conversacional"
       },

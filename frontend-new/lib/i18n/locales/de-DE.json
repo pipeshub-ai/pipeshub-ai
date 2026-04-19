@@ -316,7 +316,7 @@
     },
     "queryModes": {
       "chat": {
-        "label": "Chat",
+        "label": "Interne Suche",
         "toolbarLabel": "Chat",
         "description": "Denken, fragen und schlussfolgern Sie im konversationellen Fluss durch Ihr Wissen"
       },
