@@ -12,7 +12,6 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore } from '@/chat/store';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { buildChatHref, openFreshAgentChat } from '@/chat/build-chat-url';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
 import { ChatSidebarHeader } from './header';
@@ -83,9 +82,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
       ]);
       setAgentStreamTools(agentRes.toolFullNames);
       setAgentContextAccess(
-        agentRes.agent
-          ? getAgentSidebarRowMenuAccess(agentRes.agent as unknown as AgentListRecord)
-          : null,
+        agentRes.agent ? getAgentSidebarRowMenuAccess(agentRes.agent) : null,
       );
       setAgentConversations(conv.conversations);
       setAgentConversationsPagination(conv.pagination);

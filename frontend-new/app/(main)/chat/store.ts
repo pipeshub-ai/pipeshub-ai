@@ -507,6 +507,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentMoreChatsPagination: null,
         agentStreamTools: [],
         agentContextDisplayName: null,
+        agentContextAccess: null,
         isAgentsSidebarOpen: false,
       };
     }),
