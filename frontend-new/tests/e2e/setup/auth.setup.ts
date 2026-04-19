@@ -26,6 +26,6 @@ setup('authenticate', async ({ page }) => {
   await page.waitForURL('**/chat/**', { timeout: 15_000 });
   await expect(page).toHaveURL(/\/chat\//);
 
-  // Save auth state (includes localStorage with auth-storage key)
+  // Save auth state (includes localStorage tokens at jwt_access_token / jwt_refresh_token)
   await page.context().storageState({ path: AUTH_FILE });
 });

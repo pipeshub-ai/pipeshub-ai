@@ -1,4 +1,13 @@
 # -----------------------------------------------------------------------------
+# Global build args
+# -----------------------------------------------------------------------------
+# FRONTEND picks which frontend implementation to ship:
+#   --build-arg FRONTEND=old  -> legacy Vite app in `frontend/`  (default)
+#   --build-arg FRONTEND=new  -> Next.js app in `frontend-new/`
+# Declared before the first FROM so it can be used in `FROM ... AS ...` stages.
+ARG FRONTEND=old
+
+# -----------------------------------------------------------------------------
 # Stage 1: Build Base - Contains all build tools (NOT in final image)
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim AS build-base
@@ -38,11 +47,24 @@ WORKDIR /app/python
 COPY ./backend/python/pyproject.toml ./
 
 # Install Python dependencies
+# FASTEMBED_CACHE_PATH is set so fastembed writes to a persistent location
+# (by default it uses /tmp/fastembed_cache which we wipe below). The same
+# env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
+# runtime finds the pre-downloaded model without any code change.
+ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 RUN uv pip install --system -e . && \
-    # Download ML models
+    # Download ML models so the runtime image doesn't have to pull them over
+    # the network on first use (which previously stalled query service
+    # startup by minutes on cold caches).
     python -m spacy download en_core_web_sm && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
-    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    # Default dense embedding model used by RetrievalService (see
+    # app/config/constants/ai_models.py -> DEFAULT_EMBEDDING_MODEL). Downloading
+    # via HuggingFaceEmbeddings matches the runtime import path and populates
+    # /root/.cache/huggingface.
+    python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5', model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})" && \
+    # Sparse embedding model used by FastEmbedSparse in RetrievalService.__init__.
+    python -c "from langchain_qdrant import FastEmbedSparse; FastEmbedSparse(model_name='Qdrant/BM25')" && \
     # Clean up caches to save space
     rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
 
@@ -77,9 +99,10 @@ RUN npm run build && \
     npm cache clean --force
 
 # -----------------------------------------------------------------------------
-# Stage 4: Frontend Build
+# Stage 4a: Frontend Build (Vite / legacy `frontend/`)
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS frontend-build
+# Selected when FRONTEND=old (default). Produces static assets at /out.
+FROM node:20-slim AS frontend-build-old
 WORKDIR /app/frontend
 
 RUN mkdir -p packages
@@ -91,7 +114,45 @@ RUN npm config set legacy-peer-deps true && \
     npm cache clean --force
 
 COPY frontend/ ./
-RUN npm run build
+RUN npm run build && \
+    mkdir -p /out && \
+    cp -a dist/. /out/
+
+# -----------------------------------------------------------------------------
+# Stage 4b: Frontend Build (Next.js / `frontend-new/`)
+# -----------------------------------------------------------------------------
+# Selected when FRONTEND=new. Builds the Next.js app as a static export so the
+# output can continue to be served as static files by the Node.js backend
+# from `backend/dist/public`, matching the legacy setup.
+FROM node:20-slim AS frontend-build-new
+WORKDIR /app/frontend
+
+COPY frontend-new/package*.json ./
+
+RUN npm config set legacy-peer-deps true && \
+    npm install && \
+    npm cache clean --force
+
+COPY frontend-new/ ./
+
+# Force Next.js static export regardless of what next.config.mjs ships with,
+# so the resulting assets can be served directly from disk.
+RUN if grep -q "output: 'export'" next.config.mjs; then \
+        sed -i "s|//[[:space:]]*output: 'export',|output: 'export',|" next.config.mjs; \
+    else \
+        sed -i "s|const nextConfig = {|const nextConfig = { output: 'export',|" next.config.mjs; \
+    fi && \
+    npm run build && \
+    mkdir -p /out && \
+    cp -a out/. /out/
+
+# -----------------------------------------------------------------------------
+# Stage 4: Frontend Build (selector)
+# -----------------------------------------------------------------------------
+# Aliases the selected frontend stage (see global ARG FRONTEND above) so the
+# rest of the Dockerfile can simply reference `frontend-build`.
+ARG FRONTEND
+FROM frontend-build-${FRONTEND} AS frontend-build
 
 # -----------------------------------------------------------------------------
 # Stage 5: Runtime Base - Minimal runtime dependencies only
@@ -155,12 +216,17 @@ RUN apt-get update && \
 FROM runtime-base AS runtime
 WORKDIR /app
 
+# Point fastembed at the pre-populated cache we copy in below, matching the
+# FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
+ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+
 # Copy Python site-packages from build stage
 COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-deps /usr/local/bin /usr/local/bin
 
-# Copy ML model data
+# Copy ML model data (dense HF embeddings + reranker, sparse fastembed, NLTK)
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
 COPY --from=python-deps /root/nltk_data /root/nltk_data
 
 # Copy Node.js backend (already pruned)
@@ -169,8 +235,8 @@ COPY --from=nodejs-backend /app/backend/src/modules/mail ./backend/src/modules/m
 COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
 COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
 
-# Copy frontend build
-COPY --from=frontend-build /app/frontend/dist ./backend/dist/public
+# Copy frontend build (normalized to /out by the selected frontend stage)
+COPY --from=frontend-build /out ./backend/dist/public
 
 # Copy Python application code
 COPY backend/python/app/ /app/python/app/

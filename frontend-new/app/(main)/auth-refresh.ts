@@ -10,7 +10,7 @@
 import { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime'
 import { useAuthStore } from '@/lib/store/auth-store'
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL
+const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? ''
 
 // In-memory lock to prevent multiple simultaneous refresh attempts
 let isRefreshing = false

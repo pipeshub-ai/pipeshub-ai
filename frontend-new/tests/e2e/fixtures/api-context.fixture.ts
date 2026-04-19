@@ -4,29 +4,22 @@ import * as fs from 'fs';
 
 /**
  * Extracts the access token from the saved auth storage state.
- * The auth store persists to localStorage under key "auth-storage"
- * with shape: { state: { accessToken, refreshToken }, version: 0 }
+ * The auth store persists each token as a plain string under
+ * localStorage key "jwt_access_token" / "jwt_refresh_token".
  */
 function getAccessToken(): string {
   const raw = fs.readFileSync('.auth/user.json', 'utf-8');
   const storageState = JSON.parse(raw);
 
-  const authEntry = storageState.origins
+  const tokenEntry = storageState.origins
     ?.flatMap((o: { localStorage: { name: string; value: string }[] }) => o.localStorage)
-    ?.find((item: { name: string }) => item.name === 'auth-storage');
+    ?.find((item: { name: string }) => item.name === 'jwt_access_token');
 
-  if (!authEntry) {
-    throw new Error('auth-storage not found in .auth/user.json — run the setup project first.');
+  if (!tokenEntry || !tokenEntry.value) {
+    throw new Error('jwt_access_token not found in .auth/user.json — run the setup project first.');
   }
 
-  const parsed = JSON.parse(authEntry.value);
-  const token = parsed?.state?.accessToken;
-
-  if (!token) {
-    throw new Error('accessToken missing in auth-storage — login may have failed.');
-  }
-
-  return token;
+  return tokenEntry.value;
 }
 
 type ApiFixtures = {

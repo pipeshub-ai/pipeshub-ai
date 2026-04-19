@@ -200,6 +200,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
           )}
           <ProviderGrid
             layout="embedded"
+            hideCapabilityBadges
             providers={providers}
             configuredModels={configuredModels}
             searchQuery={searchQuery}

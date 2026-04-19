@@ -30,7 +30,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = useAuthStore((s) => s.isHydrated);
-
+  
   useEffect(() => {
     if (!isHydrated) return;
     if (!isAuthenticated) {

@@ -3619,10 +3619,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
-    async def get_user_apps(self, user_key: str) -> list[dict]:
-        """Get all apps (connectors) associated with a user by user document key (_key)."""
+    async def get_user_apps(self, user_id: str) -> list[dict]:
+        """Get all apps (connectors) associated with a user by user document key (_key).
+
+        Note: The parameter is named ``user_id`` for cross-provider consistency
+        (see Neo4j provider), but in ArangoDB this value is the user document's
+        ``_key``.
+        """
         try:
-            user_from = f"{CollectionNames.USERS.value}/{user_key}"
+            user_from = f"{CollectionNames.USERS.value}/{user_id}"
             query = f"""
             LET user_apps = (
                 FOR app IN OUTBOUND @user_from {CollectionNames.USER_APP_RELATION.value}
