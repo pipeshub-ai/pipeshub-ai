@@ -75,7 +75,7 @@ function isTokenExpired(token: string | null): boolean {
   const decoded = decodeToken(token);
   if (!decoded || typeof decoded.exp !== 'number') return false;
   const nowSeconds = Date.now() / 1000;
-  return decoded.exp < nowSeconds;
+return decoded.exp < nowSeconds + 30;
 }
 
 export const apiClient = axios.create({
