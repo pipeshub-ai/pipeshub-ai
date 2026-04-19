@@ -47,7 +47,6 @@ async def gcs_connector(
         storage_name="GCS bucket",
         connector_type="GCS",
         connector_config=config,
-        create_fn="create_bucket",
     )
     state["bucket_name"] = state["resource_name"]
     yield state

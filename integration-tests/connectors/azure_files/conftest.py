@@ -41,7 +41,6 @@ async def azure_files_connector(
         storage_name="Azure Files share",
         connector_type="Azure Files",
         connector_config=config,
-        create_fn="create_share",
     )
     resource = state["resource_name"]
     state["share_name"] = resource

@@ -77,8 +77,20 @@ STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
 RESOURCE_NAME = "pipeshub-integration-tests"
 
 
-def ensure_resource_exists(storage: object, resource_name: str, create_fn: str) -> None:
-    """Create storage resource if missing, otherwise reuse. Retries on name conflicts / eventual consistency."""
+def ensure_resource_exists(storage: object, resource_name: str, create_fn: str | None) -> None:
+    """Create storage resource if missing, otherwise reuse. Retries on name conflicts / eventual consistency.
+
+    If *create_fn* is ``None`` the resource is assumed to be pre-created and
+    only an accessibility check is performed (no create/delete permissions needed).
+    """
+    if create_fn is None:
+        objects = storage.list_objects(resource_name)
+        assert isinstance(objects, list), (
+            f"Pre-existing resource {resource_name} is not accessible. "
+            "Ensure it has been created before running these tests."
+        )
+        return
+
     conflict_markers = (
         "BucketAlreadyOwnedByYou",
         "BucketAlreadyExists",
@@ -115,11 +127,15 @@ async def constructor(
     storage_name: str,
     connector_type: str,
     connector_config: dict,
-    create_fn: str = "create_bucket",
+    create_fn: str | None = None,
     scope: str = "personal",
     auth_type: str | None = None,
 ) -> Dict[str, Any]:
-    """Ensure storage exists, upload data, create connector, wait for full sync."""
+    """Verify pre-provisioned storage is reachable, upload data, create connector, wait for full sync.
+
+    With *create_fn* ``None`` (default for all storage connector fixtures), the bucket/container/share
+    must already exist; only list/access is checked before upload.
+    """
     resource_name = RESOURCE_NAME
     connector_name = f"{connector_type.lower().replace(' ', '-')}-lifecycle-test-{uuid.uuid4().hex[:8]}"
 
