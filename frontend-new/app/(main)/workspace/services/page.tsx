@@ -29,7 +29,8 @@ import { apiClient } from '@/lib/api/axios-instance';
 
 interface ServiceMeta {
   key: string;
-  icon: string;
+  icon?: string;
+  logoSlug?: string;
   label: string;
   description: string;
 }
@@ -38,26 +39,34 @@ interface Deployment {
   kvStoreType: string;
   messageBrokerType: string;
   graphDbType: string;
+  vectorDbType?: string;
 }
+
+const LOGO_SIZE = 22;
 
 function buildInfraServices(deployment: Deployment | null): ServiceMeta[] {
   const services: ServiceMeta[] = [];
 
   if (deployment?.kvStoreType === 'redis') {
-    services.push({ key: 'redis', icon: 'memory', label: 'Redis', description: 'Caching, rate limiting, and configuration' });
+    services.push({ key: 'redis', logoSlug: 'redis', label: 'Redis', description: 'Caching, rate limiting, and configuration' });
   } else {
-    services.push({ key: 'redis', icon: 'memory', label: 'Redis', description: 'Caching and rate limiting' });
+    services.push({ key: 'redis', logoSlug: 'redis', label: 'Redis', description: 'Caching and rate limiting' });
   }
 
-  services.push({ key: 'mongodb', icon: 'storage', label: 'MongoDB', description: 'Sessions and user metadata' });
-  services.push({ key: 'messageBroker', icon: 'swap_horiz', label: 'Message Broker', description: 'Distributed event streaming' });
+  services.push({ key: 'mongodb', logoSlug: 'mongodb', label: 'MongoDB', description: 'Sessions and user metadata' });
+
+  const brokerSlug = deployment?.messageBrokerType === 'redis' ? 'redis' : 'apachekafka';
+  services.push({ key: 'messageBroker', logoSlug: brokerSlug, label: 'Message Broker', description: 'Distributed event streaming' });
 
   if (deployment?.kvStoreType === 'etcd') {
-    services.push({ key: 'KVStoreservice', icon: 'settings_ethernet', label: 'etcd', description: 'Distributed configuration' });
+    services.push({ key: 'KVStoreservice', logoSlug: 'etcd', label: 'etcd', description: 'Distributed configuration' });
   }
 
-  services.push({ key: 'graphDb', icon: 'account_tree', label: 'Graph Database', description: 'Knowledge graphs' });
-  services.push({ key: 'vectorDb', icon: 'scatter_plot', label: 'Vector Database', description: 'Semantic search embeddings' });
+  const graphSlug = deployment?.graphDbType === 'neo4j' ? 'neo4j' : 'arangodb';
+  services.push({ key: 'graphDb', logoSlug: graphSlug, label: 'Graph Database', description: 'Knowledge graphs' });
+
+  const vectorSlug = deployment?.vectorDbType || 'qdrant';
+  services.push({ key: 'vectorDb', logoSlug: vectorSlug, label: 'Vector Database', description: 'Semantic search embeddings' });
 
   return services;
 }
@@ -65,7 +74,7 @@ function buildInfraServices(deployment: Deployment | null): ServiceMeta[] {
 const APP_SERVICES: ServiceMeta[] = [
   { key: 'query', icon: 'search', label: 'Query Service', description: 'RAG, semantic search, and LLM integration' },
   { key: 'connector', icon: 'hub', label: 'Connector Service', description: 'OAuth, token refresh, and data source integrations' },
-  { key: 'indexing', icon: 'inventory_2', label: 'Indexing Service', description: 'Document parsing, embedding generation, and chunking' },
+  { key: 'indexing', icon: 'dataset', label: 'Indexing Service', description: 'Document parsing, embedding generation, and chunking' },
   { key: 'docling', icon: 'description', label: 'Docling Service', description: 'Advanced document parsing and OCR' },
 ];
 
@@ -127,7 +136,22 @@ function ServiceRow({
           flexShrink: 0,
         }}
       >
-        <MaterialIcon name={meta.icon} size={18} color="var(--slate-11)" />
+        {meta.logoSlug ? (
+          <Box
+            role="img"
+            aria-label={`${meta.label} logo`}
+            style={{
+              width: LOGO_SIZE,
+              height: LOGO_SIZE,
+              backgroundImage: `url(/icons/logos/${meta.logoSlug}.svg)`,
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'center',
+              backgroundSize: 'contain',
+            }}
+          />
+        ) : meta.icon ? (
+          <MaterialIcon name={meta.icon} size={18} color="var(--slate-11)" />
+        ) : null}
       </Flex>
 
       {/* Label + description */}
