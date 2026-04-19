@@ -4,8 +4,12 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Box, Text, Heading } from '@radix-ui/themes';
-import { InlineCitationBadge } from './response-tabs/citations';
-import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
+import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
+import type {
+  CitationMaps,
+  CitationCallbacks,
+  CitationData,
+} from './response-tabs/citations';
 
 interface AnswerContentProps {
   content: string;
@@ -13,8 +17,50 @@ interface AnswerContentProps {
   citationCallbacks?: CitationCallbacks;
 }
 
+interface CitationMatch {
+  chunkIndex: number;
+  citation?: CitationData;
+  index: number;
+  length: number;
+  key: string;
+}
+
 /**
- * Parse a single text string, replacing `[N]` markers with InlineCitationBadge components.
+ * Emit either an InlineCitationGroup (2+ consecutive same-record markers) or an
+ * InlineCitationBadge (single marker) for a run of citation matches.
+ */
+function emitRun(
+  run: CitationMatch[],
+  citationCallbacks?: CitationCallbacks,
+): React.ReactNode {
+  if (run.length >= 2 && run.every((m) => m.citation)) {
+    return (
+      <InlineCitationGroup
+        key={`cite-group-${run[0].key}`}
+        items={run.map((m) => ({
+          chunkIndex: m.chunkIndex,
+          citation: m.citation as CitationData,
+        }))}
+        callbacks={citationCallbacks}
+      />
+    );
+  }
+
+  const only = run[0];
+  return (
+    <InlineCitationBadge
+      key={`cite-${only.key}`}
+      chunkIndex={only.chunkIndex}
+      citation={only.citation}
+      callbacks={citationCallbacks}
+    />
+  );
+}
+
+/**
+ * Parse a single text string, replacing `[N]` markers with citation components.
+ * Consecutive markers pointing at the same recordId — separated only by
+ * whitespace — are collapsed into a single InlineCitationGroup.
  */
 function parseInlineCitations(
   text: string,
@@ -23,45 +69,79 @@ function parseInlineCitations(
 ): React.ReactNode[] {
   const citationRegex = /\[{1,2}(\d+)\]{1,2}/g;
   const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match;
 
-  while ((match = citationRegex.exec(text)) !== null) {
-    // Text before the marker
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-
-    const chunkIndex = parseInt(match[1], 10);
+  const matches: CitationMatch[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = citationRegex.exec(text)) !== null) {
+    const chunkIndex = parseInt(m[1], 10);
     const citationId = citationMaps?.citationsOrder[chunkIndex];
     const citation = citationId ? citationMaps?.citations[citationId] : undefined;
-
-    parts.push(
-      <InlineCitationBadge
-        key={`cite-${match.index}`}
-        chunkIndex={chunkIndex}
-        citation={citation}
-        callbacks={citationCallbacks}
-      />,
-    );
-
-    let afterIndex = match.index + match[0].length;
-    const nextChar = text[afterIndex];
-    // If the citation marker appears immediately before punctuation (e.g. "reports[1]."),
-    // move the punctuation before the badge so it reads "reports. [badge]" instead of "reports [badge]."
-    if (nextChar && /^[.!?;:,]/.test(nextChar)) {
-      const badge = parts.pop()!;
-      parts.push(nextChar);
-      parts.push(badge);
-      afterIndex += 1;
-    }
-
-    lastIndex = afterIndex;
+    matches.push({
+      chunkIndex,
+      citation,
+      index: m.index,
+      length: m[0].length,
+      key: `${m.index}-${chunkIndex}`,
+    });
   }
 
-  // Remaining text
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
+  if (matches.length === 0) {
+    return [text];
+  }
+
+  let cursor = 0;
+  let i = 0;
+  while (i < matches.length) {
+    const runStart = matches[i];
+
+    // Emit any plain text before this run starts
+    if (runStart.index > cursor) {
+      parts.push(text.slice(cursor, runStart.index));
+    }
+
+    // Build a run of consecutive markers sharing a recordId, separated only
+    // by whitespace. Single markers (or markers whose citation data isn't
+    // loaded yet) form runs of length 1.
+    const run: CitationMatch[] = [runStart];
+    const anchorRecordId = runStart.citation?.recordId;
+
+    if (anchorRecordId) {
+      while (i + 1 < matches.length) {
+        const prev = run[run.length - 1];
+        const next = matches[i + 1];
+        const nextRecordId = next.citation?.recordId;
+        if (!nextRecordId || nextRecordId !== anchorRecordId) break;
+
+        const gap = text.slice(prev.index + prev.length, next.index);
+        // Only whitespace between markers counts as "adjacent"
+        if (gap.length > 0 && !/^\s*$/.test(gap)) break;
+
+        run.push(next);
+        i += 1;
+      }
+    }
+
+    const runEnd = run[run.length - 1];
+    let afterIndex = runEnd.index + runEnd.length;
+
+    // Emit the run, then handle punctuation-swap on the last marker so
+    // "reports[1][2]." reads as "reports. [group]"
+    const runNode = emitRun(run, citationCallbacks);
+    const nextChar = text[afterIndex];
+    if (nextChar && /^[.!?;:,]/.test(nextChar)) {
+      parts.push(nextChar);
+      parts.push(runNode);
+      afterIndex += 1;
+    } else {
+      parts.push(runNode);
+    }
+
+    cursor = afterIndex;
+    i += 1;
+  }
+
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor));
   }
 
   return parts.length > 0 ? parts : [text];

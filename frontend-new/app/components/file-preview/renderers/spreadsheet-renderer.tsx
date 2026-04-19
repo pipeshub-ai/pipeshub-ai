@@ -306,11 +306,21 @@ interface SpreadsheetRendererProps {
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function SpreadsheetRenderer({ fileUrl, fileName: _fileName, citations, activeCitationId, onHighlightClick }: SpreadsheetRendererProps) {
+export function SpreadsheetRenderer({ fileUrl, fileName, citations, activeCitationId, onHighlightClick }: SpreadsheetRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [state, dispatch] = useReducer(viewerReducer, INITIAL_STATE);
   const tableRef = useRef<HTMLDivElement>(null);
+  // Abort any outstanding scroll-retry loop so a newer citation click doesn't
+  // race with an older pending scroll.
+  const scrollTokenRef = useRef(0);
+
+  // Backend block numbers for CSV files are 0-based while our __rowNum is
+  // 1-based (Excel convention). Mirrors the old UI (excel-highlighter.tsx).
+  const rowOffset = useMemo(() => {
+    const ext = fileName?.split('.').pop()?.toLowerCase();
+    return ext === 'csv' ? 1 : 0;
+  }, [fileName]);
 
   // ── Inject animation styles ─────────────────────────────────────
   useEffect(() => { ensureSpreadsheetStyles(); }, []);
@@ -365,12 +375,32 @@ export function SpreadsheetRenderer({ fileUrl, fileName: _fileName, citations, a
     for (const c of citations) {
       if (c.paragraphNumbers?.length) {
         for (const row of c.paragraphNumbers) {
-          map.set(row, c.id); // paragraphNumbers store Excel row numbers (1-based)
+          // For CSV files, block numbers are 0-based — shift by +1 to match __rowNum.
+          map.set(row + rowOffset, c.id);
         }
       }
     }
     return map;
-  }, [citations]);
+  }, [citations, rowOffset]);
+
+  // ── Find which sheet contains a given (1-based) row number ───────
+  // We prefer the currently-selected sheet; otherwise scan other sheets
+  // for a row with matching __rowNum so cross-sheet citations still work.
+  const findSheetForRow = useCallback(
+    (rowNum: number): string | null => {
+      if (!state.workbookData) return null;
+      const current = state.workbookData[state.selectedSheet];
+      if (current?.data.some((r) => r.__rowNum === rowNum)) {
+        return state.selectedSheet;
+      }
+      for (const [sheet, data] of Object.entries(state.workbookData)) {
+        if (sheet === state.selectedSheet) continue;
+        if (data.data.some((r) => r.__rowNum === rowNum)) return sheet;
+      }
+      return null;
+    },
+    [state.workbookData, state.selectedSheet],
+  );
 
   // ── Apply highlight from citation ───────────────────────────────
   const applyHighlight = useCallback(
@@ -385,29 +415,64 @@ export function SpreadsheetRenderer({ fileUrl, fileName: _fileName, citations, a
     [],
   );
 
-  // ── Scroll to a row ─────────────────────────────────────────────
+  // ── Scroll to a row (retries until the row is rendered) ─────────
   const scrollToRow = useCallback((rowNum: number) => {
-    const container = tableRef.current;
-    if (!container) return;
+    scrollTokenRef.current += 1;
+    const token = scrollTokenRef.current;
+    const deadline = Date.now() + 2000; // retry for up to 2s while the table is rendering
 
-    requestAnimationFrame(() => {
-      const row = container.querySelector(`tr[data-row="${rowNum}"]`);
+    const attempt = () => {
+      if (token !== scrollTokenRef.current) return; // superseded
+      const container = tableRef.current;
+      const row = container?.querySelector(`tr[data-row="${rowNum}"]`);
       if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Instant position first, then smooth center — matches old UI feel
+        row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        requestAnimationFrame(() => {
+          if (token !== scrollTokenRef.current) return;
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return;
       }
-    });
+      if (Date.now() < deadline) {
+        setTimeout(attempt, 50);
+      }
+    };
+
+    attempt();
   }, []);
 
   // ── Handle active citation changes ──────────────────────────────
+  // Depends on workbookData + selectedSheet so we re-run once the file
+  // finishes loading or the user switches to the sheet containing the row.
   useEffect(() => {
     if (!activeCitationId || !citations?.length) return;
+    if (!state.workbookData) return; // wait for data
+
     const citation = citations.find((c) => c.id === activeCitationId);
     if (!citation?.paragraphNumbers?.length) return;
 
-    const rowNum = citation.paragraphNumbers[0];
+    const rowNum = citation.paragraphNumbers[0] + rowOffset;
+
+    const targetSheet = findSheetForRow(rowNum);
+    if (targetSheet && targetSheet !== state.selectedSheet) {
+      // Switch sheet first — effect will re-run once selectedSheet updates
+      dispatch({ type: 'SET_SELECTED_SHEET', sheet: targetSheet });
+      return;
+    }
+
     applyHighlight(rowNum, activeCitationId);
     scrollToRow(rowNum);
-  }, [activeCitationId, citations, applyHighlight, scrollToRow]);
+  }, [
+    activeCitationId,
+    citations,
+    rowOffset,
+    applyHighlight,
+    scrollToRow,
+    findSheetForRow,
+    state.workbookData,
+    state.selectedSheet,
+  ]);
 
   // ── Handle row click for citation ───────────────────────────────
   const handleRowClick = useCallback(

@@ -33,6 +33,12 @@ export interface ChatPreviewFile {
   highlightBox?: Array<{ x: number; y: number }>;
   /** Citations for the previewed record (used by the CitationsPanel) */
   citations?: PreviewCitation[];
+  /**
+   * Citation id the user actually clicked (from citation.citationId).
+   * Used to seed the CitationsPanel so clicking `[2]` highlights citation [2],
+   * not the first citation on the target page.
+   */
+  initialCitationId?: string;
 }
 
 /**

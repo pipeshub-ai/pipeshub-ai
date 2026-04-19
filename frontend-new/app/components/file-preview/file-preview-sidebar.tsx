@@ -28,6 +28,7 @@ export function FilePreviewSidebar({
   initialPage,
   highlightBox,
   citations,
+  initialCitationId,
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
@@ -91,6 +92,7 @@ export function FilePreviewSidebar({
     onPageChange: handlePageChange,
     initialHighlightBox: highlightBox,
     initialPage,
+    initialCitationId,
   });
 
   // Create pagination controls object
@@ -116,6 +118,7 @@ export function FilePreviewSidebar({
         initialPage={initialPage}
         highlightBox={highlightBox}
         citations={citations}
+        initialCitationId={initialCitationId}
       />
     );
   }

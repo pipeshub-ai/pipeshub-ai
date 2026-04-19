@@ -129,6 +129,7 @@ export function useCitationActions(): CitationCallbacks {
           initialPage,
           highlightBox,
           citations: recordCitations,
+          initialCitationId: citation.citationId,
         });
         setPreviewMode('sidebar');
 
@@ -155,6 +156,7 @@ export function useCitationActions(): CitationCallbacks {
           initialPage,
           highlightBox,
           citations: recordCitations,
+          initialCitationId: citation.citationId,
         });
       } catch (error) {
         console.error('Failed to load file preview:', error);

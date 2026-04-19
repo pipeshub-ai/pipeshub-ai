@@ -137,7 +137,7 @@ function CollectionTreeSection({
 
       {/* Tree items or empty state */}
       {nodes.length > 0 ? (
-        <Box className="no-scrollbar" style={{ overflowX: 'auto' }}>
+        <Box className="no-scrollbar" style={{ overflow: 'hidden' }}>
           <Flex direction="column" gap="0">
             {nodes.map((node) => (
               <FolderTreeItem

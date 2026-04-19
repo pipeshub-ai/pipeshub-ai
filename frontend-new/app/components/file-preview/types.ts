@@ -109,6 +109,13 @@ export interface FilePreviewProps {
 
   /** Citations to display in the citations panel (omit or empty to hide panel) */
   citations?: PreviewCitation[];
+
+  /**
+   * Id of the citation the user clicked to open this preview.
+   * Seeds the active citation in the panel so clicking `[2]` highlights
+   * citation [2] even when multiple citations share the same page.
+   */
+  initialCitationId?: string;
 }
 
 /**

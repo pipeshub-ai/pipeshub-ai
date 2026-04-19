@@ -925,6 +925,7 @@ function ChatContent() {
           initialPage={previewFile.initialPage}
           highlightBox={previewFile.highlightBox}
           citations={previewFile.citations}
+          initialCitationId={previewFile.initialCitationId}
           defaultTab="preview"
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
@@ -949,6 +950,7 @@ function ChatContent() {
           initialPage={previewFile.initialPage}
           highlightBox={previewFile.highlightBox}
           citations={previewFile.citations}
+          initialCitationId={previewFile.initialCitationId}
           defaultTab="preview"
           onClose={() => clearPreview()}
         />

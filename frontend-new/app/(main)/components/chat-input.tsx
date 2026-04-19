@@ -25,14 +25,18 @@ interface ChatInputProps {
   contextName?: string;
 }
 
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'PNG', 'JPEG', 'JPG'];
+const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOCX', 'CSV', 'PNG', 'JPEG', 'JPG'];
 const ACCEPTED_MIME_TYPES = {
   'text/plain': 'TXT',
   'application/pdf': 'PDF',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
+  'text/csv': 'CSV',
+  'application/csv': 'CSV',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
 };
+// Extension fallback for files with missing/generic MIME types (e.g. CSV).
+const ACCEPTED_EXTENSIONS = ['txt', 'pdf', 'docx', 'csv', 'png', 'jpeg', 'jpg'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -42,7 +46,9 @@ function formatFileSize(bytes: number): string {
 
 function isFileTypeSupported(file: File): boolean {
   const mimeType = file.type;
-  return Object.keys(ACCEPTED_MIME_TYPES).includes(mimeType);
+  if (Object.keys(ACCEPTED_MIME_TYPES).includes(mimeType)) return true;
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return ACCEPTED_EXTENSIONS.includes(ext);
 }
 
 export function ChatInput({
@@ -265,7 +271,10 @@ export function ChatInput({
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".txt,.pdf,.docx,.png,.jpeg,.jpg"
+              accept={[
+                ...Object.keys(ACCEPTED_MIME_TYPES),
+                ...ACCEPTED_EXTENSIONS.map((e) => `.${e}`),
+              ].join(',')}
               onChange={handleFileSelect}
               style={{ display: 'none' }}
             />
