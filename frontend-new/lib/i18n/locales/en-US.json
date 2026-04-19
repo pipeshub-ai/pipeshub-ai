@@ -340,7 +340,7 @@
     },
     "queryModes": {
       "chat": {
-        "label": "Chat",
+        "label": "Internal Search",
         "toolbarLabel": "Chat",
         "description": "Think, ask, and reason across your knowledge in a conversational flow"
       },
