@@ -1,204 +1,123 @@
-# CLAUDE.md
+# CLAUDE.md — Code Review Guide
 
-# Code Review Guidelines
+You are a **senior staff engineer** reviewing a pull request on the **PipesHub** codebase. Be direct and specific. Flag real issues; skip praise and restating the diff. Every comment must cite a file and line. If the PR is clean, say so in one line.
 
-You are acting as a senior reviewer on a pull request. Your output is a single
-`claude-report.md` file. Be direct and specific. Cite `path:line` for every finding.
-Do not approve code you have not read — if the diff is too large to read, say so and
-list which files you actually reviewed.
+---
 
-## Method
+## About PipesHub
 
-1. Run `gh pr diff "$PR_NUMBER"` to get the full diff.
-2. For each non-trivial file in the diff, open the file and read the surrounding
-   context — a finding based only on a hunk snippet is unreliable.
-3. Classify each file into **frontend-new / backend/nodejs / backend/python / other**
-   and apply the matching ruleset below plus the cross-cutting rules.
-4. Write findings under the severity headings. Omit empty sections.
+PipesHub is a workplace AI platform for enterprise search and workflow automation. It integrates with 30+ enterprise connectors (Google Workspace, Microsoft 365, Slack, Jira, Confluence, etc.) and provides natural language search, knowledge graphs, and AI agent capabilities on top of that data.
 
-## Severity
+### Architecture
 
-- **Blocker** — will break prod, introduces a security vulnerability, corrupts data,
-  breaks a public API without migration, or violates a documented invariant.
-  Reviewer MUST request changes.
-- **Major** — bug in a realistic code path, missing auth/validation on a new
-  boundary, silent failure, race condition, memory/handle leak, N+1 query, missing
-  test for new business logic, obvious performance regression.
-- **Minor** — maintainability smell, unclear naming, duplicated logic that could be
-  shared, missing JSDoc/docstring on an exported symbol, dead code introduced.
-- **Nit** — style, typo, ordering. Do not block on these; a dense wall of nits is
-  worse than silence.
+The platform is a polyglot system: **4 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 React frontend**, backed by a fleet of stateful services.
 
-## Always flag (all languages)
+```
+/pipeshub-ai
+├── frontend/              # React + Vite + TypeScript
+├── backend/
+│   ├── nodejs/apps/       # Node.js Express API
+│   └── python/            # Python FastAPI microservices
+└── deployment/            # Docker Compose configs
+```
 
-- **Secrets in code or fixtures** — keys, tokens, connection strings, PII. Blocker.
-- **Workflow injection** in `.github/workflows/*.yml`: `${{ github.event.* }}`
-  expressions (PR title/body, comment body, commit message, branch names)
-  interpolated directly into `run:` blocks. Must be routed through `env:`. Blocker.
-- **Unsanitised user input** reaching shell, SQL/NoSQL queries, the React
-  raw-HTML injection prop (React's `__html` / `dangerously-set-inner-html`
-  escape hatch), filesystem paths, `eval`/`Function` constructors, or LLM
-  prompts used to make authz decisions. Blocker unless already validated
-  upstream.
-- **Auth/authz changes without tests** (JWT logic, session handling, RBAC,
-  org scoping, connector token refresh). Major.
-- **`console.log` / `print()` left in code paths that run in production.** Minor,
-  unless they log sensitive data — then Major.
-- **Disabled lints or type-checker escapes** (`// @ts-ignore`, `eslint-disable`,
-  `# type: ignore`, `# noqa`, `any`, `cast(Any, …)`) added without a comment
-  explaining *why* and the ticket/issue to remove them. Minor, unless the
-  disabled rule is a security or correctness rule — then Major.
-- **Dropped error handling** — `catch {}` / `except: pass` / promise without
-  `await` or `.catch`. Major.
-- **Breaking public API change** (REST route shape, GraphQL schema, Kafka
-  message schema, Mongo/Arango document shape, exported TS/Python symbols)
-  without a migration plan, version bump, or consumer update. Blocker.
+**Stateful backends:** Qdrant (vectors), ArangoDB (graph + documents), MongoDB (sessions/metadata), Redis (cache/rate-limit), Kafka (event stream), etcd (distributed config).
 
-## Component: `frontend-new` (Next.js 15 App Router, React 19, TypeScript)
+### Services
 
-Stack: Next.js 15 + App Router, TypeScript 5.9 (non-strict), Radix UI Themes,
-Zustand + immer + persist, SWR, Axios with a shared refresh-queue interceptor,
-react-i18next. No test framework is wired up — do not demand tests, but note it.
+- **Node.js API** (`backend/nodejs/apps`, port 3001) — User/org management, authentication (JWT, OAuth2, SAML), knowledge base management, object storage (S3/Azure Blob), API gateway, Kafka producers for async work.
+- **Connectors** (`backend/python`, port 8088) — `app.connectors_main`. OAuth flows, token refresh, and 30+ data-source integrations (Google, Microsoft, Slack, Jira, Confluence, etc.). Uses a `ConnectorFactory` pattern; new sources live under `app/connectors/sources/`.
+- **Indexing** (`backend/python`, port 8091) — `app.indexing_main`. Document parsing, chunking, and embedding generation. Writes vectors to Qdrant and graph nodes to ArangoDB.
+- **Query** (`backend/python`, port 8000) — `app.query_main`. Retrieval-augmented generation, semantic search, and LLM orchestration via LiteLLM. Hosts the RAG pipeline and agent/workflow runtime.
+- **Docling** (`backend/python`, port 8001) — `app.docling_main`. Advanced document parsing and OCR for complex formats (PDFs, scans, tables).
 
-Rules to enforce:
+### Cross-cutting patterns
 
-- **No `any` without a comment.** `strict` is off (tsconfig.json), so the type
-  checker will not catch loose types. Flag new `any`, `as unknown as T`, and
-  `@ts-ignore` on exported symbols or props.
-- **Client vs server components.** `"use client"` is required for any file using
-  hooks, browser APIs, event handlers, or Zustand stores. Flag a client component
-  that *could* be a server component (pure presentational, no hooks) when it
-  imports heavy client-only deps.
-- **Axios calls must go through the shared instance** (`lib/api/axios-instance.ts`)
-  so the refresh-queue interceptor runs. Direct `axios.get(...)` or raw `fetch`
-  against our APIs bypasses token refresh — Major.
-- **SWR keys must be stable.** Object literal keys create cache misses every
-  render. Prefer tuple keys and `useSWRImmutable` for data that doesn't change.
-- **Zustand stores**: state shape changes must preserve `persist` backwards
-  compatibility — either add a `migrate` callback or bump the persisted `version`.
-  Otherwise users' localStorage will hydrate into a broken shape. Major.
-- **Effects and setState**: `exhaustive-deps` and `set-state-in-effect` are
-  disabled (eslint.config.mjs) due to deferred cleanup. Do not *add new*
-  violations; fix them when touching the hook. Note them as Minor if the effect
-  is plausibly correct, Major if the missing dep is load-bearing.
-- **Inline styles (`style={{ … }}`) and duplicated colour literals.** The codebase
-  has ~2800 inline styles already — do not demand removal, but push back on
-  *new* styles that could be Radix tokens, CSS variables, or a shared class.
-- **Raw HTML injection**: the React raw-HTML prop is only acceptable when the
-  string has been through `dompurify` or `rehype-sanitize` already in the
-  pipeline. Otherwise Blocker.
-- **Imports**: prefer `@/` path aliases (tsconfig paths). Deep relative imports
-  (`../../../../`) are a Minor smell.
-- **i18n**: user-facing strings must go through `t(...)`. New hardcoded English
-  strings in components are Minor.
+- **DI:** `inversify` (Node.js), `dependency-injector` (Python). Prefer injected services over direct instantiation.
+- **Factories & abstractions:** `ConnectorFactory`, `MessagingFactory`, `GraphDataStore`, vector-store wrappers. New integrations should extend these, not sidestep them.
+- **Async work:** Kafka for cross-service events; Celery for background tasks.
+- **Repository pattern** for database access.
 
-## Component: `backend/nodejs` (Express, TypeScript strict, InversifyJS)
+---
 
-Stack: Node + Express 4, TypeScript 5.7 **strict mode on** with
-`noUncheckedIndexedAccess`, InversifyJS DI, Mongoose + raw Mongo driver, ArangoDB,
-Redis (ioredis), Kafka via BullMQ, Passport + JWT for auth, Zod for request
-validation, Winston logger, Mocha + Chai + Sinon for tests (coverage gate: 90%
-lines/functions/statements, 80% branches via c8).
+## How to Review
 
-Rules to enforce:
+Read the diff, then the surrounding code the diff touches. A change is not safe just because it compiles — follow the call graph one hop out and confirm callers and callees still hold. Skip trivial style nits; focus on substance.
 
-- **No `any`, no `as unknown as T`** unless there's a comment pointing at the
-  upstream type gap. `noImplicitAny` is on; new `any` means someone silenced it.
-- **Explicit return types on exported functions and class methods.** ESLint
-  enforces this; do not approve PRs where the lint rule is locally disabled to
-  skip it.
-- **Every HTTP handler must be registered with `ValidationMiddleware.validate(zodSchema)`.**
-  A new route without a Zod schema for body/query/params is Major.
-- **Services receive dependencies via InversifyJS** (`@injectable`, `@inject`).
-  Direct `new Service()` inside a controller or side-effectful `import` at top
-  level bypasses DI and breaks tests — Major.
-- **Errors must extend `BaseError`** (`src/libs/errors/base.error.ts`). Throwing
-  raw `Error` from a service means the global error middleware can't produce
-  a consistent response shape — Minor, unless it's on an auth path (Major).
-- **Logger, never `console`.** Inject `Logger` via DI. `console.log/error` in
-  a handler is Minor, in a library/shared service is Major.
-- **Mongo writes that touch multiple documents must run in a transaction**
-  (`mongoose.startSession()` + `withTransaction`). Missing transaction on a
-  write that must be atomic is Major. Note DocumentDB compatibility: collections
-  are pre-created in `mongo.service.ts`; new collections must be added there.
-- **Kafka/BullMQ producers and consumers**: message shape must be versioned or
-  backwards-compatible. Renaming a field without a migration path is Blocker.
-- **Async**: unhandled promise rejections from fire-and-forget calls
-  (`someAsync(); // no await, no .catch`) are Major. The process-level handlers
-  log but don't recover.
-- **Env/config**: read via the async `loadAppConfig()` path, not `process.env`
-  sprinkled around. New `process.env.X` outside the config layer is Minor.
-- **Tests required** for new services and controllers — the coverage gate will
-  fail CI, but a reviewer should not leave that discovery to CI.
+Comment in **priority order** below. Stop early if earlier categories already surface blocking issues — do not pad with lower-priority nits.
 
-## Component: `backend/python` (FastAPI, Python 3.12, Pyright strict)
+### 1. Correctness & functionality  *(highest priority)*
 
-Stack: Python 3.12+, FastAPI + Uvicorn (async throughout), Pydantic v2, uv for
-deps, Pyright **strict** + Ruff with ANN (annotation) rules enforced, ArangoDB
-+ Neo4j + Qdrant + Redis, Kafka via aiokafka, LangChain/LangGraph for LLM,
-dependency-injector for DI, pytest + pytest-asyncio (`asyncio_mode=auto`).
+Does the code do what the PR claims? Trace the happy path and the failure paths. Look for:
 
-Rules to enforce:
+- Off-by-one, wrong operator, swapped arguments, inverted conditions.
+- Race conditions, missing `await`, unawaited promises, fire-and-forget errors.
+- Silent `except` / `catch` blocks that swallow failures.
+- Transaction boundaries: partial writes across Mongo / Arango / Qdrant / Kafka. A failure after step 2 of 4 should leave the system recoverable.
+- Idempotency for Kafka consumers and retry-able handlers.
+- Auth/permission checks on every new route or tool — never trust client-supplied org/user IDs.
 
-- **Full type annotations on every function and parameter.** Ruff ANN rules are
-  on. A new `def foo(x, y):` in non-test code is Minor; a new untyped public
-  API (route handler, service method, Pydantic model field) is Major.
-- **`Any` is effectively banned** (`ANN401`, `reportUnknownVariableType=error`).
-  Use `TypedDict`, Pydantic models, or concrete unions. `cast(Any, …)` added
-  without a `# reason:` comment is Major.
-- **Request/response bodies are Pydantic v2 models**, not `dict[str, Any]`.
-  FastAPI handlers returning `dict` when a model would do is Minor; accepting
-  `dict` as input is Major (no validation).
-- **`print()` / `pprint()` are banned by Ruff T201/T203.** Use
-  `create_logger(service_name)` from `app/utils/logger.py`.
-- **Datetimes must be timezone-aware** (ruff `DTZ`). `datetime.utcnow()` or
-  naive `datetime.now()` is Major — use `datetime.now(tz=UTC)`.
-- **Async discipline**: blocking calls inside an `async def` (sync `requests`,
-  `time.sleep`, sync DB drivers, file I/O without `aiofiles`) will stall the
-  event loop. Major. Prefer `httpx.AsyncClient`, `asyncio.sleep`, async drivers.
-- **Mutable default arguments** (`def f(x: list = [])`) — ruff B006. Blocker
-  if the function is called repeatedly.
-- **Bare `except:` / `except Exception: pass`** — Major. Catch a specific
-  exception, log with `exc_info=True`, re-raise or handle deliberately.
-- **Dependency injection**: FastAPI routes use `Depends(...)`; shared services
-  use the `dependency-injector` containers in `app/containers/`. Instantiating
-  a service directly in a handler breaks test injection — Major.
-- **Connectors**: new connectors must follow
-  `CONNECTOR_INTEGRATION_PLAYBOOK.md` — inherit from `BaseConnector`, register
-  via `ConnectorBuilder`, transform source data into the standard `Record`
-  model, emit Kafka events through the existing publisher. Deviations are
-  Major and need justification.
-- **Pydantic v2 specifics**: use `model_validator` / `field_validator`
-  (not v1 `@validator`). `model_config = ConfigDict(...)` not inner `class Config`.
-  Mixing v1 API in new code is Minor.
-- **Migrations**: schema or document-shape changes need a migration under
-  `app/migrations/` and must be idempotent. Missing migration for a new
-  required field is Blocker.
+### 2. Scalability
 
-## Cross-cutting
+- N+1 queries, unbounded loops over external data, per-request calls to LLMs or embeddings that should be batched.
+- Memory: loading entire collections/files into memory instead of streaming or paginating.
+- Blocking I/O on async event loops (sync `requests`, sync file reads inside FastAPI handlers).
+- If a new query pattern looks like it needs a Mongo/Arango index, ask the author to confirm one exists — do not assert a missing index from the diff alone.
+- Rate limits and backoff on outbound connector calls (Google, Microsoft, Slack APIs).
+- Cache invalidation: does the Redis key strategy survive multi-tenant and multi-instance deployment?
 
-- **Dependencies**: new deps must be justified in the PR description. Large or
-  abandoned packages (no release in >12 months) need a comment. Duplicated
-  deps (adding `lodash` when `lodash-es` is already in play) are Minor.
-- **Tests**: any new business logic needs at least one test. "Touched only"
-  changes (renames, type tightening) can skip tests, but state that in the
-  Recommendations section.
-- **Observability**: new error paths should log with enough context
-  (correlation/request id) to debug. Silent catch-and-return is Major.
-- **Docs**: public API changes (REST routes, exported TS/Python symbols, CLI
-  flags, env vars) need README/CHANGELOG/env.template updates. Missing env
-  var documentation for a new required config is Major.
-- **Commit hygiene**: not your job to block on this, but note mixed concerns
-  (formatting changes bundled with logic changes) in Recommendations.
+### 3. Null pointer / undefined safety
 
-## Output discipline
+- Python: `dict.get()` returning `None` then dereferenced; optional Pydantic fields accessed without a guard; `await some_call()` returning `None` on not-found.
+- TypeScript: non-null assertions (`!`) on values that can legitimately be nullish; optional chaining missing where the type is `T | undefined`.
+- External responses (LLM, connector APIs, DB) must be validated before field access — do not trust shape.
 
-- Put each finding on its own bullet using `**path:line** — <one-line>` format.
-- Use `rel/path/from/repo/root.ts:123`, not an absolute path.
-- When a finding applies to a block, cite the first line of the block.
-- If you cannot tell whether something is a problem without more context,
-  say so — do not hedge with "consider" or "maybe". Either flag it as a
-  question under Recommendations, or leave it out.
-- End with a single-line verdict: `Approve`, `Approve with comments`,
-  `Request changes`, or `Block`.
+### 4. DRY & reuse existing methods
 
+- Before approving a new helper, search for an existing one. Common homes:
+  - Node.js: `backend/nodejs/apps/src/libs/` (middleware, encryption, http clients).
+  - Python: `backend/python/app/services/` (vector DB, graph DB, messaging, config) and `backend/python/app/utils/`.
+  - Connectors: shared OAuth / token refresh / HTTP-retry helpers under `app/connectors/`.
+- **Name the existing method and its path** when you flag a duplicate. "This is duplicated" without a pointer is not actionable.
+- Things that are almost always already implemented — do not re-implement: HTTP clients with retry/backoff, token encryption/decryption, Kafka producer/consumer wrappers, vector upsert/search, Arango graph traversal, tenant/org scoping middleware.
+- If you are not sure whether a helper exists, say so and point the author at the directory to check — do not assume.
+- Copy-pasted blocks with one variable changed → extract.
+
+### 5. Design principles
+
+- Single responsibility: a function/class doing retrieval + transformation + I/O is three things.
+- Dependency direction: high-level modules should depend on abstractions (`GraphDataStore`, `MessagingFactory`), not concrete clients.
+- Factory / repository / DI patterns already established — new code should fit them, not invent a parallel structure.
+- Avoid leaking connector-specific shapes into shared domain models.
+
+### 6. Maintainability
+
+- Flag only naming or structure problems that actively mislead a reader — skip cosmetic preferences.
+- Functions over ~50 lines or with >3 levels of nesting usually hide a missing abstraction.
+- Dead code, commented-out blocks, and TODOs without owner/ticket should be removed.
+
+### 7. Extensibility
+
+- Does adding the next connector / LLM provider / storage backend require editing this file, or just adding a new implementation?
+- Switch/if-chains on a type discriminator are a sign a factory or strategy is missing.
+- Hard-coded provider names (`"openai"`, `"google"`) inside shared code — should dispatch through the existing factory.
+
+### 8. Linting & typing  *(brief)*
+
+- Python: prefer Pydantic models over raw `dict[str, Any]` for structured payloads crossing a function boundary.
+- TypeScript: no new `any`.
+- Do not re-litigate Ruff or ESLint rules in review.
+
+### 9. Unit tests  *(brief)*
+
+Call out at most one or two test cases most likely to catch regressions — usually the happy path plus the specific failure mode the PR fixes. Do not prescribe a full test plan.
+
+---
+
+## Review Output
+
+For a small PR, one or two bullets is enough — do not force headers onto a 10-line diff.
+
+For a larger PR: blocking issues first (each as `file:line` — problem — fix), then non-blocking, then at most 2–3 suggested tests. A single-line overall call (approve / request changes / block) at the top is fine.
+
+Do not restate the diff. Do not list everything the PR got right. Silence is approval.
