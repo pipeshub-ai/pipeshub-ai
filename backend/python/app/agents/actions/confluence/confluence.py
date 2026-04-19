@@ -243,8 +243,9 @@ class Confluence:
                             picked = next((r for r in resources if r.id == cloud_id), None)
                             if picked is None:
                                 logger.warning(
-                                    f"Confluence _get_site_url: cloud_id {cloud_id} not found in accessible resources "
-                                    f"({[r.id for r in resources]}); refusing to fall back to a different site."
+                                    "Confluence _get_site_url: cloud_id %s not found in accessible resources (%s); "
+                                    "refusing to fall back to a different site.",
+                                    cloud_id, [r.id for r in resources],
                                 )
                                 return None
                             self._site_url = picked.url.rstrip('/')
@@ -265,7 +266,7 @@ class Confluence:
                     self._site_url = site_url
                     return self._site_url
         except Exception as e:
-            logger.warning(f"Could not get site URL: {e}")
+            logger.warning("Could not get site URL: %s", e)
 
         return None
 
