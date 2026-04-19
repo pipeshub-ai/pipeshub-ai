@@ -84,11 +84,14 @@ def ensure_resource_exists(storage: object, resource_name: str, create_fn: str |
     only an accessibility check is performed (no create/delete permissions needed).
     """
     if create_fn is None:
-        objects = storage.list_objects(resource_name)
-        assert isinstance(objects, list), (
-            f"Pre-existing resource {resource_name} is not accessible. "
-            "Ensure it has been created before running these tests."
-        )
+        try:
+            objects = storage.list_objects(resource_name)
+            assert isinstance(objects, list)
+        except Exception as e:
+            raise AssertionError(
+                f"Pre-existing resource {resource_name} is not accessible. "
+                "Ensure it has been created before running these tests."
+            ) from e
         return
 
     conflict_markers = (
