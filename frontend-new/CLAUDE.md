@@ -12,7 +12,7 @@ PipesHub is an AI-powered knowledge management dashboard application being migra
 - Google Fonts (Manrope) + Google Material Icons
 - React Hook Form + Zod (complex forms) / Native (simple forms)
 - SSE (chat streaming) + WebSocket (notifications)
-- i18n: German, English
+- i18n: German, English, Spanish, Hindi
 
 ## Naming: Collections vs Knowledge Base
 
