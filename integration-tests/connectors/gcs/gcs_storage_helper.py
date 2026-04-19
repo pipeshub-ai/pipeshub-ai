@@ -40,9 +40,6 @@ class GCSStorageHelper:
                 "GCS_SERVICE_ACCOUNT_JSON must be a valid file path or a JSON string."
             ) from e
 
-    def create_bucket(self, bucket: str) -> None:
-        self._client.create_bucket(bucket)
-
     def list_objects(self, bucket: str) -> List[str]:
         bkt = self._client.bucket(bucket)
         return [blob.name for blob in bkt.list_blobs()]
@@ -91,7 +88,3 @@ class GCSStorageHelper:
         bkt = self._client.bucket(bucket)
         for blob in bkt.list_blobs():
             blob.delete()
-
-    def delete_bucket(self, bucket: str) -> None:
-        self.clear_objects(bucket)
-        self._client.bucket(bucket).delete()

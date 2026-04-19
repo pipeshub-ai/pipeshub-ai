@@ -24,9 +24,6 @@ class AzureFilesStorageHelper:
     def __init__(self, connection_string: str) -> None:
         self._service = ShareServiceClient.from_connection_string(connection_string)
 
-    def create_share(self, share: str) -> None:
-        self._service.create_share(share)
-
     def _iter_files_in_share(
         self, share: str, directory_path: str = ""
     ) -> Iterable[str]:
@@ -151,7 +148,3 @@ class AzureFilesStorageHelper:
             )
             file_client = directory_client.get_file_client(file_name)
             file_client.delete_file()
-
-    def delete_share(self, share: str) -> None:
-        self.clear_objects(share)
-        self._service.get_share_client(share).delete_share()

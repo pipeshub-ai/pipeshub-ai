@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import logging
 import os
-import random
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict
@@ -77,48 +75,20 @@ STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
 RESOURCE_NAME = "pipeshub-integration-tests"
 
 
-def ensure_resource_exists(storage: object, resource_name: str, create_fn: str | None) -> None:
-    """Create storage resource if missing, otherwise reuse. Retries on name conflicts / eventual consistency.
+def ensure_resource_exists(storage: object, resource_name: str) -> None:
+    """Verify the storage resource is pre-provisioned and accessible.
 
-    If *create_fn* is ``None`` the resource is assumed to be pre-created and
-    only an accessibility check is performed (no create/delete permissions needed).
+    Tests must not create or delete buckets/containers/shares — those are
+    provisioned out of band. This only performs an accessibility check.
     """
-    if create_fn is None:
-        try:
-            objects = storage.list_objects(resource_name)
-            assert isinstance(objects, list)
-        except Exception as e:
-            raise AssertionError(
-                f"Pre-existing resource {resource_name} is not accessible. "
-                "Ensure it has been created before running these tests."
-            ) from e
-        return
-
-    conflict_markers = (
-        "BucketAlreadyOwnedByYou",
-        "BucketAlreadyExists",
-        "OperationAborted",
-        "already exists",
-    )
-    for attempt in range(6):
-        try:
-            objects = storage.list_objects(resource_name)
-            if isinstance(objects, list):
-                return
-        except Exception:
-            pass
-        try:
-            getattr(storage, create_fn)(resource_name)
-            return
-        except Exception as e:
-            error_str = str(e)
-            if any(marker in error_str for marker in conflict_markers):
-                logger.info("Resource %s not ready yet (attempt %d), waiting...", resource_name, attempt + 1)
-                time.sleep(5 + random.uniform(0, 2))
-            else:
-                raise
-    objects = storage.list_objects(resource_name)
-    assert isinstance(objects, list), f"Resource {resource_name} still not accessible after retries"
+    try:
+        objects = storage.list_objects(resource_name)
+        assert isinstance(objects, list)
+    except Exception as e:
+        raise AssertionError(
+            f"Pre-existing resource {resource_name} is not accessible. "
+            "Ensure it has been created before running these tests."
+        ) from e
 
 
 async def constructor(
@@ -130,14 +100,13 @@ async def constructor(
     storage_name: str,
     connector_type: str,
     connector_config: dict,
-    create_fn: str | None = None,
     scope: str = "personal",
     auth_type: str | None = None,
 ) -> Dict[str, Any]:
     """Verify pre-provisioned storage is reachable, upload data, create connector, wait for full sync.
 
-    With *create_fn* ``None`` (default for all storage connector fixtures), the bucket/container/share
-    must already exist; only list/access is checked before upload.
+    The bucket/container/share must already exist; tests never create or delete it.
+    Only list/access is checked before upload.
     """
     resource_name = RESOURCE_NAME
     connector_name = f"{connector_type.lower().replace(' ', '-')}-lifecycle-test-{uuid.uuid4().hex[:8]}"
@@ -148,7 +117,7 @@ async def constructor(
     }
 
     logger.info("CONSTRUCTOR [%s]: Ensuring %s exists", connector_type, resource_name)
-    ensure_resource_exists(storage, resource_name, create_fn)
+    ensure_resource_exists(storage, resource_name)
     objects = storage.list_objects(resource_name)
     assert isinstance(objects, list), f"{storage_name} should be accessible"
 

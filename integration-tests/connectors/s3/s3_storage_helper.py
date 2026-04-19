@@ -34,15 +34,6 @@ class S3StorageHelper:
             region_name=region,
         )
 
-    def create_bucket(self, bucket: str) -> None:
-        if self._region == "us-east-1":
-            self._client.create_bucket(Bucket=bucket)
-        else:
-            self._client.create_bucket(
-                Bucket=bucket,
-                CreateBucketConfiguration={"LocationConstraint": self._region},
-            )
-
     def list_objects(self, bucket: str) -> List[str]:
         keys: List[str] = []
         paginator = self._client.get_paginator("list_objects_v2")
@@ -134,7 +125,3 @@ class S3StorageHelper:
             # IAM often grants ListBucket/DeleteObject but not ListBucketVersions; that
             # is enough when the bucket is non-versioned (typical for integration tests).
             self._clear_objects_current_only(bucket)
-
-    def delete_bucket(self, bucket: str) -> None:
-        self.clear_objects(bucket)
-        self._client.delete_bucket(Bucket=bucket)
