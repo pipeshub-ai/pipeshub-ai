@@ -20,8 +20,8 @@ const logger = Logger.getInstance({
  * presence/absence of an explicit port, embedded credentials, and TLS.
  *
  * Mapping rules:
- *   - `bolt`, `neo4j`                         → `http://host:<httpPort>/`
- *   - `bolt+s`, `neo4j+s`, `+ssc` variants    → `https://host:<httpPort>/`
+ *   - `bolt`, `neo4j`                         → `http://host:<httpPort>`
+ *   - `bolt+s`, `neo4j+s`, `+ssc` variants    → `https://host:<httpPort>`
  *   - `http(s)://…` passed through unchanged (already an HTTP URL)
  *   - Port: explicit port → Bolt default 7687 mapped to 7474; any other
  *           Bolt port is passed through (user must expose matching HTTP port);
@@ -72,7 +72,7 @@ function buildNeo4jHttpUrl(uri: string): string {
     httpPort = port;
   }
 
-  return `${httpScheme}://${host}:${httpPort}/`;
+  return `${httpScheme}://${host}:${httpPort}`;
 }
 
 const TYPES = {
