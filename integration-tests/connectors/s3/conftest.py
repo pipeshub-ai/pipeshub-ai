@@ -52,7 +52,6 @@ async def s3_connector(
         storage_name="S3 bucket",
         connector_type="S3",
         connector_config=config,
-        create_fn="create_bucket",
     )
     state["bucket_name"] = state["resource_name"]
     yield state

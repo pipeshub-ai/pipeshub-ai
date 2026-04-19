@@ -41,7 +41,6 @@ async def azure_blob_connector(
         storage_name="Azure Blob container",
         connector_type="Azure Blob",
         connector_config=config,
-        create_fn="create_container",
     )
     state["container_name"] = state["resource_name"]
     yield state

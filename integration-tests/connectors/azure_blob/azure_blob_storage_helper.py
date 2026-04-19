@@ -20,9 +20,6 @@ class AzureBlobStorageHelper:
     def __init__(self, connection_string: str) -> None:
         self._service = BlobServiceClient.from_connection_string(connection_string)
 
-    def create_container(self, container: str) -> None:
-        self._service.create_container(container)
-
     def list_objects(self, container: str) -> List[str]:
         container_client = self._service.get_container_client(container)
         return [b.name for b in container_client.list_blobs()]
@@ -76,7 +73,3 @@ class AzureBlobStorageHelper:
         blobs = list(container_client.list_blobs())
         if blobs:
             container_client.delete_blobs(*blobs)
-
-    def delete_container(self, container: str) -> None:
-        self.clear_objects(container)
-        self._service.get_container_client(container).delete_container()
