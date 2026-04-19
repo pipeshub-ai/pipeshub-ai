@@ -12,7 +12,9 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore } from '@/chat/store';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { buildChatHref, openFreshAgentChat } from '@/chat/build-chat-url';
+import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from './footer';
 import { ChatSection } from './chat-section';
@@ -50,6 +52,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setIsAgentConversationsLoading = useChatStore((s) => s.setIsAgentConversationsLoading);
   const setAgentConversationsError = useChatStore((s) => s.setAgentConversationsError);
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
+  const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
   const agentConversations = useChatStore((s) => s.agentConversations);
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
@@ -79,6 +82,11 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: AGENT_CONVERSATIONS_PAGE_SIZE }),
       ]);
       setAgentStreamTools(agentRes.toolFullNames);
+      setAgentContextAccess(
+        agentRes.agent
+          ? getAgentSidebarRowMenuAccess(agentRes.agent as unknown as AgentListRecord)
+          : null,
+      );
       setAgentConversations(conv.conversations);
       setAgentConversationsPagination(conv.pagination);
     } catch {
@@ -86,6 +94,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
       setAgentConversations([]);
       setAgentConversationsPagination(null);
       setAgentStreamTools([]);
+      setAgentContextAccess(null);
     } finally {
       setIsAgentConversationsLoading(false);
     }
@@ -97,6 +106,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     setIsAgentConversationsLoading,
     setAgentConversationsError,
     setAgentStreamTools,
+    setAgentContextAccess,
   ]);
 
   useEffect(() => {

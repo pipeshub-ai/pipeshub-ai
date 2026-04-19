@@ -12,7 +12,6 @@ interface AgentSidebarItemMenuProps {
   canEdit: boolean;
   canDelete: boolean;
   showViewAgent: boolean;
-  /** Explains view-only behavior when {@link showViewAgent}. */
   viewAgentTooltipVariant?: ViewAgentTooltipVariant;
   onEdit: () => void;
   onView: () => void;
