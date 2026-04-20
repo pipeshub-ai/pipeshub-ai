@@ -5,6 +5,7 @@ import { Flex, Box, Text, Button, IconButton, Dialog, VisuallyHidden } from '@ra
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 
 // Supported file types
 const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'PNG', 'JPEG', 'JPG', 'SVG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX', 'MD', 'MDX'];
@@ -33,9 +34,6 @@ const SUPPORTED_MIME_TYPES = [
 const SUPPORTED_EXTENSIONS = [
   'txt', 'pdf', 'doc', 'docx', 'png', 'jpeg', 'jpg', 'svg', 'xls', 'xlsx', 'csv', 'html', 'htm', 'ppt', 'pptx', 'md', 'markdown', 'mdx',
 ];
-const MAX_FILE_SIZE_MB = 30;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-
 function isSupportedFile(file: File): boolean {
   if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
@@ -63,9 +61,10 @@ interface DropZoneProps {
   type: 'file' | 'folder';
   onDrop: (items: UploadFileItem[]) => void;
   isEmpty: boolean;
+  maxFileSizeBytes: number;
 }
 
-function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
+function DropZone({ type, onDrop, isEmpty, maxFileSizeBytes }: DropZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -88,7 +87,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
 
       if (type === 'file') {
         fileArray.forEach((file) => {
-          if (file.size <= MAX_FILE_SIZE_BYTES && isSupportedFile(file)) {
+          if (file.size <= maxFileSizeBytes && isSupportedFile(file)) {
             items.push({
               id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
               name: file.name,
@@ -160,7 +159,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
 
             await readDirectory(entry as FileSystemDirectoryEntry);
 
-            if (totalSize <= MAX_FILE_SIZE_BYTES) {
+            if (totalSize <= maxFileSizeBytes) {
               folderItems.push({
                 id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 name: entry.name,
@@ -208,7 +207,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
           const items: UploadFileItem[] = [];
           folderMap.forEach((folderFiles, folderName) => {
             const totalSize = folderFiles.reduce((sum, f) => sum + f.file.size, 0);
-            if (totalSize <= MAX_FILE_SIZE_BYTES) {
+            if (totalSize <= maxFileSizeBytes) {
               items.push({
                 id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 name: folderName,
@@ -398,6 +397,7 @@ export function UploadDataSidebar({
 }: UploadDataSidebarProps) {
   const [fileItems, setFileItems] = useState<UploadFileItem[]>([]);
   const [folderItems, setFolderItems] = useState<UploadFileItem[]>([]);
+  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
 
   const handleAddFiles = useCallback((items: UploadFileItem[]) => {
     setFileItems((prev) => [...prev, ...items]);
@@ -539,7 +539,7 @@ export function UploadDataSidebar({
                 Upload Files
               </Text>
               <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                You can upload files up to the limit of {MAX_FILE_SIZE_MB} MB
+                You can upload files up to the limit of {maxFileSizeMB} MB
               </Text>
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
@@ -564,7 +564,7 @@ export function UploadDataSidebar({
 
             {/* File drop zone - expands when empty, fixed when has items */}
             <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '120px' } : {}) }}>
-              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} />
+              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
 
@@ -596,7 +596,7 @@ export function UploadDataSidebar({
                 Upload Folders
               </Text>
               <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                You can upload folders up to the limit of {MAX_FILE_SIZE_MB} MB
+                You can upload folders up to the limit of {maxFileSizeMB} MB
               </Text>
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
@@ -621,7 +621,7 @@ export function UploadDataSidebar({
 
             {/* Folder drop zone - expands when empty, fixed when has items */}
             <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '120px' } : {}) }}>
-              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} />
+              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
             </Box>
           </Flex>
         </Box>

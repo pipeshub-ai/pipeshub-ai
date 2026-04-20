@@ -48,6 +48,9 @@ export function ShareSidebar({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItems, setSelectedItems] = useState<ShareSelection[]>([]);
   const [selectedRole, setSelectedRole] = useState<ShareRole>('READER');
+  // Tracks whether any portaled role dropdown is open — used to suppress the
+  // dialog's outside-click handler while the dropdown is active.
+  const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
 
   // Fetched data
   const [suggestedTeams, setSuggestedTeams] = useState<ShareTeam[]>([]);
@@ -253,7 +256,9 @@ export function ShareSidebar({
     }
   }, [selectedItems, selectedRole, adapter, onShareSuccess, updateSearchQuery]);
 
-  // Update role for existing member
+  // Update role for existing member.
+  // Note: the "at least one owner must remain" invariant is enforced server-side;
+  // a failed update surfaces through the catch block's toast.
   const handleRoleChange = useCallback(
     async (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => {
       if (!adapter.updateRole) return;
@@ -261,19 +266,25 @@ export function ShareSidebar({
       try {
         await adapter.updateRole(memberId, memberType, newRole);
         setExistingMembers((prev) =>
-          prev.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
+          prev.map((m) =>
+            m.id === memberId ? { ...m, role: newRole, isOwner: newRole === 'OWNER' } : m
+          )
         );
         toast.success('Role updated', {
           description: `${member?.name ?? 'Member'} is now a ${newRole.toLowerCase()}`,
         });
-      } catch {
-        toast.error('Failed to update role', { description: 'Could not update role. Please try again.' });
+      } catch (error) {
+        const message =
+          (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
+          ?? 'Could not update role. Please try again.';
+        toast.error('Failed to update role', { description: message });
       }
     },
     [adapter, existingMembers]
   );
 
-  // Remove member
+  // Remove member.
+  // Note: the "at least one owner must remain" invariant is enforced server-side.
   const handleRemoveMember = useCallback(
     async (memberId: string, memberType: 'user' | 'team') => {
       const member = existingMembers.find((m) => m.id === memberId);
@@ -284,8 +295,11 @@ export function ShareSidebar({
           description: `${member?.name ?? 'Member'} no longer has access`,
         });
         onShareSuccess?.();
-      } catch {
-        toast.error('Failed to revoke access', { description: 'Could not remove access. Please try again.' });
+      } catch (error) {
+        const message =
+          (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
+          ?? 'Could not remove access. Please try again.';
+        toast.error('Failed to revoke access', { description: message });
       }
     },
     [adapter, existingMembers, onShareSuccess]
@@ -308,6 +322,12 @@ export function ShareSidebar({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
+        onPointerDownOutside={(e) => {
+          // Prevent dialog from closing while a portaled role dropdown is open.
+          if (isRoleDropdownOpen) {
+            e.preventDefault();
+          }
+        }}
         style={{
           position: 'fixed',
           top: 10,
@@ -513,9 +533,9 @@ export function ShareSidebar({
                           }
                           subtitle={member.email}
                           avatarUrl={member.avatarUrl}
-                          isOwner={member.isOwner}
+                          
                           role={member.role}
-                          showRoleDropdown={!member.isOwner && !member.isCurrentUser}
+                          showRoleDropdown
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: 'Full Access', description: 'Chats do not have roles' }
@@ -526,11 +546,8 @@ export function ShareSidebar({
                               ? (newRole) => handleRoleChange(member.id, member.type, newRole)
                               : undefined
                           }
-                          onRemove={
-                            !member.isOwner && !member.isCurrentUser
-                              ? () => handleRemoveMember(member.id, member.type)
-                              : undefined
-                          }
+                          onRemove={() => handleRemoveMember(member.id, member.type)}
+                          onRoleDropdownOpenChange={setIsRoleDropdownOpen}
                         />
                       ))}
                     </>

@@ -11,6 +11,7 @@ import type {
   AppNodeGroup,
 } from '../types';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
+import { KB_MIN_SEARCH_QUERY_LENGTH } from '../utils';
 
 /**
  * Connector group for sidebar display
@@ -146,9 +147,9 @@ export function buildAllRecordsQueryParams(
     sortOrder: sort.order,
   };
 
-  // Search query
-  if (searchQuery && searchQuery.trim()) {
-    params.q = searchQuery.trim();
+  const sq = searchQuery?.trim();
+  if (sq && sq.length >= KB_MIN_SEARCH_QUERY_LENGTH) {
+    params.q = sq;
   }
 
   // Sidebar selection drives primary filtering
