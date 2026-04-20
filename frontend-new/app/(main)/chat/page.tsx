@@ -5,11 +5,12 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { AgentChatHeader } from './components/agent-chat-header';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { ChatSuggestion } from '@/chat/types';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -28,6 +29,12 @@ import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
+
+// Space reserved below content views to clear the absolutely-positioned chat input.
+const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
+// Extra breathing room above the chat input for the search results list.
+const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
 
 const footerLinkStyle: React.CSSProperties = {
@@ -47,7 +54,7 @@ function ChatFooterLinks() {
       align="center"
       justify="center"
       gap="3"
-      style={{ marginTop: 'var(--space-2)', paddingBottom: 'var(--space-1)' }}
+      style={{ marginTop: 'var(--space-1)', paddingBottom: 0 }}
     >
       <a
         href={EXTERNAL_LINKS.github}
@@ -125,24 +132,6 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
 
-  // Agent tools + display name for header (sidebar also loads tools when listing convs).
-  useEffect(() => {
-    if (!agentId) {
-      useChatStore.getState().setAgentStreamTools([]);
-      useChatStore.getState().setAgentContextDisplayName(null);
-      return;
-    }
-    let cancelled = false;
-    AgentsApi.getAgent(agentId).then((res) => {
-      if (!cancelled) {
-        useChatStore.getState().setAgentStreamTools(res.toolFullNames);
-        useChatStore.getState().setAgentContextDisplayName(res.agent?.name?.trim() || null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId]);
   const threadRuntime = useThreadRuntime();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -314,22 +303,53 @@ function ChatContent() {
     }
   }, [conversationsVersion, loadConversations]);
 
-  // Fetch available LLMs on mount and store the default model
+  // Populate agent side-effects (tools, display name) and kick off the model
+  // fetch for the current context. The shared `fetchModelsForContext` handles
+  // caching, default resolution, and stale-selection invalidation per ctxKey.
   useEffect(() => {
-    ChatApi.fetchAvailableLlms().then((models) => {
-      const defaultModel = models.find((m) => m.isDefault);
-      if (defaultModel) {
-        useChatStore.getState().setDefaultModel({
-          modelKey: defaultModel.modelKey,
-          modelName: defaultModel.modelName,
-          modelFriendlyName: defaultModel.modelFriendlyName,
-          modelProvider: defaultModel.provider,
-        });
+    let cancelled = false;
+
+    const load = async () => {
+      const store = useChatStore.getState();
+      const ctxKey = ctxKeyFromAgent(agentId);
+
+      if (agentId?.trim()) {
+        try {
+          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
+          if (cancelled) return;
+          store.setAgentStreamTools(toolFullNames);
+          store.setAgentContextDisplayName(agent?.name?.trim() || null);
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to fetch agent details:', error);
+          }
+        }
+      } else {
+        store.setAgentStreamTools([]);
+        store.setAgentContextDisplayName(null);
       }
-    }).catch(() => {
-      // Non-fatal: streaming will surface an error if no model is available
-    });
-  }, []);
+
+      try {
+        // Force a refetch for agent contexts: the agent's configured models
+        // can change between visits (Agent Builder save, admin edits) and
+        // stale cached lists would surface wrong defaults in the pill and
+        // the model selector. Assistant (org-wide) models change far less
+        // often, so the normal freshness window is fine there.
+        const force = Boolean(agentId?.trim());
+        await fetchModelsForContext(ctxKey, { force });
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to fetch models for context', ctxKey, error);
+        }
+      }
+    };
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
@@ -646,8 +666,22 @@ function ChatContent() {
     !activeSlotIsStreaming
   );
 
+  /** On the main new-chat landing, mount the input in the centered hero
+   * column (beside the greeting) rather than pinned at the bottom. It drops
+   * to its bottom position automatically once the first message is sent
+   * (i.e. when `showNewChatView` flips to false). Agent landings keep the
+   * input at the bottom. */
+  const isInputCentered = showNewChatView && !agentId;
+
   // Show loading state when slot exists but hasn't loaded history yet
   const showLoading = hasActiveSlot && !activeSlotIsInitialized;
+
+  // Initial-load gate: when the URL carries a conversationId on first render,
+  // the URL → store sync effect hasn't attached the slot yet, so we'd briefly
+  // flash the "new chat" view. Render a full-page loader until the slot
+  // attaches AND its history has finished loading.
+  const showInitialLoading =
+    conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
 
   // Search mode: show results view when in search mode with results/in-progress search
   const mode = useChatStore((s) => s.settings.mode);
@@ -667,9 +701,10 @@ function ChatContent() {
         background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))',
       }}
     >
-      {agentId && (
+
+      {historyAndShareAgentId && (
         <AgentChatHeader
-          agentId={agentId}
+          agentId={historyAndShareAgentId}
           displayName={agentContextDisplayName}
           isMobile={isMobile}
         />
@@ -691,9 +726,31 @@ function ChatContent() {
           />
         </Box>
       )}
-      {showSearchView ? (
+      {showInitialLoading ? (
+        /* Initial page load — conversationId in URL but slot/history not ready yet */
+        <Flex
+          direction="column"
+          align="center"
+          justify="center"
+          style={{
+            flex: 1,
+            position: 'relative',
+            zIndex: 10,
+            width: '100%',
+          }}
+        >
+          <LottieLoader variant="loader" size={48} showLabel />
+        </Flex>
+      ) : showSearchView ? (
         /* Search Results View */
-        <SearchResultsView />
+        <Flex direction="column" style={{
+          flex: 1,
+          width: '100%',
+          overflow: 'hidden',
+          marginBottom: `${(isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop) + (isMobile ? SEARCH_RESULTS_EXTRA_OFFSET.mobile : SEARCH_RESULTS_EXTRA_OFFSET.desktop)}px`,
+        }}>
+          <SearchResultsView />
+        </Flex>
       ) : showNewChatView ? (
         /* New Chat View */
         <Flex
@@ -704,8 +761,10 @@ function ChatContent() {
             flex: 1,
             position: 'relative',
             zIndex: 10,
-            marginTop: isMobile ? (agentId ? '36px' : '0') : agentId ? '-44px' : '-80px',
-            paddingBottom: isMobile ? '140px' : '0',
+            marginTop: isInputCentered
+              ? (isMobile ? '0' : '-40px')
+              : isMobile ? (historyAndShareAgentId ? '36px' : '0') : historyAndShareAgentId ? '-44px' : '-80px',
+            paddingBottom: isInputCentered ? '0' : isMobile ? '140px' : '0',
             width: '100%',
           }}
         >
@@ -718,7 +777,7 @@ function ChatContent() {
           <Box
             style={{
               textAlign: 'center',
-              marginBottom: isMobile ? 'var(--space-6)' : 'var(--space-8)',
+              marginBottom: isInputCentered ? (isMobile ? 'var(--space-5)' : 'var(--space-6)') : isMobile ? 'var(--space-8)' : '48px',
               fontFamily: 'Manrope, sans-serif',
               padding: isMobile ? '0 var(--space-4)' : undefined,
             }}
@@ -739,73 +798,24 @@ function ChatContent() {
             </Text>
           </Box>
 
-          {/* Suggestion Chips */}
-          {isMobile ? (
-            /* Mobile: vertical single-column list, full-width */
-            <Flex
-              direction="column"
-              gap="2"
+          {/* Centered chat input — stays here on the new-chat landing until
+              the first message is sent, then it's rendered at the bottom. */}
+          {isInputCentered && (
+            <Box
               style={{
                 width: '100%',
-                padding: '0 var(--space-4)',
+                display: 'flex',
+                justifyContent: 'center',
+                padding: isMobile ? '0 var(--space-4)' : undefined,
               }}
             >
-              {defaultSuggestions.slice(0, 5).map((suggestion) => (
-                <SuggestionChip
-                  key={suggestion.id}
-                  text={suggestion.text}
-                  icons={[...suggestion.icons]}
-                  onClick={() => handleSuggestionClick(suggestion)}
-                  fullWidth
-                />
-              ))}
-            </Flex>
-          ) : (
-            /* Desktop: 2-column paired rows */
-            <Flex direction="column" align="center" gap="1" style={{ marginBottom: 'var(--space-6)' }}>
-              {/* Row 1 */}
-              <Flex align="center" gap="1">
-                <SuggestionChip
-                  text={defaultSuggestions[0].text}
-                  icons={[...defaultSuggestions[0].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[0])}
-                />
-                <SuggestionChip
-                  text={defaultSuggestions[1].text}
-                  icons={[...defaultSuggestions[1].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[1])}
-                />
-              </Flex>
-
-              {/* Row 2 */}
-              <Flex align="center" gap="1">
-                <SuggestionChip
-                  text={defaultSuggestions[2].text}
-                  icons={[...defaultSuggestions[2].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[2])}
-                />
-                <SuggestionChip
-                  text={defaultSuggestions[3].text}
-                  icons={[...defaultSuggestions[3].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[3])}
-                />
-              </Flex>
-
-              {/* Row 3 */}
-              <Flex align="center" gap="1">
-                <SuggestionChip
-                  text={defaultSuggestions[4].text}
-                  icons={[...defaultSuggestions[4].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[4])}
-                />
-                <SuggestionChip
-                  text={defaultSuggestions[5].text}
-                  icons={[...defaultSuggestions[5].icons]}
-                  onClick={() => handleSuggestionClick(defaultSuggestions[5])}
-                />
-              </Flex>
-            </Flex>
+              <ChatInputWrapper />
+            </Box>
           )}
+
+          {/* Suggestion chips are intentionally hidden: the defaults are hardcoded
+              placeholders and not tied to the user's actual data yet. Re-enable
+              once suggestions are dynamically generated. */}
         </Flex>
       ) : showLoading ? (
         /* Loading View */
@@ -831,15 +841,18 @@ function ChatContent() {
             zIndex: 10,
             width: '100%',
             overflow: 'hidden',
-            marginBottom: isMobile ? '120px' : '160px',
-            paddingTop: isMobile ? (agentId ? '76px' : '60px') : agentId ? '72px' : '56px',
+            marginBottom: `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`,
+            paddingTop: isMobile ? (historyAndShareAgentId ? '76px' : '60px') : historyAndShareAgentId ? '56px' : '40px',
           }}
         >
           <MessageList />
         </Flex>
       )}
 
-      {/* Chat Input - Fixed at bottom, uses ChatInputWrapper to access runtime */}
+      {/* Chat Input - Fixed at bottom, uses ChatInputWrapper to access runtime.
+          On the new-chat landing the input is rendered inline in the hero
+          column (see `isInputCentered`); this bottom slot then only carries
+          the footer links until the first message is sent. */}
       <Box
         style={{
           position: 'absolute',
@@ -851,7 +864,7 @@ function ChatContent() {
           zIndex: 20,
         }}
       >
-        <ChatInputWrapper />
+        {!isInputCentered && <ChatInputWrapper />}
         <ChatFooterLinks />
       </Box>
 
@@ -864,14 +877,17 @@ function ChatContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           initialPage={previewFile.initialPage}
           highlightBox={previewFile.highlightBox}
           citations={previewFile.citations}
+          initialCitationId={previewFile.initialCitationId}
           defaultTab="preview"
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
@@ -888,14 +904,17 @@ function ChatContent() {
             id: previewFile.id,
             name: previewFile.name,
             url: previewFile.url,
+            blob: previewFile.blob,
             type: previewFile.type,
             size: previewFile.size,
           }}
           isLoading={previewFile.isLoading}
+          error={previewFile.error}
           recordDetails={previewFile.recordDetails}
           initialPage={previewFile.initialPage}
           highlightBox={previewFile.highlightBox}
           citations={previewFile.citations}
+          initialCitationId={previewFile.initialCitationId}
           defaultTab="preview"
           onClose={() => clearPreview()}
         />
@@ -960,10 +979,12 @@ export default function ChatPage() {
   const runtime = useExternalStoreRuntime(liveConfig);
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Suspense>
-        <ChatContent />
-      </Suspense>
-    </AssistantRuntimeProvider>
+    <ServiceGate services={['query']}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Suspense>
+          <ChatContent />
+        </Suspense>
+      </AssistantRuntimeProvider>
+    </ServiceGate>
   );
 }

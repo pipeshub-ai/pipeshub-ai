@@ -1,6 +1,7 @@
 'use client';
 
 import { Theme } from '@radix-ui/themes';
+import { Tooltip } from 'radix-ui';
 import { useEffect, useState, useCallback, createContext, useContext } from 'react';
 
 const THEME_STORAGE_KEY = 'pipeshub-theme-preference';
@@ -126,7 +127,12 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
         radius="medium"
         data-accent-color="emerald"
       >
-        {children}
+        {/* Global default for Radix tooltips — 700ms (library default) feels
+            sluggish; 200ms is snappy but still avoids accidental flashes.
+            Individual <Tooltip delayDuration=... /> props still override this. */}
+        <Tooltip.Provider delayDuration={200} skipDelayDuration={300}>
+          {children}
+        </Tooltip.Provider>
       </Theme>
     </ThemeContext.Provider>
   );

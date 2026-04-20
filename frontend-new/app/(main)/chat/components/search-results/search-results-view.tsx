@@ -217,7 +217,7 @@ export function SearchResultsView() {
           flex: 1,
           overflowY: 'auto',
           padding: '0 var(--space-2)',
-          paddingBottom: '220px',
+          paddingBottom: 'var(--space-4)',
         }}
       >
         {/* Loading state */}

@@ -6,6 +6,7 @@ import { useConnectorsStore } from '../../store';
 import { InstanceHeader } from './instance-header';
 import { SyncSettingsSection } from './sync-settings-section';
 import { CustomSyncFieldsSection } from './custom-sync-fields-section';
+import { FiltersSection } from './filters-section';
 
 // ========================================
 // Component
@@ -15,6 +16,7 @@ export function ConfigureTab() {
   const {
     connectorSchema,
     panelConnector,
+    panelConnectorId,
     formData,
     formErrors,
     setSyncFormValue,
@@ -56,6 +58,8 @@ export function ConfigureTab() {
           onChange={setSyncFormValue}
         />
       )}
+
+      <FiltersSection key={panelConnectorId ?? 'new'} />
     </Flex>
   );
 }

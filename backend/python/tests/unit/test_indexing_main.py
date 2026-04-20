@@ -3,7 +3,6 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
-import httpx
 import pytest
 from fastapi.responses import JSONResponse
 
@@ -1009,127 +1008,36 @@ class TestIndexingHealthCheck:
     """Tests for health_check() endpoint."""
 
     async def test_health_check_success(self):
-        """Health check returns healthy when connector service is healthy."""
-        from app.indexing_main import health_check, app
-
-        mock_config_service = MagicMock()
-        mock_config_service.get_config = AsyncMock(return_value={
-            "connectors": {"endpoint": "http://connector:8088"},
-        })
-
-        app.container = MagicMock()
-        app.container.config_service.return_value = mock_config_service
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("app.indexing_main.httpx.AsyncClient", return_value=mock_client),
-            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890),
-        ):
-            result = await health_check()
-
-        assert result.status_code == 200
-
-    async def test_health_check_connector_unhealthy(self):
-        """Health check returns fail when connector service is unhealthy."""
-        from app.indexing_main import health_check, app
-
-        mock_config_service = MagicMock()
-        mock_config_service.get_config = AsyncMock(return_value={
-            "connectors": {"endpoint": "http://connector:8088"},
-        })
-
-        app.container = MagicMock()
-        app.container.config_service.return_value = mock_config_service
-
-        mock_response = MagicMock()
-        mock_response.status_code = 503
-        mock_response.text = "Service Unavailable"
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("app.indexing_main.httpx.AsyncClient", return_value=mock_client),
-            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890),
-        ):
-            result = await health_check()
-
-        assert result.status_code == 500
-
-    async def test_health_check_request_error(self):
-        """Health check returns fail when connector service is unreachable."""
-        from app.indexing_main import health_check, app
-
-        mock_config_service = MagicMock()
-        mock_config_service.get_config = AsyncMock(return_value={
-            "connectors": {"endpoint": "http://connector:8088"},
-        })
-
-        app.container = MagicMock()
-        app.container.config_service.return_value = mock_config_service
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.RequestError("connection refused", request=MagicMock()))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("app.indexing_main.httpx.AsyncClient", return_value=mock_client),
-            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890),
-        ):
-            result = await health_check()
-
-        assert result.status_code == 500
-
-    async def test_health_check_general_exception(self):
-        """Health check returns fail on unexpected exception."""
-        from app.indexing_main import health_check, app
-
-        app.container = MagicMock()
-        app.container.config_service.return_value = MagicMock()
-        app.container.config_service.return_value.get_config = AsyncMock(side_effect=RuntimeError("config error"))
+        """Health check returns healthy status."""
+        from app.indexing_main import health_check
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
             result = await health_check()
 
-        assert result.status_code == 500
+        assert result.status_code == 200
+        assert result.body is not None
 
-    async def test_health_check_uses_default_endpoint(self):
-        """Health check uses default endpoint when config doesn't have one."""
-        from app.indexing_main import health_check, app
+    async def test_health_check_includes_timestamp(self):
+        """Health check response includes timestamp."""
+        import json
+        from app.indexing_main import health_check
 
-        mock_config_service = MagicMock()
-        # endpoint is not in the config - uses .get with default
-        endpoints_data = {"connectors": {}}
-        mock_config_service.get_config = AsyncMock(return_value=endpoints_data)
-
-        app.container = MagicMock()
-        app.container.config_service.return_value = mock_config_service
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("app.indexing_main.httpx.AsyncClient", return_value=mock_client),
-            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890),
-        ):
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
             result = await health_check()
 
-        assert result.status_code == 200
+        body = json.loads(result.body)
+        assert body["status"] == "healthy"
+        assert body["timestamp"] == 1234567890
+
+    async def test_health_check_general_exception(self):
+        """Health check returns 500 when get_epoch_timestamp_in_ms raises on first call."""
+        from app.indexing_main import health_check
+
+        mock_ts = MagicMock(side_effect=[RuntimeError("timestamp error"), 9999999])
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", mock_ts):
+            result = await health_check()
+
+        assert result.status_code == 500
 
 
 # ---------------------------------------------------------------------------

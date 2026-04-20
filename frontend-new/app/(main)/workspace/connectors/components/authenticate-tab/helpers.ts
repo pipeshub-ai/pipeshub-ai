@@ -33,6 +33,7 @@ export function formatAuthTypeName(authType: string): string {
     OAUTH_CERTIFICATE: 'OAuth (Certificate)',
     API_TOKEN: 'API Token',
     USERNAME_PASSWORD: 'Username & Password',
+    BASIC_AUTH: 'Basic authentication',
     BEARER_TOKEN: 'Bearer Token',
     CUSTOM: 'Custom',
     NONE: 'None',

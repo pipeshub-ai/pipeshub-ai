@@ -135,7 +135,7 @@ export function StepSmtp({
       </Box>
 
       {/* Scrollable fields */}
-      <Box className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
+      <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
         <Flex direction="column" gap="6">
         <InfoBanner message="This is a recommended step to enable emails, invites & password resets" />
         {/* SMTP Host */}

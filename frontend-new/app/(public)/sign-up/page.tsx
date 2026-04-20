@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, TextField, Button, Spinner } from '@radix-ui/themes';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { isValidEmail, validatePassword } from '@/lib/utils/validators';
 import { toast } from '@/lib/store/toast-store';
 import { GuestGuard } from '@/app/components/ui/guest-guard';
+import { LoadingScreen } from '@/app/components/ui/auth-guard';
+import { getOrgExists } from '@/lib/api/org-exists-public';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import AuthHero from '../components/auth-hero';
 import FormPanel from '../components/form-panel';
@@ -19,8 +21,11 @@ import { AuthApi } from '../api';
 export default function SignUpPage() {
   const router = useRouter();
   const splitLayout = useAuthWideLayout();
+  const isHydrated = useAuthStore((s) => s.isHydrated);
   const setTokens = useAuthStore((s) => s.setTokens);
   const setUser = useAuthStore((s) => s.setUser);
+
+  const [orgAllowsSignUp, setOrgAllowsSignUp] = useState(false);
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -31,6 +36,29 @@ export default function SignUpPage() {
 
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    let cancelled = false;
+
+    void getOrgExists()
+      .then(({ exists }) => {
+        if (cancelled) return;
+        if (exists) {
+          router.replace('/login');
+          return;
+        }
+        setOrgAllowsSignUp(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOrgAllowsSignUp(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isHydrated, router]);
 
   function validate(): boolean {
     const next: Record<string, string> = {};
@@ -118,6 +146,9 @@ export default function SignUpPage() {
 
   return (
     <GuestGuard>
+      {!orgAllowsSignUp ? (
+        <LoadingScreen />
+      ) : (
       <Flex
         direction={splitLayout ? 'row' : 'column'}
         style={{
@@ -348,6 +379,7 @@ export default function SignUpPage() {
           </Flex>
         </FormPanel>
       </Flex>
+      )}
     </GuestGuard>
   );
 }

@@ -13,6 +13,7 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi, DEFAULT_SYSTEM_PROMPT } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
@@ -186,6 +187,7 @@ export default function PromptsPage() {
   }
 
   return (
+    <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto' }}>
       <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
 
@@ -263,5 +265,6 @@ export default function PromptsPage() {
         isSaving={isSaving}
       />
     </Box>
+    </ServiceGate>
   );
 }

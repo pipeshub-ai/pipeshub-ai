@@ -21,6 +21,7 @@ import type { CitationMaps, CitationCallbacks } from './response-tabs/citations'
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
+import { useTranslation } from 'react-i18next';
 
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
@@ -70,7 +71,19 @@ export const ChatResponse = React.memo(function ChatResponse({
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
 
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
+
+  /** Shown only if the stream is active but no SSE status has arrived yet */
+  const streamingFallbackStatus = useMemo(
+    (): StatusMessage => ({
+      id: 'status-waiting',
+      status: 'processing',
+      message: t('chatStream.thinkingFallback'),
+      timestamp: '',
+    }),
+    [t],
+  );
 
   // ── Render-reason tracking ─────────────────────────────────────────
   const prevCRRef = useRef<Record<string, unknown>>({});
@@ -151,6 +164,9 @@ export const ChatResponse = React.memo(function ChatResponse({
       : answer,
   );
   const currentStatusMessage = currentStatusMessageProp;
+  const streamingStatusToShow =
+    currentStatusMessage ??
+    (isStreaming && !displayContent.trim() ? streamingFallbackStatus : null);
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -174,8 +190,8 @@ export const ChatResponse = React.memo(function ChatResponse({
         return (
           <Box style={{ padding: 'var(--space-4) 0' }}>
             {/* Status indicator — always above content, same slot as ConfidenceIndicator */}
-            {isStreaming && currentStatusMessage && (
-              <StatusMessageComponent status={currentStatusMessage} />
+            {isStreaming && streamingStatusToShow && (
+              <StatusMessageComponent status={streamingStatusToShow} />
             )}
 
             {/* Show confidence only when not streaming and has answer */}

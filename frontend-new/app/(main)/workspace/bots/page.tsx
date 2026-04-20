@@ -5,12 +5,25 @@ import { toast } from '@/lib/store/toast-store';
 import { useBotsStore } from './store';
 import { BotsApi } from './api';
 import { BotPageLayout, BotConfigPanel } from './components';
+import { useRouter } from 'next/navigation';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
+
 
 // ========================================
 // Page
 // ========================================
 
 export default function BotsPage() {
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin]);
+
   const {
     slackBotConfigs,
     agents,
@@ -58,7 +71,7 @@ export default function BotsPage() {
   }, [fetchData]);
 
   return (
-    <>
+    <ServiceGate services={['query']}>
       <BotPageLayout
         configs={slackBotConfigs}
         agents={agents}
@@ -68,6 +81,6 @@ export default function BotsPage() {
         onManage={(configId) => setEditingBot(configId)}
       />
       <BotConfigPanel />
-    </>
+    </ServiceGate>
   );
 }

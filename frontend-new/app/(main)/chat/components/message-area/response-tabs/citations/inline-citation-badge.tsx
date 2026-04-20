@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Flex, Text, Popover } from '@radix-ui/themes';
 import { CitationPopoverContent } from './citation-popover';
+import { CITATION_POPOVER_WIDTH, CITATION_POPOVER_MAX_WIDTH } from './constants';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import type { CitationData, CitationCallbacks } from './types';
 
@@ -148,8 +149,8 @@ export function InlineCitationBadge({
         align="start"
         onOpenAutoFocus={(e) => e.preventDefault()}
         style={{
-          width: '420px',
-          maxWidth: '90vw',
+          width: CITATION_POPOVER_WIDTH,
+          maxWidth: CITATION_POPOVER_MAX_WIDTH,
           backgroundColor: 'var(--effects-translucent)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',

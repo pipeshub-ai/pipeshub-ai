@@ -1,5 +1,12 @@
 'use client';
 
+/**
+ * File-type glyphs: inline SVG with theme tokens such as `var(--file-icon-fill)`.
+ * For static SVG assets that use `currentColor` (for example LLM provider marks), prefer
+ * `ThemeableAssetIcon` from `./themeable-asset-icon` over a raw `<img>` so light/dark themes
+ * keep contrast.
+ */
+
 import React from 'react';
 import { MaterialIcon } from './MaterialIcon';
 import { FILE_TYPE_ICON_MAP } from './file-type-icons';

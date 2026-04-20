@@ -1,6 +1,10 @@
 import { apiClient } from '@/lib/api';
-import { GROUP_TYPES, USER_ROLES } from '../constants';
-import type { User, UsersListResponse, WithGroupsUser } from './types';
+import type {
+  GraphUsersListResponse,
+  User,
+  UsersListResponse,
+  WithGroupsUser,
+} from './types';
 
 /**
  * Get all groups for a specific user by their MongoDB _id.
@@ -23,15 +27,39 @@ const BASE_URL = '/api/v1/users';
 
 export const UsersApi = {
   /**
-   * List users with pagination from the graph API.
-   * GET /api/v1/users/graph/list
+   * List users with pagination and server-side filters.
+   * GET /api/v1/users?page=&limit=&search=&hasLoggedIn=&groupIds=
+   * Queries MongoDB directly with filters applied at the database level.
    */
   async listUsers(params?: {
     page?: number;
     limit?: number;
     search?: string;
+    hasLoggedIn?: string;
+    isBlocked?: string;
+    groupIds?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
     const { data } = await apiClient.get<UsersListResponse>(
+      BASE_URL,
+      { params }
+    );
+    return {
+      users: data.users ?? [],
+      totalCount: data.pagination?.totalCount ?? data.users?.length ?? 0,
+    };
+  },
+
+  /**
+   * List users from the graph API (returns graph UUID as `id`).
+   * Use this when you need the graph key that matches team.createdBy.
+   * GET /api/v1/users/graph/list
+   */
+  async listGraphUsers(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+  }): Promise<{ users: User[]; totalCount: number }> {
+    const { data } = await apiClient.get<GraphUsersListResponse>(
       `${BASE_URL}/graph/list`,
       { params }
     );
@@ -47,52 +75,29 @@ export const UsersApi = {
    */
   async fetchUsersWithGroups(): Promise<WithGroupsUser[]> {
     const { data } = await apiClient.get(`${BASE_URL}/fetch/with-groups`);
-    // Response may be a direct array or wrapped in an object
     return Array.isArray(data) ? data : (data as { users: WithGroupsUser[] }).users ?? [];
   },
 
   /**
-   * Fetch merged users: server-paginates via graph/list, enriches with with-groups.
-   * - graph/list  → id (UUID), email, timestamps, server pagination
-   * - with-groups → hasLoggedIn, inline groups array (role + raw count)
+   * Unblock a user. PUT /api/v1/users/:userId/unblock (admin)
+   */
+  async unblockUser(userId: string): Promise<void> {
+    await apiClient.put(`${BASE_URL}/${userId}/unblock`);
+  },
+
+  /**
+   * Fetch users with all enrichment (groups, blocked status, profile pictures).
+   * Single call to GET /api/v1/users — backend returns everything.
    */
   async fetchMergedUsers(params?: {
     page?: number;
     limit?: number;
     search?: string;
+    hasLoggedIn?: string;
+    isBlocked?: string;
+    groupIds?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
-    const [graphResult, withGroupsUsers] = await Promise.all([
-      UsersApi.listUsers(params),
-      UsersApi.fetchUsersWithGroups(),
-    ]);
-
-    // Build lookup from MongoDB _id → with-groups user
-    const wgByUserId = new Map<string, WithGroupsUser>();
-    for (const wgUser of withGroupsUsers) {
-      wgByUserId.set(wgUser._id, wgUser);
-    }
-
-    const mergedUsers: User[] = graphResult.users.map((user) => {
-      const wgUser = wgByUserId.get(user.userId);
-      const hasLoggedIn = wgUser?.hasLoggedIn ?? true;
-      const groups = wgUser?.groups ?? [];
-
-      return {
-        ...user,
-        name: user.name || wgUser?.fullName,
-        hasLoggedIn,
-        isActive: user.isActive ?? hasLoggedIn,
-        // Pending users have no meaningful timestamps — omit so UI renders "-"
-        createdAtTimestamp: hasLoggedIn ? user.createdAtTimestamp : undefined,
-        updatedAtTimestamp: hasLoggedIn ? user.updatedAtTimestamp : undefined,
-        role: groups.some((g) => g.type === GROUP_TYPES.ADMIN) ? USER_ROLES.ADMIN : USER_ROLES.MEMBER,
-        // Use the raw groups array size, excluding the "everyone" system group
-        groupCount: groups.filter((g) => g.type !== GROUP_TYPES.EVERYONE).length,
-        userGroups: groups,
-      };
-    });
-
-    return { users: mergedUsers, totalCount: graphResult.totalCount };
+    return UsersApi.listUsers(params);
   },
 
   /**
@@ -102,6 +107,21 @@ export const UsersApi = {
   async getUser(id: string): Promise<User> {
     const { data } = await apiClient.get<User>(`${BASE_URL}/${id}`);
     return data;
+  },
+
+  /**
+   * Batch lookup users by their MongoDB IDs.
+   * POST /api/v1/users/by-ids
+   * Use this to enrich known user IDs with name/email without scanning
+   * the whole user list.
+   */
+  async getUsersByIds(userIds: string[]): Promise<User[]> {
+    if (userIds.length === 0) return [];
+    const { data } = await apiClient.post<User[] | { users: User[] }>(
+      `${BASE_URL}/by-ids`,
+      { userIds }
+    );
+    return Array.isArray(data) ? data : data.users ?? [];
   },
 
   /**

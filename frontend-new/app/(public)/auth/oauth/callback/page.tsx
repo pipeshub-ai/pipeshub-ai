@@ -90,10 +90,10 @@ export default function OAuthCallbackPage() {
           throw new Error('Invalid OAuth state: missing provider.');
         }
 
-        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-        if (!baseUrl) {
-          throw new Error('Configuration error: API base URL is not set.');
-        }
+        // Default to '' (same origin) — in the standard deployment the Next.js
+        // static export is served by the Node.js backend, so no explicit base
+        // URL is needed for this call to reach the auth endpoint.
+        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
         const response = await fetch(
           `${baseUrl}/api/v1/userAccount/oauth/exchange`,

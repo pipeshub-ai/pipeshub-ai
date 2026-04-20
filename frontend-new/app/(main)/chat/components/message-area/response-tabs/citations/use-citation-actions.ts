@@ -6,26 +6,7 @@ import { useChatStore } from '@/chat/store';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import type { CitationData, CitationCallbacks, CitationOrigin, CitationMaps } from './types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
-
-/** MIME types for PowerPoint presentation files (.ppt, .pptx) */
-const PPT_MIME_TYPES = [
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-];
-
-/**
- * Checks whether a file is a PowerPoint presentation (PPT/PPTX) by MIME type or extension.
- * PPT/PPTX files require server-side conversion to PDF via the `convertTo=pdf` query param
- * on the streaming API before they can be previewed in the browser.
- */
-function isPresentationFile(mimeType?: string, fileName?: string): boolean {
-  if (mimeType && PPT_MIME_TYPES.includes(mimeType)) return true;
-  if (fileName) {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (ext === 'ppt' || ext === 'pptx') return true;
-  }
-  return false;
-}
+import { isPresentationFile, isDocxFile } from '@/app/components/file-preview/utils';
 
 /**
  * Hook that provides citation interaction callbacks:
@@ -129,6 +110,7 @@ export function useCitationActions(): CitationCallbacks {
           initialPage,
           highlightBox,
           citations: recordCitations,
+          initialCitationId: citation.citationId,
         });
         setPreviewMode('sidebar');
 
@@ -140,21 +122,34 @@ export function useCitationActions(): CitationCallbacks {
           KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions),
         ]);
 
-        // 3. Create object URL from blob
-        const url = URL.createObjectURL(blob);
+        // 3. Build the preview-state payload.
+        // For DOCX we pass the Blob straight through to `DocxRenderer`
+        // (it calls `blob.arrayBuffer()` and hands the buffer to
+        // `docx-preview.renderAsync`), so no blob URL is needed. For every
+        // other renderer we still materialise a blob URL the way we used to.
+        const resolvedType = recordDetails.record.mimeType || citation.extension || '';
+        // Detect DOCX from the real MIME / file name only — `resolvedType` may
+        // fall back to `citation.extension` (e.g. the bare string "docx"),
+        // which isn't a valid MIME and would bypass the strict MIME check.
+        const isDocx =
+          isDocxFile(recordDetails.record.mimeType, citation.recordName) ||
+          citation.extension?.toLowerCase() === 'docx';
+        const url = isDocx ? '' : URL.createObjectURL(blob);
 
-        // 4. Update state with actual file URL and record details
+        // 4. Update state with actual file URL and/or blob and record details
         setPreviewFile({
           id: citation.recordId,
           name: citation.recordName,
           url,
-          type: recordDetails.record.mimeType || citation.extension || '',
+          blob: isDocx ? blob : undefined,
+          type: resolvedType,
           size: recordDetails.record.sizeInBytes,
           isLoading: false,
           recordDetails,
           initialPage,
           highlightBox,
           citations: recordCitations,
+          initialCitationId: citation.citationId,
         });
       } catch (error) {
         console.error('Failed to load file preview:', error);

@@ -17,6 +17,12 @@
 /** Fixed sidebar width in pixels - applies to all navigation sidebars */
 export const SIDEBAR_WIDTH = 233;
 
+/** Minimum sidebar width when resizing (same as default) */
+export const SIDEBAR_MIN_WIDTH = 233;
+
+/** Maximum sidebar width when resizing */
+export const SIDEBAR_MAX_WIDTH = 450;
+
 /** Height of the optional sidebar header area (e.g., logo + avatar in Chat) */
 export const HEADER_HEIGHT = 56;
 

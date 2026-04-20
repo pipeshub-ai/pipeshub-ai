@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { Connector } from '../types';
 import { ConnectorCard } from './connector-card';
 
@@ -40,6 +41,8 @@ interface ConnectorCatalogLayoutProps {
   activeConnectors: Connector[];
   /** Called when a connector Setup / Add button is clicked. */
   onSetup?: (connector: Connector) => void;
+  /** Called when "+" is used to add another instance (catalog active card). */
+  onAddInstance?: (connector: Connector) => void;
   /** Called when a connector card body is clicked (navigate to type page). */
   onCardClick?: (connector: Connector) => void;
   /** Whether data is loading. */
@@ -63,6 +66,7 @@ export function ConnectorCatalogLayout({
   registryConnectors,
   activeConnectors,
   onSetup,
+  onAddInstance,
   onCardClick,
   isLoading = false,
 }: ConnectorCatalogLayoutProps) {
@@ -104,7 +108,8 @@ export function ConnectorCatalogLayout({
     return result;
   }, [activeConnectors, registryConnectors]);
 
-  // Apply tab filter
+  // Apply tab filter. Personal "active"/"inactive" tabs must reflect all instances per type,
+  // not the first merged row's isActive (multiple instances can disagree).
   const tabFiltered = useMemo(() => {
     switch (activeTab) {
       case 'configured':
@@ -112,13 +117,13 @@ export function ConnectorCatalogLayout({
       case 'not_configured':
         return allConnectors.filter((c) => !c.isConfigured);
       case 'active':
-        return allConnectors.filter((c) => c.isActive);
+        return allConnectors.filter((c) => (activeCountByType[c.type] ?? 0) > 0);
       case 'inactive':
-        return allConnectors.filter((c) => !c.isActive);
+        return allConnectors.filter((c) => (inactiveCountByType[c.type] ?? 0) > 0);
       default:
         return allConnectors;
     }
-  }, [allConnectors, activeTab]);
+  }, [allConnectors, activeTab, activeCountByType, inactiveCountByType]);
 
   // Apply search filter
   const filtered = useMemo(() => {
@@ -151,10 +156,12 @@ export function ConnectorCatalogLayout({
     counts['all'] = base.length;
     counts['configured'] = base.filter((c) => c.isConfigured).length;
     counts['not_configured'] = base.filter((c) => !c.isConfigured).length;
-    counts['active'] = base.filter((c) => c.isActive).length;
-    counts['inactive'] = base.filter((c) => !c.isActive).length;
+    counts['active'] = base.filter((c) => (activeCountByType[c.type] ?? 0) > 0).length;
+    counts['inactive'] = base.filter(
+      (c) => (inactiveCountByType[c.type] ?? 0) > 0
+    ).length;
     return counts;
-  }, [allConnectors, searchQuery]);
+  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType]);
 
   return (
     <Flex
@@ -215,11 +222,9 @@ export function ConnectorCatalogLayout({
         <Flex
           align="center"
           justify="center"
-          style={{ width: '100%', paddingTop: 80 }}
+          style={{ width: '100%', flex: 1 }}
         >
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            Loading connectors…
-          </Text>
+          <LottieLoader variant="loader" size={48} showLabel label="Loading connectors…" />
         </Flex>
       ) : filtered.length === 0 ? (
         <Flex
@@ -248,6 +253,7 @@ export function ConnectorCatalogLayout({
               activeInstanceCount={activeCountByType[connector.type] ?? 0}
               inactiveInstanceCount={inactiveCountByType[connector.type] ?? 0}
               onSetup={onSetup}
+              onAddInstance={onAddInstance}
               onCardClick={onCardClick}
             />
           ))}

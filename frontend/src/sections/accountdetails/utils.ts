@@ -60,12 +60,12 @@ export const getOrgLogo = async (orgId: string): Promise<string | null> => {
       return null;
     }
 
-    const contentType = response.headers['content-type'];
-    if (contentType && contentType.includes('application/json')) {
+    const contentType = String(response.headers['content-type'] ?? '');
+    if (contentType.includes('application/json')) {
       return null;
     }
 
-    const blob = new Blob([response.data], { type: response.headers['content-type'] });
+    const blob = new Blob([response.data], { type: contentType || undefined });
 
     return await new Promise<string | null>((resolve, reject) => {
       const reader = new FileReader();
@@ -92,12 +92,12 @@ export const getUserLogo = async (userId: string): Promise<string | null> => {
       responseType: 'arraybuffer',
     });
 
-    const contentType = response.headers['content-type'];
-    if (contentType && contentType.includes('application/json')) {
+    const contentType = String(response.headers['content-type'] ?? '');
+    if (contentType.includes('application/json')) {
       return null;
     }
 
-    const blob = new Blob([response.data], { type: response.headers['content-type'] });
+    const blob = new Blob([response.data], { type: contentType || undefined });
 
     return await new Promise<string | null>((resolve, reject) => {
       const reader = new FileReader();

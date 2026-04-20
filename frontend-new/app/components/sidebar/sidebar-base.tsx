@@ -1,13 +1,17 @@
 'use client';
 
+import { useRef, useCallback, useEffect, useState } from 'react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   SIDEBAR_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_MAX_WIDTH,
   HEADER_HEIGHT,
   FOOTER_HEIGHT,
   CONTENT_PADDING,
 } from './constants';
+import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import type { SidebarBaseProps } from './types';
 
 /**
@@ -117,16 +121,75 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
     );
   }
 
+  const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useSidebarWidthStore((s) => s.setSidebarWidth);
+
+  const primaryRef = useRef<HTMLDivElement>(null);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const secondaryRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const widthRef = useRef(sidebarWidth);
+  const isDragging = useRef(false);
+
+  // Sync ref when store value changes (e.g. on hydration from localStorage)
+  useEffect(() => {
+    widthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  const [dragHandleHovered, setDragHandleHovered] = useState(false);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, ev.clientX));
+      widthRef.current = clamped;
+      const hasSecondary = !!secondaryRef.current;
+      const clusterW = hasSecondary ? clamped + SIDEBAR_WIDTH : clamped;
+
+      if (primaryRef.current) {
+        primaryRef.current.style.width = `${clamped}px`;
+      }
+      if (outerRef.current) {
+        outerRef.current.style.width = `${clusterW}px`;
+        outerRef.current.style.minWidth = `${clusterW}px`;
+      }
+      if (secondaryRef.current) {
+        secondaryRef.current.style.left = `${clamped}px`;
+      }
+      if (backdropRef.current) {
+        backdropRef.current.style.left = `${clusterW}px`;
+      }
+    };
+
+    const onMouseUp = () => {
+      isDragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      setSidebarWidth(widthRef.current);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [setSidebarWidth]);
+
   const primarySidebar = (
     <Flex
+      ref={primaryRef}
       direction="column"
       style={{
-        width: `${SIDEBAR_WIDTH}px`,
+        width: `${sidebarWidth}px`,
         height: '100%',
         backgroundColor: 'var(--olive-1)',
         borderRight: '1px solid var(--olive-3)',
         flexShrink: 0,
         fontFamily: 'Manrope, sans-serif',
+        position: 'relative',
       }}
     >
       {/* Optional header — fixed height */}
@@ -164,15 +227,46 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
           {footer}
         </Box>
       )}
+
+      {/* Drag handle */}
+      <Box
+        onMouseDown={handleMouseDown}
+        onMouseEnter={() => setDragHandleHovered(true)}
+        onMouseLeave={() => setDragHandleHovered(false)}
+        style={{
+          position: 'absolute',
+          top: 0,
+          right: -2,
+          width: 4,
+          height: '100%',
+          cursor: 'col-resize',
+          zIndex: 20,
+        }}
+      >
+        <Box
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 1,
+            width: 2,
+            height: '100%',
+            borderRadius: 1,
+            transition: 'opacity 0.15s',
+            opacity: dragHandleHovered ? 1 : 0,
+            backgroundColor: 'var(--olive-8)',
+          }}
+        />
+      </Box>
     </Flex>
   );
 
   // Reserve horizontal space for primary + secondary so the panel is not
   // clipped by the app shell's overflow:hidden (secondary is position:absolute).
-  const sidebarClusterWidth = secondaryPanel ? SIDEBAR_WIDTH * 2 : SIDEBAR_WIDTH;
+  const sidebarClusterWidth = secondaryPanel ? sidebarWidth + SIDEBAR_WIDTH : sidebarWidth;
 
   return (
     <Box
+      ref={outerRef}
       style={{
         position: 'relative',
         flexShrink: 0,
@@ -181,6 +275,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         alignSelf: 'stretch',
       }}
     >
+      <style>{`.sidebar-drag-handle { opacity: 0; } *:hover > .sidebar-drag-handle { opacity: 1; }`}</style>
       {primarySidebar}
 
       {/* Click-outside backdrop — covers the entire viewport so clicking
@@ -188,6 +283,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
           This is a root sidebar-level concern, not page-specific. */}
       {secondaryPanel && onDismissSecondaryPanel && (
         <Box
+          ref={backdropRef}
           onClick={onDismissSecondaryPanel}
           style={{
             position: 'fixed',
@@ -205,10 +301,11 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       {/* Secondary panel — absolutely positioned to float over main content */}
       {secondaryPanel && (
         <Box
+          ref={secondaryRef}
           style={{
             position: 'absolute',
             top: 0,
-            left: `${SIDEBAR_WIDTH}px`,
+            left: `${sidebarWidth}px`,
             height: '100%',
             zIndex: 10,
           }}

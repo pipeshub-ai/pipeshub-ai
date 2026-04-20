@@ -9,6 +9,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 import {
   EntityPageHeader,
@@ -20,6 +21,7 @@ import {
   AvatarCell,
   StatusBadge,
   ConfirmationDialog,
+  DestructiveTypedConfirmationDialog,
 } from '../components';
 import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
@@ -32,13 +34,14 @@ import { GroupsApi } from '../groups/api';
 import type { Group } from '../groups/types';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
+import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
 
 // ========================================
 // Constants
 // ========================================
 
 const USERS_FILTER_CHIPS: FilterChipConfig[] = [
-  { key: 'role', label: 'Role', icon: 'person' },
+  // { key: 'role', label: 'Role', icon: 'person' },
   { key: 'group', label: 'Group', icon: 'group' },
   { key: 'status', label: 'Status', icon: 'radio_button_checked' },
   { key: 'lastActive', label: 'Last Active', icon: 'schedule' },
@@ -53,6 +56,7 @@ const ROLE_OPTIONS = [
 const STATUS_OPTIONS = [
   { value: 'Active', label: 'Active', icon: 'check_circle', iconColor: 'var(--accent-11)' },
   { value: 'Pending', label: 'Pending', icon: 'schedule', iconColor: 'var(--amber-11)' },
+  { value: 'Blocked', label: 'Blocked', icon: 'block', iconColor: 'var(--red-11)' },
 ];
 
 // ========================================
@@ -111,21 +115,11 @@ function UsersPageContent() {
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  // Prevent rendering (and running data-fetching effects) while profile is
-  // unresolved or before the redirect fires for confirmed non-admin users.
-  if (!isProfileInitialized || isAdmin === false) {
-    return null;
-  }
-
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [unblockTarget, setUnblockTarget] = useState<User | null>(null);
+  const [isUnblocking, setIsUnblocking] = useState(false);
   // Admin group ref for role changes
   const adminGroupRef = useRef<Group | null>(null);
 
@@ -155,9 +149,36 @@ function UsersPageContent() {
     closeProfilePanel,
   } = useUsersStore();
 
-  // Groups for the filter dropdown — fetched independently of user list
+  // ── Paginated group filter ──
   const groupsRef = useRef<Group[]>([]);
-  const [groupOptions, setGroupOptions] = useState<{ value: string; label: string; icon: string }[]>([]);
+  const groupFilter = usePaginatedFilterOptions<Group>({
+    fetcher: async (search, page, limit) => {
+      const { groups, totalCount } = await GroupsApi.listGroups({ page, limit, search });
+      return { items: groups, totalCount };
+    },
+    mapOption: (g) => ({
+      value: g._id,
+      label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
+      icon: 'group',
+    }),
+    onFetched: (groups, page, search) => {
+      // Cache the admin group for role changes (from first page, no search)
+      if (!search && page === 1) {
+        groupsRef.current = groups;
+        adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
+      } else {
+        groupsRef.current = [...groupsRef.current, ...groups];
+      }
+    },
+  });
+  // Filter out "everyone" group from displayed options
+  const groupOptions = useMemo(
+    () => groupFilter.options.filter((o) => {
+      const group = groupsRef.current.find((g) => g._id === o.value);
+      return !group || group.type !== GROUP_TYPES.EVERYONE;
+    }),
+    [groupFilter.options]
+  );
 
   // Capture userId from initial URL load so we can restore the profile panel
   // after fetchUsers completes (users list is empty on first render).
@@ -169,39 +190,30 @@ function UsersPageContent() {
     pendingProfileUserIdRef.current = (panel === 'profile' && userId) ? userId : null;
   }, []);
 
-  // ── Fetch groups once on mount (for filter dropdown) ──────────────────
-  useEffect(() => {
-    let cancelled = false;
-    GroupsApi.listGroups()
-      .then((groups) => {
-        if (!cancelled) {
-          groupsRef.current = groups;
-          adminGroupRef.current = groups.find((g) => g.type === GROUP_TYPES.ADMIN) ?? null;
-          setGroupOptions(
-            groups
-              .filter((g) => g.type !== GROUP_TYPES.EVERYONE)
-              .map((g) => ({
-                value: g._id,
-                label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
-                icon: 'group',
-              }))
-          );
-        }
-      })
-      .catch(() => { /* filter dropdown degrades gracefully */ });
-    return () => { cancelled = true; };
-  }, []);
-
-  // ── Fetch users (server-paginated, enriched with with-groups) ──────────────────
+  // ── Fetch users (server-paginated + server-filtered) ──────────────────
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await UsersApi.fetchMergedUsers({
+      // Build server-side filter params
+      const params: Parameters<typeof UsersApi.fetchMergedUsers>[0] = {
         page,
         limit,
         search: searchQuery || undefined,
-      });
+      };
+      // Status filter → hasLoggedIn and/or isBlocked flags
+      if (filters.statuses?.length) {
+        const selected = new Set(filters.statuses);
+        if (selected.has('Active')) params.hasLoggedIn = 'true';
+        else if (selected.has('Pending')) params.hasLoggedIn = 'false';
+        if (selected.has('Blocked')) params.isBlocked = 'true';
+      }
+      // Group filter → comma-separated group IDs
+      if (filters.groups?.length) {
+        params.groupIds = filters.groups.join(',');
+      }
+
+      const result = await UsersApi.fetchMergedUsers(params);
       setUsers(result.users, result.totalCount);
 
       // Restore profile panel when navigating directly to ?panel=profile&userId=xxx
@@ -218,7 +230,7 @@ function UsersPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [page, limit, searchQuery, setUsers, setLoading, setError, openProfilePanel]);
+  }, [page, limit, searchQuery, filters, setUsers, setLoading, setError, openProfilePanel]);
 
   useEffect(() => {
     fetchUsers();
@@ -312,16 +324,16 @@ function UsersPageContent() {
   const renderFilter = useCallback(
     (filter: FilterChipConfig) => {
       switch (filter.key) {
-        case 'role':
-          return (
-            <FilterDropdown
-              label={filter.label}
-              icon={filter.icon}
-              options={ROLE_OPTIONS}
-              selectedValues={filters.roles || []}
-              onSelectionChange={(values) => setFilters({ roles: values })}
-            />
-          );
+        // case 'role':
+        //   return (
+        //     <FilterDropdown
+        //       label={filter.label}
+        //       icon={filter.icon}
+        //       options={ROLE_OPTIONS}
+        //       selectedValues={filters.roles || []}
+        //       onSelectionChange={(values) => setFilters({ roles: values })}
+        //     />
+        //   );
         case 'group':
           return (
             <FilterDropdown
@@ -331,6 +343,10 @@ function UsersPageContent() {
               selectedValues={filters.groups || []}
               onSelectionChange={(values) => setFilters({ groups: values })}
               searchable
+              onSearch={groupFilter.onSearch}
+              onLoadMore={groupFilter.onLoadMore}
+              isLoadingMore={groupFilter.isLoading}
+              hasMore={groupFilter.hasMore}
             />
           );
         case 'status':
@@ -340,7 +356,9 @@ function UsersPageContent() {
               icon={filter.icon}
               options={STATUS_OPTIONS}
               selectedValues={filters.statuses || []}
-              onSelectionChange={(values) => setFilters({ statuses: values as ('Active' | 'Pending')[] })}
+              onSelectionChange={(values) =>
+                setFilters({ statuses: values as ('Active' | 'Pending' | 'Blocked')[] })
+              }
             />
           );
         case 'lastActive':
@@ -401,47 +419,14 @@ function UsersPageContent() {
           return null;
       }
     },
-    [filters, setFilters, groupOptions]
+    [filters, setFilters, groupOptions, groupFilter]
   );
 
-  // ── Client-side search + filter ──
+  // ── Client-side date filters (role/group/status are server-side) ──
   const filteredUsers = useMemo(() => {
     let result = users;
 
-    // Search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (u) =>
-          u.name?.toLowerCase().includes(q) ||
-          u.email?.toLowerCase().includes(q)
-      );
-    }
-
-    // Role filter
-    if (filters.roles?.length) {
-      result = result.filter((u) => filters.roles!.includes(u.role || 'Member'));
-    }
-
-    // Group filter
-    if (filters.groups?.length) {
-      const selectedGroupIds = new Set(filters.groups);
-      result = result.filter((u) =>
-        groupsRef.current.some(
-          (g) => selectedGroupIds.has(g._id) && g.users.includes(u.userId)
-        )
-      );
-    }
-
-    // Status filter
-    if (filters.statuses?.length) {
-      result = result.filter((u) => {
-        const status = u.hasLoggedIn ? 'Active' : 'Pending';
-        return filters.statuses!.includes(status);
-      });
-    }
-
-    // Last Active date filter
+    // Last Active date filter (client-side)
     if (filters.lastActiveAfter || filters.lastActiveBefore) {
       result = result.filter((u) =>
         isInDateRange(
@@ -453,7 +438,7 @@ function UsersPageContent() {
       );
     }
 
-    // Date Joined filter
+    // Date Joined filter (client-side)
     if (filters.dateJoinedAfter || filters.dateJoinedBefore) {
       result = result.filter((u) =>
         isInDateRange(
@@ -466,11 +451,22 @@ function UsersPageContent() {
     }
 
     return result;
-  }, [users, searchQuery, filters]);
+  }, [users, filters]);
 
   // Server already returns the correct page; client-side filters may further narrow the set
   const paginatedUsers = filteredUsers;
   const effectiveTotalCount = totalCount;
+
+  const hasActiveFilters = !!(
+    searchQuery.trim() ||
+    filters.statuses?.length ||
+    filters.groups?.length ||
+    filters.lastActiveAfter ||
+    filters.lastActiveBefore ||
+    filters.dateJoinedAfter ||
+    filters.dateJoinedBefore
+  );
+  const isEmptyFiltered = !isLoading && paginatedUsers.length === 0 && hasActiveFilters;
 
   // ── Bulk action logic ─────────────────────────────────────────
   const selectedUsersList = useMemo(
@@ -567,6 +563,11 @@ function UsersPageContent() {
   }, [selectedUsersList, addToast, t, setSelectedUsers, fetchUsers]);
 
   /** Bulk actions shown in the floating bar — varies by selection composition */
+  const hasAdminSelected = useMemo(
+    () => selectedUsersList.some((u) => u.role === 'Admin'),
+    [selectedUsersList]
+  );
+
   const bulkActions = useMemo<BulkAction[]>(() => {
     if (allSelectedArePending) {
       // All selected are invited (pending) users
@@ -592,13 +593,16 @@ function UsersPageContent() {
     return [
       {
         key: 'remove-from-workspace',
-        label: t('workspace.users.bulk.removeFromWorkspace', 'Remove from Workplace'),
-        icon: 'person_remove',
+        label: hasAdminSelected
+          ? t('workspace.users.bulk.adminCantBeRemoved', 'Admin users cannot be removed')
+          : t('workspace.users.bulk.removeFromWorkspace', 'Remove from Workplace'),
+        icon: hasAdminSelected ? 'block' : 'person_remove',
         variant: 'danger',
+        disabled: hasAdminSelected,
         onClick: handleBulkRemove,
       },
     ];
-  }, [allSelectedArePending, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
+  }, [allSelectedArePending, hasAdminSelected, t, handleBulkResendInvite, handleBulkCancelInvite, handleBulkRemove]);
 
   // ── Column definitions ──────────────────
 
@@ -613,6 +617,7 @@ function UsersPageContent() {
             name={user.name || user.email || '-'}
             email={user.name ? user.email : undefined}
             isSelf={currentUser?.id === user.id || currentUser?.email === user.email}
+            profilePicture={user.profilePicture}
           />
         ),
       },
@@ -641,7 +646,11 @@ function UsersPageContent() {
         label: t('workspace.users.columns.status'),
         width: '110px',
         render: (user) => (
-          <StatusBadge status={user.hasLoggedIn ? 'Active' : 'Pending'} />
+          <StatusBadge
+            status={
+              user.isBlocked ? 'Blocked' : user.hasLoggedIn ? 'Active' : 'Pending'
+            }
+          />
         ),
       },
       {
@@ -694,6 +703,32 @@ function UsersPageContent() {
       setIsRemoving(false);
     }
   }, [removeTarget, fetchUsers, addToast, t]);
+
+  const handleConfirmUnblock = useCallback(async () => {
+    if (!unblockTarget) return;
+    setIsUnblocking(true);
+    try {
+      await UsersApi.unblockUser(unblockTarget.userId);
+      addToast({
+        variant: 'success',
+        title: t('workspace.users.actions.unblockSuccess', 'User unblocked'),
+        duration: 3000,
+      });
+      setUnblockTarget(null);
+      fetchUsers();
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.users.actions.unblockError', 'Failed to unblock user'),
+        duration: 5000,
+      });
+    } finally {
+      setIsUnblocking(false);
+    }
+  }, [unblockTarget, addToast, t, fetchUsers]);
+
+  const unblockConfirmKeyword =
+    unblockTarget?.name?.trim() || unblockTarget?.email || '';
 
   // Shared "coming soon" toast helper
   const showComingSoon = useCallback(() => {
@@ -824,7 +859,20 @@ function UsersPageContent() {
 
       let actions: (RowAction | false)[];
 
-      if (isPending) {
+      if (user.isBlocked) {
+        actions = [
+          {
+            icon: 'visibility',
+            label: t('workspace.users.actions.viewProfile'),
+            onClick: () => navigateToProfilePanel(user),
+          },
+          {
+            icon: 'lock_open',
+            label: t('workspace.users.actions.unblock', 'Unblock'),
+            onClick: () => setUnblockTarget(user),
+          },
+        ];
+      } else if (isPending) {
         // Pending invite — invite management actions
         actions = [
           {
@@ -852,42 +900,42 @@ function UsersPageContent() {
         // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
         actions = [];
       } else if (isActive && currentRole === 'Admin') {
-        // Active Admin — View Profile + Change Role only
+        // Active Admin — View Profile only
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
-            icon: 'manage_accounts',
-            label: t('workspace.users.actions.changeRole'),
-            subMenu: {
-              type: 'radio' as const,
-              value: currentRole,
-              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
-              options: ROLE_SUB_MENU_OPTIONS,
-            },
-          },
+          // {
+          //   icon: 'manage_accounts',
+          //   label: t('workspace.users.actions.changeRole'),
+          //   subMenu: {
+          //     type: 'radio' as const,
+          //     value: currentRole,
+          //     onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+          //     options: ROLE_SUB_MENU_OPTIONS,
+          //   },
+          // },
         ];
       } else if (isActive) {
-        // Active Member/Guest — full management actions
+        // Active Member/Guest — management actions
         actions = [
           {
             icon: 'visibility',
             label: t('workspace.users.actions.viewProfile'),
             onClick: () => navigateToProfilePanel(user),
           },
-          {
-            icon: 'manage_accounts',
-            label: t('workspace.users.actions.changeRole'),
-            subMenu: {
-              type: 'radio' as const,
-              value: currentRole,
-              onValueChange: (newRole: string) => handleChangeRole(user, newRole),
-              options: ROLE_SUB_MENU_OPTIONS,
-            },
-          },
+          // {
+          //   icon: 'manage_accounts',
+          //   label: t('workspace.users.actions.changeRole'),
+          //   subMenu: {
+          //     type: 'radio' as const,
+          //     value: currentRole,
+          //     onValueChange: (newRole: string) => handleChangeRole(user, newRole),
+          //     options: ROLE_SUB_MENU_OPTIONS,
+          //   },
+          // },
           {
             icon: 'person_off',
             label: t('workspace.users.actions.deactivate'),
@@ -907,8 +955,29 @@ function UsersPageContent() {
 
       return <EntityRowActionMenu actions={actions} />;
     },
-    [t, navigateToProfilePanel, showComingSoon, handleChangeRole, handleResendInvite, handleEditInvite, ROLE_SUB_MENU_OPTIONS]
+    [
+      t,
+      navigateToProfilePanel,
+      showComingSoon,
+      handleChangeRole,
+      handleResendInvite,
+      handleEditInvite,
+      ROLE_SUB_MENU_OPTIONS,
+    ]
   );
+
+  // ── Redirect non-admin users ──────────────────────────────
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  // Prevent rendering (and running data-fetching effects) while profile is
+  // unresolved or before the redirect fires for confirmed non-admin users.
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   // ── Render ──────────────────────────────
 
@@ -947,17 +1016,37 @@ function UsersPageContent() {
         {/* Filter bar */}
         <EntityFilterBar filters={filterChips} renderFilter={renderFilter} />
 
-        {/* Data table */}
-        <EntityDataTable<User>
-          columns={columns}
-          data={paginatedUsers}
-          getItemId={(u) => u.id}
-          selectedIds={selectedUsers}
-          onSelectionChange={setSelectedUsers}
-          renderRowActions={renderRowActions}
-          isLoading={isLoading}
-          onRowClick={(user) => navigateToProfilePanel(user)}
-        />
+        {isEmptyFiltered ? (
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            gap="2"
+            style={{ flex: 1, padding: 'var(--space-6)' }}
+          >
+            <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
+              {t('workspace.users.noFilterResults', 'No users match the applied filters')}
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              {t('workspace.users.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
+            </Text>
+          </Flex>
+        ) : (
+          <>
+            {/* Data table */}
+            <EntityDataTable<User>
+              columns={columns}
+              data={paginatedUsers}
+              getItemId={(u) => u.id}
+              selectedIds={selectedUsers}
+              onSelectionChange={setSelectedUsers}
+              renderRowActions={renderRowActions}
+              isLoading={isLoading}
+              onRowClick={(user) => navigateToProfilePanel(user)}
+            />
+          </>
+        )}
 
         {/* Footer: pagination + bulk action bar */}
         <Flex
@@ -1008,6 +1097,42 @@ function UsersPageContent() {
         confirmVariant="danger"
         isLoading={isRemoving}
         onConfirm={handleRemoveUser}
+      />
+
+      <DestructiveTypedConfirmationDialog
+        open={!!unblockTarget}
+        onOpenChange={(open) => {
+          if (!open) setUnblockTarget(null);
+        }}
+        heading={t('workspace.users.actions.unblockTypedConfirmTitle', {
+          name: unblockTarget?.name || unblockTarget?.email || '',
+          defaultValue: 'Unblock {{name}}?',
+        })}
+        body={
+          <>
+            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+              {t('workspace.users.actions.unblockTypedConfirmBodyLine1', {
+                name: unblockTarget?.name || unblockTarget?.email || '',
+                defaultValue: 'This will restore sign-in access for {{name}}.',
+              })}
+            </Text>
+            <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
+              {t(
+                'workspace.users.actions.unblockTypedConfirmBodyLine2',
+                'Type the user\'s display name exactly to confirm.'
+              )}
+            </Text>
+          </>
+        }
+        confirmationKeyword={unblockConfirmKeyword}
+        confirmInputLabel={t('workspace.users.actions.typeNameToConfirm', {
+          keyword: unblockConfirmKeyword,
+        })}
+        primaryButtonText={t('workspace.users.actions.unblockConfirmAction', 'Unblock')}
+        cancelLabel={t('workspace.users.actions.cancelButton')}
+        isLoading={isUnblocking}
+        confirmLoadingLabel={t('workspace.users.actions.unblocking', 'Unblocking…')}
+        onConfirm={() => void handleConfirmUnblock()}
       />
     </Flex>
   );

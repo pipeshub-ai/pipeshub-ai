@@ -106,16 +106,14 @@ export function MessageActions({
   }, [isSpeaking, stopSpeech, content, speak]);
 
   const handleFeedback = useCallback((value: FeedbackValue) => {
-    setFeedback((prev) => {
-      const newValue = prev === value ? undefined : value;
-      if (newValue === 'like' || newValue === 'dislike') {
-        toast.success(t('chat.thankYouForFeedback'), {
-          description: t('chat.feedbackHelpsImprove'),
-        });
-      }
-      return newValue;
-    });
-  }, [t]);
+    const newValue = feedback === value ? undefined : value;
+    setFeedback(newValue);
+    if (newValue === 'like' || newValue === 'dislike') {
+      toast.success(t('chat.thankYouForFeedback'), {
+        description: t('chat.feedbackHelpsImprove'),
+      });
+    }
+  }, [feedback, t]);
 
   const handleRegenerate = useCallback(() => {
     if (!messageId) return;

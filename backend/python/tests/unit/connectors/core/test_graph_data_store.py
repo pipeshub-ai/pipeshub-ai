@@ -287,9 +287,9 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_get_record_by_path(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.get_record_by_path("conn1", "/some/path")
+        await tx_store.get_record_by_path("conn1", ["some","path"], "record_group_id")
         mock_graph_provider.get_record_by_path.assert_awaited_once_with(
-            "conn1", "/some/path", transaction="txn-123"
+            "conn1", ["some","path"], "record_group_id", transaction="txn-123"
         )
 
     @pytest.mark.asyncio

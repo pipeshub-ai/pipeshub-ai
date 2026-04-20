@@ -4,17 +4,13 @@ export const FLOW_EDGE = {
   emphasis: 'var(--agent-flow-edge-emphasis)',
 } as const;
 
-/** Card chrome — neutral wells; icon color follows platform gray. */
+/** Card chrome — node header icon tint. */
 export type FlowNodeChrome = {
-  iconWell: string;
-  iconWellBorder: string;
   iconColor: string;
 };
 
 export function getFlowNodeChrome(_nodeType: string): FlowNodeChrome {
   return {
-    iconWell: 'var(--gray-3)',
-    iconWellBorder: 'var(--gray-6)',
     iconColor: 'var(--agent-flow-text)',
   };
 }

@@ -1,10 +1,13 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner, RadioGroup } from '@radix-ui/themes';
+import { Flex, Text, Badge, Spinner, RadioGroup, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { ChatApi } from '@/chat/api';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
@@ -20,6 +23,8 @@ interface ModelSelectorPanelProps {
   onModelSelect: (model: ModelOverride) => void;
   /** Hide the "Configured Models / Open Settings" header (used when embedded in a bottom sheet that provides its own header) */
   hideHeader?: boolean;
+  /** Optional agent ID - when provided, shows only agent-configured models */
+  agentId?: string | null;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -51,45 +56,68 @@ export function ModelSelectorPanel({
   selectedModel,
   onModelSelect,
   hideHeader = false,
+  agentId,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
-  const [models, setModels] = useState<AvailableLlmModel[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const router = useRouter();
+
+  const ctxKey = ctxKeyFromAgent(agentId);
+  // Read the shared cache so the panel re-renders as soon as the fetcher
+  // writes results — no duplicate network calls.
+  const cached = useChatStore((s) => s.settings.availableModels[ctxKey]);
+  const models: AvailableLlmModel[] = cached?.models ?? [];
+
+  const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch models on mount; auto-select the default if no model is selected yet
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
     setError(null);
+    setIsLoading(!cached);
 
-    ChatApi.fetchAvailableLlms()
-      .then((data) => {
+    // Force a refetch whenever the panel is (re)opened: the set of available
+    // models can change between visits (admin adds/removes an LLM, an agent's
+    // configuration is edited elsewhere), and clicking the AI Models button
+    // is an explicit user signal that they want to see the current list.
+    // The util still dedupes concurrent in-flight calls, so this is safe.
+    fetchModelsForContext(ctxKey, { force: true })
+      .then((fresh) => {
         if (cancelled) return;
-        setModels(data);
-
-        // If no model is selected yet, auto-select the one marked isDefault
-        if (!selectedModel) {
-          const defaultModel = data.find((m) => m.isDefault);
-          if (defaultModel) {
-            onModelSelect({
-              modelKey: defaultModel.modelKey,
-              modelName: defaultModel.modelName,
-              modelFriendlyName: defaultModel.modelFriendlyName,
-              modelProvider: defaultModel.provider,
-            });
-          }
+        if (fresh.length === 0) {
+          setError(
+            ctxKey === ASSISTANT_CTX
+              ? t('chat.noModelsAvailable')
+              : t('chat.agentNoModelsConfigured'),
+          );
         }
       })
-      .catch(() => {
-        if (!cancelled) setError('Failed to load models');
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Failed to fetch models:', err);
+        setError(
+          ctxKey === ASSISTANT_CTX
+            ? t('chat.failedToLoadModels')
+            : t('chat.failedToLoadAgentConfig'),
+        );
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
       });
 
-    return () => { cancelled = true; };
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+    // `cached` intentionally excluded — including it would force a refetch
+    // every time the cache writes back, defeating the dedupe in the util.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctxKey, t]);
+
+  // NOTE: We intentionally do NOT auto-select the default model here.
+  // The chat-input pill already falls back to `defaultModels[ctxKey]` when
+  // `selectedModels[ctxKey]` is null, so there is no need to mutate the
+  // user's selection slot. Writing default into the selection on mount used
+  // to leak between contexts (e.g. picking default in assistant silently
+  // locked that model into every agent the user visited).
 
   const handleSelect = useCallback(
     (model: AvailableLlmModel) => {
@@ -151,8 +179,41 @@ export function ModelSelectorPanel({
         )}
 
         {!isLoading && error && (
-          <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-            <Text size="2" style={{ color: 'var(--red-9)' }}>{error}</Text>
+          <Flex 
+            direction="column" 
+            align="center" 
+            justify="center" 
+            gap="3"
+            style={{ padding: 'var(--space-6)' }}
+          >
+            <MaterialIcon 
+              name="error_outline" 
+              size={32} 
+              color="var(--red-9)" 
+            />
+            <Text 
+              size="2" 
+              style={{ 
+                color: 'var(--red-9)', 
+                textAlign: 'center',
+                maxWidth: '300px',
+                lineHeight: '1.5'
+              }}
+            >
+              {error}
+            </Text>
+            {error === t('chat.agentNoModelsConfigured') && agentId && (
+              <Button 
+                variant="soft" 
+                size="2"
+                onClick={() => {
+                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
+                }}
+              >
+                <MaterialIcon name="settings" size={16} />
+                {t('chat.configureModels')}
+              </Button>
+            )}
           </Flex>
         )}
 
@@ -178,8 +239,19 @@ interface ModelItemProps {
 }
 
 function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
-  const providerName = PROVIDER_FRIENDLY_NAMES[model.provider] ?? 'Missing Provider Friendly Name';
-  const description = MODEL_DESCRIPTIONS[model.modelName] ?? 'Missing model one liner';
+  const [isHovered, setIsHovered] = useState(false);
+  // Provider always comes through from the API. If we don't have a curated
+  // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to the raw
+  // provider string (case-insensitive lookup first) rather than a placeholder.
+  const providerKey = Object.keys(PROVIDER_FRIENDLY_NAMES).find(
+    (k) => k.toLowerCase() === model.provider?.toLowerCase(),
+  );
+  const providerName = providerKey
+    ? PROVIDER_FRIENDLY_NAMES[providerKey]
+    : (model.provider?.trim() || '');
+  // Description is optional — only render when we actually have one so we
+  // don't show placeholder text for models that aren't in the curated map.
+  const description = MODEL_DESCRIPTIONS[model.modelName];
 
   return (
     <Flex
@@ -202,22 +274,28 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {model.modelFriendlyName || model.modelName}
           </Text>
-          <Image
-            src="/icons/common/ellipse-1.svg"
-            alt=""
-            width={4}
-            height={4}
-            style={{ flexShrink: 0 }}
-          />
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
-            by {providerName}
-          </Text>
+          {providerName && (
+            <>
+              <Image
+                src="/icons/common/ellipse-1.svg"
+                alt=""
+                width={4}
+                height={4}
+                style={{ flexShrink: 0 }}
+              />
+              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                by {providerName}
+              </Text>
+            </>
+          )}
         </Flex>
 
-        {/* Description */}
-        <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
-          {description}
-        </Text>
+        {/* Description — only rendered when we have a curated one-liner. */}
+        {description && (
+          <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
+            {description}
+          </Text>
+        )}
 
         {/* Tags */}
         <Flex align="center" gap="1" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>

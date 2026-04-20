@@ -884,7 +884,13 @@ export function MessageList() {
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver
-                    accounts for its height in the spacer calculation. */}
+                    accounts for its height in the spacer calculation.
+
+                    TEMPORARILY DISABLED: the follow-up questions are hardcoded
+                    (see `ASK_MORE_QUESTION_SETS` in ../../constants) and are not
+                    yet generated from the actual conversation. Re-enable once
+                    the suggestions are dynamically produced by the backend. */}
+                {/*
                 {isLast && showAskMore && (
                   <Box style={{ marginTop: 'var(--space-6)' }}>
                     <AskMore
@@ -893,6 +899,7 @@ export function MessageList() {
                     />
                   </Box>
                 )}
+                */}
               </div>
             );
           })}

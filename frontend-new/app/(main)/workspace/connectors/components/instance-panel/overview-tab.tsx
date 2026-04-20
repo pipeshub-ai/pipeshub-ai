@@ -9,6 +9,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
+import { ensureConnectorSyncActiveThenResync } from '../../utils/connector-sync-actions';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import type {
   ConnectorInstance,
@@ -68,7 +69,10 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
   const setAllRecordsFilter = useKnowledgeBaseStore((s) => s.setAllRecordsFilter);
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
   const addToast = useToastStore((s) => s.addToast);
+  const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
   const [isStartingSync, setIsStartingSync] = useState(false);
+  const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
+  const [isReindexBusy, setIsReindexBusy] = useState(false);
   const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
 
   // Derive indexed records from byRecordType data
@@ -103,14 +107,48 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
     if (!connectorId || isStartingSync) return;
     try {
       setIsStartingSync(true);
-      await ConnectorsApi.startSync(connectorId);
+      await ensureConnectorSyncActiveThenResync({
+        _key: connectorId,
+        type: instance.type,
+      });
       addToast({ variant: 'success', title: 'Sync started successfully' });
+      bumpCatalogRefresh();
     } catch {
       addToast({ variant: 'error', title: 'Failed to start sync' });
     } finally {
       setIsStartingSync(false);
     }
-  }, [instance._key, isStartingSync, addToast]);
+  }, [instance._key, instance.type, isStartingSync, addToast, bumpCatalogRefresh]);
+
+  const handleOverviewResync = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isHeaderSyncBusy) return;
+    try {
+      setIsHeaderSyncBusy(true);
+      await ConnectorsApi.resyncConnector(connectorId, instance.type);
+      addToast({ variant: 'success', title: 'Sync started' });
+      bumpCatalogRefresh();
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to start sync' });
+    } finally {
+      setIsHeaderSyncBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
+
+  const handleReindexFailed = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isReindexBusy) return;
+    try {
+      setIsReindexBusy(true);
+      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type);
+      addToast({ variant: 'success', title: 'Reindexing failed records…' });
+      bumpCatalogRefresh();
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to reindex' });
+    } finally {
+      setIsReindexBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isReindexBusy, addToast, bumpCatalogRefresh]);
 
   // Status banner for ready_to_sync
   const showReadyBanner = isReadyToSync;
@@ -215,12 +253,26 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
             Records Status
           </Text>
-          <Flex align="center" gap="1">
-            {isSyncFailed && (
-              <StatusActionButton label="Reindex Failed" icon="replay" />
-            )}
-            <StatusActionButton label="Sync" icon="sync" />
-          </Flex>
+          {instance.isActive && (
+            <Flex align="center" gap="1">
+              {isSyncFailed && (
+                <StatusActionButton
+                  label="Reindex Failed"
+                  icon="replay"
+                  onClick={handleReindexFailed}
+                  disabled={isReindexBusy}
+                  loading={isReindexBusy}
+                />
+              )}
+              <StatusActionButton
+                label="Sync"
+                icon="sync"
+                onClick={handleOverviewResync}
+                disabled={isHeaderSyncBusy}
+                loading={isHeaderSyncBusy}
+              />
+            </Flex>
+          )}
         </Flex>
 
         {/* Stats grid */}
@@ -330,12 +382,27 @@ export function OverviewTab({ instance, stats }: OverviewTabProps) {
 // Sub-components
 // ========================================
 
-function StatusActionButton({ label, icon }: { label: string; icon: string }) {
+function StatusActionButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+  loading,
+}: {
+  label: string;
+  icon: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+}) {
   const [isHovered, setIsHovered] = useState(false);
+  const isDisabled = disabled || loading;
 
   return (
     <button
       type="button"
+      onClick={onClick}
+      disabled={isDisabled}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -350,17 +417,18 @@ function StatusActionButton({ label, icon }: { label: string; icon: string }) {
         padding: '0 8px',
         borderRadius: 'var(--radius-2)',
         border: '1px solid var(--gray-a4)',
-        backgroundColor: isHovered ? 'var(--gray-a3)' : 'transparent',
+        backgroundColor: isHovered && !isDisabled ? 'var(--gray-a3)' : 'transparent',
         color: 'var(--gray-11)',
         fontSize: 12,
         fontWeight: 500,
-        cursor: 'pointer',
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        opacity: isDisabled ? 0.6 : 1,
         transition: 'background-color 150ms ease',
         whiteSpace: 'nowrap',
       }}
     >
       <MaterialIcon name={icon} size={12} color="var(--gray-11)" />
-      {label}
+      {loading ? '…' : label}
     </button>
   );
 }

@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { Flex, Grid, Heading, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { WorkspaceHeaderIconButton } from '../../components';
 import type { SlackBotConfig, AgentOption } from '../types';
 import { BotCard } from './bot-card';
 
@@ -62,17 +64,18 @@ export function BotPageLayout({
 
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           <CreateBotButton onClick={onCreateBot} />
-          <IconButton icon="refresh" onClick={onRefresh} />
-          <IconButton icon="open_in_new" onClick={() => window.open('https://docs.pipeshub.com/bots', '_blank')} />
+          <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} />
+          <WorkspaceHeaderIconButton
+            icon="open_in_new"
+            onClick={() => window.open('https://docs.pipeshub.com/integrations', '_blank')}
+          />
         </Flex>
       </Flex>
 
       {/* ── Content ── */}
       {isLoading ? (
-        <Flex align="center" justify="center" style={{ width: '100%', paddingTop: 80 }}>
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            Loading bots…
-          </Text>
+        <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
+          <LottieLoader variant="loader" size={48} showLabel label="Loading bots…" />
         </Flex>
       ) : configs.length === 0 ? (
         <EmptyState onAdd={onCreateBot} />

@@ -8,6 +8,7 @@ import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { toast } from '@/lib/store/toast-store';
 import { SidebarItem } from './sidebar-item';
 import { AgentSidebarItemMenu } from './agent-sidebar-item-menu';
+import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
 import { DeleteAgentDialog } from './dialogs';
 
 export interface AgentSidebarListRowProps {
@@ -25,7 +26,7 @@ export interface AgentSidebarListRowProps {
 }
 
 /**
- * One agent row in a chat sidebar with hover, meatball (edit/delete), and typed DELETE confirmation.
+ * One agent row in a chat sidebar with hover, meatball (view/edit/delete), and typed DELETE confirmation.
  */
 export function AgentSidebarListRow({
   agent,
@@ -38,17 +39,20 @@ export function AgentSidebarListRow({
 }: AgentSidebarListRowProps) {
   const router = useRouter();
   const { t } = useTranslation();
-  const id = agent.id || agent._key;
-  const canEdit = Boolean(id && agent.can_edit);
-  const canDelete = Boolean(id && agent.can_delete);
-  const showMenu = canEdit || canDelete;
+  const menuAccess = getAgentSidebarRowMenuAccess(agent);
+  const id = menuAccess?.agentKey ?? agent.id ?? agent._key;
+  const canEdit = menuAccess?.canEdit ?? false;
+  const canDelete = menuAccess?.canDelete ?? false;
+  const showViewAgent = menuAccess?.showViewAgent ?? false;
+  const viewAgentTooltipVariant = menuAccess?.viewAgentTooltipVariant;
+  const showMenu = menuAccess?.showMenu ?? false;
 
   const [rowHovered, setRowHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const goEdit = useCallback(() => {
+  const goBuilder = useCallback(() => {
     if (!id) return;
     onBeforeNavigate?.();
     router.push(`/agents/edit?agentKey=${encodeURIComponent(id)}`);
@@ -91,7 +95,10 @@ export function AgentSidebarListRow({
               onOpenChange={setMenuOpen}
               canEdit={canEdit}
               canDelete={canDelete}
-              onEdit={goEdit}
+              showViewAgent={showViewAgent}
+              viewAgentTooltipVariant={viewAgentTooltipVariant}
+              onEdit={goBuilder}
+              onView={goBuilder}
               onDelete={() => setDeleteOpen(true)}
             />
           ) : undefined

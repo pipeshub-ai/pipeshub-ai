@@ -509,7 +509,7 @@ class TestJiraInit:
 
             with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource"):
                 cs.get_config = AsyncMock(return_value={
-                    "auth": {"authType": "OAUTH"},
+                    "auth": {"authType": "OAUTH", "baseUrl": "https://test.atlassian.net"},
                     "credentials": {"access_token": "token"},
                 })
                 connector._get_access_token = AsyncMock(return_value="token")

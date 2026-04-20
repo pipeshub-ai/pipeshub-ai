@@ -55,6 +55,7 @@ interface AllRecordsModeProps {
 
   // Navigation
   onNavigateToConnectors: () => void;
+  onNavigateToConnector: (connectorTypeParam: string) => void;
 
   // Meatball menu actions
   onReindex?: (nodeId: string) => void;
@@ -96,6 +97,7 @@ export function AllRecordsMode({
   kbSharedTree,
   kbPrivateTree,
   onNavigateToConnectors,
+  onNavigateToConnector,
   onReindex,
   onRename,
   onDelete,
@@ -227,7 +229,7 @@ export function AllRecordsMode({
           </Text>
           <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
             {moreConnectors.map((connector) => (
-              <MoreConnectorItem key={connector.id} connector={connector} />
+              <MoreConnectorItem key={connector.id} connector={connector} onNavigate={onNavigateToConnector} />
             ))}
             <Button
               variant="ghost"
@@ -248,16 +250,16 @@ export function AllRecordsMode({
                   {t('sidebar.seeMoreConnectors')}
                 </Text>
               </div>
-               <IconButton
+              <IconButton
                 variant="soft"
                 size="1"
                 style={{ cursor: 'pointer', padding: '0px' }}
                 onClick={(e) => {
-                e.stopPropagation();
+                  e.stopPropagation();
                 }}
               >
                 <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-               </IconButton>
+              </IconButton>
             </Button>
           </Flex>
         </Box>

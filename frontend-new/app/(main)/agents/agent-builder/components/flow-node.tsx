@@ -5,7 +5,14 @@ import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
-import { formattedProvider, normalizeDisplayName } from '../display-utils';
+import {
+  AGENT_TOOLSET_FALLBACK_ICON,
+  formattedProvider,
+  normalizeDisplayName,
+  resolveNodeHeaderIconErrorFallback,
+  resolveNodeHeaderIconUrl,
+} from '../display-utils';
+import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { NodeHandles } from './node-handles';
 import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
@@ -119,7 +126,12 @@ export const FlowNode = React.memo(function FlowNode({
         ? t('agentBuilder.nodeLabelChatOutput')
         : normalizeDisplayName(data.label);
   const icon = data.icon as string | undefined;
-  const isIconUrl = typeof icon === 'string' && (icon.startsWith('/') || icon.startsWith('http'));
+  const trimmedIcon = typeof icon === 'string' ? icon.trim() : '';
+  const headerIconUrl = resolveNodeHeaderIconUrl(data);
+  const isIconUrl = Boolean(headerIconUrl);
+  const materialIconName =
+    trimmedIcon && !trimmedIcon.startsWith('/') && !trimmedIcon.startsWith('http') ? trimmedIcon : 'widgets';
+  const headerIconErrorFallback = resolveNodeHeaderIconErrorFallback(data);
 
   let groupBody: React.ReactNode = null;
   if (data.type === 'app-group') {
@@ -151,7 +163,12 @@ export const FlowNode = React.memo(function FlowNode({
               }}
             >
               {app.iconPath ? (
-                <img src={app.iconPath} width={12} height={12} alt="" style={{ objectFit: 'contain', flexShrink: 0 }} />
+                <ThemeableAssetIcon
+                  {...themeableAssetIconPresets.flowNodeWell}
+                  src={app.iconPath}
+                  size={12}
+                  fallbackSrc={AGENT_TOOLSET_FALLBACK_ICON}
+                />
               ) : (
                 <MaterialIcon name="cloud" size={12} color="var(--agent-flow-text-muted)" />
               )}
@@ -220,26 +237,24 @@ export const FlowNode = React.memo(function FlowNode({
         header={
           <Flex align="center" justify="between" gap="2" px="3" py="2">
             <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-              <Box
-                style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 'var(--radius-2)',
-                  background: chrome.iconWell,
-                  border: `1px solid ${chrome.iconWellBorder}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  boxShadow: 'inset 0 1px 0 var(--gray-a3)',
-                }}
+              <Flex
+                align="center"
+                justify="center"
+                style={{ flexShrink: 0, lineHeight: 0 }}
+                aria-hidden
               >
                 {isIconUrl ? (
-                  <img src={icon} width={20} height={20} alt="" style={{ objectFit: 'contain' }} />
+                  <ThemeableAssetIcon
+                    {...themeableAssetIconPresets.flowNodeHeader}
+                    src={headerIconUrl}
+                    size={22}
+                    color={chrome.iconColor}
+                    fallbackSrc={headerIconErrorFallback}
+                  />
                 ) : (
-                  <MaterialIcon name={icon || 'widgets'} size={20} color={chrome.iconColor} />
+                  <MaterialIcon name={materialIconName} size={22} color={chrome.iconColor} />
                 )}
-              </Box>
+              </Flex>
               <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
                 <Text
                   weight="medium"

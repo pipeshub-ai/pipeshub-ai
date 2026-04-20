@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { Dialog, Flex, Text, TextField, Button, Box, Callout, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 
 interface DeleteConfirmationDialogProps {
@@ -122,13 +123,15 @@ export function DeleteConfirmationDialog({
             >
               {t('action.cancel')}
             </Button>
-            <Button
+            <LoadingButton
               color="red"
               onClick={handleConfirm}
-              disabled={!isConfirmed || isDeleting}
+              disabled={!isConfirmed}
+              loading={isDeleting}
+              loadingLabel={t('action.deleting')}
             >
-              {isDeleting ? t('action.deleting') : t('action.delete')}
-            </Button>
+              {t('action.delete')}
+            </LoadingButton>
           </Flex>
         </Flex>
       </Dialog.Content>

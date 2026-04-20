@@ -14,6 +14,7 @@ import { ICON_SIZE_DEFAULT, CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
 import { DeleteChatDialog, ArchiveChatDialog } from './dialogs';
+import { Spinner } from '@/app/components/ui/spinner';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -191,6 +192,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
             font: 'inherit',
           }}
         />
+        {isSavingRename && <Spinner size={12} color="var(--slate-10)" />}
       </Flex>
     );
   }
@@ -206,15 +208,17 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={
-          <ChatItemMenu
-            isParentHovered={isHovered}
-            onOpenChange={setMenuOpen}
-            onRename={handleStartRename}
-            onArchive={() => setArchiveDialogOpen(true)}
-            onDelete={() => setDeleteDialogOpen(true)}
-            showRename={!agentId}
-            showArchive={!agentId}
-          />
+          conversation.isOwner === true ? (
+            <ChatItemMenu
+              isParentHovered={isHovered}
+              onOpenChange={setMenuOpen}
+              onRename={handleStartRename}
+              onArchive={() => setArchiveDialogOpen(true)}
+              onDelete={() => setDeleteDialogOpen(true)}
+              showRename={!agentId}
+              showArchive={!agentId}
+            />
+          ) : undefined
         }
       />
 

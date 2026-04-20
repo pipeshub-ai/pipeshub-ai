@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Image from 'next/image';
-import { Button } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,18 +111,17 @@ export default function ProviderButton({
   } else if (provider === 'oauth' && oauthProviderName?.trim()) {
     label = `Continue with ${oauthProviderName.trim()}`;
   }
-  const isDisabled = disabled || loading;
-
   return (
-    <Button
+    <LoadingButton
       type="button"
       size="3"
       variant={primary ? 'solid' : 'outline'}
-      disabled={isDisabled}
+      disabled={disabled}
+      loading={loading}
+      loadingLabel="Connecting…"
       style={{
         width: '100%',
         fontWeight: 500,
-        cursor: isDisabled ? 'not-allowed' : 'pointer',
         ...(primary
           ? { backgroundColor: 'var(--accent-9)', color: 'white' }
           : { color: 'var(--gray-12)', borderColor: 'var(--gray-a6)' }),
@@ -130,7 +129,7 @@ export default function ProviderButton({
       onClick={onClick}
     >
       {icon}
-      {loading ? 'Connecting…' : label}
-    </Button>
+      {label}
+    </LoadingButton>
   );
 }

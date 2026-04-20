@@ -6,25 +6,28 @@ from __future__ import annotations
 
 import logging
 import os
-import random
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict
 
 import requests
-from neo4j import Driver
 from neo4j.exceptions import Neo4jError
 
-from graph_assertions import (  # type: ignore[import-not-found]
-    assert_all_records_cleaned,
-    count_records,
-)
+try:
+    import aiohttp
+
+    _GRAPH_TEARDOWN_HTTP_ERRORS: tuple[type[BaseException], ...] = (aiohttp.ClientError,)
+except ImportError:
+    _GRAPH_TEARDOWN_HTTP_ERRORS = ()
+
 from pipeshub_client import (  # type: ignore[import-not-found]
     PipeshubAuthError,
     PipeshubClient,
     PipeshubClientError,
 )
+
+from helper.graph_provider import GraphProviderProtocol
+from helper.graph_provider_utils import wait_until_graph_condition
 
 logger = logging.getLogger("connector-lifecycle")
 
@@ -35,7 +38,9 @@ _CONNECTOR_API_TEARDOWN_ERRORS = (
     requests.exceptions.RequestException,
 )
 
-_CONNECTOR_DELETE_TEARDOWN_ERRORS = _CONNECTOR_API_TEARDOWN_ERRORS + (TimeoutError, Neo4jError)
+_CONNECTOR_DELETE_TEARDOWN_ERRORS = (
+    _CONNECTOR_API_TEARDOWN_ERRORS + (TimeoutError, Neo4jError) + _GRAPH_TEARDOWN_HTTP_ERRORS
+)
 
 
 def _storage_clear_error_types() -> tuple[type[BaseException], ...]:
@@ -70,47 +75,39 @@ STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
 RESOURCE_NAME = "pipeshub-integration-tests"
 
 
-def ensure_resource_exists(storage: object, resource_name: str, create_fn: str) -> None:
-    """Create storage resource if missing, otherwise reuse. Retries on name conflicts / eventual consistency."""
-    conflict_markers = (
-        "BucketAlreadyOwnedByYou",
-        "BucketAlreadyExists",
-        "OperationAborted",
-        "already exists",
-    )
-    for attempt in range(6):
-        try:
-            objects = storage.list_objects(resource_name)
-            if isinstance(objects, list):
-                return
-        except Exception:
-            pass
-        try:
-            getattr(storage, create_fn)(resource_name)
-            return
-        except Exception as e:
-            error_str = str(e)
-            if any(marker in error_str for marker in conflict_markers):
-                logger.info("Resource %s not ready yet (attempt %d), waiting...", resource_name, attempt + 1)
-                time.sleep(5 + random.uniform(0, 2))
-            else:
-                raise
-    objects = storage.list_objects(resource_name)
-    assert isinstance(objects, list), f"Resource {resource_name} still not accessible after retries"
+def ensure_resource_exists(storage: object, resource_name: str) -> None:
+    """Verify the storage resource is pre-provisioned and accessible.
+
+    Tests must not create or delete buckets/containers/shares — those are
+    provisioned out of band. This only performs an accessibility check.
+    """
+    try:
+        objects = storage.list_objects(resource_name)
+        assert isinstance(objects, list)
+    except Exception as e:
+        raise AssertionError(
+            f"Pre-existing resource {resource_name} is not accessible. "
+            "Ensure it has been created before running these tests."
+        ) from e
 
 
-def constructor(
+async def constructor(
     storage: object,
     pipeshub_client: PipeshubClient,
-    neo4j_driver: Driver,
+    graph_provider: GraphProviderProtocol,
     sample_data_root: Path,
     *,
     storage_name: str,
     connector_type: str,
     connector_config: dict,
-    create_fn: str = "create_bucket",
+    scope: str = "personal",
+    auth_type: str | None = None,
 ) -> Dict[str, Any]:
-    """Ensure storage exists, upload data, create connector, wait for full sync."""
+    """Verify pre-provisioned storage is reachable, upload data, create connector, wait for full sync.
+
+    The bucket/container/share must already exist; tests never create or delete it.
+    Only list/access is checked before upload.
+    """
     resource_name = RESOURCE_NAME
     connector_name = f"{connector_type.lower().replace(' ', '-')}-lifecycle-test-{uuid.uuid4().hex[:8]}"
 
@@ -120,7 +117,7 @@ def constructor(
     }
 
     logger.info("CONSTRUCTOR [%s]: Ensuring %s exists", connector_type, resource_name)
-    ensure_resource_exists(storage, resource_name, create_fn)
+    ensure_resource_exists(storage, resource_name)
     objects = storage.list_objects(resource_name)
     assert isinstance(objects, list), f"{storage_name} should be accessible"
 
@@ -144,8 +141,9 @@ def constructor(
     instance = pipeshub_client.create_connector(
         connector_type=connector_type,
         instance_name=connector_name,
-        scope="personal",
+        scope=scope,
         config=connector_config,
+        auth_type=auth_type,
     )
     assert instance.connector_id, "Connector must have a valid ID"
     connector_id = instance.connector_id
@@ -156,24 +154,29 @@ def constructor(
     logger.info("CONSTRUCTOR [%s]: Sync enabled — waiting for full sync (connector %s)", connector_type, connector_id)
 
     uploaded = state["uploaded_count"]
-    pipeshub_client.wait_for_sync(
+
+    async def _check_full_sync() -> bool:
+        return await graph_provider.count_records(connector_id) >= uploaded
+
+    await wait_until_graph_condition(
         connector_id,
-        check_fn=lambda: count_records(neo4j_driver, connector_id) >= uploaded,
+        check=_check_full_sync,
         timeout=180,
         poll_interval=10,
         description="full sync",
     )
-    full_count = count_records(neo4j_driver, connector_id)
+
+    full_count = await graph_provider.count_records(connector_id)
     state["full_sync_count"] = full_count
     logger.info("CONSTRUCTOR [%s]: Full sync complete — %d records (connector %s)", connector_type, full_count, connector_id)
 
     return state
 
 
-def destructor(
+async def destructor(
     storage: object,
     pipeshub_client: PipeshubClient,
-    neo4j_driver: Driver,
+    graph_provider: GraphProviderProtocol,
     state: Dict[str, Any],
     *,
     connector_type: str,
@@ -198,7 +201,7 @@ def destructor(
         cleanup_s = int(
             os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", str(cleanup_timeout))
         )
-        assert_all_records_cleaned(neo4j_driver, connector_id, timeout=cleanup_s)
+        await graph_provider.assert_all_records_cleaned(connector_id, timeout=cleanup_s)
         logger.info("DESTRUCTOR [%s]: Graph cleaned for connector %s", connector_type, connector_id)
     except _CONNECTOR_DELETE_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to delete/clean connector %s", connector_type, connector_id)

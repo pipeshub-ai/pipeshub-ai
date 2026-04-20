@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Flex, Text, Button, Badge, IconButton } from '@radix-ui/themes';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { AuthCardState } from '../types';
 
@@ -15,6 +16,8 @@ interface AuthCardProps {
   onAuthenticate: () => void;
   onRetry?: () => void;
   loading?: boolean;
+  /** When true, omit outer shell (use inside a parent olive card). */
+  embedded?: boolean;
 }
 
 // ========================================
@@ -52,6 +55,7 @@ export function AuthCard({
   onAuthenticate,
   onRetry,
   loading = false,
+  embedded = false,
 }: AuthCardProps) {
   const config = stateConfig[state];
 
@@ -60,11 +64,19 @@ export function AuthCard({
       direction="column"
       gap="4"
       style={{
-        backgroundColor: 'var(--olive-2)',
-        border: '1px solid var(--olive-5)',
-        borderRadius: 'var(--radius-2)',
-        padding: 16,
         width: '100%',
+        ...(embedded
+          ? {
+              padding: 0,
+              backgroundColor: 'transparent',
+              border: 'none',
+            }
+          : {
+              padding: 16,
+              backgroundColor: 'var(--olive-2)',
+              border: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-2)',
+            }),
       }}
     >
       {/* Icon + text */}
@@ -97,15 +109,16 @@ export function AuthCard({
 
       {/* Action area — varies by state */}
       {state === 'empty' && (
-        <Button
+        <LoadingButton
           variant="solid"
           size="2"
           onClick={onAuthenticate}
-          disabled={loading}
-          style={{ width: '100%', cursor: loading ? 'not-allowed' : 'pointer' }}
+          loading={loading}
+          loadingLabel="Authenticating..."
+          style={{ width: '100%' }}
         >
-          {loading ? 'Authenticating...' : `Authenticate ${connectorName} to Proceed`}
-        </Button>
+          {`Authenticate ${connectorName} to Proceed`}
+        </LoadingButton>
       )}
 
       {state === 'success' && (

@@ -8,6 +8,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { PROVIDER_CONFIGS } from '../../constants';
 import type { ConfigurableMethod } from '../../types';
 import type { FieldDef } from '../../constants';
@@ -103,10 +104,8 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
     // ── Loading state ─────────────────────────────────────
     if (isLoading) {
       return (
-        <Flex align="center" justify="center" style={{ padding: 'var(--space-8) 0' }}>
-          <Text size="2" style={{ color: 'var(--slate-10)' }}>
-            Loading configuration…
-          </Text>
+        <Flex align="center" justify="center" style={{ padding: '32px 0' }}>
+          <LottieLoader variant="loader" size={48} showLabel label="Loading configuration…" />
         </Flex>
       );
     }
