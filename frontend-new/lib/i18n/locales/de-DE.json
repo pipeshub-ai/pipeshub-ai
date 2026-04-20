@@ -18,6 +18,8 @@
     "embeddingStepHint": "Fügen Sie unten einen Embedding-Anbieter hinzu, oder klicken Sie auf „Überspringen“, um „Standard (System)“ zu öffnen und „Modell hinzufügen“ zu bestätigen. Änderbar in den Workspace-Einstellungen.",
     "embeddingStepHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um die semantische Suche zu aktivieren. Änderbar in den Workspace-Einstellungen.",
     "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
+    "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
+    "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren"
   },
   "nav": {

@@ -72,12 +72,12 @@ export function StepEmbeddingModel({
       setProviders(orderDefaultEmbeddingProviderFirst(raw));
       onRegistryHasSystemDefaultEmbedding?.(raw.some((p) => p.providerId === 'default'));
     } catch {
-      toast.error('Failed to load embedding providers');
+      toast.error(t('onboarding.failedToLoadEmbeddingProviders'));
       onRegistryHasSystemDefaultEmbedding?.(false);
     } finally {
       setLoadingProviders(false);
     }
-  }, [onRegistryHasSystemDefaultEmbedding]);
+  }, [onRegistryHasSystemDefaultEmbedding, t]);
 
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
@@ -86,12 +86,12 @@ export function StepEmbeddingModel({
       setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
       setModelsLoaded(true);
     } catch {
-      toast.error('Failed to load configured models');
+      toast.error(t('onboarding.failedToLoadConfiguredModels'));
       setModelsLoaded(true);
     } finally {
       setLoadingModels(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadProviders();

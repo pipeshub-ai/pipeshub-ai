@@ -59,6 +59,7 @@ function providerMatchesSearch(
   if (provider.name.toLowerCase().includes(qq)) return true;
   if (provider.providerId.toLowerCase().includes(qq)) return true;
   if (provider.description.toLowerCase().includes(qq)) return true;
+  if ((provider.notice ?? '').toLowerCase().includes(qq)) return true;
   for (const cap of provider.capabilities) {
     const dn = aiModelsCapabilityLabel(t, cap).toLowerCase();
     const badge = aiModelsCapabilityBadge(t, cap).toLowerCase();
