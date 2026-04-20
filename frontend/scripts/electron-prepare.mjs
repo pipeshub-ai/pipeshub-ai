@@ -23,7 +23,9 @@ const LOGO_PNG = join(ELECTRON_OUT, 'logo', 'pipes-hub-1024.png');
 
 // ── 1. Copy static export ──────────────────────────────────────────────────
 if (!existsSync(SRC_OUT)) {
-  console.error('ERROR: out/ directory not found. Run `npm run build` first.');
+  console.error(
+    'ERROR: out/ directory not found. For Electron, run `npm run build:electron` first (static export), then `npm run electron:prepare`.',
+  );
   process.exit(1);
 }
 

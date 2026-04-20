@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
-const electronStaticExport = process.env.ELECTRON_STATIC_EXPORT === '1';
+// Static HTML for Electron packaging (see scripts/next-build-electron.mjs).
+const electronStaticExport =
+    process.env.ELECTRON_STATIC === '1' || process.env.ELECTRON_STATIC_EXPORT === '1';
 
 const nextConfig = {
     ...(electronStaticExport ? { output: 'export' } : {}),
