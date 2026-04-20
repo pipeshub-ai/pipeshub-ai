@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Text, Flex, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole } from './types';
@@ -24,19 +25,37 @@ interface RoleDropdownMenuProps {
    * this element's edges (used for search-bar alignment).
    */
   anchorRef?: React.RefObject<HTMLElement | null>;
+  /**
+   * Fires when the dropdown open state changes. Parents can use this to
+   * gate outside-click handling on portaled elements.
+   */
+  onOpenChange?: (open: boolean) => void;
 }
 
 const SELECTABLE_ROLES: ShareRole[] = ['OWNER', 'WRITER', 'READER'];
+const MENU_WIDTH = 292;
+const MIN_HORIZONTAL_MARGIN = 8;
+const MIN_VERTICAL_MARGIN = 8;
 
-export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef }: RoleDropdownMenuProps) {
+export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange }: RoleDropdownMenuProps) {
   // Treat as no-roles when isTeam or noRolesInfo is provided
   const isNoRoles = isTeam || !!noRolesInfo;
   const noRolesTitle = noRolesInfo?.title ?? 'Team';
   const noRolesDescription = noRolesInfo?.description ?? 'Teams do not have roles';
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  const setOpen = useCallback((next: boolean | ((prev: boolean) => boolean)) => {
+    setOpenState((prev) =>
+      typeof next === 'function' ? (next as (p: boolean) => boolean)(prev) : next
+    );
+  }, []);
+
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
 
   // Close on outside click
   const handleClickOutside = useCallback((e: MouseEvent) => {
@@ -48,12 +67,12 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
     ) {
       setOpen(false);
     }
-  }, []);
+  }, [setOpen]);
 
   // Close on Escape
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape') setOpen(false);
-  }, []);
+  }, [setOpen]);
 
   useEffect(() => {
     if (open) {
@@ -66,31 +85,59 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
     };
   }, [open, handleClickOutside, handleKeyDown]);
 
-  // Calculate anchor position when opening with anchorRef
+  // Calculate fixed position from trigger (or anchorRef) using viewport coordinates.
+  // Re-measures on scroll/resize so the dropdown stays anchored to its trigger.
   useEffect(() => {
-    if (open && anchorRef?.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      setAnchorRect({ top: rect.bottom + 4, left: rect.left, width: rect.width });
-    } else if (!open) {
+    if (!open) {
       setAnchorRect(null);
+      return;
     }
-  }, [open, anchorRef]);
+    const el = anchorRef?.current ?? triggerRef.current;
+    if (!el) return;
 
-  const useFixedPosition = !!anchorRef && !!anchorRect;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      const dropdownWidth = MENU_WIDTH;
+      const left = Math.min(
+        window.innerWidth - dropdownWidth - MIN_HORIZONTAL_MARGIN,
+        Math.max(MIN_HORIZONTAL_MARGIN, rect.right - dropdownWidth)
+      );
+      const estimatedMenuHeight = onRemove ? 220 : 190;
+      const measuredMenuHeight = menuRef.current?.offsetHeight || estimatedMenuHeight;
+      const preferredTop = rect.bottom + 4;
+      const maxTop = window.innerHeight - measuredMenuHeight - MIN_VERTICAL_MARGIN;
+      let top = preferredTop;
 
-  const menuPositionStyle: React.CSSProperties = useFixedPosition
-    ? {
-        position: 'fixed',
-        top: anchorRect.top,
-        left: anchorRect.left,
-        width: anchorRect.width,
+      // If opening downward would overflow viewport, open upward and keep attached
+      // to the trigger. Fallback to clamped viewport bounds when necessary.
+      if (preferredTop > maxTop) {
+        const upwardTop = rect.top - measuredMenuHeight - 4;
+        top =
+          upwardTop >= MIN_VERTICAL_MARGIN
+            ? upwardTop
+            : Math.max(MIN_VERTICAL_MARGIN, maxTop);
       }
-    : {
-        position: 'absolute',
-        top: 'calc(100% + 4px)',
-        right: 0,
-        width: 320,
-      };
+      setAnchorRect({
+        top,
+        left,
+        width: dropdownWidth,
+      });
+    };
+
+    update();
+    // Re-measure after the menu mounts so we use real height, not only estimate.
+    const rafId = requestAnimationFrame(update);
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro.disconnect();
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [open, anchorRef, onRemove]);
 
   return (
     <Box style={{ position: 'relative' }}>
@@ -103,17 +150,17 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
           display: 'inline-flex',
           alignItems: 'center',
           gap: 4,
-          height: 24,
+          height: 28,
           padding: '0 8px',
           borderRadius: 'var(--radius-1)',
           backgroundColor: 'var(--slate-a4)',
           border: 'none',
           cursor: 'pointer',
           fontFamily: 'var(--default-font-family)',
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: 400,
-          lineHeight: '16px',
-          letterSpacing: '0.04px',
+          lineHeight: '14px',
+          letterSpacing: '0.02px',
           color: 'var(--slate-11)',
           flexShrink: 0,
           userSelect: 'none',
@@ -123,32 +170,38 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
         <MaterialIcon name="expand_more" size={16} color="var(--slate-11)" />
       </button>
 
-      {/* Dropdown popover */}
-      {open && (
+      {/* Dropdown popover — portaled to body to escape Dialog overflow clipping */}
+      {open && anchorRect && createPortal(
         <Box
           ref={menuRef}
           style={{
-            ...menuPositionStyle,
+            position: 'fixed',
+            top: anchorRect.top,
+            left: anchorRect.left,
+            width: anchorRect.width,
+            maxHeight: 'min(320px, calc(100vh - 16px))',
+            pointerEvents: 'auto',
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             boxShadow:
               '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
             padding: 0,
-            overflow: 'hidden',
-            zIndex: 100,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            zIndex: 9999,
           }}
         >
           {isNoRoles ? (
             /* No-roles mode: show informational label only */
             <Flex
               direction="column"
-              style={{ padding: '12px 16px', paddingBottom: onRemove ? 8 : 12 }}
+              style={{ padding: '10px 12px', paddingBottom: onRemove ? 8 : 10 }}
             >
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              <Text size="1" weight="medium" style={{ color: 'var(--slate-12)', fontSize: 13, lineHeight: '16px' }}>
                 {noRolesTitle}
               </Text>
-              <Text size="1" style={{ color: 'var(--slate-11)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)', fontSize: 12, lineHeight: '16px' }}>
                 {noRolesDescription}
               </Text>
             </Flex>
@@ -163,10 +216,10 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                 setOpen(false);
               }}
               style={{
-                padding: '8px 16px',
-                paddingTop: index === 0 ? 12 : 8,
+                padding: '6px 12px',
+                paddingTop: index === 0 ? 8 : 6,
                 paddingBottom:
-                  index === SELECTABLE_ROLES.length - 1 && !onRemove ? 12 : 8,
+                  index === SELECTABLE_ROLES.length - 1 && !onRemove ? 8 : 6,
                 cursor: 'pointer',
               }}
               onMouseEnter={(e) => {
@@ -179,13 +232,13 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
               {/* Label + description */}
               <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
                 <Text
-                  size="2"
+                  size="1"
                   weight={r === role ? 'medium' : 'regular'}
-                  style={{ color: 'var(--slate-12)' }}
+                  style={{ color: 'var(--slate-12)', fontSize: 13, lineHeight: '16px' }}
                 >
                   {SHARE_ROLE_LABELS[r].label}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)', fontSize: 12, lineHeight: '15px' }}>
                   {SHARE_ROLE_LABELS[r].description}
                 </Text>
               </Flex>
@@ -193,8 +246,8 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
               {/* Radio indicator */}
               <Box
                 style={{
-                  width: 16,
-                  height: 16,
+                  width: 14,
+                  height: 14,
                   borderRadius: '50%',
                   border: `2px solid ${r === role ? 'var(--accent-9)' : 'var(--slate-7)'}`,
                   display: 'flex',
@@ -206,8 +259,8 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                 {r === role && (
                   <Box
                     style={{
-                      width: 8,
-                      height: 8,
+                      width: 6,
+                      height: 6,
                       borderRadius: '50%',
                       backgroundColor: 'var(--accent-9)',
                     }}
@@ -234,7 +287,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                   setOpen(false);
                 }}
                 style={{
-                  padding: '12px 16px',
+                  padding: '10px 12px',
                   cursor: 'pointer',
                 }}
                 onMouseEnter={(e) => {
@@ -244,13 +297,14 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                   (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
                 }}
               >
-                <Text size="2" style={{ color: 'var(--red-11)' }}>
+                <Text size="1" style={{ color: 'var(--red-11)', fontSize: 13, lineHeight: '16px' }}>
                   Remove
                 </Text>
               </Flex>
             </>
           )}
-        </Box>
+        </Box>,
+        document.body
       )}
     </Box>
   );

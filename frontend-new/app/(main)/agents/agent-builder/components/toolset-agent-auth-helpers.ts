@@ -1,5 +1,12 @@
-import type { AuthSchemaField, ConnectorAuthConfig } from '@/app/(main)/workspace/connectors/types';
+import type {
+  AuthSchemaField,
+  ConnectorAuthConfig,
+  DocumentationLink,
+} from '@/app/(main)/workspace/connectors/types';
 import type { ToolsetOauthConfigListRow } from '@/app/(main)/toolsets/api';
+import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
+
+export { normalizeDocumentationLinks };
 
 export function toolsetSchemaRoot(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -7,6 +14,23 @@ export function toolsetSchemaRoot(raw: unknown): Record<string, unknown> | null 
   const t = r.toolset;
   if (t && typeof t === 'object') return t as Record<string, unknown>;
   return r;
+}
+
+/** Reads `toolset.documentationLinks` or `toolset.config.documentationLinks` from a schema API payload. */
+export function documentationLinksFromToolsetSchema(raw: unknown): DocumentationLink[] {
+  const root = toolsetSchemaRoot(raw);
+  if (!root) return [];
+  const fromTop = normalizeDocumentationLinks(root.documentationLinks);
+  if (fromTop.length) return fromTop;
+  const cfg = root.config as Record<string, unknown> | undefined;
+  return normalizeDocumentationLinks(cfg?.documentationLinks);
+}
+
+export function primaryHttpDocumentationUrl(
+  links: readonly Pick<DocumentationLink, 'url'>[] | undefined
+): string {
+  const url = links?.[0]?.url;
+  return typeof url === 'string' && url.startsWith('https://') ? url : '';
 }
 
 export function getToolsetAuthConfigFromSchema(raw: unknown): ConnectorAuthConfig | null {

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useContext } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Select } from '@radix-ui/themes';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
@@ -31,6 +32,7 @@ export function SyncSettingsSection({
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
+  const { t } = useTranslation();
   return (
     <Flex
       direction="column"
@@ -44,22 +46,22 @@ export function SyncSettingsSection({
     >
       <Flex direction="column" gap="1">
         <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          Sync settings
+          {t('workspace.connectors.configTab.syncSettings')}
         </Text>
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          Control how {connectorName} data should be synchronized
+          {t('workspace.connectors.configTab.syncSettingsDescription', { name: connectorName })}
         </Text>
       </Flex>
 
       {/* Sync Strategy */}
-      <FormField label="Sync Strategy">
+      <FormField label={t('workspace.connectors.configTab.syncStrategy')}>
         <Select.Root
           value={selectedStrategy}
           onValueChange={(v) => onStrategyChange(v as SyncStrategy)}
         >
           <Select.Trigger
             style={{ width: '100%', height: 32 }}
-            placeholder="Select sync strategy..."
+            placeholder={t('workspace.connectors.configTab.syncStrategyPlaceholder')}
           />
           <Select.Content
             position="popper"
@@ -74,20 +76,20 @@ export function SyncSettingsSection({
           </Select.Content>
         </Select.Root>
         <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-          Choose how data will be synchronized from {connectorName}
+          {t('workspace.connectors.configTab.syncStrategyHelper', { name: connectorName })}
         </Text>
       </FormField>
 
       {/* Sync Interval (only when SCHEDULED) */}
       {selectedStrategy === 'SCHEDULED' && (
-        <FormField label="Sync Interval">
+        <FormField label={t('workspace.connectors.configTab.syncInterval')}>
           <Select.Root
             value={String(intervalMinutes ?? 60)}
             onValueChange={(v) => onIntervalChange(Number(v))}
           >
             <Select.Trigger
               style={{ width: '100%', height: 32 }}
-              placeholder="Select interval..."
+              placeholder={t('workspace.connectors.configTab.syncIntervalPlaceholder')}
             />
             <Select.Content
               position="popper"
@@ -102,7 +104,7 @@ export function SyncSettingsSection({
             </Select.Content>
           </Select.Root>
           <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
-            Set how often {connectorName} data is refreshed
+            {t('workspace.connectors.configTab.syncIntervalHelper', { name: connectorName })}
           </Text>
         </FormField>
       )}

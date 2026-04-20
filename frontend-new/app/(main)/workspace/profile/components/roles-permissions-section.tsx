@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, Badge } from '@radix-ui/themes';
 import { SettingsSection } from './settings-section';
 import { SettingsRow } from './settings-row';
@@ -19,11 +20,12 @@ export interface RolesPermissionsSectionProps {
 // ========================================
 
 export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectionProps) {
+  const { t } = useTranslation();
   return (
-    <SettingsSection title="Roles & Permissions">
+    <SettingsSection title={t('workspace.profile.rolesPermissions.title')}>
 
       {/* Role */}
-      <SettingsRow label="Role" description="Your role on Pipeshub app">
+      <SettingsRow label={t('workspace.users.profile.role')} description={t('workspace.profile.rolesPermissions.roleDescription')}>
         <TextField.Root
           value={role}
           readOnly
@@ -32,10 +34,10 @@ export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectio
       </SettingsRow>
 
       {/* Groups */}
-      <SettingsRow label="Groups" description="User groups you belong to">
+      <SettingsRow label={t('workspace.groups.title')} description={t('workspace.profile.rolesPermissions.groupsDescription')}>
         {groups.length === 0 ? (
           <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            No user groups found
+            {t('workspace.profile.rolesPermissions.noGroups')}
           </Text>
         ) : (
           <Flex wrap="wrap" gap="2">

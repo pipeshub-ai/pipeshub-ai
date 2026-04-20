@@ -55,6 +55,8 @@ interface ConfiguredModelsGridProps {
   onSetDefault: (modelType: string, modelKey: string) => void;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   isLoading?: boolean;
+  /** When true (default), empty embedding shows the system built-in row. Disable on onboarding. */
+  showEmbeddingBuiltinPlaceholder?: boolean;
 }
 
 export function ConfiguredModelsGrid({
@@ -66,6 +68,7 @@ export function ConfiguredModelsGrid({
   onSetDefault,
   onDelete,
   isLoading = false,
+  showEmbeddingBuiltinPlaceholder = true,
 }: ConfiguredModelsGridProps) {
   const { t } = useTranslation();
   const rows = useMemo(() => {
@@ -79,6 +82,7 @@ export function ConfiguredModelsGrid({
     }
 
     if (
+      showEmbeddingBuiltinPlaceholder &&
       capabilitySection === 'embedding' &&
       (configuredModels.embedding ?? []).length === 0
     ) {
@@ -102,7 +106,14 @@ export function ConfiguredModelsGrid({
         capLabel.includes(q)
       );
     });
-  }, [configuredModels, capabilitySection, searchQuery, providers, t]);
+  }, [
+    configuredModels,
+    capabilitySection,
+    searchQuery,
+    providers,
+    t,
+    showEmbeddingBuiltinPlaceholder,
+  ]);
 
   if (isLoading) {
     return (

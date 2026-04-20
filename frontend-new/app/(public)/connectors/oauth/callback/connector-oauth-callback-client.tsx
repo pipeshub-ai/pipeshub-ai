@@ -9,8 +9,8 @@ import { isProcessedError } from '@/lib/api';
 import {
   postConnectorOAuthErrorToOpener,
   postConnectorOAuthSuccessToOpener,
-} from '../../connector-oauth-window-messages';
-import { parseConnectorOAuthCallbackPayload } from '../../connector-oauth-callback-response';
+} from '@/app/(main)/connectors/oauth/connector-oauth-window-messages';
+import { parseConnectorOAuthCallbackPayload } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import {
   OAUTH_CALLBACK_SUCCESS_DISPLAY_MS,
 } from '@/app/(main)/workspace/connectors/components/authenticate-tab/use-connector-oauth-popup';
