@@ -13,4 +13,6 @@ export interface ICrawlingTaskService {
 export interface CrawlingResult {
   success: boolean;
   error?: string;
+  /** True when the job was a no-op (e.g. Local FS crawl with no connected watcher). */
+  skipped?: boolean;
 }

@@ -16,6 +16,7 @@ import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
 import {
   extractLocalFsRootPath,
   buildLocalSyncScheduleFromConnectorConfig,
+  buildLocalFsWatcherOptionsFromConnectorConfig,
   startElectronLocalSync,
   getElectronLocalSyncStatus,
 } from '../../utils/electron-local-sync';
@@ -148,6 +149,7 @@ export function OverviewTab({
             connectorName: instance.name,
             rootPath,
             accessToken,
+            ...buildLocalFsWatcherOptionsFromConnectorConfig(instanceConfigs[connectorId]),
             ...buildLocalSyncScheduleFromConnectorConfig(
               instanceConfigs[connectorId],
               instance.type

@@ -4,15 +4,14 @@ import {
   CrawlingResult,
   ICrawlingTaskService,
 } from '../task/crawling_task_service';
-import {
-  SyncEventProducer,
-} from '../../../knowledge_base/services/sync_events.service';
+import { SyncEventProducer } from '../../../knowledge_base/services/sync_events.service';
 import { constructSyncConnectorEvent } from '../../utils/utils';
 import { ICrawlingSchedule } from '../../schema/interface';
 import {
   localFsResyncDispatcher,
   isLocalFsConnector,
 } from '../../../knowledge_base/services/local_fs_resync_dispatcher';
+import { localFsWatcherRegistry } from '../../../cli_rpc/socket/local_fs_watcher_registry';
 
 @injectable()
 export class ConnectorsCrawlingService implements ICrawlingTaskService {
@@ -43,15 +42,14 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
     });
 
     try {
-      // TODO: Implement Connectors crawling logic
-      this.logger.info('Connectors crawling completed successfully', {
-        orgId,
-        userId,
-        connector,
-        connectorId,
-      });
-
       if (isLocalFsConnector(connector)) {
+        if (!localFsWatcherRegistry.hasActiveWatcher(orgId, connectorId)) {
+          this.logger.debug(
+            'Skipping Local FS scheduled crawl — no active watcher. Connect the app or run `pipeshub run` for this connector.',
+            { orgId, connector, connectorId },
+          );
+          return { success: true, skipped: true };
+        }
         await localFsResyncDispatcher.dispatch({
           orgId,
           connectorId,
@@ -64,17 +62,10 @@ export class ConnectorsCrawlingService implements ICrawlingTaskService {
           connector,
           connectorId,
         });
-        return {
-          success: true,
-        };
+        return { success: true };
       }
 
-      // Construct the payload for the sync event using the connector information
-      const event = constructSyncConnectorEvent(
-        orgId,
-        connector,
-        connectorId,
-      );
+      const event = constructSyncConnectorEvent(orgId, connector, connectorId);
 
       await this.syncEventsService.publishEvent(event);
 
