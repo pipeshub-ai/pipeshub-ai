@@ -3,6 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Box } from '@radix-ui/themes';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
   KbDataTable,
@@ -2269,8 +2270,10 @@ function KnowledgeBasePageContent() {
 
 export default function KnowledgeBasePage() {
   return (
-    <Suspense>
-      <KnowledgeBasePageContent />
-    </Suspense>
+    <ServiceGate services={['query', 'connector']}>
+      <Suspense>
+        <KnowledgeBasePageContent />
+      </Suspense>
+    </ServiceGate>
   );
 }

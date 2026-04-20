@@ -29,6 +29,7 @@ import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
+import { ServiceGate } from '@/app/components/ui/service-gate';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
@@ -1019,10 +1020,12 @@ export default function ChatPage() {
   const runtime = useExternalStoreRuntime(liveConfig);
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Suspense>
-        <ChatContent />
-      </Suspense>
-    </AssistantRuntimeProvider>
+    <ServiceGate services={['query']}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Suspense>
+          <ChatContent />
+        </Suspense>
+      </AssistantRuntimeProvider>
+    </ServiceGate>
   );
 }
