@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
@@ -32,6 +33,25 @@ const TEAM_TABS = [
 // ========================================
 // Page
 // ========================================
+
+function TeamConnectorsAccessGate() {
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+
+  useEffect(() => {
+    if (!isProfileInitialized) return;
+    if (isAdmin !== true) {
+      router.replace('/workspace/connectors/personal/');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  if (!isProfileInitialized || isAdmin !== true) {
+    return null;
+  }
+
+  return <TeamConnectorsPageContent />;
+}
 
 function TeamConnectorsPageContent() {
   const router = useRouter();
@@ -528,7 +548,7 @@ export default function TeamConnectorsPage() {
   return (
     <ServiceGate services={['connector']}>
       <Suspense>
-        <TeamConnectorsPageContent />
+        <TeamConnectorsAccessGate />
       </Suspense>
     </ServiceGate>
   );
