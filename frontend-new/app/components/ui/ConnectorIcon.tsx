@@ -37,6 +37,7 @@ export type ConnectorType =
   | 'gcs'
   | 'minio'
   | 'azure-storage'
+  | 'azure-files'
   | 'azure-fileshares'
   | 'nextcloud'
   // Document & Knowledge
@@ -111,7 +112,8 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'gcs':              { svg: '/icons/connectors/Google-Cloud.svg',   fallback: 'cloud' },
   'minio':            { svg: '/icons/connectors/Minio.svg',            fallback: 'cloud' },
   'azure-storage':    { svg: '/icons/connectors/azure-storage.svg',    fallback: 'cloud' },
-  'azure-fileshares': { svg: '/icons/connectors/azure-fileshares.svg', fallback: 'folder_shared' },
+  'azure-files':      { svg: '/icons/connectors/azure-files.svg',      fallback: 'folder_shared' },
+  'azure-fileshares': { svg: '/icons/connectors/azure-files.svg',      fallback: 'folder_shared' },
   'nextcloud':        { svg: '/icons/connectors/Nextcloud.svg',        fallback: 'cloud' },
   // Document & Knowledge
   'notion':           { svg: '/icons/connectors/notion.svg',           fallback: 'description' },
@@ -122,11 +124,11 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-slides':    { svg: '/icons/connectors/Google-Slides.svg',    fallback: 'slideshow' },
   'google-forms':     { svg: '/icons/connectors/Google-Forms.svg',     fallback: 'quiz' },
   'ms-onenote':       { svg: '/icons/connectors/MS-Note.svg',          fallback: 'note' },
-  // Project & Issue Tracking
+  // Project & Issue Tracking (keys sorted A–Z)
+  'github':           { svg: '/icons/connectors/github.svg',           fallback: 'code' },
+  'gitlab':           { svg: '/icons/connectors/gitlab.svg',           fallback: 'code' },
   'jira':             { svg: '/icons/connectors/jira.svg',             fallback: 'bug_report' },
   'linear':           { svg: '/icons/connectors/linear.svg',           fallback: 'view_kanban' },
-  'gitlab':           { svg: '/icons/connectors/gitlab.svg',           fallback: 'code' },
-  'github':           { svg: '/icons/connectors/github.svg',           fallback: 'code' },
   'servicenow':       { svg: '/icons/connectors/service-now.svg',      fallback: 'build' },
   'zendesk':          { svg: '/icons/connectors/Zendesk.svg',          fallback: 'support' },
   'zammad':           { svg: '/icons/connectors/Zammad.svg',           fallback: 'support_agent' },
@@ -135,7 +137,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'sharepointonline': { svg: '/icons/connectors/sharepoint.svg',       fallback: 'share' },
   'google-admin':     { svg: '/icons/connectors/Google-Admin.svg',     fallback: 'admin_panel_settings' },
   'google-cloud':     { svg: '/icons/connectors/Google-Cloud.svg',     fallback: 'cloud' },
-  'salesforce':       { svg: '/assets/icons/connectors/salesforce.svg', fallback: 'cloud' },
+  'salesforce':       { svg: '/icons/connectors/salesforce.svg',       fallback: 'cloud' },
   // Databases
   'postgresql':       { svg: '/icons/connectors/Postgresql.svg',       fallback: 'storage' },
   'mariadb':          { svg: '/icons/connectors/MariaDB.svg',          fallback: 'storage' },
@@ -174,7 +176,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['teams', 'teams'],
   ['zoom', 'zoom'],
   // Cloud storage
-  ['gcs', 'gcs'],
+  ['azure-files', 'azure-files'],
   ['amazon-s3', 'amazon-s3'], ['aws-s3', 'amazon-s3'], ['s3', 'amazon-s3'],
   ['azure-fileshare', 'azure-fileshares'], ['azure-storage', 'azure-storage'],
   ['dropbox', 'dropbox'], ['box', 'box'],
@@ -194,7 +196,6 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   // Media & Other
   ['youtube', 'youtube'], ['rss', 'rss'],
   ['seek', 'seek'], ['frame', 'frame'], ['vector', 'vector'],
-  ['salesforce', 'salesforce'],
   // Broad fallbacks (last — only match if nothing specific matched)
   ['google', 'google-drive'], ['microsoft', 'sharepoint'], ['365', 'sharepoint'],
   ['azure', 'azure-storage'], ['drive', 'google-drive'],
