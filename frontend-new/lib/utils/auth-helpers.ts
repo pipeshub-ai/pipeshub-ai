@@ -4,11 +4,16 @@ export interface JwtUser {
   name?: string;
   email?: string;
   initials?: string;
+  /** Token expiry, seconds since epoch (standard JWT `exp` claim). */
+  exp?: number;
+  /** Token issued-at, seconds since epoch (standard JWT `iat` claim). */
+  iat?: number;
 }
 
 /**
- * Decodes the payload of a JWT and extracts name / email / initials.
- * Does NOT verify the signature. Safe for display purposes only.
+ * Decodes the payload of a JWT and extracts name / email / initials and
+ * `exp` / `iat` timing claims. Does NOT verify the signature.
+ * Safe for display and expiry-gating purposes only.
  */
 export function decodeJwtUser(token: string): JwtUser {
   try {
@@ -30,7 +35,9 @@ export function decodeJwtUser(token: string): JwtUser {
           .map((w: string) => w[0]?.toUpperCase() ?? '')
           .join('')
       : email.slice(0, 2).toUpperCase();
-    return { name, email, initials };
+    const exp = typeof json.exp === 'number' ? json.exp : undefined;
+    const iat = typeof json.iat === 'number' ? json.iat : undefined;
+    return { name, email, initials, exp, iat };
   } catch {
     return {};
   }

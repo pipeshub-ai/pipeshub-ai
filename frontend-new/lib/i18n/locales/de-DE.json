@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "Diese Seite ist nur über einen E-Mail-Link zum Zurücksetzen des Passworts zugänglich. Bitte verwenden Sie die Option „Passwort vergessen“ auf der Anmeldeseite.",
+      "inviteExpiredMessage": "Dieser Einladungslink ist abgelaufen. Bitte bitten Sie Ihren Organisationsadministrator um eine neue Einladung.",
+      "resetExpiredMessage": "Dieser Link zum Zurücksetzen des Passworts ist abgelaufen. Bitte fordern Sie einen neuen über die Option „Passwort vergessen“ auf der Anmeldeseite an.",
+      "backToSignIn": "Zurück zur Anmeldung",
+      "genericLinkInvalidMessage": "Dieser Link ist möglicherweise abgelaufen. Bitte bitten Sie Ihren Organisationsadministrator um eine neue Einladung."
+    }
+  },
   "agents": {
     "createPageTitle": "Agent erstellen",
     "createPageDescription": "Dies ist die Seite zum Erstellen eines Agents. Binden Sie hier Ihr Formular ein oder leiten Sie zu Ihrem Agent-Builder weiter.",

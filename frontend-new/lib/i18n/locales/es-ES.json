@@ -1,4 +1,13 @@
 {
+  "resetPassword": {
+    "failure": {
+      "missingTokenMessage": "Esta página solo es accesible desde un enlace de correo electrónico para restablecer la contraseña. Por favor, utilice la opción Olvidé mi contraseña en la página de inicio de sesión.",
+      "inviteExpiredMessage": "Este enlace de invitación ha caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación.",
+      "resetExpiredMessage": "Este enlace para restablecer la contraseña ha caducado. Por favor, solicite uno nuevo desde la opción Olvidé mi contraseña en la página de inicio de sesión.",
+      "backToSignIn": "Volver al inicio de sesión",
+      "genericLinkInvalidMessage": "Este enlace puede haber caducado. Por favor, pida a su administrador de la organización que le envíe una nueva invitación."
+    }
+  },
   "agents": {
     "createPageTitle": "Crear agente",
     "createPageDescription": "Página dedicada para crear un agente. Conecte aquí su formulario o redirija a su constructor de agentes.",
