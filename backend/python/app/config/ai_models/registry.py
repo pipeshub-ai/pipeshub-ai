@@ -17,6 +17,7 @@ def AIModelProvider(
     provider_id: str,
     *,
     description: str = "",
+    notice: str = "",
     capabilities: list[ModelCapability] | None = None,
     icon_path: str = "/assets/icons/ai-models/default.svg",
     color: str = "#888888",
@@ -38,6 +39,7 @@ def AIModelProvider(
             "name": name,
             "providerId": provider_id,
             "description": description,
+            "notice": notice,
             "capabilities": [c.value if isinstance(c, ModelCapability) else c for c in caps],
             "iconPath": icon_path,
             "color": color,
@@ -65,6 +67,7 @@ class AIModelProviderBuilder:
         self._name = name
         self._provider_id = provider_id or _default_provider_id(name)
         self._description = ""
+        self._notice = ""
         self._capabilities: list[ModelCapability] = []
         self._icon_path = "/assets/icons/ai-models/default.svg"
         self._color = "#888888"
@@ -76,6 +79,11 @@ class AIModelProviderBuilder:
 
     def with_description(self, desc: str) -> AIModelProviderBuilder:
         self._description = desc
+        return self
+
+    def with_notice(self, text: str) -> AIModelProviderBuilder:
+        """Short operational warning shown prominently in the UI (e.g. performance)."""
+        self._notice = text
         return self
 
     def with_capabilities(self, caps: list[ModelCapability]) -> AIModelProviderBuilder:
@@ -126,6 +134,7 @@ class AIModelProviderBuilder:
             name=self._name,
             provider_id=self._provider_id,
             description=self._description,
+            notice=self._notice,
             capabilities=self._capabilities,
             icon_path=self._icon_path,
             color=self._color,
@@ -193,6 +202,7 @@ class AIModelRegistry:
                 p.get("name", ""),
                 p.get("providerId", ""),
                 p.get("description", ""),
+                p.get("notice", ""),
                 " ".join(p.get("capabilities", [])),
             ]).lower()
             if q in haystack:

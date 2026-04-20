@@ -34,7 +34,7 @@ export const DEFAULT_ONBOARDING_STEPS: OnboardingStep[] = [
     id: 'embedding-model',
     title: 'Embedding Model',
     description: 'Enable semantic search across your documents',
-    required: false,
+    required: true,
   },
   {
     id: 'storage',

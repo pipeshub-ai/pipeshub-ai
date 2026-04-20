@@ -11,6 +11,17 @@
     "thinkingFallback": "Denken…",
     "refiningResponse": "Antwort wird verfeinert…"
   },
+  "onboarding": {
+    "skipEmbeddingDefault": "Überspringen",
+    "skipEmbeddingTitle": "Einrichtung für „Standard (System)“ öffnen, dann „Modell hinzufügen“ wählen",
+    "nextDisabledEmbeddingHint": "Fügen Sie unten ein Embedding hinzu, oder nutzen Sie „Überspringen“ für die Standard-Einrichtung",
+    "embeddingStepHint": "Fügen Sie unten einen Embedding-Anbieter hinzu, oder klicken Sie auf „Überspringen“, um „Standard (System)“ zu öffnen und „Modell hinzufügen“ zu bestätigen. Änderbar in den Workspace-Einstellungen.",
+    "embeddingStepHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um die semantische Suche zu aktivieren. Änderbar in den Workspace-Einstellungen.",
+    "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
+    "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
+    "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
+    "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren"
+  },
   "nav": {
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
