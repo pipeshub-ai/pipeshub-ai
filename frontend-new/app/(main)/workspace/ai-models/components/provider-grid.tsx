@@ -39,6 +39,8 @@ interface ProviderGridProps {
   capabilityTabs?: 'all' | 'hidden';
   /** When true, hide capability chips on each provider row. */
   hideCapabilityBadges?: boolean;
+  /** Passed to configured-models list; false hides built-in embedding row (e.g. onboarding). */
+  showEmbeddingBuiltinPlaceholder?: boolean;
 }
 
 function modelTypesForSection(section: CapabilitySection): readonly string[] {
@@ -84,6 +86,7 @@ export function ProviderGrid({
   showPageHeader: showPageHeaderProp,
   capabilityTabs: capabilityTabsProp,
   hideCapabilityBadges = false,
+  showEmbeddingBuiltinPlaceholder = true,
 }: ProviderGridProps) {
   const { t } = useTranslation();
   const isEmbedded = layout === 'embedded';
@@ -368,6 +371,7 @@ export function ProviderGrid({
           onSetDefault={onSetDefault}
           onDelete={onDelete}
           isLoading={isLoading}
+          showEmbeddingBuiltinPlaceholder={showEmbeddingBuiltinPlaceholder}
         />
       )}
     </Flex>

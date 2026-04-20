@@ -11,14 +11,32 @@ import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/
 import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
 import { ProviderGrid, ModelConfigDialog } from '@/app/(main)/workspace/ai-models/components';
 
+/** If the registry includes `providerId: 'default'`, show it first; otherwise preserve API order. */
+function orderDefaultEmbeddingProviderFirst(providers: AIModelProvider[]): AIModelProvider[] {
+  const list = [...providers];
+  const idx = list.findIndex((p) => p.providerId === 'default');
+  if (idx <= 0) return list;
+  const [row] = list.splice(idx, 1);
+  list.unshift(row);
+  return list;
+}
+
 interface StepEmbeddingModelProps {
   systemStepIndex: number;
   totalSystemSteps: number;
+  /** Set `true` from the onboarding footer when the user clicks Skip (system default path). */
+  embeddingDefaultDialog: boolean;
+  setEmbeddingDefaultDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  /** Fired after the embedding registry loads so the footer can show Skip only when `default` exists. */
+  onRegistryHasSystemDefaultEmbedding?: (hasDefault: boolean) => void;
 }
 
 export function StepEmbeddingModel({
   systemStepIndex,
   totalSystemSteps,
+  embeddingDefaultDialog,
+  setEmbeddingDefaultDialog,
+  onRegistryHasSystemDefaultEmbedding,
 }: StepEmbeddingModelProps) {
   const { t } = useTranslation();
   const { markStepCompleted, unmarkStepCompleted } = useOnboardingStore();
@@ -50,13 +68,16 @@ export function StepEmbeddingModel({
     setLoadingProviders(true);
     try {
       const data = await AIModelsApi.getRegistry({ capability: 'embedding' });
-      setProviders(data.providers);
+      const raw = data.providers ?? [];
+      setProviders(orderDefaultEmbeddingProviderFirst(raw));
+      onRegistryHasSystemDefaultEmbedding?.(raw.some((p) => p.providerId === 'default'));
     } catch {
       toast.error('Failed to load embedding providers');
+      onRegistryHasSystemDefaultEmbedding?.(false);
     } finally {
       setLoadingProviders(false);
     }
-  }, []);
+  }, [onRegistryHasSystemDefaultEmbedding]);
 
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
@@ -78,6 +99,28 @@ export function StepEmbeddingModel({
   }, [loadProviders, loadModels]);
 
   useEffect(() => {
+    if (!embeddingDefaultDialog) return;
+    if (loadingProviders) return;
+    const defaultFromRegistry = providers.find((p) => p.providerId === 'default');
+    if (!defaultFromRegistry) {
+      toast.error(t('onboarding.embeddingDefaultNotInRegistry'));
+      setEmbeddingDefaultDialog(false);
+      return;
+    }
+    setDialogMode('add');
+    setDialogProvider(defaultFromRegistry);
+    setDialogCapability('embedding');
+    setDialogEditModel(null);
+    setDialogOpen(true);
+  }, [
+    embeddingDefaultDialog,
+    loadingProviders,
+    providers,
+    setEmbeddingDefaultDialog,
+    t,
+  ]);
+
+  useEffect(() => {
     if (!modelsLoaded) return;
     const embeddings = configuredModels.embedding ?? [];
     if (embeddings.length > 0) {
@@ -92,7 +135,13 @@ export function StepEmbeddingModel({
     setDialogProvider(null);
     setDialogCapability(null);
     setDialogEditModel(null);
-  }, []);
+    setEmbeddingDefaultDialog(false);
+  }, [setEmbeddingDefaultDialog]);
+
+  const handleModelConfigSaved = useCallback(() => {
+    void loadModels();
+    setEmbeddingDefaultDialog(false);
+  }, [loadModels, setEmbeddingDefaultDialog]);
 
   const handleAdd = useCallback((provider: AIModelProvider, capability: string) => {
     setDialogMode('add');
@@ -158,6 +207,7 @@ export function StepEmbeddingModel({
 
   const isLoading = loadingProviders || loadingModels;
   const embedCount = configuredModels.embedding?.length ?? 0;
+  const registryHasSystemDefaultEmbedding = providers.some((p) => p.providerId === 'default');
   const deleteKeyword = deleteTarget?.modelName ?? '';
 
   return (
@@ -197,13 +247,15 @@ export function StepEmbeddingModel({
           <Flex direction="column" gap="5">
             {!isLoading && embedCount === 0 && (
               <Text size="2" style={{ color: 'var(--gray-11)', display: 'block' }}>
-                Add an embedding provider below to enable semantic search across documents, or use
-                Next to continue and configure this later in workspace settings.
+                {registryHasSystemDefaultEmbedding
+                  ? t('onboarding.embeddingStepHint')
+                  : t('onboarding.embeddingStepHintNoRegistryDefault')}
               </Text>
             )}
             <ProviderGrid
               layout="embedded"
               hideCapabilityBadges
+              showEmbeddingBuiltinPlaceholder={false}
               providers={providers}
               configuredModels={configuredModels}
               searchQuery={searchQuery}
@@ -230,7 +282,7 @@ export function StepEmbeddingModel({
         capability={dialogCapability}
         editModel={dialogEditModel}
         onClose={closeDialog}
-        onSaved={loadModels}
+        onSaved={handleModelConfigSaved}
       />
 
       <DestructiveTypedConfirmationDialog

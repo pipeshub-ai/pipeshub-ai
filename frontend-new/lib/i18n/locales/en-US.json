@@ -11,6 +11,15 @@
     "thinkingFallback": "Thinking\u2026",
     "refiningResponse": "Refining response\u2026"
   },
+  "onboarding": {
+    "skipEmbeddingDefault": "Skip",
+    "skipEmbeddingTitle": "Open setup for Default (System Provided), then press Add Model to save",
+    "nextDisabledEmbeddingHint": "Add an embedding provider below, or use Skip to open the default model setup",
+    "embeddingStepHint": "Add an embedding provider below to enable semantic search, or click Skip to open Default (System Provided) and press Add Model. You can change this later in workspace settings.",
+    "embeddingStepHintNoRegistryDefault": "Add an embedding provider below to enable semantic search. You can change this later in workspace settings.",
+    "embeddingDefaultNotInRegistry": "No system default embedding is available for this deployment.",
+    "nextDisabledEmbeddingHintNoRegistryDefault": "Add an embedding provider below to continue"
+  },
   "nav": {
     "collections": "Collections",
     "allRecords": "All Records",

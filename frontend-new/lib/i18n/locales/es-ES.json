@@ -11,6 +11,15 @@
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…"
   },
+  "onboarding": {
+    "skipEmbeddingDefault": "Omitir",
+    "skipEmbeddingTitle": "Abrir la configuración de «Predeterminado (proporcionado por el sistema)» y pulse Añadir modelo",
+    "nextDisabledEmbeddingHint": "Añada un proveedor de embeddings abajo, u omita para abrir el predeterminado del sistema",
+    "embeddingStepHint": "Añada un proveedor de embeddings abajo para la búsqueda semántica, u omita para abrir «Predeterminado (proporcionado por el sistema)» y pulse Añadir modelo. Puede cambiarlo después en los ajustes del espacio de trabajo.",
+    "embeddingStepHintNoRegistryDefault": "Añada un proveedor de embeddings abajo para habilitar la búsqueda semántica. Puede cambiarlo después en los ajustes del espacio de trabajo.",
+    "embeddingDefaultNotInRegistry": "No hay embedding predeterminado del sistema disponible en este despliegue.",
+    "nextDisabledEmbeddingHintNoRegistryDefault": "Añada un proveedor de embeddings abajo para continuar"
+  },
   "nav": {
     "collections": "Colecciones",
     "allRecords": "Todos los registros",
