@@ -3217,10 +3217,9 @@ class Neo4jProvider(IGraphDBProvider):
                 """
                 params["record_type"] = record_type
 
-            # If caller has size: match only when candidate has same size or no size (both have size => check size).
             if size_in_bytes is not None:
                 query += """
-                AND (r.sizeInBytes IS NULL OR r.sizeInBytes = $size_in_bytes)
+                AND r.sizeInBytes = $size_in_bytes
                 """
                 params["size_in_bytes"] = size_in_bytes
 

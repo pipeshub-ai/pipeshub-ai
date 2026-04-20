@@ -1,6 +1,6 @@
 import logging
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
@@ -96,7 +96,7 @@ class SinkOrchestrator(Transformer):
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
         indexing_status = record_doc.get("indexingStatus")
-        if indexing_status != "COMPLETED":
+        if indexing_status != ProgressStatus.COMPLETED.value:
             result = await self.vector_store.apply(ctx)
             if result is False:
                 return

@@ -267,6 +267,7 @@ class MariaDBConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
         self._record_id_cache: Dict[str, str] = {}
         self.sync_stats: SyncStats = SyncStats()
+        self._frontend_url: str = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
         self._table_filter_cache: List[FilterOption] = []
         self._filter_cache_rebuild_event: Optional[asyncio.Event] = None
         # Initialize sync point for incremental sync
@@ -512,8 +513,7 @@ class MariaDBConnector(BaseConnector):
                 record_id = str(uuid.uuid4())
                 self._record_id_cache[fqn] = record_id
                 
-                frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
-                weburl = f"{frontend_url}/record/{record_id}" if frontend_url else ""
+                weburl = f"{self._frontend_url}/record/{record_id}" if self._frontend_url else ""
 
                 current_time = get_epoch_timestamp_in_ms()
                 record = SQLTableRecord(

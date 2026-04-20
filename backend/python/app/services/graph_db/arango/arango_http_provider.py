@@ -16713,7 +16713,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if size_in_bytes is not None:
                 query += """
-                AND (record.sizeInBytes == null OR record.sizeInBytes == @size_in_bytes)
+                AND record.sizeInBytes == @size_in_bytes
                 """
                 bind_vars["size_in_bytes"] = size_in_bytes
 

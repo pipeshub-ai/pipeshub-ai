@@ -917,7 +917,7 @@ class TestOnEventUpdateEvent:
 
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["virtual_record_id"] == "existing-vrid"
-        assert processor._prev_virtual_record_id == "existing-vrid"
+        assert call_kwargs["prev_virtual_record_id"] == "existing-vrid"
 
     @pytest.mark.asyncio
     async def test_update_reconciliation_type_nto1_isolates_vrid(self):
@@ -1515,16 +1515,16 @@ class TestOnEventPassesEventType:
 
 
 # ===========================================================================
-# on_event - prev_virtual_record_id set on processor
+# on_event - prev_virtual_record_id passed to processor
 # ===========================================================================
 
 
 class TestOnEventPrevVirtualRecordId:
-    """Verify prev_virtual_record_id is set on processor."""
+    """Verify prev_virtual_record_id is forwarded to processor calls."""
 
     @pytest.mark.asyncio
-    async def test_new_record_sets_prev_vrid_to_none(self):
-        """NEW_RECORD event sets prev_virtual_record_id to None."""
+    async def test_new_record_passes_prev_vrid_as_none(self):
+        """NEW_RECORD event passes prev_virtual_record_id=None."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
@@ -1536,11 +1536,12 @@ class TestOnEventPrevVirtualRecordId:
             )
             await _drain(ep.on_event(event_data))
 
-        assert processor._prev_virtual_record_id is None
+        call_kwargs = processor.process_docx_document.call_args[1]
+        assert call_kwargs["prev_virtual_record_id"] is None
 
     @pytest.mark.asyncio
-    async def test_update_reconciliation_type_sets_prev_vrid(self):
-        """UPDATE on reconciliation type sets prev_virtual_record_id."""
+    async def test_update_reconciliation_type_passes_prev_vrid(self):
+        """UPDATE on reconciliation type forwards prev_virtual_record_id."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {
             "_key": "rec-1",
@@ -1559,4 +1560,5 @@ class TestOnEventPrevVirtualRecordId:
             )
             await _drain(ep.on_event(event_data))
 
-        assert processor._prev_virtual_record_id == "prev-vrid"
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["prev_virtual_record_id"] == "prev-vrid"

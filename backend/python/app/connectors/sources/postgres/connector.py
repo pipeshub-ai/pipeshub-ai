@@ -300,6 +300,7 @@ class PostgreSQLConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
         self._record_id_cache: Dict[str, str] = {}
         self.sync_stats: SyncStats = SyncStats()
+        self._frontend_url: str = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
 
         self._schema_filter_cache: List[FilterOption] = []
         self._table_filter_cache:  List[FilterOption] = []
@@ -385,19 +386,25 @@ class PostgreSQLConnector(BaseConnector):
             if connection_string:
                 # Parse connection string (postgresql://user:password@host:port/database)
                 try:
-                    from urllib.parse import urlparse
+                    from urllib.parse import urlparse, unquote
                     parsed = urlparse(connection_string)
-                    
+
+                    if parsed.scheme not in ("postgresql", "postgres"):
+                        self.logger.error(
+                            f"Invalid PostgreSQL connection string scheme: {parsed.scheme!r}"
+                        )
+                        return False
+
                     host = parsed.hostname
                     port = parsed.port or 5432
-                    database = parsed.path.lstrip('/')
-                    user = parsed.username
-                    password = parsed.password or ""
-                    
+                    database = unquote(parsed.path.lstrip('/')) if parsed.path else ""
+                    user = unquote(parsed.username) if parsed.username else None
+                    password = unquote(parsed.password) if parsed.password else ""
+
                     if not all([host, database, user]):
                         self.logger.error("Invalid PostgreSQL connection string")
                         return False
-                        
+
                 except Exception as e:
                     self.logger.error(f"Failed to parse connection string: {e}")
                     return False
@@ -598,8 +605,7 @@ class PostgreSQLConnector(BaseConnector):
                 self._record_id_cache[fqn] = record_id
                 
                 # Construct web URL using frontend URL and record ID
-                frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
-                weburl = f"{frontend_url}/record/{record_id}" if frontend_url else ""
+                weburl = f"{self._frontend_url}/record/{record_id}" if self._frontend_url else ""
 
                 current_time = get_epoch_timestamp_in_ms()
                 record = SQLTableRecord(

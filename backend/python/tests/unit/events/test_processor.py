@@ -279,10 +279,10 @@ class TestProcessorInit:
             )
             mock_docling.assert_called_once()
 
-    def test_prev_virtual_record_id_initialized_to_none(self):
-        """_prev_virtual_record_id is initialized to None."""
+    def test_processor_does_not_store_prev_virtual_record_id(self):
+        """Reconciliation context is passed per-invocation, not stored on Processor."""
         proc, _, _, _ = _make_processor()
-        assert proc._prev_virtual_record_id is None
+        assert not hasattr(proc, "_prev_virtual_record_id")
 
 
 # ===========================================================================
@@ -319,14 +319,17 @@ class TestCreateTransformContext:
                 prev_virtual_record_id=None,
             )
 
-    def test_uses_prev_virtual_record_id_from_processor(self):
-        """Uses _prev_virtual_record_id set on the Processor instance."""
+    def test_creates_context_with_explicit_prev_virtual_record_id(self):
+        """Uses explicitly provided prev_virtual_record_id argument."""
         proc, _, _, _ = _make_processor()
-        proc._prev_virtual_record_id = "prev-vr-123"
         mock_record = MagicMock()
 
         with patch("app.events.processor.TransformContext") as MockCtx:
-            proc._create_transform_context(mock_record, event_type="newRecord")
+            proc._create_transform_context(
+                mock_record,
+                event_type="newRecord",
+                prev_virtual_record_id="prev-vr-123",
+            )
             MockCtx.assert_called_once_with(
                 record=mock_record,
                 event_type="newRecord",

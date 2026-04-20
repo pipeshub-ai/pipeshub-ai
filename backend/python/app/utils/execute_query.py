@@ -278,7 +278,7 @@ async def _execute_postgres_query(
         
         with client:
             connection_info = client.get_connection_info()
-            logger.info(f"🔍 [_execute_postgres_query] Connected to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
+            logger.debug(f"🔍 [_execute_postgres_query] Connected to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
             logger.debug(f"🔍 [_execute_postgres_query] Full connection info: {connection_info}")
             logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
             
@@ -430,7 +430,7 @@ async def _execute_mariadb_query(
 
         with client:
             connection_info = client.get_connection_info()
-            logger.info(
+            logger.debug(
                 "🔍 [_execute_mariadb_query] Connected to MariaDB: "
                 f"host={connection_info.get('host')}, "
                 f"port={connection_info.get('port')}, "
