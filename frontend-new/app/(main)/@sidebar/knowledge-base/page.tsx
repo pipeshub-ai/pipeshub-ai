@@ -451,7 +451,7 @@ function KnowledgeBaseSidebarSlotContent() {
       moreConnectors={MORE_CONNECTORS}
       // Sidebar item actions
       onSidebarReindex={handleSidebarReindex}
-      onSidebarRename={handleSidebarRename}
+      onSidebarRename={isAllRecordsMode ? undefined : handleSidebarRename}
       onSidebarDelete={handleSidebarDelete}
       // All Records navigation
       onAllRecordsSelectAll={handleAllRecordsSelectAll}

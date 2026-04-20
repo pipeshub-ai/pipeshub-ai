@@ -2009,7 +2009,7 @@ function KnowledgeBasePageContent() {
               onShare={shareAdapter ? handleShare : undefined}
               sharedMembers={sharedMembers}
               onRename={
-                (isAllRecordsMode ? allRecordsTableData?.permissions?.canEdit : tableData?.permissions?.canEdit) !== false
+                !isAllRecordsMode && tableData?.permissions?.canEdit !== false
                   ? handleBreadcrumbRename
                   : undefined
               }
@@ -2068,7 +2068,7 @@ function KnowledgeBasePageContent() {
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
           onRename={
-            (isAllRecordsMode ? allRecordsTableData?.permissions?.canEdit : tableData?.permissions?.canEdit) !== false
+            !isAllRecordsMode && tableData?.permissions?.canEdit !== false
               ? handleRename
               : undefined
           }

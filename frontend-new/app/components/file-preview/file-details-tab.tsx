@@ -2,6 +2,7 @@
 
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { formatDate } from '@/lib/utils/formatters';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 
 interface FileDetailsTabProps {
@@ -11,6 +12,11 @@ interface FileDetailsTabProps {
 interface DetailRowProps {
   label: string;
   value: string | string[] | null | undefined;
+}
+
+interface LinkRowProps {
+  label: string;
+  href: string | null | undefined;
 }
 
 function DetailRow({ label, value }: DetailRowProps) {
@@ -35,9 +41,50 @@ function DetailRow({ label, value }: DetailRowProps) {
       <Text size="1" weight="medium" style={{ color: 'var(--olive-10)' }}>
         {label}
       </Text>
-      <Text size="3" style={{ color: 'var(--olive-12)' }}>
+      <Text size="3" style={{ color: 'var(--olive-12)', wordBreak: 'break-all' }}>
         {displayValue}
       </Text>
+    </Box>
+  );
+}
+
+function LinkRow({ label, href }: LinkRowProps) {
+  if (!href) return null;
+
+  return (
+    <Box
+      style={{
+        backgroundColor: 'var(--olive-2)',
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-2)',
+        padding: 'var(--space-4)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-1)',
+      }}
+    >
+      <Text size="1" weight="medium" style={{ color: 'var(--olive-10)' }}>
+        {label}
+      </Text>
+      <Flex align="center" gap="1">
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color: 'var(--accent-9)',
+            textDecoration: 'none',
+            fontSize: 'var(--font-size-3)',
+            wordBreak: 'break-all',
+            flex: 1,
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = 'underline'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.textDecoration = 'none'; }}
+        >
+          {href}
+        </a>
+        <MaterialIcon name="open_in_new" size={14} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+      </Flex>
     </Box>
   );
 }
@@ -97,6 +144,7 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
         
         <Flex direction="column" gap="2">
           <DetailRow label="Name" value={record.recordName} />
+          <DetailRow label="Record ID" value={record.id} />
           <DetailRow label="Record Type" value={record.mimeType} />
           <DetailRow label="Origin" value={record.origin} />
           <DetailRow label="Indexing Status" value={record.indexingStatus} />
@@ -105,6 +153,9 @@ export function FileDetailsTab({ recordDetails }: FileDetailsTabProps) {
           <DetailRow label="Updated At" value={updatedDate} />
           <DetailRow label="Knowledge Base" value={knowledgeBase?.name} />
           <DetailRow label="Permissions" value={permissions?.[0]?.relationship || 'Owner'} />
+          {record.origin !== 'UPLOAD' && (
+            <LinkRow label="Web URL" href={record.webUrl || record.fileRecord?.webUrl} />
+          )}
         </Flex>
       </Flex>
 

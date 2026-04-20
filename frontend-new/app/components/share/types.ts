@@ -56,7 +56,17 @@ export interface ShareTeam {
 
 /** Org user (for suggestions) */
 export interface ShareUser {
+  /**
+   * The identifier expected by the current entity's share endpoint.
+   * For collections/KB this is the graph UUID; for chat this is the MongoDB ObjectID.
+   */
   id: string;
+  /**
+   * The graph UUID for this user. Always set when available and used by flows that
+   * operate on UUIDs regardless of which adapter produced the list (e.g. team creation,
+   * which requires UUIDs even when the surrounding entity uses MongoDB IDs).
+   */
+  uuid?: string;
   name: string;
   email?: string;
   avatarUrl?: string;
