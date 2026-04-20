@@ -30,6 +30,8 @@ import { useIsMobile } from "@/lib/hooks/use-is-mobile"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
+import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
+import { FullNameDialog } from './components/full-name-dialog'
 
 export default function RootLayout({
   children,
@@ -91,6 +93,9 @@ export default function RootLayout({
                 </AppLayout>
               </HealthGate>
             </AuthGuard>
+            {/* ToastContainer must live outside HealthGate so toasts render
+                during the blocking health-check loading screen too. */}
+            <ToastContainer />
           </ThemeProvider>
         </I18nextProvider>
       </body>
@@ -113,6 +118,19 @@ function AppLayout({
   const setOnboardingActive = useOnboardingStore((s) => s.setOnboardingActive)
   const openMobileSidebar = useMobileSidebarStore((s) => s.open)
   const isMobile = useIsMobile()
+
+  // ── Full-name guard ────────────────────────────────────────────────────────
+  const profile = useUserStore((s) => s.profile)
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized)
+  const updateProfile = useUserStore((s) => s.updateProfile)
+
+  const showFullNameDialog =
+    isProfileInitialized && (!profile?.fullName || profile.fullName.trim() === '')
+
+  const handleFullNameSuccess = (savedFullName: string) => {
+    updateProfile({ fullName: savedFullName })
+  }
+  // ──────────────────────────────────────────────────────────────────────────
 
   // ── Onboarding gate ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -211,7 +229,12 @@ function AppLayout({
         </Flex>
 
         <UploadProgressTracker key="upload-progress-tracker" />
-        <ToastContainer key="toast-container" />
+        {/* Full-name guard — blocks access until the user sets their full name */}
+        <FullNameDialog
+          key="full-name-dialog"
+          open={showFullNameDialog}
+          onSuccess={handleFullNameSuccess}
+        />
         {/* User background survey — shown once after login/onboarding */}
         <UserBackgroundSurvey key="user-background-survey" />
         {/* Onboarding tour card — bottom-left corner, guides new users through first steps.
