@@ -340,7 +340,7 @@ function TeamConnectorsPageContent() {
 
   const handleStartSync = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key) return;
+      if (!instance._key || instance.status === 'DELETING') return;
       try {
         await ensureConnectorSyncActiveThenResync({
           _key: instance._key,
@@ -365,7 +365,7 @@ function TeamConnectorsPageContent() {
 
   const handleToggleSyncActive = useCallback(
     async (instance: ConnectorInstance) => {
-      if (!instance._key) return;
+      if (!instance._key || instance.status === 'DELETING') return;
       try {
         await ConnectorsApi.toggleConnector(instance._key, 'sync');
         addToast({

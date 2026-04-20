@@ -1,17 +1,20 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { useTranslation } from 'react-i18next';
 import { usePathname } from 'next/navigation';
-import { Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
+import { AlertDialog, Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getConnectorIconPath } from '@/lib/utils/connector-icon-utils';
-import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
+import {
+  WorkspaceRightPanel,
+  useWorkspaceDrawerNestedModalHost,
+} from '@/app/(main)/workspace/components/workspace-right-panel';
+import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../../store';
-import type { ConnectorScope } from '../../types';
+import { ConnectorsApi } from '../../api';
+import type { Connector, ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
-import type { InstancePanelTab } from '../../types';
 
 // ========================================
 // InstanceManagementPanel
@@ -19,6 +22,7 @@ import type { InstancePanelTab } from '../../types';
 
 export function InstanceManagementPanel() {
   const pathname = usePathname();
+  const addToast = useToastStore((s) => s.addToast);
   const {
     isInstancePanelOpen,
     selectedInstance,
@@ -30,11 +34,18 @@ export function InstanceManagementPanel() {
     setInstancePanelTab,
     openPanel,
     openInstancePanel,
+    upsertConnectorInstance,
+    removeConnectorInstanceCaches,
+    bumpCatalogRefresh,
   } = useConnectorsStore();
 
-  const { t } = useTranslation();
   const [iconError, setIconError] = useState(false);
   const [triggerHovered, setTriggerHovered] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
+  const nestedModalHost = useWorkspaceDrawerNestedModalHost(isInstancePanelOpen);
 
   const handleManageConfiguration = useCallback(() => {
     if (!selectedInstance) return;
@@ -45,6 +56,56 @@ export function InstanceManagementPanel() {
     closeInstancePanel();
     openPanel(selectedInstance, selectedInstance._key, scope);
   }, [selectedInstance, closeInstancePanel, openPanel, pathname]);
+
+  const openRemoveDialog = useCallback(() => {
+    if (!selectedInstance?._key) return;
+    setPendingDeleteId(selectedInstance._key);
+    setDeleteOpen(true);
+  }, [selectedInstance?._key]);
+
+  const confirmRemoveConnector = useCallback(async () => {
+    const id = pendingDeleteId;
+    if (!id || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      const raw = await ConnectorsApi.deleteConnectorInstance(id);
+      const data = raw as Record<string, unknown> | null | undefined;
+      if (
+        data &&
+        typeof data === 'object' &&
+        typeof data._key === 'string' &&
+        typeof data.type === 'string'
+      ) {
+        upsertConnectorInstance(data as unknown as Connector);
+      }
+      removeConnectorInstanceCaches(id);
+      addToast({
+        variant: 'success',
+        title: 'Connector removal started',
+        description: 'This instance is being deleted. It may take a moment to disappear from the list.',
+        duration: 4000,
+      });
+      setDeleteOpen(false);
+      setPendingDeleteId(null);
+      closeInstancePanel();
+      bumpCatalogRefresh();
+    } catch {
+      addToast({
+        variant: 'error',
+        title: 'Failed to remove connector',
+      });
+    } finally {
+      setDeleteBusy(false);
+    }
+  }, [
+    pendingDeleteId,
+    deleteBusy,
+    upsertConnectorInstance,
+    removeConnectorInstanceCaches,
+    addToast,
+    closeInstancePanel,
+    bumpCatalogRefresh,
+  ]);
 
   if (!selectedInstance) return null;
 
@@ -90,6 +151,21 @@ export function InstanceManagementPanel() {
 
   // When there are multiple instances of this connector type, render an
   // instance-switcher dropdown instead of a plain title string.
+  const instancePendingDelete =
+    (pendingDeleteId ? instances.find((i) => i._key === pendingDeleteId) : null) ?? selectedInstance;
+
+  const removeConnectorDisabled =
+    selectedInstance.isActive === true || selectedInstance.status === 'DELETING';
+
+  const removeConnectorDisabledReason =
+    selectedInstance.status === 'DELETING'
+      ? 'This connector is already being removed.'
+      : selectedInstance.isActive
+        ? 'Turn off sync before removing this connector.'
+        : null;
+
+  const manageConfigDisabled = selectedInstance.status === 'DELETING';
+
   const titleNode =
     instances.length > 1 ? (
       <DropdownMenu.Root>
@@ -137,6 +213,7 @@ export function InstanceManagementPanel() {
     ) : undefined;
 
   return (
+    <>
     <WorkspaceRightPanel
       open={isInstancePanelOpen}
       onOpenChange={(open) => {
@@ -161,17 +238,25 @@ export function InstanceManagementPanel() {
               marginBottom: 16,
             }}
           >
-            <Tabs.Trigger value="overview">{t('workspace.connectors.instancePanel.overview')}</Tabs.Trigger>
-            <Tabs.Trigger value="settings">{t('workspace.connectors.instancePanel.settings')}</Tabs.Trigger>
+            <Tabs.Trigger value="overview">Overview</Tabs.Trigger>
+            <Tabs.Trigger value="settings">Settings</Tabs.Trigger>
           </Tabs.List>
 
-          <Tabs.Content value="overview">
-            <OverviewTab instance={selectedInstance} stats={instanceStat} />
-          </Tabs.Content>
-          <Tabs.Content value="settings">
-            <SettingsTab instance={selectedInstance} config={instanceConfig} />
-          </Tabs.Content>
-        </Tabs.Root>
+            <Tabs.Content value="overview">
+              <OverviewTab instance={selectedInstance} stats={instanceStat} />
+            </Tabs.Content>
+            <Tabs.Content value="settings">
+              <SettingsTab
+                instance={selectedInstance}
+                config={instanceConfig}
+                onRequestRemoveConnector={
+                  selectedInstance._key ? openRemoveDialog : undefined
+                }
+                removeConnectorDisabled={removeConnectorDisabled}
+                removeConnectorDisabledReason={removeConnectorDisabledReason}
+              />
+            </Tabs.Content>
+          </Tabs.Root>
 
         {/* ── Manage Configuration button (bottom) ── */}
         <Flex
@@ -185,14 +270,46 @@ export function InstanceManagementPanel() {
             variant="outline"
             color="gray"
             size="2"
+            disabled={manageConfigDisabled}
             onClick={handleManageConfiguration}
             style={{ cursor: 'pointer' }}
           >
             <MaterialIcon name="settings" size={16} color="var(--gray-11)" />
-            {t('workspace.connectors.instancePanel.manageConfig')}
+            Manage Configuration
           </Button>
         </Flex>
       </Flex>
     </WorkspaceRightPanel>
+
+      {nestedModalHost ? (
+        <AlertDialog.Root
+          open={deleteOpen}
+          onOpenChange={(open) => {
+            if (!open && deleteBusy) return;
+            setDeleteOpen(open);
+            if (!open) setPendingDeleteId(null);
+          }}
+        >
+          <AlertDialog.Content container={nestedModalHost} style={{ maxWidth: 440 }}>
+            <AlertDialog.Title>Remove connector instance?</AlertDialog.Title>
+            <AlertDialog.Description size="2">
+              Are you sure you want to delete{' '}
+              <Text weight="bold">&quot;{instancePendingDelete.name}&quot;</Text>? This cannot be
+              undone.
+            </AlertDialog.Description>
+            <Flex gap="3" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray" disabled={deleteBusy}>
+                  Cancel
+                </Button>
+              </AlertDialog.Cancel>
+              <Button color="red" loading={deleteBusy} onClick={() => void confirmRemoveConnector()}>
+                Remove connector
+              </Button>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
+      ) : null}
+    </>
   );
 }

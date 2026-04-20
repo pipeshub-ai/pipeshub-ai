@@ -164,6 +164,8 @@ interface ConnectorsState {
   setInstanceStats: (connectorId: string, stats: ConnectorStatsResponse['data']) => void;
   /** Merge one connector into active list + instance list + selected instance (no full refetch). */
   upsertConnectorInstance: (updated: Connector) => void;
+  /** Drop cached config/stats for one instance (e.g. after delete starts). */
+  removeConnectorInstanceCaches: (connectorId: string) => void;
   clearInstanceData: () => void;
   setSelectedInstance: (instance: ConnectorInstance | null) => void;
   openInstancePanel: (instance: ConnectorInstance) => void;
@@ -652,6 +654,13 @@ export const useConnectorsStore = create<ConnectorsState>()(
           if (s.selectedInstance?._key === id) {
             s.selectedInstance = mergeRow(s.selectedInstance as ConnectorInstance);
           }
+        }),
+
+      removeConnectorInstanceCaches: (connectorId) =>
+        set((s) => {
+          if (!connectorId) return;
+          delete s.instanceConfigs[connectorId];
+          delete s.instanceStats[connectorId];
         }),
 
       clearInstanceData: () =>

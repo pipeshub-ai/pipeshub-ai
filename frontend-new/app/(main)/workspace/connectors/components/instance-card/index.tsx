@@ -155,7 +155,8 @@ export function InstanceCard({
     Boolean(instance._key) &&
     instance.isActive &&
     instance.isConfigured &&
-    instance.isAuthenticated;
+    instance.isAuthenticated &&
+    instance.status !== 'DELETING';
 
   const syncSwitchControl = (
     <Switch
