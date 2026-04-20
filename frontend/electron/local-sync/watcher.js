@@ -128,9 +128,19 @@ class ConnectorFsWatcher {
     if (this.allowedExtensions.size === 0) return events;
     return events.filter((ev) => {
       if (ev.isDirectory) return true;
-      const ext = path.extname(ev.path).replace(/^\./, '').toLowerCase();
-      if (!ext) return true;
-      return this.allowedExtensions.has(ext);
+      const pathsToCheck = [ev.path];
+      if (
+        (ev.type === 'RENAMED' || ev.type === 'MOVED' || ev.type === 'DIR_RENAMED' || ev.type === 'DIR_MOVED')
+        && ev.oldPath
+      ) {
+        pathsToCheck.push(ev.oldPath);
+      }
+      for (const p of pathsToCheck) {
+        const ext = path.extname(p).replace(/^\./, '').toLowerCase();
+        if (!ext) return true;
+        if (this.allowedExtensions.has(ext)) return true;
+      }
+      return false;
     });
   }
 
