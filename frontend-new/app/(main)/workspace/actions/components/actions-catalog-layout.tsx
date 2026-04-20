@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { ActionCatalogItem } from '../types';
 import { ActionCard, type ActionCardCta } from './action-card';
 
@@ -177,10 +178,12 @@ export function ActionsCatalogLayout({
       </Flex>
 
       {isLoading ? (
-        <Flex align="center" justify="center" style={{ width: '100%', paddingTop: 80 }}>
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
-            {loadingLabel}
-          </Text>
+        <Flex
+          align="center"
+          justify="center"
+          style={{ width: '100%', flex: 1 }}
+        >
+          <LottieLoader variant="loader" size={48} showLabel label={loadingLabel} />
         </Flex>
       ) : filtered.length === 0 ? (
         <Flex
