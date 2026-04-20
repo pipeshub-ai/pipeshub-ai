@@ -24,6 +24,7 @@ export function FilePreviewSidebar({
   onOpenChange,
   onToggleFullscreen,
   isLoading = false,
+  error,
   recordDetails,
   initialPage,
   highlightBox,
@@ -32,6 +33,7 @@ export function FilePreviewSidebar({
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
+  const hasError = !isLoading && !!error;
   const [activeTab, setActiveTab] = useState<FilePreviewTab>(defaultTab);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null); // null = detecting
@@ -114,6 +116,7 @@ export function FilePreviewSidebar({
         onOpenChange={onOpenChange}
         onToggleFullscreen={onToggleFullscreen}
         isLoading={isLoading}
+        error={error}
         recordDetails={recordDetails}
         initialPage={initialPage}
         highlightBox={highlightBox}
@@ -150,6 +153,10 @@ export function FilePreviewSidebar({
       >
         <VisuallyHidden>
           <Dialog.Title>{file.name}</Dialog.Title>
+          <Dialog.Description>
+            Preview pane for {file.name}. Document content, file details and
+            related citations are shown here.
+          </Dialog.Description>
         </VisuallyHidden>
         {/* Header */}
         <Flex
@@ -255,11 +262,25 @@ export function FilePreviewSidebar({
                   >
                     <LottieLoader variant="loader" size={40} showLabel />
                   </Flex>
+                ) : hasError && activeTab === 'preview' ? (
+                  <Flex
+                    direction="column"
+                    align="center"
+                    justify="center"
+                    gap="3"
+                    style={{ height: '100%', padding: 'var(--space-6)' }}
+                  >
+                    <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+                    <Text size="3" weight="medium" color="red">
+                      {error}
+                    </Text>
+                  </Flex>
                 ) : activeTab === 'preview' ? (
                   <FilePreviewRenderer
                     fileUrl={file.url}
                     fileName={file.name}
                     fileType={file.type}
+                    fileBlob={file.blob}
                     pagination={paginationControls}
                     highlightBox={hasCitations ? syncHighlightBox : highlightBox}
                     highlightPage={hasCitations ? syncHighlightPage : undefined}

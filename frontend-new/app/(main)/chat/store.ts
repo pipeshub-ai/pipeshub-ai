@@ -22,6 +22,13 @@ export interface ChatPreviewFile {
   id: string;
   name: string;
   url: string;
+  /**
+   * Raw Blob for the streamed file. Populated only for renderers that are
+   * better fed the binary data directly (DOCX via `docx-preview`) — avoids
+   * the extra `URL.createObjectURL` + re-`fetch` roundtrip that was causing
+   * the DOCX preview pane to stay blank.
+   */
+  blob?: Blob;
   type: string;
   size?: number;
   isLoading?: boolean;

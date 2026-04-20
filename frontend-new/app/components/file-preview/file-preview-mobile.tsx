@@ -18,6 +18,7 @@ export function FilePreviewMobile({
   file,
   onOpenChange,
   isLoading = false,
+  error,
   recordDetails,
   initialPage,
   highlightBox,
@@ -26,6 +27,7 @@ export function FilePreviewMobile({
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
+  const hasError = !isLoading && !!error;
   const [showFileInfo, setShowFileInfo] = useState(false);
   const [showCitationsSheet, setShowCitationsSheet] = useState(false);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
@@ -232,12 +234,26 @@ export function FilePreviewMobile({
               >
                 <LottieLoader variant="loader" size={40} showLabel />
               </Flex>
+            ) : hasError ? (
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                gap="3"
+                style={{ height: '100%', padding: 'var(--space-6)' }}
+              >
+                <MaterialIcon name="error_outline" size={48} color="var(--red-9)" />
+                <Text size="3" weight="medium" color="red">
+                  {error}
+                </Text>
+              </Flex>
             ) : (
               <Box style={{ height: '100%', padding: 'var(--space-2)' }}>
                 <FilePreviewRenderer
                   fileUrl={file.url}
                   fileName={file.name}
                   fileType={file.type}
+                  fileBlob={file.blob}
                   pagination={paginationControls}
                   highlightBox={hasCitations ? syncHighlightBox : highlightBox}
                   highlightPage={hasCitations ? syncHighlightPage : undefined}
