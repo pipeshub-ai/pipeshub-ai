@@ -1420,20 +1420,47 @@ class SnowflakeConnector(BaseConnector):
             deleted_tables, deleted_views, deleted_files
         )
 
-    async def _create_app_user(self) -> None:
-        """Create AppUser entries for all active users in the organization.
-        
-        This establishes the userapp relation between users and this Snowflake app,
-        enabling proper access control and data visibility.
-        """
+    async def _ensure_scope_app_edges(self) -> None:
+        """Ensure connector app edges are created according to connector scope."""
         try:
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
+            if self.scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                self.logger.info("Ensured team-app edge for Snowflake connector")
+                return
+
+            if not self.created_by:
+                self.logger.warning(
+                    "Personal Snowflake connector has no created_by; skipping user-app edges."
+                )
+                return
+
+            creator_user = await self.data_entities_processor.get_user_by_user_id(
+                self.created_by
+            )
+            if not creator_user or not getattr(creator_user, "email", None):
+                self.logger.warning(
+                    "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                    self.created_by,
+                )
+                return
+
+            app_users = self.get_app_users([creator_user])
             await self.data_entities_processor.on_new_app_users(app_users)
-            self.logger.info(f"Created {len(app_users)} app users for Snowflake connector")
+            self.logger.info(
+                "Created user-app edge for Snowflake connector creator %s",
+                self.created_by,
+            )
         except Exception as e:
             self.logger.error(f"Error creating app users: {e}", exc_info=True)
             raise
+
+    async def _create_app_user(self) -> None:
+        """Backward-compatible wrapper for scope-aware app-edge creation."""
+        await self._ensure_scope_app_edges()
 
     async def _get_permissions(self) -> List[Permission]:
         """
