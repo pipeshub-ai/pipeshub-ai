@@ -56,6 +56,11 @@ export interface FilterDropdownProps {
   isLoadingMore?: boolean;
   /** Whether there are more options to load */
   hasMore?: boolean;
+  /**
+   * First page / non-append fetch in progress (server-side `onSearch` / `onPopoverOpenChange`).
+   * Avoids flashing “No results” before options arrive; optional banner when only prior selections exist.
+   */
+  isLoadingOptions?: boolean;
   /** Portal container for the popover (e.g. modal body) so the menu stacks above overlays */
   portalContainer?: HTMLElement | null;
   /** Fired when the popover opens or closes (use to load the first page of server options). */
@@ -124,6 +129,7 @@ export function FilterDropdown({
   onLoadMore,
   isLoadingMore = false,
   hasMore = false,
+  isLoadingOptions = false,
   portalContainer,
   onPopoverOpenChange,
   popoverContentStyle,
@@ -449,6 +455,31 @@ export function FilterDropdown({
           onScroll={handleScroll}
           style={{ maxHeight: '200px', overflowY: 'auto' }}
         >
+          {isLoadingOptions && filteredOptions.length === 0 ? (
+            <Flex align="center" justify="center" gap="2" style={{ padding: '20px 12px' }}>
+              <Spinner size={14} />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                Loading options…
+              </Text>
+            </Flex>
+          ) : null}
+          {isLoadingOptions && filteredOptions.length > 0 ? (
+            <Flex
+              align="center"
+              gap="2"
+              style={{
+                padding: '8px 10px',
+                marginBottom: 4,
+                borderRadius: 'var(--radius-1)',
+                backgroundColor: 'var(--gray-a3)',
+              }}
+            >
+              <Spinner size={12} />
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                Loading more options…
+              </Text>
+            </Flex>
+          ) : null}
           {filteredOptions.map((option) => (
             <Flex
               key={option.value}
@@ -489,11 +520,11 @@ export function FilterDropdown({
             <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
               <Spinner size={12} />
               <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                Loading...
+                Loading more…
               </Text>
             </Flex>
           )}
-          {filteredOptions.length === 0 && !isLoadingMore && (
+          {filteredOptions.length === 0 && !isLoadingMore && !isLoadingOptions && (
             <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>
               No results found
             </Text>

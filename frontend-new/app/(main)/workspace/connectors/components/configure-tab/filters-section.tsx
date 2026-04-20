@@ -1,7 +1,19 @@
 'use client';
 
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Flex, Text, Select, Button, Box, Badge, DropdownMenu } from '@radix-ui/themes';
+import {
+  Flex,
+  Text,
+  Select,
+  Button,
+  Box,
+  Badge,
+  DropdownMenu,
+  Switch,
+  Tooltip,
+  IconButton,
+  Checkbox,
+} from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { FilterDropdown } from '@/app/components/ui/filter-dropdown';
@@ -13,6 +25,9 @@ import type { FilterSchemaField } from '../../types';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
 type FilterSection = 'sync' | 'indexing';
+
+/** Legacy parity: shown in its own card above sync/indexing filter accordions (not in “Indexing filters”). */
+const MANUAL_INDEXING_FIELD_NAME = 'enable_manual_sync';
 
 const INITIAL_LIMIT = 20;
 const PAGE_LIMIT = 20;
@@ -168,26 +183,46 @@ function isFilterRowValue(v: unknown): v is FilterRowValue {
   );
 }
 
+function booleanDefaultValue(field: FilterSchemaField): boolean {
+  if (typeof field.defaultValue === 'boolean') return field.defaultValue;
+  return true;
+}
+
+function defaultFilterOperator(field: FilterSchemaField): string {
+  const fromSchema = field.defaultOperator ?? field.operators?.[0] ?? 'is';
+  return String(fromSchema).trim() || 'is';
+}
+
 function getRow(field: FilterSchemaField, raw: unknown): FilterRowValue {
   if (isFilterRowValue(raw)) {
+    const op = raw.operator?.trim()
+      ? raw.operator
+      : defaultFilterOperator(field);
     return {
-      operator: raw.operator || field.defaultOperator || field.operators?.[0] || '',
+      operator: op,
       value: raw.value,
       type: raw.type || field.filterType,
     };
   }
   return {
-    operator: field.defaultOperator || field.operators?.[0] || '',
+    operator: defaultFilterOperator(field),
     value:
       field.filterType === 'list'
         ? []
         : field.filterType === 'boolean'
-          ? true
+          ? booleanDefaultValue(field)
           : field.filterType === 'datetime'
             ? { start: null, end: null }
             : '',
     type: field.filterType,
   };
+}
+
+/** Indexing filters: legacy UI kept any row with an operator visible (incl. empty lists / default booleans). */
+function hasActiveFilterRow(raw: unknown): boolean {
+  if (raw === undefined || raw === null) return false;
+  if (!isFilterRowValue(raw)) return false;
+  return Boolean(String(raw.operator || '').trim());
 }
 
 /** Whether saved form state counts as a configured filter (for summary chips). */
@@ -244,7 +279,7 @@ function summarizeCommittedFilter(field: FilterSchemaField, row: FilterRowValue)
     return ds || de ? `${op} · date range` : op;
   }
   if (ft === 'boolean') {
-    return `${op} · ${row.value ? 'Yes' : 'No'}`;
+    return row.value ? 'Yes' : 'No';
   }
   const s = row.value === undefined || row.value === null ? '' : String(row.value);
   const short = s.length > 36 ? `${s.slice(0, 34)}…` : s;
@@ -381,6 +416,8 @@ function ConnectorFilterMultiSelect({
   const [options, setOptions] = useState<{ id: string; label: string }[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** First page / search refetch — avoids empty list flashing “No results” (legacy autocomplete parity). */
+  const [initialLoading, setInitialLoading] = useState(false);
   const fetchingRef = useRef(false);
   const cursorRef = useRef<string | undefined>(undefined);
   const searchRef = useRef('');
@@ -389,6 +426,11 @@ function ConnectorFilterMultiSelect({
     async (append: boolean) => {
       if (!connectorId || !isDynamic || fetchingRef.current) return;
       fetchingRef.current = true;
+      if (!append) {
+        setInitialLoading(true);
+        setOptions([]);
+        setHasMore(false);
+      }
       if (append) setLoadingMore(true);
       try {
         const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, append
@@ -420,6 +462,7 @@ function ConnectorFilterMultiSelect({
       } finally {
         fetchingRef.current = false;
         setLoadingMore(false);
+        if (!append) setInitialLoading(false);
       }
     },
     [connectorId, field.name, isDynamic]
@@ -512,10 +555,102 @@ function ConnectorFilterMultiSelect({
       onLoadMore={handleLoadMore}
       isLoadingMore={loadingMore}
       hasMore={hasMore}
+      isLoadingOptions={initialLoading}
       onPopoverOpenChange={handlePopoverOpen}
       portalContainer={portalContainer}
       popoverContentStyle={{ minWidth: 280, maxWidth: 420, zIndex: 10001 }}
     />
+  );
+}
+
+// ========================================
+// Manual indexing (legacy UI: own section, not under “Indexing filters”)
+// ========================================
+
+function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
+  const { formData, setFilterFormValue } = useConnectorsStore();
+  const raw = formData.filters.indexing[field.name];
+
+  useEffect(() => {
+    if (raw !== undefined && raw !== null) return;
+    const initial = getRow(field, undefined);
+    setFilterFormValue('indexing', field.name, {
+      operator: initial.operator,
+      value: initial.value,
+      type: field.filterType || initial.type,
+    });
+  }, [field, raw, setFilterFormValue]);
+
+  const row = getRow(field, raw);
+  const checked = row.value === true || row.value === 'true';
+
+  const tooltipLines =
+    'OFF (default): Records are automatically indexed based on the indexing filters below.\n\n' +
+    'ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.';
+
+  return (
+    <Box
+      style={{
+        padding: 16,
+        backgroundColor: 'var(--olive-2)',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--olive-3)',
+      }}
+    >
+      <Flex align="start" justify="between" gap="4" wrap="wrap">
+        <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
+          <Flex align="center" gap="2" wrap="wrap">
+            <Box
+              style={{
+                padding: 6,
+                borderRadius: 'var(--radius-2)',
+                background: 'var(--green-3)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <MaterialIcon name="tune" size={16} color="var(--green-11)" />
+            </Box>
+            <Flex align="center" gap="1" wrap="wrap" style={{ minWidth: 0 }}>
+              <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+                {field.displayName}
+              </Text>
+              <Tooltip content={tooltipLines}>
+                <IconButton
+                  type="button"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  aria-label="About manual indexing"
+                  style={{ cursor: 'help', flexShrink: 0 }}
+                >
+                  <MaterialIcon name="info" size={16} color="var(--gray-10)" />
+                </IconButton>
+              </Tooltip>
+            </Flex>
+          </Flex>
+          {field.description ? (
+            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+              {field.description}
+            </Text>
+          ) : null}
+        </Flex>
+        <Switch
+          color="jade"
+          size="2"
+          checked={checked}
+          onCheckedChange={(next) => {
+            setFilterFormValue('indexing', field.name, {
+              operator: defaultFilterOperator(field),
+              value: next,
+              type: field.filterType ?? 'boolean',
+            });
+          }}
+        />
+      </Flex>
+    </Box>
   );
 }
 
@@ -530,9 +665,17 @@ export function FiltersSection() {
     () => connectorSchema?.filters?.sync?.schema?.fields ?? [],
     [connectorSchema]
   );
-  const indexingFields = useMemo(
+  const indexingFieldsAll = useMemo(
     () => connectorSchema?.filters?.indexing?.schema?.fields ?? [],
     [connectorSchema]
+  );
+  const manualIndexingField = useMemo(
+    () => indexingFieldsAll.find((f) => f.name === MANUAL_INDEXING_FIELD_NAME) ?? null,
+    [indexingFieldsAll]
+  );
+  const indexingFields = useMemo(
+    () => indexingFieldsAll.filter((f) => f.name !== MANUAL_INDEXING_FIELD_NAME),
+    [indexingFieldsAll]
   );
 
   const [activeSync, setActiveSync] = useState<string[]>([]);
@@ -544,17 +687,41 @@ export function FiltersSection() {
       setActiveIndexing([]);
       return;
     }
+    const { formData: fd0, setFilterFormValue: patchFilter } = useConnectorsStore.getState();
+
+    // Legacy parity: every indexing schema field gets default operator/value in form state
+    for (const field of indexingFields) {
+      const key = field.name;
+      const existing = fd0.filters.indexing[key];
+      if (existing === undefined || existing === null) {
+        const row = getRow(field, undefined);
+        patchFilter('indexing', key, {
+          operator: row.operator,
+          value: row.value,
+          type: field.filterType || row.type,
+        });
+      }
+    }
+
     const { formData: fd } = useConnectorsStore.getState();
-    const seed = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
+    const seedSync = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
       fields.map((f) => f.name).filter((name) => {
         const field = fields.find((ff) => ff.name === name);
         return field ? isMeaningfulCommitted(field, vals[name]) : false;
       });
-    setActiveSync(seed(syncFields, fd.filters.sync));
-    setActiveIndexing(seed(indexingFields, fd.filters.indexing));
+    const seedIndexingActive = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
+      fields
+        .map((f) => f.name)
+        .filter((name) => {
+          const raw = vals[name];
+          return hasActiveFilterRow(raw);
+        });
+
+    setActiveSync(seedSync(syncFields, fd.filters.sync));
+    setActiveIndexing(seedIndexingActive(indexingFields, fd.filters.indexing));
   }, [panelConnectorId, connectorSchema, syncFields, indexingFields]);
 
-  if (syncFields.length === 0 && indexingFields.length === 0) {
+  if (syncFields.length === 0 && indexingFields.length === 0 && !manualIndexingField) {
     return null;
   }
 
@@ -565,10 +732,13 @@ export function FiltersSection() {
           Indexing & sync filters
         </Text>
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          Add only the filters you need. Pick a filter from the list, set the operator and value, or
-          remove it when you do not want that constraint.
+          Indexing filters always apply—toggle booleans or adjust values as needed. For sync filters,
+          add only what you need; list and date filters use an operator and value, and you can clear
+          a sync filter when you do not want that constraint.
         </Text>
       </Flex>
+
+      {manualIndexingField ? <ManualIndexingSection field={manualIndexingField} /> : null}
 
       {syncFields.length > 0 && (
         <FilterCategoryBlock
@@ -593,6 +763,7 @@ export function FiltersSection() {
           setActiveFieldNames={setActiveIndexing}
           connectorId={panelConnectorId}
           onChange={setFilterFormValue}
+          showConfiguredPreview={false}
         />
       )}
     </Flex>
@@ -608,6 +779,7 @@ function FilterCategoryBlock({
   setActiveFieldNames,
   connectorId,
   onChange,
+  showConfiguredPreview = true,
 }: {
   title: string;
   section: FilterSection;
@@ -617,9 +789,13 @@ function FilterCategoryBlock({
   setActiveFieldNames: React.Dispatch<React.SetStateAction<string[]>>;
   connectorId: string | null;
   onChange: (section: FilterSection, name: string, value: unknown) => void;
+  /** Green summary chips; hidden for indexing filters (legacy + less clutter). */
+  showConfiguredPreview?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
-  const availableToAdd = fields.filter((f) => !activeFieldNames.includes(f.name));
+  /** Indexing filters are always-on (legacy); sync filters stay add/remove. */
+  const allowRemoveFilter = section === 'sync';
+  const availableToAdd = allowRemoveFilter ? fields.filter((f) => !activeFieldNames.includes(f.name)) : [];
 
   const addField = (fieldName: string) => {
     const field = fields.find((f) => f.name === fieldName);
@@ -714,75 +890,77 @@ function FilterCategoryBlock({
         ) : null}
       </Flex>
 
-      {configuredPreviewItems.length > 0 ? (
-        <Flex direction="column" gap="3" style={{ marginBottom: 14 }}>
-          {configuredPreviewItems.map((item) =>
-            item.kind === 'list' ? (
-              <Box key={item.name} style={{ width: '100%', minWidth: 0 }}>
-                <Text
+      {showConfiguredPreview ? (
+        configuredPreviewItems.length > 0 ? (
+          <Flex direction="column" gap="3" style={{ marginBottom: 14 }}>
+            {configuredPreviewItems.map((item) =>
+              item.kind === 'list' ? (
+                <Box key={item.name} style={{ width: '100%', minWidth: 0 }}>
+                  <Text
+                    size="1"
+                    weight="medium"
+                    style={{ color: 'var(--gray-11)', display: 'block', marginBottom: 8, lineHeight: 1.4 }}
+                  >
+                    {item.fieldLabel} · {item.operatorLabel}
+                  </Text>
+                  <Flex wrap="wrap" gap="2" align="start">
+                    {item.valueLabels.map((text, idx) => (
+                      <Badge
+                        key={`${item.name}-${idx}`}
+                        size="1"
+                        color="green"
+                        variant="soft"
+                        radius="full"
+                        title={text}
+                        style={{
+                          whiteSpace: 'normal',
+                          wordBreak: 'break-word',
+                          maxWidth: '100%',
+                          height: 'auto',
+                          textAlign: 'left',
+                          lineHeight: 1.35,
+                          padding: '6px 10px',
+                        }}
+                      >
+                        {text}
+                      </Badge>
+                    ))}
+                  </Flex>
+                </Box>
+              ) : (
+                <Badge
+                  key={item.name}
                   size="1"
-                  weight="medium"
-                  style={{ color: 'var(--gray-11)', display: 'block', marginBottom: 8, lineHeight: 1.4 }}
+                  color="green"
+                  variant="soft"
+                  radius="full"
+                  title={item.chipLine}
+                  style={{
+                    width: 'fit-content',
+                    maxWidth: '100%',
+                    whiteSpace: 'normal',
+                    wordBreak: 'break-word',
+                    height: 'auto',
+                    textAlign: 'left',
+                    lineHeight: 1.35,
+                    padding: '6px 10px',
+                  }}
                 >
-                  {item.fieldLabel} · {item.operatorLabel}
-                </Text>
-                <Flex wrap="wrap" gap="2" align="start">
-                  {item.valueLabels.map((text, idx) => (
-                    <Badge
-                      key={`${item.name}-${idx}`}
-                      size="1"
-                      color="green"
-                      variant="soft"
-                      radius="full"
-                      title={text}
-                      style={{
-                        whiteSpace: 'normal',
-                        wordBreak: 'break-word',
-                        maxWidth: '100%',
-                        height: 'auto',
-                        textAlign: 'left',
-                        lineHeight: 1.35,
-                        padding: '6px 10px',
-                      }}
-                    >
-                      {text}
-                    </Badge>
-                  ))}
-                </Flex>
-              </Box>
-            ) : (
-              <Badge
-                key={item.name}
-                size="1"
-                color="green"
-                variant="soft"
-                radius="full"
-                title={item.chipLine}
-                style={{
-                  width: 'fit-content',
-                  maxWidth: '100%',
-                  whiteSpace: 'normal',
-                  wordBreak: 'break-word',
-                  height: 'auto',
-                  textAlign: 'left',
-                  lineHeight: 1.35,
-                  padding: '6px 10px',
-                }}
-              >
-                {item.chipLine}
-              </Badge>
-            )
-          )}
-        </Flex>
-      ) : activeFieldNames.length > 0 ? (
-        <Text size="1" color="gray" style={{ marginBottom: 14 }}>
-          Finish operator and value for each filter below to see a summary here.
-        </Text>
-      ) : (
-        <Text size="1" color="gray" style={{ marginBottom: 14 }}>
-          No filters yet. Use &quot;Add filter&quot; to choose one of the supported filters.
-        </Text>
-      )}
+                  {item.chipLine}
+                </Badge>
+              )
+            )}
+          </Flex>
+        ) : activeFieldNames.length > 0 ? (
+          <Text size="1" color="gray" style={{ marginBottom: 14 }}>
+            Finish operator and value for each filter below to see a summary here.
+          </Text>
+        ) : (
+          <Text size="1" color="gray" style={{ marginBottom: 14 }}>
+            No filters yet. Use &quot;Add filter&quot; to choose one of the supported filters.
+          </Text>
+        )
+      ) : null}
 
       <Flex direction="column" gap="4">
         {activeFieldNames.length === 0 ? null : (
@@ -799,6 +977,7 @@ function FilterCategoryBlock({
                   connectorId={connectorId}
                   onChange={onChange}
                   onClear={() => removeField(field.name)}
+                  allowClear={allowRemoveFilter}
                 />
               );
             })}
@@ -816,6 +995,7 @@ function FilterFieldRow({
   connectorId,
   onChange,
   onClear,
+  allowClear = true,
 }: {
   field: FilterSchemaField;
   section: FilterSection;
@@ -823,6 +1003,7 @@ function FilterFieldRow({
   connectorId: string | null;
   onChange: (section: FilterSection, name: string, value: unknown) => void;
   onClear: () => void;
+  allowClear?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const operators = useMemo(() => {
@@ -844,37 +1025,75 @@ function FilterFieldRow({
   const isBooleanField = field.filterType === 'boolean';
 
   const commit = (next: FilterRowValue) => {
-    if (!next.operator?.trim()) {
-      onClear();
-      return;
+    const boolOp = defaultFilterOperator(field);
+    let op = isBooleanField ? (next.operator?.trim() ? next.operator : boolOp) : next.operator;
+    if (!isBooleanField && !op?.trim()) {
+      if (allowClear) {
+        onClear();
+        return;
+      }
+      op = defaultFilterOperator(field);
     }
     onChange(section, field.name, {
-      operator: next.operator,
+      operator: op,
       value: next.value,
       type: field.filterType || next.type,
     });
   };
 
+  const cardShell: React.CSSProperties = {
+    padding: 14,
+    borderRadius: 'var(--radius-2)',
+    border: '1px solid var(--olive-3)',
+    backgroundColor: 'var(--color-surface)',
+    width: '100%',
+    boxSizing: 'border-box',
+  };
+
+  if (isBooleanField) {
+    const checked = row.value === true || row.value === 'true';
+    return (
+      <Box style={cardShell}>
+        <Flex align="start" gap="3" style={{ width: '100%' }}>
+          <Checkbox
+            checked={checked}
+            onCheckedChange={(v) =>
+              commit({
+                ...row,
+                operator: defaultFilterOperator(field),
+                value: v === true,
+              })
+            }
+            style={{ flexShrink: 0, cursor: 'pointer', marginTop: 2 }}
+          />
+          <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {field.displayName}
+            </Text>
+            {field.description ? (
+              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                {field.description}
+              </Text>
+            ) : null}
+          </Flex>
+        </Flex>
+      </Box>
+    );
+  }
+
   return (
-    <Box
-      style={{
-        padding: 14,
-        borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--olive-3)',
-        backgroundColor: 'var(--color-surface)',
-        width: '100%',
-        boxSizing: 'border-box',
-      }}
-    >
+    <Box style={cardShell}>
       <Flex direction="column" gap="3">
         <Flex align="center" justify="between" gap="2" wrap="wrap">
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {field.displayName}
           </Text>
-          <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear} style={{ cursor: 'pointer' }}>
-            <MaterialIcon name="close" size={14} color="var(--gray-11)" />
-            Clear
-          </Button>
+          {allowClear ? (
+            <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear} style={{ cursor: 'pointer' }}>
+              <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+              Clear
+            </Button>
+          ) : null}
         </Flex>
         {field.description ? (
           <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
@@ -894,10 +1113,10 @@ function FilterFieldRow({
         >
           <Box
             style={{
-              flex: isBooleanField ? '1 1 200px' : '0 1 220px',
+              flex: '0 1 220px',
               minWidth: 0,
               maxWidth: '100%',
-              width: isBooleanField ? undefined : 220,
+              width: 220,
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
@@ -947,7 +1166,7 @@ function FilterFieldRow({
 
           <Box
             style={{
-              flex: isBooleanField ? '1 1 200px' : '1 1 280px',
+              flex: '1 1 280px',
               minWidth: 0,
               maxWidth: '100%',
               display: 'flex',
